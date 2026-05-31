@@ -1,0 +1,33 @@
+# 빌드 산출물
+build/
+build_*/
+dist/
+*.o
+*.obj
+
+# 대용량 외부 도구 (빌드 시 다운로드/번들)
+**/resources/tools/yt-dlp*
+**/resources/tools/ffmpeg*
+**/resources/tools/ffprobe*
+**/resources/tools/rclone*
+**/resources/tools/exiftool/
+**/resources/tools/exiftool.exe
+**/resources/chromium/
+**/python_env/
+**/python_embed/
+**/python_standalone/
+
+# 배포 바이너리 (→ GitHub Releases)
+*.dmg
+*.app
+*.exe
+
+# 시스템/IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.user
+moc_*.cpp
+qrc_*.cpp
+ui_*.h

@@ -1,0 +1,8 @@
+<RCC>
+    <qresource prefix="/">
+        <file>html/index.html</file>
+        <file>trad_cover.png</file>
+        <file>fonts/NanumGothic-Regular.ttf</file>
+        <file>fonts/NanumGothic-Bold.ttf</file>
+    </qresource>
+</RCC>

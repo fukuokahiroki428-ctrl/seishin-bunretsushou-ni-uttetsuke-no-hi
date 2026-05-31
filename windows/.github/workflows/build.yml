@@ -1,0 +1,152 @@
+name: Windows Build (Chernobyl)
+
+# Mac 에서 코드 작성 → git push → 이 workflow 가 GitHub 의 Windows 서버에서 자동 빌드.
+# 결과 .exe + DLL + 도구가 zip 으로 Artifacts 에 올라감. Actions 탭에서 다운로드.
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:   # Actions 탭에서 수동 실행 버튼
+
+# ★ Node.js 20 deprecation 대응 — JS 액션(checkout/upload-artifact/msvc-dev-cmd)을
+#   Node 24 로 강제 실행 → "Node.js 20 actions are deprecated" 경고 제거 + 6/2 강제전환 대비.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-windows:
+    # ★ windows-latest 는 6/15 부터 windows-2025-vs2026 (VS 2026) 로 자동 변경됨.
+    #   Qt 6.7.3 msvc2019_64 프리빌드 라이브러리는 VS 2022 까지만 ABI 검증돼 있어서
+    #   VS 2026 으로 갑자기 바뀌면 링킹 깨질 수 있음 → 명시적으로 windows-2022 핀.
+    runs-on: windows-2022
+
+    steps:
+      # 1) 소스 체크아웃
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2) Qt 6.7 + WebEngine 설치
+      #    ★ 6.7.3 의 MSVC 데스크탑 arch 는 win64_msvc2019_64 (Qt 명명 규칙 — 실제로는 VS2022 로 빌드 가능).
+      #      win64_msvc2022_64 는 6.7.3 에 존재하지 않아 "packages not found" 로 실패함.
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+          modules: 'qtwebengine qtwebchannel qtwebsockets qtpositioning'
+          cache: true
+
+      # 3) Windows 용 외부 도구 다운로드 (yt-dlp / ffmpeg / ffprobe / rclone)
+      #    repo 에는 .exe 안 올림 (.gitignore) → 빌드 시 최신 버전 받음
+      - name: Download Windows tools
+        shell: pwsh
+        run: |
+          $tools = "resources/tools"
+          New-Item -ItemType Directory -Force -Path $tools | Out-Null
+
+          # yt-dlp
+          Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile "$tools/yt-dlp.exe"
+
+          # ffmpeg + ffprobe (gyan.dev essentials)
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "ffmpeg.zip"
+          Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg_tmp" -Force
+          $ff = Get-ChildItem -Path "ffmpeg_tmp" -Directory | Select-Object -First 1
+          Copy-Item "$($ff.FullName)/bin/ffmpeg.exe"  "$tools/ffmpeg.exe"  -Force
+          Copy-Item "$($ff.FullName)/bin/ffprobe.exe" "$tools/ffprobe.exe" -Force
+
+          # rclone
+          Invoke-WebRequest -Uri "https://github.com/rclone/rclone/releases/download/v1.74.2/rclone-v1.74.2-windows-amd64.zip" -OutFile "rclone.zip"
+          Expand-Archive -Path "rclone.zip" -DestinationPath "rclone_tmp" -Force
+          $rc = Get-ChildItem -Path "rclone_tmp" -Directory | Select-Object -First 1
+          Copy-Item "$($rc.FullName)/rclone.exe" "$tools/rclone.exe" -Force
+
+          Write-Host "Downloaded tools:"
+          Get-ChildItem $tools -Filter *.exe | Format-Table Name, Length
+
+      # 3.5) MSVC 개발 환경 — Ninja 가 cl.exe / rc.exe / link.exe 를 PATH 에서 찾도록.
+      #      install-qt-action 는 vcvars 를 안 걸어줘서 이 단계 없으면 Ninja 가 컴파일러를 못 찾음.
+      - name: Setup MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      # 4) CMake configure + build (Release)
+      - name: Configure + Build
+        shell: pwsh
+        run: |
+          cmake -B build_win -G "Ninja" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
+            -DAPP_NAME=Chernobyl `
+            -DAPP_ID=com.chernobyl.app
+          cmake --build build_win -j
+
+      # 5) windeployqt — Qt DLL 자동 번들 + 리소스 복사
+      - name: Deploy
+        shell: pwsh
+        run: |
+          $dist = "dist/Chernobyl_win"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+
+          # exe 찾기 (Chernobyl.exe 또는 Miyo.exe)
+          $exe = Get-ChildItem -Path "build_win" -Filter "*.exe" -Recurse | Where-Object { $_.Name -match "Chernobyl|Miyo" } | Select-Object -First 1
+          Copy-Item $exe.FullName "$dist/Chernobyl.exe" -Force
+
+          # Qt DLL 번들 (--compiler-runtime: VC++ 런타임 DLL 동봉 → 사용자 PC 에 VC redist 없어도 실행)
+          & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --no-translations --compiler-runtime --no-system-d3d-compiler "$dist/Chernobyl.exe"
+
+          # 리소스 복사
+          if (Test-Path "resources/fonts") { Copy-Item "resources/fonts" "$dist/fonts" -Recurse -Force }
+          if (Test-Path "resources/html")  { Copy-Item "resources/html"  "$dist/html"  -Recurse -Force }
+
+          # 도구 복사
+          New-Item -ItemType Directory -Force -Path "$dist/tools" | Out-Null
+          Copy-Item "resources/tools/*.exe" "$dist/tools/" -Force -ErrorAction SilentlyContinue
+          Copy-Item "resources/tools/*.py"  "$dist/tools/" -Force -ErrorAction SilentlyContinue
+          if (Test-Path "resources/tools/exiftool")           { Copy-Item "resources/tools/exiftool"           "$dist/tools/exiftool"           -Recurse -Force }
+          if (Test-Path "resources/tools/exiftool_files")     { Copy-Item "resources/tools/exiftool_files"     "$dist/tools/exiftool_files"     -Recurse -Force }
+          if (Test-Path "resources/tools/singlefile_extension"){ Copy-Item "resources/tools/singlefile_extension" "$dist/tools/singlefile_extension" -Recurse -Force }
+
+          # ★ Python 환경 — Twitter/Bluesky 데몬(twikit/atproto)에 필수.
+          #   bundle_python_win.bat 가 build_win/python_env 에 생성 → 앱은 <exe>/python_env/python.exe 를 찾으므로 dist 루트로 복사.
+          if (Test-Path "build_win/python_env") {
+            Copy-Item "build_win/python_env" "$dist/python_env" -Recurse -Force
+            $pyMB = (Get-ChildItem "$dist/python_env" -Recurse | Measure-Object -Property Length -Sum).Sum/1MB
+            Write-Host ("python_env bundled: {0:N1} MB" -f $pyMB)
+          } else {
+            Write-Host "WARN: build_win/python_env 없음 — Twitter/Bluesky 는 시스템 Python 필요"
+          }
+
+          # exiftool.exe → exe 루트 (Windows 앱은 applicationDirPath()/exiftool.exe 탐색)
+          if (Test-Path "resources/tools/exiftool.exe") { Copy-Item "resources/tools/exiftool.exe" "$dist/exiftool.exe" -Force }
+
+          Write-Host "=== dist content ==="
+          Get-ChildItem $dist -Recurse | Measure-Object -Property Length -Sum | ForEach-Object { "Total: {0:N1} MB" -f ($_.Sum/1MB) }
+
+      # 6) Artifact 업로드 (폴더 zip — 포터블) — Actions 탭에서 다운로드
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chernobyl-Windows-${{ github.sha }}
+          path: dist/Chernobyl_win/
+          retention-days: 14
+
+      # 7) 단일 설치 파일 (Inno Setup) — dist 전체를 Chernobyl_Setup.exe 하나로 패키징
+      - name: Build single-file installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "iscc" }
+          & $iscc chernobyl.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed (exit $LASTEXITCODE)" }
+          Get-ChildItem installer_out | Format-Table Name, @{N='MB';E={[math]::Round($_.Length/1MB,1)}}
+
+      # 8) 설치 exe 업로드 — Actions Artifacts 에서 단일 파일로 다운로드
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chernobyl-Setup-${{ github.sha }}
+          path: installer_out/Chernobyl_Setup.exe
+          retention-days: 14

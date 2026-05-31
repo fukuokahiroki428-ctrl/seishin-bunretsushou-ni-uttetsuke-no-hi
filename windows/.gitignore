@@ -1,0 +1,34 @@
+# 빌드 산출물
+build/
+build_win/
+build_windows/
+dist/
+*.o
+*.obj
+
+# 큰 외부 바이너리 — GitHub Actions 가 빌드 시 자동 다운로드 (repo 가볍게)
+resources/tools/yt-dlp.exe
+resources/tools/ffmpeg.exe
+resources/tools/ffprobe.exe
+resources/tools/rclone.exe
+
+# Python 환경 (OS-specific — 빌드 시 생성)
+resources/tools/python_env/
+resources/tools/python_embed/
+
+# 시스템
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# IDE
+.vscode/
+.idea/
+*.user
+
+# Qt
+*.pro.user
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
