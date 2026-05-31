@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>팬을 잘 쓰고 싶다</title>
+<style>
+    :root {
+        --bg: #0e0e10; --bg2: #17171a; --bg3: #1f1f23; --bg4: #2a2a30;
+        --border: #2d2d33; --border-soft: #232328;
+        --text: #e7e7ea; --text2: #8e8e95; --text3: #5c5c63;
+        --accent: #7c5cff; --accent-hover: #8d72ff; --accent-soft: rgba(124,92,255,.15);
+        --success: #3ddc84; --warning: #ffb84d; --error: #ff5e57;
+        --transition: .15s ease;
+    }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    html, body { height:100%; }
+    body {
+        background:var(--bg); color:var(--text);
+        font-family:-apple-system,'SF Pro Text','Apple SD Gothic Neo','Pretendard','Noto Sans KR',sans-serif;
+        font-size:13px; overflow:hidden;
+        -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+    }
+    .app { display:flex; flex-direction:column; height:100vh; }
+
+    /* ─── 헤더 ─── */
+    .header {
+        height:46px; flex:0 0 46px; background:var(--bg2); border-bottom:1px solid var(--border);
+        display:flex; align-items:center; padding:0 18px; gap:14px;
+    }
+    .brand {
+        font-size:14px; font-weight:600; letter-spacing:-.01em;
+        background:linear-gradient(135deg,#a78bfa,#7c5cff);
+        -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+    }
+    .brand-sub { color:var(--text3); font-size:11px; font-weight:500; letter-spacing:.02em; }
+    .header-spacer { flex:1; }
+    .status-dot {
+        width:8px; height:8px; border-radius:50%; background:var(--text3); transition:background var(--transition);
+    }
+    .status-dot.on { background:var(--success); box-shadow:0 0 8px rgba(61,220,132,.4); }
+    .status-dot.paused { background:var(--warning); box-shadow:0 0 8px rgba(255,184,77,.4); }
+    .status-text { color:var(--text2); font-size:11px; }
+
+    /* ─── 메인 레이아웃 ─── */
+    .main { flex:1; display:flex; min-height:0; }
+    .panel {
+        flex:1; min-width:0; padding:20px; overflow-y:auto;
+    }
+    .panel-left { max-width:380px; border-right:1px solid var(--border); background:var(--bg2); }
+    .panel-right { display:flex; flex-direction:column; gap:14px; }
+
+    /* ─── 카드 / 섹션 ─── */
+    .card {
+        background:var(--bg2); border:1px solid var(--border); border-radius:10px;
+        padding:14px; margin-bottom:12px;
+    }
+    .card-title {
+        font-size:11px; font-weight:600; color:var(--text2);
+        text-transform:uppercase; letter-spacing:.08em; margin-bottom:10px;
+    }
+    .field { margin-bottom:10px; }
+    .field-label { display:block; font-size:11px; color:var(--text2); margin-bottom:4px; }
+    .input, .select, .textarea {
+        width:100%; background:var(--bg3); border:1px solid var(--border-soft); border-radius:6px;
+        padding:8px 10px; color:var(--text); font-size:12.5px; font-family:inherit; outline:none;
+        transition:border-color var(--transition);
+    }
+    .input:focus, .select:focus, .textarea:focus { border-color:var(--accent); }
+    .textarea { min-height:64px; resize:vertical; font-family:'SF Mono','Menlo',monospace; font-size:11.5px; line-height:1.45; }
+
+    .row { display:flex; gap:6px; }
+    .row .input { flex:1; }
+
+    .checkbox-row { display:flex; align-items:center; gap:7px; cursor:pointer; color:var(--text); font-size:12px; }
+    .checkbox-row input[type="checkbox"] { accent-color:var(--accent); width:14px; height:14px; cursor:pointer; }
+    .hint { font-size:11px; color:var(--text3); margin-top:4px; line-height:1.5; }
+
+    /* ─── 버튼 ─── */
+    .btn {
+        padding:8px 14px; border:none; border-radius:6px; cursor:pointer;
+        font-size:12px; font-weight:600; font-family:inherit;
+        transition:all var(--transition); white-space:nowrap;
+    }
+    .btn:disabled { opacity:.35; cursor:not-allowed; }
+    .btn-primary { background:var(--accent); color:#fff; }
+    .btn-primary:hover:not(:disabled) { background:var(--accent-hover); }
+    .btn-secondary { background:var(--bg3); color:var(--text); border:1px solid var(--border); }
+    .btn-secondary:hover:not(:disabled) { background:var(--bg4); border-color:var(--text3); }
+    .btn-danger { background:#3a1f24; color:var(--error); border:1px solid #4a262d; }
+    .btn-danger:hover:not(:disabled) { background:#4a262d; }
+    .btn-success { background:#1f3a2c; color:var(--success); border:1px solid #264a36; }
+    .btn-success:hover:not(:disabled) { background:#264a36; }
+    .btn-sm { padding:5px 10px; font-size:11px; }
+    .btn-row { display:flex; gap:6px; flex-wrap:wrap; }
+    .btn-row.tight { gap:4px; }
+
+    /* ─── 로그 / 출력 ─── */
+    .log-card { flex:1; min-height:200px; display:flex; flex-direction:column; }
+    .log-box {
+        flex:1; min-height:0; background:#08080a; border:1px solid var(--border-soft);
+        border-radius:6px; padding:10px;
+        font-family:'SF Mono','JetBrains Mono','Menlo',monospace; font-size:11px;
+        line-height:1.55; overflow-y:auto;
+    }
+    .log-entry { margin-bottom:1px; word-break:break-word; }
+    .log-info { color:var(--text2); }
+    .log-success { color:var(--success); }
+    .log-warning { color:var(--warning); }
+    .log-error { color:var(--error); }
+    .log-empty { color:var(--text3); font-style:italic; }
+
+    /* ─── 큰 페이즈 알림 (캡챠/로그인 대기) ─── */
+    .pause-banner {
+        display:none;
+        background:linear-gradient(135deg,#3d2a0a,#4a3210);
+        border:1px solid #6b4615; border-radius:10px;
+        padding:14px 16px; margin-bottom:12px;
+        animation:pulse 1.6s ease-in-out infinite;
+    }
+    .pause-banner.show { display:flex; align-items:center; gap:14px; }
+    .pause-banner-icon { font-size:22px; }
+    .pause-banner-body { flex:1; }
+    .pause-banner-title { font-weight:600; color:var(--warning); font-size:13px; margin-bottom:3px; }
+    .pause-banner-desc { font-size:11.5px; color:var(--text2); line-height:1.45; }
+    @keyframes pulse {
+        0%,100% { box-shadow:0 0 0 0 rgba(255,184,77,.25); }
+        50% { box-shadow:0 0 0 6px rgba(255,184,77,0); }
+    }
+
+    /* ─── KPI ─── */
+    .kpi-row { display:flex; gap:8px; margin-bottom:12px; }
+    .kpi {
+        flex:1; background:var(--bg2); border:1px solid var(--border); border-radius:8px;
+        padding:10px; text-align:center;
+    }
+    .kpi-value { font-size:18px; font-weight:600; color:var(--text); }
+    .kpi-label { font-size:10px; color:var(--text3); text-transform:uppercase; letter-spacing:.06em; margin-top:2px; }
+
+    /* ─── 스크롤바 ─── */
+    ::-webkit-scrollbar { width:9px; height:9px; }
+    ::-webkit-scrollbar-track { background:transparent; }
+    ::-webkit-scrollbar-thumb { background:#2c2c33; border-radius:5px; }
+    ::-webkit-scrollbar-thumb:hover { background:#3a3a42; }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+    <!-- ── 헤더 ── -->
+    <div class="header">
+        <span class="brand">팬을 잘 쓰고 싶다</span>
+        <span class="brand-sub">/ 인터랙티브 크롤러</span>
+        <span class="header-spacer"></span>
+        <span id="statusDot" class="status-dot"></span>
+        <span id="statusText" class="status-text">정지</span>
+    </div>
+
+    <!-- ── 본문 ── -->
+    <div class="main">
+
+        <!-- 좌측: 조작 -->
+        <div class="panel panel-left">
+
+            <!-- ★ 다운로드 카드 — 가장 자주 쓰는 거 맨 위에 (큰 버튼 보이게) -->
+            <div class="card" style="border:2px solid var(--accent)">
+                <div class="card-title">⬇ 다운로드 (한 버튼)</div>
+                <div class="hint" style="margin-bottom:10px">
+                    URL 입력 → [다운로드 시작] 한 번 클릭. Chrome 자동 시작 + 옵션 따라 자동 분기.<br>
+                    Twitter/X URL 은 자동 스크롤 모드.
+                </div>
+
+                <div class="field">
+                    <label class="field-label">URL</label>
+                    <input id="dlUrl" class="input" type="text" placeholder="https://... (비우면 현재 페이지만)">
+                </div>
+
+                <div class="row" style="gap:6px">
+                    <div class="field" style="flex:1; margin-bottom:0">
+                        <label class="field-label">깊이</label>
+                        <select id="dlDepth" class="input">
+                            <option value="0">0 — 단일</option>
+                            <option value="1">1 — 직접 링크</option>
+                            <option value="2" selected>2 — 2단계</option>
+                            <option value="3">3 — 3단계</option>
+                            <option value="999">∞ 전체</option>
+                        </select>
+                    </div>
+                    <div class="field" style="flex:1; margin-bottom:0">
+                        <label class="field-label">최대 페이지</label>
+                        <input id="dlMaxPages" class="input" type="number" value="30" min="1" max="9999">
+                    </div>
+                </div>
+
+                <div class="field" style="margin-top:8px">
+                    <label class="field-label">모드</label>
+                    <select id="dlMode" class="input">
+                        <option value="inline" selected>SingleFile inline (한 페이지=한 HTML, base64 내장)</option>
+                        <option value="deep">분리 파일 (wget -mkp — 디렉토리 구조 보존)</option>
+                    </select>
+                </div>
+
+                <label class="checkbox-row" style="margin-top:8px">
+                    <input id="dlSameDomain" type="checkbox" checked>
+                    <span>같은 도메인만</span>
+                </label>
+                <label class="checkbox-row" style="margin-top:4px">
+                    <input id="dlMedia" type="checkbox">
+                    <span>이미지/비디오 별도 다운로드</span>
+                </label>
+
+                <div class="btn-row" style="margin-top:12px">
+                    <button class="btn btn-primary" style="flex:1; padding:12px; font-size:14px" onclick="dlStart()">⬇ 다운로드 시작</button>
+                    <button class="btn btn-danger btn-sm" onclick="dlStop()">중지</button>
+                </div>
+                <div class="btn-row tight" style="margin-top:6px">
+                    <button class="btn btn-secondary btn-sm" onclick="crawlScroll()">끝까지 스크롤</button>
+                    <button class="btn btn-secondary btn-sm" onclick="penOpenSaveFolder()">저장 폴더 열기</button>
+                </div>
+            </div>
+
+            <!-- 시작 — 자주 안 쓰지만 저장 경로 / 사용자 쿠키 설정용 (접힌 채로) -->
+            <details class="card">
+                <summary style="cursor:pointer; font-size:11px; font-weight:600; color:var(--text2); text-transform:uppercase; letter-spacing:.08em">시작 옵션 (펼치기)</summary>
+
+                <div class="field" style="margin-top:10px">
+                    <label class="field-label">시작 URL (수동 시작 시 navigate)</label>
+                    <input id="startUrl" class="input" type="text" placeholder="https://...">
+                </div>
+
+                <div class="field">
+                    <label class="field-label">저장 폴더</label>
+                    <div class="row">
+                        <input id="savePath" class="input" type="text" placeholder="~/Downloads/Pen">
+                        <button class="btn btn-secondary btn-sm" onclick="penPickSavePath()">선택</button>
+                        <button class="btn btn-secondary btn-sm" onclick="if(backend&&backend.pickMountedVolume) backend.pickMountedVolume('savePath');" title="마운트된 NAS/외장 빠른 선택">📂 NAS</button>
+                    </div>
+                    <div class="hint">캡쳐는 이 폴더 아래 <code>YYYYMMDD_HHmmss/captures/</code>에 저장됨. [📂 NAS] 누르면 Qt 네이티브 다이얼로그로 마운트된 볼륨 선택.</div>
+                </div>
+
+                <div class="field">
+                    <label class="checkbox-row">
+                        <input id="useUserProfile" type="checkbox" checked>
+                        <span>사용자 Chrome 로그인 가져오기 (쿠키 복사) <strong style="color:#7c5cff">[기본 ON]</strong></span>
+                    </label>
+                    <div class="hint">
+                        체크 ON → Chrome 시작 전 사용자 Chrome 의 Cookies 파일을 펜 프로필로 한 번 복사 →
+                        Twitter/X 등 사이트 로그인 그대로 가져옴. 락 충돌 없음.<br>
+                        체크 OFF → 펜 전용 프로필 (첫 실행 시 로그인, 영구 유지).
+                    </div>
+                </div>
+
+                <div class="btn-row">
+                    <button id="btnStart" class="btn btn-secondary btn-sm" onclick="crawlBegin()">수동 시작 (보통 자동)</button>
+                    <button id="btnStop" class="btn btn-danger btn-sm" onclick="crawlStop()" disabled>종료</button>
+                </div>
+            </details>
+
+            <details class="card" style="padding:0">
+                <summary style="padding:14px; cursor:pointer; font-size:11px; font-weight:600; color:var(--text2); text-transform:uppercase; letter-spacing:.08em">고급 — 수동 조작</summary>
+                <div style="padding:0 14px 14px">
+                    <div class="field">
+                        <label class="field-label">이동 (URL navigate)</label>
+                        <div class="row">
+                            <input id="navUrl" class="input" type="text" placeholder="https://...">
+                            <button class="btn btn-secondary btn-sm" onclick="crawlNav()">이동</button>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label class="field-label">CSS 셀렉터로 클릭</label>
+                        <div class="row">
+                            <input id="clickSel" class="input" type="text" placeholder="button.next, .pagination .arrow">
+                            <button class="btn btn-secondary btn-sm" onclick="crawlClickEl()">클릭</button>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label class="field-label">CSS 셀렉터로 텍스트 입력</label>
+                        <div class="row">
+                            <input id="typeSel" class="input" type="text" placeholder="input[type=text]">
+                            <input id="typeVal" class="input" type="text" placeholder="입력할 텍스트">
+                        </div>
+                        <div class="btn-row" style="margin-top:6px">
+                            <button class="btn btn-secondary btn-sm" onclick="crawlTypeIn()">입력</button>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label class="field-label">JS 평가 (디버그)</label>
+                        <textarea id="evalJs" class="textarea" placeholder="document.title"></textarea>
+                        <div class="btn-row" style="margin-top:6px">
+                            <button class="btn btn-secondary btn-sm" onclick="crawlEvalRun()">실행</button>
+                        </div>
+                    </div>
+                    <!-- 통합 다운로드에서 안 쓰는 hidden 필드 (기존 함수 호환용) -->
+                    <input type="hidden" id="capName" value="">
+                    <input type="hidden" id="tweetUrl" value="">
+                    <input type="hidden" id="tweetBatch" value="">
+                </div>
+            </details>
+
+            <!-- ★ 이전 5개 카드 (Twitter 미러 / 딥 미러 / 사이트 미러 / 자동 크롤 / 미디어 다운로드) →
+                 위의 "다운로드" 카드 하나로 통합됨. dlStart() 가 옵션 따라 자동 분기. -->
+            <input type="hidden" id="twUrl" value="">
+            <input type="hidden" id="twScrolls" value="30">
+            <input type="hidden" id="deepUrl" value="">
+            <input type="hidden" id="deepMaxPages" value="30">
+            <input type="hidden" id="deepSameDomain" value="">
+            <input type="hidden" id="mirrorUrl" value="">
+            <input type="hidden" id="mirrorMaxPages" value="50">
+            <input type="hidden" id="mirrorSameDomain" value="">
+            <input type="hidden" id="mirrorDownloadMedia" value="">
+            <input type="hidden" id="autoUrl" value="">
+            <input type="hidden" id="autoMaxPages" value="30">
+            <input type="hidden" id="autoSameDomain" value="">
+            <input type="hidden" id="autoDownloadMedia" value="">
+
+            <div class="card">
+                <div class="card-title">WebDAV NAS 자동 업로드 (Synology 등)</div>
+                <div class="hint" style="margin-bottom:8px">캡쳐 완료된 파일을 자동으로 NAS에 업로드. 로컬 + NAS 양쪽 보관.</div>
+                <div class="field">
+                    <label class="field-label">WebDAV URL</label>
+                    <input id="webdavUrl" class="input" type="text" placeholder="https://nas.synology.me:5006/공유폴더">
+                </div>
+                <div class="row" style="gap:6px">
+                    <div class="field" style="flex:1; margin-bottom:0">
+                        <label class="field-label">사용자명</label>
+                        <input id="webdavUser" class="input" type="text" placeholder="user">
+                    </div>
+                    <div class="field" style="flex:1; margin-bottom:0">
+                        <label class="field-label">비밀번호</label>
+                        <input id="webdavPass" class="input" type="password" placeholder="password">
+                    </div>
+                </div>
+                <label class="checkbox-row" style="margin-top:8px">
+                    <input id="webdavEnabled" type="checkbox">
+                    <span>자동 업로드 활성화</span>
+                </label>
+                <div class="btn-row" style="margin-top:8px">
+                    <button class="btn btn-primary btn-sm" onclick="saveWebDavConfig()">저장</button>
+                    <button class="btn btn-secondary btn-sm" onclick="testWebDavConn()">연결 테스트</button>
+                    <button class="btn btn-secondary btn-sm" onclick="mountWebDavFinder()" title="Finder에 마운트 — 권한 우회">📂 Finder 마운트</button>
+                    <button class="btn btn-secondary btn-sm" onclick="openSecurityPrefs()" title="권한 거부 시">🔒 권한</button>
+                </div>
+                <div class="hint" style="margin-top:6px">
+                    <strong>Finder 마운트:</strong> macOS가 인증/권한 처리 → "권한 없음" 우회.
+                    <code>/Volumes/&lt;공유폴더&gt;</code> 생성됨.
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">미러 자동 시도</div>
+                <textarea id="mirrors" class="textarea" placeholder="한 줄에 하나씩 — 살아있는 첫 미러까지 순차 시도&#10;https://newtoki001.com/...&#10;https://newtoki002.com/..."></textarea>
+                <div class="btn-row" style="margin-top:8px">
+                    <button class="btn btn-primary btn-sm" onclick="crawlMirrorTry()">미러 시도</button>
+                </div>
+                <div class="hint">document.title이 비어있지 않고 "404"/"not found" 없으면 OK 판정</div>
+            </div>
+        </div>
+
+        <!-- 우측: 상태 + 로그 -->
+        <div class="panel panel-right">
+
+            <!-- 캡챠/로그인 대기 배너 -->
+            <div id="pauseBanner" class="pause-banner">
+                <div class="pause-banner-icon">⚠</div>
+                <div class="pause-banner-body">
+                    <div class="pause-banner-title">사용자 작업 대기 중</div>
+                    <div class="pause-banner-desc">
+                        Chrome 창에서 <strong>캡챠 / 로그인 / age-gate</strong>를 직접 푸세요.<br>
+                        끝나면 아래 "준비 완료" 누르거나, 그냥 캡쳐 진행해도 됨.
+                    </div>
+                </div>
+                <button class="btn btn-success btn-sm" onclick="penResumeUser()">준비 완료</button>
+            </div>
+
+            <div class="kpi-row">
+                <div class="kpi">
+                    <div class="kpi-value" id="kpiCaptures">0</div>
+                    <div class="kpi-label">캡쳐</div>
+                </div>
+                <div class="kpi">
+                    <div class="kpi-value" id="kpiState">정지</div>
+                    <div class="kpi-label">상태</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">사용 안내</div>
+                <div class="hint" style="line-height:1.7;color:var(--text2);font-size:12px">
+                    1. <strong>시작</strong> 누르면 별도 Chrome 창이 뜸 (제어용 CDP 연결).<br>
+                    2. <strong>로그인이나 캡챠</strong>는 Chrome 창에서 직접 처리. 한번 로그인하면 다음 실행 때도 유지(영구 프로필).<br>
+                    3. 페이지 도달했으면 좌측 <strong>캡쳐</strong> 버튼 — SingleFile로 인라인 HTML 저장 (이미지/스타일 포함).<br>
+                    4. <strong>끝까지 스크롤</strong>은 lazy-load 강제 트리거용.<br>
+                    5. <strong>미러 자동 시도</strong>는 죽은 사이트 후보군에서 살아있는 미러 자동 탐색.
+                </div>
+            </div>
+
+            <div class="card log-card">
+                <div class="card-title">로그</div>
+                <div id="logBox" class="log-box">
+                    <div class="log-entry log-empty">시작을 누르면 여기에 로그가 표시됩니다…</div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<script>
+let backend = null;
+let captureCount = 0;
+
+// ★ Qt6 WebChannel transport — qt.webChannelTransport 가 정식 (qt.webChannel.transport 는 오타).
+//   페이지가 qrc:/html/index.html 로 로드돼야 qt 객체가 주입됨 (file:// 면 작동 X).
+console.log('[Pen] WebChannel init, qt defined:', typeof qt);
+if (typeof qt === 'undefined' || !qt.webChannelTransport) {
+    console.error('[Pen] qt.webChannelTransport 없음 — WebChannel 연결 실패');
+    appendLog('백엔드 연결 실패 — 앱 재시작 필요', 'error');
+} else {
+    new QWebChannel(qt.webChannelTransport, function(channel) {
+        backend = channel.objects.backend;
+        window.backend = backend;
+        console.log('[Pen] backend connected:', !!backend);
+        appendLog('백엔드 연결됨 ✓', 'success');
+        if (backend.loadConfig) backend.loadConfig();
+        if (backend.loadFormData) backend.loadFormData();
+        if (backend.getSystemInfo) backend.getSystemInfo();
+    });
+}
+
+// ─── UI 헬퍼 ───
+function appendLog(message, type, platform) {
+    const box = document.getElementById('logBox');
+    if (!box) return;
+    if (box.firstChild && box.firstChild.classList && box.firstChild.classList.contains('log-empty')) {
+        box.innerHTML = '';
+    }
+    const div = document.createElement('div');
+    div.className = 'log-entry log-' + (type || 'info');
+    const ts = new Date().toTimeString().slice(0,8);
+    div.textContent = `[${ts}] ${message}`;
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+    // 1000줄 넘으면 앞 200줄 잘라냄
+    if (box.children.length > 1000) {
+        for (let i = 0; i < 200; i++) box.removeChild(box.firstChild);
+    }
+    // 캡쳐 카운트
+    if (typeof message === 'string' && message.startsWith('✅ 캡쳐')) {
+        captureCount++;
+        document.getElementById('kpiCaptures').textContent = captureCount;
+    }
+}
+
+function setStatus(state) {
+    const dot = document.getElementById('statusDot');
+    const txt = document.getElementById('statusText');
+    const kpi = document.getElementById('kpiState');
+    dot.className = 'status-dot' + (state === 'on' ? ' on' : state === 'paused' ? ' paused' : '');
+    const label = state === 'on' ? '실행 중' : state === 'paused' ? '대기 중' : '정지';
+    txt.textContent = label;
+    kpi.textContent = label;
+    document.getElementById('btnStart').disabled = (state === 'on' || state === 'paused');
+    document.getElementById('btnStop').disabled = (state !== 'on' && state !== 'paused');
+}
+
+// ─── 백엔드 콜백 ───
+window.onCrawlStarted = function(ok) {
+    setStatus(ok ? 'on' : 'off');
+    saveForm();
+};
+window.onCrawlStopped = function() {
+    setStatus('off');
+};
+window.onCrawlPaused = function() {
+    document.getElementById('pauseBanner').classList.add('show');
+    setStatus('paused');
+};
+window.onCrawlResumed = function() {
+    document.getElementById('pauseBanner').classList.remove('show');
+    setStatus('on');
+};
+window.onSavePathPicked = function(p) {
+    document.getElementById('savePath').value = p;
+    saveForm();
+};
+window.onSystemInfo = function(info) {
+    appendLog(`OS: ${info.os} (${info.arch}) · Qt ${info.qt} · 다운로드 여유: ${info.downloadsFreeGB.toFixed(1)}GB`, 'info', 'crawl');
+};
+window.onConfigLoaded = function(c) {
+    if (!c) return;
+    if (c.webdavUrl)  document.getElementById('webdavUrl').value  = c.webdavUrl;
+    if (c.webdavUser) document.getElementById('webdavUser').value = c.webdavUser;
+    if (c.webdavPass) document.getElementById('webdavPass').value = c.webdavPass;
+    if (typeof c.webdavEnabled === 'boolean') document.getElementById('webdavEnabled').checked = c.webdavEnabled;
+};
+// ─── 폼 데이터 — 모든 입력 필드 자동 저장/복원 ───
+const _penFormIds = [
+    'startUrl', 'savePath', 'mirrors', 'navUrl',
+    'capName', 'tweetUrl', 'tweetBatch',
+    'clickSel', 'typeSel', 'typeVal', 'evalJs'
+];
+const _penFormCheckboxes = ['useUserProfile'];
+
+window.onFormDataLoaded = function(f) {
+    if (!f || typeof f !== 'object') return;
+    _penFormIds.forEach(id => {
+        if (f[id] !== undefined) {
+            const el = document.getElementById(id);
+            if (el) el.value = f[id];
+        }
+    });
+    _penFormCheckboxes.forEach(id => {
+        if (typeof f[id] === 'boolean') {
+            const el = document.getElementById(id);
+            if (el) el.checked = f[id];
+        }
+    });
+};
+
+function saveForm() {
+    if (!backend || !backend.saveFormData) return;
+    const data = {};
+    _penFormIds.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) data[id] = el.value;
+    });
+    _penFormCheckboxes.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) data[id] = el.checked;
+    });
+    backend.saveFormData(JSON.stringify(data));
+}
+_penFormIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+        el.addEventListener('change', saveForm);
+        el.addEventListener('input', saveForm);  // 입력 즉시 저장
+    }
+});
+_penFormCheckboxes.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', saveForm);
+});
+
+// ─── 크롤 액션 ───
+function crawlBegin() {
+    if (!backend) return;
+    const url = document.getElementById('startUrl').value.trim();
+    const sp = document.getElementById('savePath').value.trim();
+    const up = document.getElementById('useUserProfile').checked;
+    backend.crawlStart(url, sp, up);
+}
+function crawlStop() { if (backend) backend.crawlStop(); }
+function crawlNav() {
+    if (!backend) return;
+    const u = document.getElementById('navUrl').value.trim();
+    if (u) backend.crawlNavigate(u);
+}
+function crawlCapture() {
+    if (!backend) return;
+    backend.crawlCaptureCurrent(document.getElementById('capName').value.trim());
+}
+function crawlCaptureTwitter() {
+    if (!backend) return;
+    let u = document.getElementById('tweetUrl').value.trim();
+    if (!u) u = document.getElementById('startUrl').value.trim();
+    if (!u) { appendLog('트윗 URL이 없음', 'warning', 'crawl'); return; }
+    backend.crawlCaptureTweet(u, '');
+}
+function crawlCaptureBatch() {
+    if (!backend) return;
+    const lines = document.getElementById('tweetBatch').value.split('\n')
+        .map(s => s.trim()).filter(s => s.length > 0);
+    if (!lines.length) { appendLog('배치 URL이 없음', 'warning', 'crawl'); return; }
+    backend.crawlCaptureTweetBatch(lines);
+}
+function crawlClickEl() {
+    if (!backend) return;
+    const s = document.getElementById('clickSel').value.trim();
+    if (s) backend.crawlClick(s);
+}
+function crawlTypeIn() {
+    if (!backend) return;
+    const s = document.getElementById('typeSel').value.trim();
+    const v = document.getElementById('typeVal').value;
+    if (s) backend.crawlType(s, v);
+}
+function crawlEvalRun() {
+    if (!backend) return;
+    const j = document.getElementById('evalJs').value.trim();
+    if (j) backend.crawlEvaluate(j);
+}
+function crawlScroll() { if (backend) backend.crawlScrollAll(); }
+function crawlMirrorTry() {
+    if (!backend) return;
+    const lines = document.getElementById('mirrors').value.split('\n')
+        .map(s => s.trim()).filter(s => s.length > 0);
+    if (!lines.length) { appendLog('미러 URL이 없음', 'warning', 'crawl'); return; }
+    backend.crawlTryMirrors(lines, document.getElementById('savePath').value.trim(),
+                             document.getElementById('useUserProfile').checked);
+}
+function penPickSavePath() { if (backend) backend.browseSavePath(); }
+function penOpenSaveFolder() {
+    if (!backend) return;
+    const p = document.getElementById('savePath').value.trim() || '~/Downloads/Crawl';
+    backend.openFolder(p);
+}
+function penResumeUser() { if (backend) backend.crawlResumeFromUser(); }
+function updateStats(p,m,s,plat) { /* reserved for future */ }
+
+// ─── 자동 크롤 ───
+function crawlAutoStart() {
+    if (!backend) return;
+    let u = document.getElementById('autoUrl').value.trim();
+    if (!u) u = document.getElementById('startUrl').value.trim();
+    if (!u) { appendLog('자동 크롤: 시작 URL 입력', 'warning'); return; }
+    const maxPages = parseInt(document.getElementById('autoMaxPages').value) || 30;
+    const sameDomain = document.getElementById('autoSameDomain').checked;
+    const dlMedia = document.getElementById('autoDownloadMedia').checked;
+    backend.crawlAuto(u, maxPages, sameDomain, dlMedia);
+}
+function crawlAutoStop() { if (backend) backend.crawlAutoStop(); }
+function penDownloadMedia() { if (backend) backend.crawlDownloadMedia(); }
+
+// ─── 통합 다운로드 — 한 버튼으로 모든 거 (Chrome 자동 시작 포함) ───
+let _chromeReady = false;
+window.onCrawlStarted = function(ok) {
+    setStatus(ok ? 'on' : 'off');
+    _chromeReady = ok;
+    saveForm();
+    // Chrome 준비되면 대기 중인 다운로드 실행
+    if (ok && window._pendingDownload) {
+        const fn = window._pendingDownload;
+        window._pendingDownload = null;
+        setTimeout(fn, 500);  // 페이지 안정화 잠깐 대기
+    }
+};
+
+function _isChromeReady() {
+    // setStatus 가 dot 의 class 'on' 으로 표시함
+    const dot = document.getElementById('statusDot');
+    return dot && dot.classList.contains('on');
+}
+
+function dlStart() {
+    if (!backend) return;
+    const url = document.getElementById('dlUrl').value.trim();
+    const depth = parseInt(document.getElementById('dlDepth').value) || 0;
+    const maxP = parseInt(document.getElementById('dlMaxPages').value) || 30;
+    const mode = document.getElementById('dlMode').value;
+    const sd = document.getElementById('dlSameDomain').checked;
+    const media = document.getElementById('dlMedia').checked;
+
+    // 실제 다운로드 액션
+    const doDownload = () => {
+        const isTwitter = /^(https?:\/\/)?(www\.)?(x|twitter)\.com\//i.test(url);
+        if (!url && depth === 0) {
+            appendLog('현재 페이지 캡쳐...', 'info');
+            backend.crawlCaptureCurrent('');
+            if (media) setTimeout(() => backend.crawlDownloadMedia(), 1000);
+            return;
+        }
+        if (!url) { appendLog('URL 입력 필요', 'warning'); return; }
+
+        if (isTwitter && depth >= 1) {
+            const scrolls = Math.max(10, maxP);
+            appendLog(`Twitter 미러 — ${scrolls}회 스크롤`, 'info');
+            backend.crawlTwitterMirror(url, scrolls);
+            return;
+        }
+        if (depth === 0) {
+            appendLog(`단일 페이지 다운로드: ${url}`, 'info');
+            backend.crawlNavigate(url);
+            setTimeout(() => {
+                backend.crawlCaptureCurrent('');
+                if (media) setTimeout(() => backend.crawlDownloadMedia(), 2000);
+            }, 3000);
+            return;
+        }
+        if (mode === 'deep') {
+            appendLog(`딥 미러 (분리 파일): ${url} — 깊이 ${depth}, 최대 ${maxP}페이지`, 'info');
+            backend.crawlDeepMirror(url, maxP, sd, depth);
+        } else {
+            appendLog(`사이트 미러 (inline): ${url} — 깊이 ${depth}, 최대 ${maxP}페이지`, 'info');
+            backend.crawlSiteMirror(url, maxP, sd, media, depth);
+        }
+    };
+
+    // ★ Chrome 안 떴으면 자동으로 띄우고 → 준비 완료 콜백에서 다운로드 실행
+    if (!_isChromeReady()) {
+        appendLog('Chrome 자동 시작...', 'info');
+        window._pendingDownload = doDownload;
+        // 시작 URL 은 dlUrl 사용 (없으면 빈 채로 시작 → 사용자 직접 조작 모드)
+        const startUrl = url || '';
+        const sp = document.getElementById('savePath').value.trim();
+        const up = document.getElementById('useUserProfile').checked;
+        backend.crawlStart(startUrl, sp, up);
+        return;
+    }
+
+    // Chrome 이미 떠 있음 — 즉시 실행
+    doDownload();
+}
+
+function dlStop() {
+    if (backend) backend.crawlAutoStop();
+}
+
+// ─── Twitter/X 통째 미러 ───
+function crawlTwitterStart() {
+    if (!backend) return;
+    let u = document.getElementById('twUrl').value.trim();
+    if (!u) u = document.getElementById('startUrl').value.trim();
+    if (!u) { appendLog('Twitter 미러: 프로필 URL 입력 (예: https://x.com/username)', 'warning'); return; }
+    const scrolls = parseInt(document.getElementById('twScrolls').value) || 30;
+    backend.crawlTwitterMirror(u, scrolls);
+}
+
+// ─── 딥 미러 (소스 분리 보존) ───
+function crawlDeepStart() {
+    if (!backend) return;
+    let u = document.getElementById('deepUrl').value.trim();
+    if (!u) u = document.getElementById('startUrl').value.trim();
+    if (!u) { appendLog('딥 미러: 시작 URL 입력', 'warning'); return; }
+    const maxP = parseInt(document.getElementById('deepMaxPages').value) || 30;
+    const sd = document.getElementById('deepSameDomain').checked;
+    backend.crawlDeepMirror(u, maxP, sd);
+}
+
+// ─── 사이트 통째 미러 ───
+function crawlMirrorStart() {
+    if (!backend) return;
+    let u = document.getElementById('mirrorUrl').value.trim();
+    if (!u) u = document.getElementById('startUrl').value.trim();
+    if (!u) { appendLog('사이트 미러: 시작 URL 입력', 'warning'); return; }
+    const maxP = parseInt(document.getElementById('mirrorMaxPages').value) || 50;
+    const sd = document.getElementById('mirrorSameDomain').checked;
+    const dm = document.getElementById('mirrorDownloadMedia').checked;
+    backend.crawlSiteMirror(u, maxP, sd, dm);
+}
+
+// ─── WebDAV 설정 ───
+function saveWebDavConfig() {
+    if (!backend || !backend.setWebDavConfig) return;
+    const url  = document.getElementById('webdavUrl').value.trim();
+    const user = document.getElementById('webdavUser').value.trim();
+    const pass = document.getElementById('webdavPass').value;
+    const en   = document.getElementById('webdavEnabled').checked;
+    backend.setWebDavConfig(url, user, pass, en);
+}
+function testWebDavConn() {
+    saveWebDavConfig();
+    if (backend && backend.testWebDavConnection) backend.testWebDavConnection();
+}
+function mountWebDavFinder() {
+    saveWebDavConfig();
+    if (backend && backend.mountWebDavInFinder) backend.mountWebDavInFinder();
+}
+function openSecurityPrefs() {
+    if (backend && backend.openSecurityPrefs) backend.openSecurityPrefs();
+}
+// 마운트 성공 콜백 — 저장 경로 자동 갱신 제안 + 드롭다운 갱신
+window.onWebDavMounted = function(info) {
+    try {
+        const path = (info && info.path) || '';
+        if (!path) return;
+        if (backend && backend.listMountedVolumes) backend.listMountedVolumes();
+        if (confirm(`Finder에 마운트 완료:\n${path}\n\n저장 경로를 이 폴더로 변경?`)) {
+            const el = document.getElementById('savePath');
+            if (el) { el.value = path; el.dispatchEvent(new Event('change')); }
+        }
+    } catch(e) { console.error(e); }
+};
+// NAS 드롭다운 선택 → 저장 경로에 반영
+function onNasSelect(sel) {
+    if (!sel.value) return;
+    const el = document.getElementById('savePath');
+    if (el) { el.value = sel.value; el.dispatchEvent(new Event('change')); }
+    sel.selectedIndex = 0;
+}
+// 마운트 목록 콜백 → 드롭다운 채움
+window.onMountedVolumes = function(vols) {
+    const sel = document.getElementById('nasSelect');
+    if (!sel) return;
+    const opts = ['<option value="">📂 NAS/외장…</option>'];
+    (vols || []).forEach(v => {
+        const icon = v.isNetwork ? '🌐' : '💾';
+        opts.push(`<option value="${v.path}">${icon} ${v.name}</option>`);
+    });
+    sel.innerHTML = opts.join('');
+};
+// 시작 시 1회 호출 (backend 연결 후)
+setTimeout(() => {
+    if (window.backend && window.backend.listMountedVolumes) {
+        window.backend.listMountedVolumes();
+    }
+}, 1500);
+</script>
+</body>
+</html>
