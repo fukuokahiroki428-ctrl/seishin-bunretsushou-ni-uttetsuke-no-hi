@@ -1,0 +1,81 @@
+═══════════════════════════════════════════════════════════════
+  チェルノブイリ + 펜을 잘 쓰고 싶다 — Windows 빌드 가이드
+═══════════════════════════════════════════════════════════════
+
+Mac에서 cross-compile은 환경 셋업이 매우 복잡하므로, 다음 두 가지
+경로 중 하나를 선택하세요.
+
+┌─────────────────────────────────────────────────────────────┐
+│ 옵션 A. Windows 머신에서 직접 빌드 (가장 단순)              │
+└─────────────────────────────────────────────────────────────┘
+
+[1] 사전 설치
+  • Qt6 (6.5+ 권장 6.7.0): https://www.qt.io/download-open-source
+    Online Installer 실행 → "Qt 6.7.0" 선택
+    필수 컴포넌트:
+      ✓ MinGW 11.2.0 64-bit (또는 MSVC 2019 64-bit)
+      ✓ Qt WebEngine
+      ✓ Qt WebChannel
+      ✓ Qt WebSockets
+      ✓ Qt Positioning
+      ✓ Qt 5 Compat (선택)
+  • CMake 3.20+: https://cmake.org/download/ → Windows x64 Installer
+    설치 시 "Add to PATH" 체크
+  • (체르노빌만 필요) ffmpeg / yt-dlp / exiftool — 자동 다운로드 권장:
+      ffmpeg:   https://www.gyan.dev/ffmpeg/builds/  (release-essentials)
+      yt-dlp:   https://github.com/yt-dlp/yt-dlp/releases (yt-dlp.exe)
+      exiftool: https://exiftool.org/ (Windows Executable)
+    각각 다운로드 후 mac/miyo_cpp/resources/tools/ 에 .exe로 배치
+
+[2] 빌드
+  • チェルノブイリ:
+      cd mac\miyo_cpp
+      build_windows.bat
+  • 펜을 잘 쓰고 싶다:
+      cd beta
+      build_windows.bat
+
+[3] 결과물
+  • mac\miyo_cpp\dist\チェルノブイリ_win.zip
+  • beta\dist\펜을_잘_쓰고_싶다_win.zip
+
+  실행파일 + 모든 Qt DLL + 폰트 + tools 까지 포함된 자체 완결 ZIP.
+  사용자에게 zip 통째 보내면 압축 풀고 .exe 더블클릭으로 바로 실행.
+
+
+┌─────────────────────────────────────────────────────────────┐
+│ 옵션 B. GitHub Actions 자동 빌드 (Windows 머신 없을 때)     │
+└─────────────────────────────────────────────────────────────┘
+
+이 프로젝트 루트의 .github/workflows/windows-build.yml 이 이미
+세팅되어 있습니다.
+
+[1] GitHub 저장소에 push (private OK)
+[2] 저장소 → Actions 탭 → "Windows Build" 워크플로우 → "Run workflow"
+[3] 빌드 완료 (~10분) 후 Actions 페이지 하단 "Artifacts" 섹션:
+      Chernobyl-windows.zip
+      Pen-windows.zip
+    각각 다운로드 → 압축 풀고 .exe 실행.
+
+자동 트리거: main/master 브랜치에 push 시 자동 빌드.
+
+
+┌─────────────────────────────────────────────────────────────┐
+│ 옵션 C. 빠른 진단 (Qt 환경 잘못됐을 때)                     │
+└─────────────────────────────────────────────────────────────┘
+
+  Q. CMake configure 실패 — Qt6 못 찾음
+  A. QT_DIR 환경변수 직접 설정:
+       set QT_DIR=C:\Qt\6.7.0\mingw_64
+       build_windows.bat
+
+  Q. windeployqt.exe 못 찾음 (DLL 누락)
+  A. PATH에 %QT_DIR%\bin 추가
+
+  Q. mingw32-make 없음
+  A. MinGW 컴포넌트 설치 안 됨. Qt Maintenance Tool 다시 실행 →
+     Add or remove components → Developer and Designer Tools →
+     "MinGW 11.2.0 64-bit" 체크 후 설치
+
+
+빌드 환경 차이로 발생하는 문제가 있다면 알려주세요.
