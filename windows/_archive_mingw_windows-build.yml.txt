@@ -1,0 +1,101 @@
+name: Windows Build
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:  # 수동 트리거
+
+jobs:
+  build-chernobyl:
+    name: Build チェルノブイリ (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.7.0
+          host: windows
+          target: desktop
+          arch: win64_mingw
+          modules: 'qtwebengine qtwebchannel qtpositioning qtwebsockets'
+          cache: true
+
+      - name: Configure (chernobyl)
+        working-directory: mac/miyo_cpp
+        run: |
+          mkdir build_win
+          cd build_win
+          cmake -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release ..
+
+      - name: Build (chernobyl)
+        working-directory: mac/miyo_cpp/build_win
+        run: mingw32-make -j4
+
+      - name: Package
+        working-directory: mac/miyo_cpp
+        shell: pwsh
+        run: |
+          $dist = "dist\Chernobyl_win"
+          New-Item -ItemType Directory -Force -Path $dist
+          Copy-Item build_win\*.exe $dist
+          Copy-Item build_win\*.dll $dist -ErrorAction SilentlyContinue
+          foreach ($d in 'platforms','styles','imageformats','iconengines','translations','fonts','resources') {
+            if (Test-Path "build_win\$d") { Copy-Item "build_win\$d" $dist -Recurse }
+          }
+          if (Test-Path "resources\tools") { Copy-Item "resources\tools" "$dist\tools" -Recurse }
+          Compress-Archive -Path "$dist\*" -DestinationPath "Chernobyl_win.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Chernobyl-windows
+          path: mac/miyo_cpp/Chernobyl_win.zip
+          retention-days: 30
+
+  build-pen:
+    name: Build 펜을 잘 쓰고 싶다 (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.7.0
+          host: windows
+          target: desktop
+          arch: win64_mingw
+          modules: 'qtwebengine qtwebchannel qtpositioning qtwebsockets'
+          cache: true
+
+      - name: Configure (pen)
+        working-directory: beta
+        run: |
+          mkdir build_win
+          cd build_win
+          cmake -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release ..
+
+      - name: Build (pen)
+        working-directory: beta/build_win
+        run: mingw32-make -j4
+
+      - name: Package
+        working-directory: beta
+        shell: pwsh
+        run: |
+          $dist = "dist\Pen_win"
+          New-Item -ItemType Directory -Force -Path $dist
+          Copy-Item build_win\*.exe $dist
+          Copy-Item build_win\*.dll $dist -ErrorAction SilentlyContinue
+          foreach ($d in 'platforms','styles','imageformats','iconengines','translations','fonts','resources') {
+            if (Test-Path "build_win\$d") { Copy-Item "build_win\$d" $dist -Recurse }
+          }
+          if (Test-Path "resources\tools") { Copy-Item "resources\tools" "$dist\tools" -Recurse }
+          Compress-Archive -Path "$dist\*" -DestinationPath "Pen_win.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pen-windows
+          path: beta/Pen_win.zip
+          retention-days: 30
