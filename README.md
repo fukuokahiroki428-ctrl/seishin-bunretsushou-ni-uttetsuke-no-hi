@@ -27,7 +27,9 @@
 |------|--------|------|------|
 | `Chernobyl_Setup.exe` | Windows 10/11 (x64) | ~261 MB | 더블클릭 → 설치 (관리자 권한 불필요, %LOCALAPPDATA% 에 설치) |
 | `Chernobyl.dmg` | macOS (Apple Silicon) | ~721 MB | 마운트 → Applications 로 드래그 |
-| `팬을 잘 쓰고 싶다.dmg` | macOS (Apple Silicon) | ~652 MB | 마운트 → Applications 로 드래그 |
+| `Pen.dmg` (팬을 잘 쓰고 싶다) | macOS (Apple Silicon) | ~652 MB | 마운트 → Applications 로 드래그 |
+
+> 📌 `Pen.dmg` 가 **팬을 잘 쓰고 싶다** 앱입니다. (GitHub 릴리스 자산 파일명은 ASCII 만 허용되어 영문명으로 올립니다. 다운로드 페이지의 라벨에는 한글명이 표시됩니다.)
 
 > ⚠️ **서명 안내**: 두 macOS DMG 와 Windows 설치파일은 정식 배포 서명(Apple Developer ID / Microsoft 인증서)이 아닙니다.
 > - **macOS**: 첫 실행 시 우클릭 → "열기", 또는 `시스템 설정 → 개인정보 보호 및 보안 → 확인 없이 열기`
