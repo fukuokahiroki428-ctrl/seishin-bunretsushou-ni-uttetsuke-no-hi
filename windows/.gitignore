@@ -11,6 +11,9 @@ resources/tools/yt-dlp.exe
 resources/tools/ffmpeg.exe
 resources/tools/ffprobe.exe
 resources/tools/rclone.exe
+resources/tools/deno.exe
+resources/tools/exiftool.exe
+resources/tools/exiftool_files/
 
 # Python 환경 (OS-specific — 빌드 시 생성)
 resources/tools/python_env/

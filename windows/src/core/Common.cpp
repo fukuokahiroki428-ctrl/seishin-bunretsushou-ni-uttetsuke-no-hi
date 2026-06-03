@@ -356,7 +356,11 @@ static QString findBundledYtDlp()
 QString ytDlpExecutable()
 {
     // 1) 사용자 폴더 (자동 업데이트된 최신본)
+#ifdef Q_OS_WIN
+    QString userBin = userToolsDir() + "/yt-dlp.exe";
+#else
     QString userBin = userToolsDir() + "/yt-dlp";
+#endif
     if (QFile::exists(userBin)) {
         QFileInfo fi(userBin);
         if (fi.size() > 1000000 && fi.isExecutable()) return userBin;
@@ -375,7 +379,11 @@ QString ytDlpExecutable()
 //   4) GitHub 죽거나 변조되어도 → 번들 yt-dlp 항상 작동 보장.
 void ensureYtDlpReady(bool autoUpdate)
 {
+#ifdef Q_OS_WIN
+    QString userBin = userToolsDir() + "/yt-dlp.exe";
+#else
     QString userBin = userToolsDir() + "/yt-dlp";
+#endif
     QString bundled = findBundledYtDlp();
 
     // 1) 사용자 폴더에 yt-dlp 없거나 너무 작으면 번들 복사 (앱과 함께 출하된 검증된 버전)

@@ -5,6 +5,7 @@ name: Windows Build (Chernobyl)
 on:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]     # ★ v* 태그 push 시 빌드 + GitHub Release 발행
   workflow_dispatch:   # Actions 탭에서 수동 실행 버튼
 
 # ★ Node.js 20 deprecation 대응 — JS 액션(checkout/upload-artifact/msvc-dev-cmd)을
@@ -18,6 +19,8 @@ jobs:
     #   Qt 6.7.3 msvc2019_64 프리빌드 라이브러리는 VS 2022 까지만 ABI 검증돼 있어서
     #   VS 2026 으로 갑자기 바뀌면 링킹 깨질 수 있음 → 명시적으로 windows-2022 핀.
     runs-on: windows-2022
+    permissions:
+      contents: write   # ★ 태그 push 시 GITHUB_TOKEN 으로 Release 생성/자산 업로드
 
     steps:
       # 1) 소스 체크아웃
@@ -37,7 +40,7 @@ jobs:
           modules: 'qtwebengine qtwebchannel qtwebsockets qtpositioning'
           cache: true
 
-      # 3) Windows 용 외부 도구 다운로드 (yt-dlp / ffmpeg / ffprobe / rclone)
+      # 3) Windows 용 외부 도구 다운로드 (yt-dlp / ffmpeg / ffprobe / rclone / deno)
       #    repo 에는 .exe 안 올림 (.gitignore) → 빌드 시 최신 버전 받음
       - name: Download Windows tools
         shell: pwsh
@@ -60,6 +63,11 @@ jobs:
           Expand-Archive -Path "rclone.zip" -DestinationPath "rclone_tmp" -Force
           $rc = Get-ChildItem -Path "rclone_tmp" -Directory | Select-Object -First 1
           Copy-Item "$($rc.FullName)/rclone.exe" "$tools/rclone.exe" -Force
+
+          # deno — yt-dlp 의 JS 런타임 (YouTube 추출에 필수, 없으면 일부 포맷 누락)
+          Invoke-WebRequest -Uri "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip" -OutFile "deno.zip"
+          Expand-Archive -Path "deno.zip" -DestinationPath "deno_tmp" -Force
+          Copy-Item "deno_tmp/deno.exe" "$tools/deno.exe" -Force
 
           Write-Host "Downloaded tools:"
           Get-ChildItem $tools -Filter *.exe | Format-Table Name, Length
@@ -101,11 +109,15 @@ jobs:
           if (Test-Path "resources/html")  { Copy-Item "resources/html"  "$dist/html"  -Recurse -Force }
 
           # 도구 복사
+          #  ★ .exe 도구(yt-dlp/ffmpeg/ffprobe/rclone/exiftool)는 exe 루트로 — 앱이
+          #    findBundledTool() = applicationDirPath()/<tool>.exe 및 --ffmpeg-location <exe_dir> 로 찾음.
+          #    (이전: tools/ 하위로 복사 → 루트에서 못 찾아 YouTube/rclone 동작 안 함)
+          #  ★ .py 데몬 스크립트만 tools/ 로 — bundledToolsDir() = <exe>/tools.
           New-Item -ItemType Directory -Force -Path "$dist/tools" | Out-Null
-          Copy-Item "resources/tools/*.exe" "$dist/tools/" -Force -ErrorAction SilentlyContinue
+          Copy-Item "resources/tools/*.exe" "$dist/" -Force -ErrorAction SilentlyContinue
           Copy-Item "resources/tools/*.py"  "$dist/tools/" -Force -ErrorAction SilentlyContinue
-          if (Test-Path "resources/tools/exiftool")           { Copy-Item "resources/tools/exiftool"           "$dist/tools/exiftool"           -Recurse -Force }
-          if (Test-Path "resources/tools/exiftool_files")     { Copy-Item "resources/tools/exiftool_files"     "$dist/tools/exiftool_files"     -Recurse -Force }
+          # exiftool 의 Perl 런타임 폴더는 exiftool.exe 와 같은 위치(루트)에 있어야 함
+          if (Test-Path "resources/tools/exiftool_files")     { Copy-Item "resources/tools/exiftool_files"     "$dist/exiftool_files"     -Recurse -Force }
           if (Test-Path "resources/tools/singlefile_extension"){ Copy-Item "resources/tools/singlefile_extension" "$dist/tools/singlefile_extension" -Recurse -Force }
 
           # ★ Python 환경 — Twitter/Bluesky 데몬(twikit/atproto)에 필수.
@@ -150,3 +162,14 @@ jobs:
           name: Chernobyl-Setup-${{ github.sha }}
           path: installer_out/Chernobyl_Setup.exe
           retention-days: 14
+
+      # 9) GitHub Release 발행 — v* 태그 push 시 Chernobyl_Setup.exe 를 릴리즈 자산으로 업로드
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installer_out/Chernobyl_Setup.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
