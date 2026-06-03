@@ -427,6 +427,26 @@ if(WIN32)
         )
     endif()
 
+    # rclone.exe → <exe_dir>/  (WebDAV/SFTP/S3 고속 백업 — 없으면 일반 백업으로 fallback)
+    set(RCLONE_WIN "${CMAKE_SOURCE_DIR}/resources/tools/rclone.exe")
+    if(EXISTS "${RCLONE_WIN}")
+        add_custom_command(TARGET Miyo POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${RCLONE_WIN}" "${WIN_OUTPUT_DIR}/rclone.exe"
+            COMMENT "Bundling rclone.exe (WebDAV/SFTP/S3 fast transfer)"
+        )
+    endif()
+
+    # deno.exe → <exe_dir>/  (yt-dlp JS 런타임 — YouTube 추출에 필수, PATH 통해 자동 탐지)
+    set(DENO_WIN "${CMAKE_SOURCE_DIR}/resources/tools/deno.exe")
+    if(EXISTS "${DENO_WIN}")
+        add_custom_command(TARGET Miyo POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${DENO_WIN}" "${WIN_OUTPUT_DIR}/deno.exe"
+            COMMENT "Bundling deno.exe (yt-dlp JS runtime for YouTube)"
+        )
+    endif()
+
     # miyo_cli → <exe_dir>/miyo_cli/
     set(MIYO_CLI_WIN "${CMAKE_SOURCE_DIR}/../miyo_cli")
     if(EXISTS "${MIYO_CLI_WIN}")

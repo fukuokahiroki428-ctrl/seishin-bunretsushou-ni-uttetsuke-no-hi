@@ -95,18 +95,25 @@ if exist "resources\fonts"          xcopy /E /I /Y "resources\fonts"          "%
 if exist "resources\html"           xcopy /E /I /Y "resources\html"           "%DIST_DIR%\html\"           >nul
 if exist "resources\chernobyl.icns" copy /Y         "resources\chernobyl.icns" "%DIST_DIR%\"                >nul
 
-REM 도구 번들 (Windows 바이너리만 있는 경우 — yt-dlp.exe, ffmpeg.exe, ffprobe.exe)
+REM 도구 번들
+REM   ★ .exe 도구는 exe 루트로 — 앱이 applicationDirPath()\<tool>.exe 및
+REM     --ffmpeg-location <exe_dir> 로 찾음. (tools\ 하위에 두면 YouTube/rclone/EXIF 동작 안 함)
+REM   ★ .py 데몬 스크립트만 tools\ 로 — bundledToolsDir() = <exe>\tools.
 if exist "resources\tools" (
     mkdir "%DIST_DIR%\tools" 2>nul
-    REM Python 스크립트들
+    REM Python 스크립트들 → tools\
     for %%F in (resources\tools\*.py) do copy /Y "%%F" "%DIST_DIR%\tools\" >nul
-    REM Windows 바이너리만 복사
-    if exist "resources\tools\yt-dlp.exe"  copy /Y "resources\tools\yt-dlp.exe"  "%DIST_DIR%\tools\" >nul
-    if exist "resources\tools\ffmpeg.exe"  copy /Y "resources\tools\ffmpeg.exe"  "%DIST_DIR%\tools\" >nul
-    if exist "resources\tools\ffprobe.exe" copy /Y "resources\tools\ffprobe.exe" "%DIST_DIR%\tools\" >nul
-    REM exiftool (Perl 스크립트라 Windows에서도 동작 — perl.exe 필요)
-    if exist "resources\tools\exiftool" xcopy /E /I /Y "resources\tools\exiftool" "%DIST_DIR%\tools\exiftool\" >nul
-    REM SingleFile 확장
+    REM Windows 바이너리 → exe 루트
+    if exist "resources\tools\yt-dlp.exe"  copy /Y "resources\tools\yt-dlp.exe"  "%DIST_DIR%\" >nul
+    if exist "resources\tools\ffmpeg.exe"  copy /Y "resources\tools\ffmpeg.exe"  "%DIST_DIR%\" >nul
+    if exist "resources\tools\ffprobe.exe" copy /Y "resources\tools\ffprobe.exe" "%DIST_DIR%\" >nul
+    if exist "resources\tools\rclone.exe"  copy /Y "resources\tools\rclone.exe"  "%DIST_DIR%\" >nul
+    REM deno — yt-dlp JS 런타임 (YouTube 추출에 필수)
+    if exist "resources\tools\deno.exe"    copy /Y "resources\tools\deno.exe"    "%DIST_DIR%\" >nul
+    REM exiftool.exe + Perl 런타임 폴더 → exe 루트 (exiftool.exe 옆에 exiftool_files 필요)
+    if exist "resources\tools\exiftool.exe"   copy /Y         "resources\tools\exiftool.exe"   "%DIST_DIR%\"                 >nul
+    if exist "resources\tools\exiftool_files" xcopy /E /I /Y "resources\tools\exiftool_files" "%DIST_DIR%\exiftool_files\" >nul
+    REM SingleFile 확장 → tools\
     if exist "resources\tools\singlefile_extension" xcopy /E /I /Y "resources\tools\singlefile_extension" "%DIST_DIR%\tools\singlefile_extension\" >nul
 )
 
@@ -127,10 +134,10 @@ echo    실행파일: %DIST_DIR%\Chernobyl.exe
 echo    압축본:   %DIST_DIR%.zip
 echo ─────────────────────────────────────────────────────────
 echo.
-echo 누락된 Windows 바이너리 (필요 시 수동 추가):
-if not exist "%DIST_DIR%\tools\yt-dlp.exe"  echo    - tools\yt-dlp.exe  (https://github.com/yt-dlp/yt-dlp/releases)
-if not exist "%DIST_DIR%\tools\ffmpeg.exe"  echo    - tools\ffmpeg.exe  (https://www.gyan.dev/ffmpeg/builds/)
-if not exist "%DIST_DIR%\tools\ffprobe.exe" echo    - tools\ffprobe.exe (위와 동일 패키지)
+echo 누락된 Windows 바이너리 (필요 시 수동 추가 — exe 옆 루트에 배치):
+if not exist "%DIST_DIR%\yt-dlp.exe"  echo    - yt-dlp.exe  (https://github.com/yt-dlp/yt-dlp/releases)
+if not exist "%DIST_DIR%\ffmpeg.exe"  echo    - ffmpeg.exe  (https://www.gyan.dev/ffmpeg/builds/)
+if not exist "%DIST_DIR%\ffprobe.exe" echo    - ffprobe.exe (위와 동일 패키지)
 echo.
 
 endlocal

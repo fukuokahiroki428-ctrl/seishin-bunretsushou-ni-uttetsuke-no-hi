@@ -748,7 +748,8 @@ void MiyoBackend::runRcloneBackup(const QStringList &srcDirs, const QString &des
 {
     QString rclonePath = QCoreApplication::applicationDirPath() + "/../Resources/tools/rclone";
 #ifdef Q_OS_WIN
-    rclonePath = QCoreApplication::applicationDirPath() + "/resources/tools/rclone.exe";
+    // Windows: rclone.exe 는 exe 옆에 배치 (yt-dlp.exe/ffmpeg.exe 와 동일 레이아웃)
+    rclonePath = QCoreApplication::applicationDirPath() + "/rclone.exe";
 #endif
     if (!QFile::exists(rclonePath)) {
         // dev mode fallback
@@ -1513,7 +1514,8 @@ void MiyoBackend::backupNow()
                             }
                         }
 #endif
-                        // [2] cp -p
+                        // [2] cp -p  (macOS 전용 — Windows 는 /bin/cp 없음 → [3] QFile::copy 로 직행)
+#ifdef Q_OS_MACOS
                         if (!ok) {
                             if (QFile::exists(j.dst)) QFile::remove(j.dst);
                             QProcess p;
@@ -1535,6 +1537,7 @@ void MiyoBackend::backupNow()
                                     .arg(dynTimeout/1000).arg(p.exitCode()).arg(errOut.left(120));
                             }
                         }
+#endif
                         // [3] QFile::copy
                         if (!ok) {
                             if (QFile::exists(j.dst)) QFile::remove(j.dst);
@@ -2601,9 +2604,10 @@ void MiyoBackend::emailWatchTick()
 {
     if (m_emailServer.isEmpty()) return;
 
-    // Python script 경로 — 번들 우선
-    QString scriptPath = QCoreApplication::applicationDirPath() + "/../Resources/tools/email_watch.py";
+    // Python script 경로 — 번들 우선 (플랫폼별 레이아웃은 Common 헬퍼가 처리)
+    QString scriptPath = Common::bundledToolsDir() + "/email_watch.py";
     if (!QFileInfo::exists(scriptPath)) {
+        // dev fallback (빌드 디렉토리 옆)
         scriptPath = QCoreApplication::applicationDirPath() + "/../../../resources/tools/email_watch.py";
     }
     if (!QFileInfo::exists(scriptPath)) {
@@ -2611,9 +2615,18 @@ void MiyoBackend::emailWatchTick()
         return;
     }
 
-    // Python 인터프리터 — 번들 또는 시스템
-    QString python = QCoreApplication::applicationDirPath() + "/../Resources/python_env/bin/python3";
-    if (!QFileInfo::exists(python)) python = "/usr/bin/python3";
+    // Python 인터프리터 — 번들(Win: python_env/python.exe, mac: python_env/bin/python3) → 시스템 순.
+    //   pythonCandidates() 가 OS 별 후보를 반환 → 존재하는 첫 번째 선택, 없으면 첫 후보로 fallback.
+    QString python;
+    const QStringList pyCands = Common::pythonCandidates();
+    for (const QString &c : pyCands) {
+        if (c.contains('/') || c.contains('\\')) {   // 절대/번들 경로면 존재 확인
+            if (QFileInfo::exists(c)) { python = c; break; }
+        } else if (python.isEmpty()) {
+            python = c;                               // PATH 기반 (python/python3) — 후순위 fallback
+        }
+    }
+    if (python.isEmpty()) python = pyCands.isEmpty() ? QStringLiteral("python3") : pyCands.first();
 
     QString server = m_emailServer;
     int port = m_emailPort;
@@ -8248,8 +8261,13 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     for (const QString &a : baseArgs) argsStr += esc(a) + " ";
 
     QString script;
-    script += "@echo off\r\nchcp 65001 >nul\r\n";
+    // ★ enabledelayedexpansion — if/else 블록 안에서 !VAR! 로 런타임 값 읽기 필요
+    script += "@echo off\r\nsetlocal enabledelayedexpansion\r\nchcp 65001 >nul\r\n";
     script += "title ABIWA - YouTube\r\n";
+    // ★ exe 디렉토리를 PATH 앞에 추가 — yt-dlp 가 번들된 deno(JS 런타임)/ffmpeg 를 자동 탐지.
+    //   yt-dlp 2025+ 는 YouTube 추출에 JS 런타임(deno) 필요 — 없으면 포맷 누락/실패 경고.
+    //   (.bat 은 새 cmd 환경에서 실행되어 앱의 bundledProcessEnv PATH 를 못 받으므로 여기서 직접 설정)
+    script += "set \"PATH=" + QDir::toNativeSeparators(appDir) + ";%PATH%\"\r\n";
     script += "set \"STATUS=" + QDir::toNativeSeparators(statusFile) + "\"\r\n";
     script += "set \"STOP_MARKER=" + QDir::toNativeSeparators(stopMarker) + "\"\r\n";
     script += "echo STARTED > \"%STATUS%\"\r\n";
@@ -8259,10 +8277,15 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     script += "echo =========================================\r\n";
     script += "echo.\r\nset SUCCESS=0\r\nset FAIL=0\r\n\r\n";
 
+    // ★ yt-dlp 출력 템플릿의 % 를 %% 로 이스케이프 — cmd.exe 는 %VAR% 를 환경변수로 확장하므로
+    //   %(channel,uploader)s 가 빈 문자열로 치환되어 파일명이 깨지는 버그 수정
+    QString outTemplate = ytTypeDir + "/%(channel,uploader)s/%(upload_date)s_%(title)s.%(ext)s";
+    outTemplate.replace("%", "%%");
+
     for (int i = 0; i < urls.size(); i++) {
         script += "if exist \"%STOP_MARKER%\" (\r\n";
         script += "  echo 사용자에 의해 중지됨\r\n";
-        script += "  echo DONE:%SUCCESS%:%FAIL% > \"%STATUS%\"\r\n";
+        script += "  echo DONE:!SUCCESS!:!FAIL! > \"%STATUS%\"\r\n";
         script += "  del /f \"%STOP_MARKER%\" 2>nul\r\n";
         script += "  pause >nul\r\n  exit /b 0\r\n)\r\n";
         script += QString("echo PROGRESS:%1:%2 > \"%STATUS%\"\r\n").arg(i + 1).arg(urls.size());
@@ -8270,19 +8293,20 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
         script += "echo -----------------------------------------\r\n";
         script += "set RETRY=0\r\n";
         script += ":RETRY_LOOP_" + QString::number(i) + "\r\n";
-        script += esc(ytdlpPath) + " -o " + esc(ytTypeDir + "/%(channel,uploader)s/%(upload_date)s_%(title)s.%(ext)s") + " " + argsStr + esc(urls[i]) + "\r\n";
+        script += esc(ytdlpPath) + " -o " + esc(outTemplate) + " " + argsStr + esc(urls[i]) + "\r\n";
         script += "if %errorlevel%==0 (\r\n  set /a SUCCESS+=1\r\n  echo >> 완료\r\n) else (\r\n";
+        // ★ if/else 블록 안에서 %RETRY% 는 파싱 시점(=0) 으로 고정됨 → !RETRY! 사용
         script += "  set /a RETRY+=1\r\n";
-        script += "  if %RETRY% LEQ 3 (\r\n";
-        script += "    set /a WAIT_SEC=60*%RETRY%\r\n";
-        script += "    echo >> Rate limit / 실패 — %WAIT_SEC%초 대기 후 재시도 ^(%RETRY%/3^)\r\n";
-        script += "    timeout /t %WAIT_SEC% /nobreak >nul\r\n";
+        script += "  if !RETRY! LEQ 3 (\r\n";
+        script += "    set /a WAIT_SEC=60*!RETRY!\r\n";
+        script += "    echo >> Rate limit / 실패 — !WAIT_SEC!초 대기 후 재시도 ^(!RETRY!/3^)\r\n";
+        script += "    timeout /t !WAIT_SEC! /nobreak >nul\r\n";
         script += "    goto RETRY_LOOP_" + QString::number(i) + "\r\n";
         script += "  ) else (\r\n    set /a FAIL+=1\r\n    echo >> 실패\r\n  )\r\n)\r\n";
         script += "echo.\r\n";
     }
     script += "echo =========================================\r\n";
-    script += "echo   완료! 성공: %SUCCESS%, 실패: %FAIL%\r\n";
+    script += "echo   완료! 성공: !SUCCESS!, 실패: !FAIL!\r\n";
     script += "echo   저장 경로: " + ytBaseDir + "\r\n";
     script += "echo =========================================\r\n";
     script += "echo DONE:%SUCCESS%:%FAIL% > \"%STATUS%\"\r\n";
@@ -11948,13 +11972,13 @@ void MiyoBackend::upgradePython()
     runJs("setPythonEnvBusy(true, '업그레이드 중...')");
 
     QThread *thread = QThread::create([this]() {
-        QString appDir = QCoreApplication::applicationDirPath();
-        QString resDir = appDir + "/../Resources";
+        // ★ 경로는 OS 별 레이아웃을 Common 헬퍼가 처리 (mac: ../Resources/python_env/bin/python3,
+        //   win: <exe>/python_env/python.exe)
+        QString resDir = Common::bundledResourcesDir();
         QString pythonDir = resDir + "/python_env";
-        QString scriptDir = appDir + "/../../scripts";
 
         // 1. 현재 패키지 목록 저장 (복원용)
-        QString python = pythonDir + "/bin/python3";
+        QString python = Common::bundledPythonPath();
         QStringList frozenPkgs;
         if (QFile::exists(python)) {
             QProcess freeze;
@@ -11986,7 +12010,9 @@ void MiyoBackend::upgradePython()
         // GitHub API로 최신 릴리스 찾기
         QString arch = "aarch64-apple-darwin";
 #ifdef Q_OS_WIN
-        arch = "x86_64-pc-windows-msvc-shared";
+        // ★ python-build-standalone 의 Windows install_only 토큰은 "-shared" 없음
+        //   (bundle_python_win.bat 와 동일: ...x86_64-pc-windows-msvc-install_only.tar.gz)
+        arch = "x86_64-pc-windows-msvc";
 #elif defined(Q_OS_LINUX)
         arch = "x86_64-unknown-linux-gnu";
 #endif
@@ -12050,7 +12076,7 @@ void MiyoBackend::upgradePython()
         tarProc.start("tar", {"xzf", tarball, "-C", pythonDir, "--strip-components=1"});
         tarProc.waitForFinished(120000);
 
-        python = pythonDir + "/bin/python3";
+        python = Common::bundledPythonPath();
         if (!QFile::exists(python)) {
             log("  ❌ Python 바이너리를 찾을 수 없습니다", "error", "settings");
             m_pythonBusy = false;
@@ -12093,17 +12119,22 @@ void MiyoBackend::upgradePython()
             }
         }
 
-        // 7. 정리
+        // 7. 정리 — 불필요한 디렉토리/캐시 제거 (Qt 네이티브 — bash/find/rm 의존 없음 → 크로스플랫폼)
         log("  정리 중...", "info", "settings");
-        // test dirs
-        QProcess cleanProc;
-        cleanProc.start("bash", {"-c", QString(
-            "find '%1' -name tests -type d -exec rm -rf {} + 2>/dev/null;"
-            "find '%1' -name test -type d -exec rm -rf {} + 2>/dev/null;"
-            "rm -rf '%1/share' '%1/include' 2>/dev/null;"
-            "find '%1' -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null"
-        ).arg(pythonDir)});
-        cleanProc.waitForFinished(30000);
+        {
+            QDir(pythonDir + "/share").removeRecursively();
+            QDir(pythonDir + "/include").removeRecursively();
+            // 모든 __pycache__ / test / tests 디렉토리 수집 후 제거 (이터레이터 무효화 방지)
+            QStringList toRemove;
+            QDirIterator cit(pythonDir, QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+            while (cit.hasNext()) {
+                QString p = cit.next();
+                const QString name = QFileInfo(p).fileName();
+                if (name == "__pycache__" || name == "test" || name == "tests")
+                    toRemove << p;
+            }
+            for (const QString &p : toRemove) QDir(p).removeRecursively();
+        }
 
         // marker
         QFile marker(pythonDir + "/.bundled_ok");
@@ -12112,11 +12143,13 @@ void MiyoBackend::upgradePython()
             marker.close();
         }
 
-        QString size;
-        QProcess duProc;
-        duProc.start("du", {"-sh", pythonDir});
-        duProc.waitForFinished(10000);
-        size = QString::fromUtf8(duProc.readAllStandardOutput()).split('\t').first().trimmed();
+        // 디렉토리 총 크기 계산 (Qt 네이티브 — du 의존 없음)
+        qint64 totalBytes = 0;
+        {
+            QDirIterator sit(pythonDir, QDir::Files, QDirIterator::Subdirectories);
+            while (sit.hasNext()) { sit.next(); totalBytes += sit.fileInfo().size(); }
+        }
+        QString size = QString("%1 MB").arg(totalBytes / (1024.0 * 1024.0), 0, 'f', 0);
 
         log(QString("✅ Python 업그레이드 완료! %1, 패키지 %2개 설치, 크기: %3")
             .arg(installedVer).arg(installed).arg(size),
@@ -12162,15 +12195,23 @@ void MiyoBackend::repairPython()
             log(QString("    • %1").arg(p), "warning", "settings");
         }
 
-        // 2. Python 자체가 없으면 → 번들 스크립트로 전체 재설치
+        // 2. Python 자체가 없으면 → 전체 재설치
         if (problems.contains("python_missing")) {
             log("  Python 바이너리가 없습니다. 전체 재설치...", "warning", "settings");
-
-            // bundle_python.sh 실행
+            QFile::remove(pythonDir + "/.bundled_ok");  // marker 삭제 → 강제 재빌드
+#ifdef Q_OS_WIN
+            // Windows: bash/bundle_python.sh 없음 → upgradePython() 의 다운로드+설치 경로 재사용.
+            //   (upgradePython 이 m_pythonBusy 를 다시 획득하므로 여기서 먼저 해제)
+            log("  Windows: 다운로드 기반 재설치로 전환합니다...", "info", "settings");
+            m_pythonBusy = false;
+            QMetaObject::invokeMethod(this, "upgradePython", Qt::QueuedConnection);
+            return;
+#else
+            // bundle_python.sh 실행 (macOS/Linux)
             QString appBundle = QCoreApplication::applicationDirPath() + "/../..";
             QString scriptPath = appBundle + "/../../scripts/bundle_python.sh";
 
-            // 스크립트가 없으면 직접 수행
+            // 스크립트가 없으면 업그레이드로 전환
             if (!QFile::exists(scriptPath)) {
                 log("  번들 스크립트를 찾을 수 없습니다. 업그레이드 기능을 사용하세요.", "error", "settings");
                 m_pythonBusy = false;
@@ -12180,8 +12221,6 @@ void MiyoBackend::repairPython()
 
             QProcess proc;
             proc.setProcessEnvironment(Common::bundledProcessEnv());
-            // marker 삭제하여 강제 재빌드
-            QFile::remove(pythonDir + "/.bundled_ok");
             proc.start("bash", {scriptPath, appBundle});
             proc.waitForFinished(600000);
             log(QString::fromUtf8(proc.readAllStandardOutput()), "info", "settings");
@@ -12194,6 +12233,7 @@ void MiyoBackend::repairPython()
             }
             // 재진단
             problems = diagnosePythonEnv(python);
+#endif
         }
 
         // 3. pip 복구

@@ -39,12 +39,19 @@ ZIP에는 Mac용 바이너리가 빠져있습니다.
 • ffmpeg.exe   → https://www.gyan.dev/ffmpeg/builds/  (release-essentials)
 • ffprobe.exe  → ffmpeg와 같은 패키지에 포함
 • exiftool.exe → https://exiftool.org/
+• deno.exe     → https://github.com/denoland/deno/releases  (yt-dlp JS 런타임 — YouTube 추출에 필수)
+• rclone.exe   → https://rclone.org/downloads/  (선택 — WebDAV/SFTP 고속 백업)
 
 배치 위치: resources\tools\
    yt-dlp.exe
    ffmpeg.exe
    ffprobe.exe
    exiftool.exe   (또는 폴더 통째)
+   deno.exe
+   rclone.exe     (선택)
+
+※ scripts\download_windows_tools.sh (Git Bash) 를 실행하면 위 도구를 모두 자동 다운로드합니다.
+※ 빌드 후 .exe 도구들은 exe 와 같은 폴더(루트)에 배치됩니다 — yt-dlp 가 PATH 로 deno/ffmpeg 를 자동 탐지.
 
 
 ┌─────────────────────────────────────────────────────────────┐

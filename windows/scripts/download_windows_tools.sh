@@ -28,7 +28,7 @@ echo ""
 cd "$TMP_DIR"
 
 # ─── 1. yt-dlp.exe ──────────────────────────────────────────────
-echo -e "${BOLD}[1/4] yt-dlp.exe${RESET}"
+echo -e "${BOLD}[1/6] yt-dlp.exe${RESET}"
 if [ -f "$TOOLS_DIR/yt-dlp.exe" ] && [ "$1" != "--force" ]; then
     echo -e "  ${GREEN}✓ 이미 있음${RESET} ($(ls -lh "$TOOLS_DIR/yt-dlp.exe" | awk '{print $5}'))"
 else
@@ -39,7 +39,7 @@ else
 fi
 
 # ─── 2. ffmpeg.exe + ffprobe.exe (gyan.dev essentials) ──────────
-echo -e "${BOLD}[2/4] ffmpeg.exe + ffprobe.exe${RESET}"
+echo -e "${BOLD}[2/6] ffmpeg.exe + ffprobe.exe${RESET}"
 if [ -f "$TOOLS_DIR/ffmpeg.exe" ] && [ -f "$TOOLS_DIR/ffprobe.exe" ] && [ "$1" != "--force" ]; then
     echo -e "  ${GREEN}✓ 이미 있음${RESET}"
 else
@@ -57,7 +57,7 @@ else
 fi
 
 # ─── 3. exiftool.exe ────────────────────────────────────────────
-echo -e "${BOLD}[3/4] exiftool.exe${RESET}"
+echo -e "${BOLD}[3/6] exiftool.exe${RESET}"
 if [ -f "$TOOLS_DIR/exiftool.exe" ] && [ "$1" != "--force" ]; then
     echo -e "  ${GREEN}✓ 이미 있음${RESET} ($(ls -lh "$TOOLS_DIR/exiftool.exe" | awk '{print $5}'))"
 else
@@ -87,8 +87,50 @@ else
     rm -rf exiftool.exe exiftool_files exiftool.zip
 fi
 
-# ─── 4. Python embed (선택, 없어도 시스템 Python 사용) ──────────
-echo -e "${BOLD}[4/4] Python embed (twikit, atproto 등 위해)${RESET}"
+# ─── 4. rclone.exe (WebDAV/SFTP/S3 고속 백업) ───────────────────
+echo -e "${BOLD}[4/6] rclone.exe${RESET}"
+if [ -f "$TOOLS_DIR/rclone.exe" ] && [ "$1" != "--force" ]; then
+    echo -e "  ${GREEN}✓ 이미 있음${RESET} ($(ls -lh "$TOOLS_DIR/rclone.exe" | awk '{print $5}'))"
+else
+    echo -e "  ${CYAN}→ rclone.org 최신 windows-amd64 다운로드...${RESET}"
+    curl -L -sS -o "$TMP_DIR/rclone.zip" \
+        "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
+    cd "$TMP_DIR"
+    if unzip -q rclone.zip; then
+        RCLONE_DIR=$(ls -d rclone-*-windows-amd64 2>/dev/null | head -1)
+        if [ -n "$RCLONE_DIR" ] && [ -f "$RCLONE_DIR/rclone.exe" ]; then
+            cp "$RCLONE_DIR/rclone.exe" "$TOOLS_DIR/"
+            echo -e "  ${GREEN}✓ 완료${RESET} ($(ls -lh "$TOOLS_DIR/rclone.exe" | awk '{print $5}'))"
+        else
+            echo -e "  ${RED}✗ 실패 — rclone.exe 추출 못함 (고속 백업 비활성 — 일반 백업으로 동작)${RESET}"
+        fi
+        rm -rf "$RCLONE_DIR"
+    else
+        echo -e "  ${RED}✗ 실패 — 다운로드/압축해제 못함 (고속 백업 비활성 — 일반 백업으로 동작)${RESET}"
+    fi
+    rm -f "$TMP_DIR/rclone.zip"
+fi
+
+# ─── 5. deno.exe (yt-dlp JS 런타임 — YouTube 추출에 필수) ───────
+echo -e "${BOLD}[5/6] deno.exe (yt-dlp JS 런타임)${RESET}"
+if [ -f "$TOOLS_DIR/deno.exe" ] && [ "$1" != "--force" ]; then
+    echo -e "  ${GREEN}✓ 이미 있음${RESET} ($(ls -lh "$TOOLS_DIR/deno.exe" | awk '{print $5}'))"
+else
+    echo -e "  ${CYAN}→ denoland/deno releases 에서 windows-amd64 다운로드 (~40MB)...${RESET}"
+    curl -L -sS -o "$TMP_DIR/deno.zip" \
+        "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
+    cd "$TMP_DIR"
+    if unzip -q deno.zip && [ -f "deno.exe" ]; then
+        cp deno.exe "$TOOLS_DIR/"
+        echo -e "  ${GREEN}✓ 완료${RESET} ($(ls -lh "$TOOLS_DIR/deno.exe" | awk '{print $5}'))"
+    else
+        echo -e "  ${RED}✗ 실패 — deno.exe 추출 못함 (YouTube 는 JS 런타임 없이 동작 — 일부 포맷 누락)${RESET}"
+    fi
+    rm -f "$TMP_DIR/deno.zip" "$TMP_DIR/deno.exe"
+fi
+
+# ─── 6. Python embed (선택, 없어도 시스템 Python 사용) ──────────
+echo -e "${BOLD}[6/6] Python embed (twikit, atproto 등 위해)${RESET}"
 if [ -d "$TOOLS_DIR/python_embed" ] && [ "$1" != "--force" ]; then
     echo -e "  ${GREEN}✓ 이미 있음${RESET}"
 else
