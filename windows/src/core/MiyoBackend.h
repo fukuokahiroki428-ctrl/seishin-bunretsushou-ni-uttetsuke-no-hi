@@ -20,6 +20,7 @@ class SiteCrawler;
 class RealChromeCrawler;
 class HttpClient;
 class QTimer;
+class QProcess;
 class WebDavUploader;
 
 class MiyoBackend : public QObject
@@ -239,6 +240,10 @@ private:
     void openBackupTerminalLog();
     void writeTerminalLog(const QString &message, const QString &platform = QString());
     void closeTerminalLog(const QString &platform = QString());
+    // ★ Windows: .bat 을 자체 콘솔 창 + Chernobyl 자식 프로세스로 실행 (cmd /c start 분리 대신).
+    //   작업관리자에서 Chernobyl 아래 nested, 앱 종료 시 트리 kill. 다른 OS 에선 no-op.
+    void launchChildConsole(const QString &scriptPath);
+    QList<QProcess*> m_childConsoleProcs;  // 실행 중인 자식 콘솔 추적 (종료 시 정리)
 public:
     void closeAllTerminalLogs();
     QString m_terminalLogPath;

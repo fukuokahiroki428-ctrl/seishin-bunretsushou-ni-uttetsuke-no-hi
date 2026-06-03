@@ -2944,7 +2944,7 @@ void MiyoBackend::openBackupTerminalLog()
         script.write(content.toUtf8());
         script.close();
     }
-    QProcess::startDetached("cmd.exe", {"/c", "start", "ABIWA-Backup", QDir::toNativeSeparators(scriptPath)});
+    launchChildConsole(scriptPath);  // 자체 콘솔 창 + Chernobyl 자식 프로세스 (nested)
 #else
     // macOS — 컬러 + 스피너 애니메이션, 150ms refresh
     QString scriptPath = scriptDir + "/miyo_backup_tail.command";
@@ -3054,7 +3054,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
         script.write(content.toUtf8());
         script.close();
     }
-    QProcess::startDetached("cmd.exe", {"/c", "start", "ABIWA", QDir::toNativeSeparators(scriptPath)});
+    launchChildConsole(scriptPath);  // 자체 콘솔 창 + Chernobyl 자식 프로세스 (nested)
 #else
     // macOS/Linux: 단순 tail -f — kernel inotify/kqueue 사용, CPU 거의 0
     // ★ 옛 애니메이션 (150ms clear+refresh) 은 CPU/메모리 부담 큼 → 사용자 요청으로 단순화
@@ -3210,6 +3210,51 @@ void MiyoBackend::closeAllTerminalLogs()
         }
         m_terminalLogPath.clear();
     }
+
+#ifdef Q_OS_WIN
+    // ★ 자식 콘솔(cmd + yt-dlp/ffmpeg/deno 등 트리) 강제 종료 — 앱과 함께 종료.
+    //   tail 창은 위 [DONE] 마커로 스스로 닫히지만, YouTube/백업 작업 트리는 여기서 정리.
+    //   ※ PID 를 먼저 수집한 뒤 종료 — taskkill 의 QProcess::execute 가 중첩 이벤트 루프를
+    //     돌려 finished 람다가 m_childConsoleProcs 를 수정해도 안전하도록 (반복자 무효화 방지).
+    QList<qint64> killPids;
+    for (QProcess *p : m_childConsoleProcs) {
+        if (p && p->state() != QProcess::NotRunning) {
+            const qint64 pid = p->processId();
+            if (pid > 0) killPids.append(pid);
+        }
+    }
+    m_childConsoleProcs.clear();
+    for (qint64 pid : killPids)
+        QProcess::execute("taskkill", {"/F", "/T", "/PID", QString::number(pid)});
+#endif
+}
+
+// ★ Windows: .bat 을 자체 콘솔 창 + Chernobyl 자식 프로세스로 실행.
+//   - CREATE_NEW_CONSOLE: 자체 콘솔 창 (사용자가 진행 상황을 봄)
+//   - STARTF_USESTDHANDLES 해제: 출력이 QProcess 파이프가 아닌 새 콘솔로 → 창에 보임
+//   - QProcess(this) 소유 + start(): cmd 가 Chernobyl.exe 의 자식 → 작업관리자에서 nested
+//   - 추적(m_childConsoleProcs) → closeAllTerminalLogs 에서 트리 kill (앱 종료 시 같이 종료)
+void MiyoBackend::launchChildConsole(const QString &scriptPath)
+{
+#ifdef Q_OS_WIN
+    QProcess *p = new QProcess(this);
+    p->setProgram("cmd.exe");
+    p->setArguments({"/c", QDir::toNativeSeparators(scriptPath)});
+    p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) {
+        a->flags |= CREATE_NEW_CONSOLE;
+        if (a->startupInfo) a->startupInfo->dwFlags &= ~STARTF_USESTDHANDLES;
+    });
+    QProcess *raw = p;
+    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+        [this, raw](int, QProcess::ExitStatus) {
+            m_childConsoleProcs.removeAll(raw);
+            raw->deleteLater();
+        });
+    m_childConsoleProcs.append(p);
+    p->start();
+#else
+    Q_UNUSED(scriptPath);
+#endif
 }
 
 void MiyoBackend::updateStats(int posts, int media, const QString &status, const QString &platform)
@@ -8425,7 +8470,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     // Launch terminal with script
     log(QString("터미널에서 %1개 URL 다운로드 시작...").arg(urls.size()), "info", "youtube");
 #ifdef Q_OS_WIN
-    QProcess::startDetached("cmd.exe", {"/c", "start", "ABIWA-YouTube", QDir::toNativeSeparators(scriptPath)});
+    launchChildConsole(scriptPath);  // 자체 콘솔 창 + Chernobyl 자식 프로세스 (nested)
 #else
     QProcess::startDetached("/usr/bin/open", {scriptPath});
 #endif
