@@ -472,9 +472,10 @@ if(WIN32)
         )
     endif()
 
-    # Windows RC file for icon
+    # Windows RC file for icon — .rc 는 abiwa.ico 가 있을 때만 컴파일(없으면 RC2135 로 빌드 실패).
+    #   아이콘 에셋이 없어도 빌드는 성공하고, 기본 아이콘으로 동작.
     set(RC_FILE "${CMAKE_SOURCE_DIR}/resources/abiwa.rc")
-    if(EXISTS "${RC_FILE}")
+    if(EXISTS "${RC_FILE}" AND EXISTS "${APP_ICON_WIN}")
         target_sources(Miyo PRIVATE "${RC_FILE}")
     endif()
 
