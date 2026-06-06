@@ -24,10 +24,19 @@ install_name_tool -add_rpath "@loader_path/../../../../../../../../Frameworks" "
 
 # Fix all homebrew absolute paths to @rpath
 otool -L "$HELPER_BIN" | grep '/opt/homebrew/' | awk '{print $1}' | while read lib; do
-    # Extract framework name: e.g. /opt/homebrew/.../QtCore.framework/Versions/A/QtCore → QtCore.framework
-    fw=$(basename "$(dirname "$(dirname "$(dirname "$lib")")")")
     name=$(basename "$lib")
-    install_name_tool -change "$lib" "@rpath/$fw/Versions/A/$name" "$HELPER_BIN" 2>/dev/null || true
+    case "$lib" in
+        *.framework/*)
+            # e.g. /opt/homebrew/.../QtCore.framework/Versions/A/QtCore → @rpath/QtCore.framework/Versions/A/QtCore
+            fw=$(basename "$(dirname "$(dirname "$(dirname "$lib")")")")
+            install_name_tool -change "$lib" "@rpath/$fw/Versions/A/$name" "$HELPER_BIN" 2>/dev/null || true
+            ;;
+        *)
+            # ★ 일반 dylib(프레임워크 아님): /opt/homebrew/lib/libfoo.dylib → @rpath/libfoo.dylib
+            #   (이전엔 basename(dirname×3)="opt" 라서 @rpath/opt/... 잘못된 경로를 만들었음)
+            install_name_tool -change "$lib" "@rpath/$name" "$HELPER_BIN" 2>/dev/null || true
+            ;;
+    esac
 done
 
 echo "QtWebEngineProcess fixed"

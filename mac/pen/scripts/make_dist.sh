@@ -15,9 +15,8 @@ SRC_APP="$BETA_DIR/build/Pen.app"
 OUT_APP="${1:-/tmp/Pen_dist.app}"
 MACDEPLOYQT="$(command -v macdeployqt || echo /opt/homebrew/bin/macdeployqt)"
 
-SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
-    | grep -m1 "Apple Development" | sed -E 's/.*\) ([0-9A-F]+) "(.*)"/\2/' )
-[ -z "$SIGN_ID" ] && SIGN_ID="-"
+# 서명은 codesign_app.sh 에 위임(Developer ID 우선 / ad-hoc 폴백 + --deep --strict 검증).
+#   ★ 이전엔 여기서 "Apple Development" 인증서를 골랐는데 배포에 무효였음.
 
 echo "━━ 1) build/Pen.app → $OUT_APP 복사 ━━"
 [ ! -d "$SRC_APP" ] && { echo "❌ $SRC_APP 없음 — 먼저 빌드하세요"; exit 1; }
@@ -79,20 +78,9 @@ LEFT=$(
 if [ -n "$LEFT" ]; then echo "⚠ homebrew 잔재 남음:"; echo "$LEFT"; else echo "✅ homebrew 의존 0 — 완전 자급자족"; fi
 set -e
 
-echo "━━ 7) inside-out 코드사인 (id: $SIGN_ID) ━━"
-WEBENG="$FW/QtWebEngineCore.framework"
-HELPER_APP="$WEBENG/Versions/A/Helpers/QtWebEngineProcess.app"
-# dylib → framework → webengine helper → main exe → app
-find "$OUT_APP" -type f -name "*.dylib" -print0 | xargs -0 -P8 -I{} codesign --force --sign "$SIGN_ID" {} 2>/dev/null || true
-find "$FW" -maxdepth 1 -name "*.framework" -type d ! -name "QtWebEngineCore.framework" -print0 \
-    | xargs -0 -I{} codesign --force --sign "$SIGN_ID" {} 2>/dev/null || true
-[ -d "$HELPER_APP" ] && codesign --force --sign "$SIGN_ID" "$HELPER_APP" 2>/dev/null || true
-codesign --force --sign "$SIGN_ID" "$WEBENG/Versions/A" 2>/dev/null || true
-codesign --force --sign "$SIGN_ID" "$OUT_APP/Contents/MacOS/Pen" 2>/dev/null || true
-codesign --force --sign "$SIGN_ID" "$OUT_APP" 2>/dev/null || true
-
-echo "━━ 8) --deep --strict 검증 ━━"
-codesign --verify --deep --strict --verbose=1 "$OUT_APP" 2>&1 | tail -2
+echo "━━ 7) inside-out 코드사인 + --deep --strict 검증 (codesign_app.sh 위임) ━━"
+# 단일 서명 경로로 통일 — 서명 실패/검증 실패 시 codesign_app.sh 가 exit 1 → set -e 로 여기서 중단.
+bash "$BETA_DIR/scripts/codesign_app.sh" "$OUT_APP"
 
 echo ""
 echo "✅ 완료: $OUT_APP ($(du -sh "$OUT_APP" | awk '{print $1}'))"

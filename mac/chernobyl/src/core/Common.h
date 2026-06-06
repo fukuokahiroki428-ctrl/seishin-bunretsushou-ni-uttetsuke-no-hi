@@ -24,9 +24,18 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
                      const QString &comment, const QString &dateStr);
 
 // Cross-platform path helpers
-// macOS: Contents/Resources/python_env/bin/python3
+// macOS: <쓰기가능 복사본>/bin/python3  (아래 activePythonEnvDir 참고)
 // Windows: <exe_dir>/python_env/python.exe
 QString bundledPythonPath();
+
+// ★ 쓰기가능 python_env 경로 (~/Library/Application Support/.../python_env).
+//   macOS 는 .app 번들이 codesign 으로 sealed → 번들 내부 python_env 에 pip install 하면
+//   "sealed resource invalid" → macOS 가 앱을 SIGKILL. 그래서 외부 복사본을 두고 사용한다.
+QString userPythonEnvDir();
+// 실제 사용할 python_env 디렉토리.
+//   macOS: 외부 복사본 우선 — 없으면 번들에서 1회 자동 복사(시드). 복사 실패 시 읽기전용 번들.
+//   Windows/Linux: 설치 위치의 python_env 그대로 (서명 seal 없음 → 제자리 수정 안전).
+QString activePythonEnvDir();
 
 // macOS: Contents/Resources/tools/
 // Windows: <exe_dir>/tools/

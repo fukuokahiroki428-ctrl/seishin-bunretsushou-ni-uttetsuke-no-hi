@@ -2611,8 +2611,8 @@ void MiyoBackend::emailWatchTick()
         return;
     }
 
-    // Python 인터프리터 — 번들 또는 시스템
-    QString python = QCoreApplication::applicationDirPath() + "/../Resources/python_env/bin/python3";
+    // Python 인터프리터 — 쓰기가능 복사본(번들 seal 보호) 또는 시스템
+    QString python = Common::bundledPythonPath();
     if (!QFileInfo::exists(python)) python = "/usr/bin/python3";
 
     QString server = m_emailServer;
@@ -11948,10 +11948,18 @@ void MiyoBackend::upgradePython()
     runJs("setPythonEnvBusy(true, '업그레이드 중...')");
 
     QThread *thread = QThread::create([this]() {
-        QString appDir = QCoreApplication::applicationDirPath();
-        QString resDir = appDir + "/../Resources";
-        QString pythonDir = resDir + "/python_env";
-        QString scriptDir = appDir + "/../../scripts";
+        // ★ 번들 내부가 아니라 쓰기가능 외부 python_env 에 설치 (번들 codesign seal 보호).
+        QString pythonDir = Common::activePythonEnvDir();
+
+#ifdef Q_OS_MACOS
+        // 외부 복사본을 만들 수 없어 번들을 가리키면 중단 — 번들에 쓰면 seal 깨져 SIGKILL.
+        if (pythonDir != Common::userPythonEnvDir()) {
+            log("⚠️ python_env 쓰기가능 복사본을 만들 수 없어 업그레이드를 중단합니다 (번들 서명 보호). 디스크 공간을 확인하세요.", "error", "settings");
+            m_pythonBusy = false;
+            runJs("setPythonEnvBusy(false, '중단')");
+            return;
+        }
+#endif
 
         // 1. 현재 패키지 목록 저장 (복원용)
         QString python = pythonDir + "/bin/python3";
@@ -12095,15 +12103,18 @@ void MiyoBackend::upgradePython()
 
         // 7. 정리
         log("  정리 중...", "info", "settings");
-        // test dirs
-        QProcess cleanProc;
-        cleanProc.start("bash", {"-c", QString(
-            "find '%1' -name tests -type d -exec rm -rf {} + 2>/dev/null;"
-            "find '%1' -name test -type d -exec rm -rf {} + 2>/dev/null;"
-            "rm -rf '%1/share' '%1/include' 2>/dev/null;"
-            "find '%1' -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null"
-        ).arg(pythonDir)});
-        cleanProc.waitForFinished(30000);
+        // ★ rm -rf 안전 가드 — pythonDir 이 비었거나 예상 밖 경로면 정리 스킵.
+        //   (pythonDir 이 빈 문자열이면 rm -rf '/share' 같은 사고가 날 수 있음)
+        if (pythonDir.endsWith("/python_env") && QDir(pythonDir + "/bin").exists()) {
+            QProcess cleanProc;
+            cleanProc.start("bash", {"-c", QString(
+                "find '%1' -name tests -type d -exec rm -rf {} + 2>/dev/null;"
+                "find '%1' -name test -type d -exec rm -rf {} + 2>/dev/null;"
+                "rm -rf '%1/share' '%1/include' 2>/dev/null;"
+                "find '%1' -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null"
+            ).arg(pythonDir)});
+            cleanProc.waitForFinished(30000);
+        }
 
         // marker
         QFile marker(pythonDir + "/.bundled_ok");
@@ -12143,8 +12154,8 @@ void MiyoBackend::repairPython()
 
     QThread *thread = QThread::create([this]() {
         QString python = Common::bundledPythonPath();
-        QString resDir = Common::bundledResourcesDir();
-        QString pythonDir = resDir + "/python_env";
+        // ★ 쓰기가능 외부 python_env (번들 codesign seal 보호 — 번들엔 절대 쓰지 않음).
+        QString pythonDir = Common::activePythonEnvDir();
 
         // 1. 진단
         log("  환경 진단 중...", "info", "settings");
@@ -12162,32 +12173,17 @@ void MiyoBackend::repairPython()
             log(QString("    • %1").arg(p), "warning", "settings");
         }
 
-        // 2. Python 자체가 없으면 → 번들 스크립트로 전체 재설치
+        // 2. Python 자체가 없으면 → 번들에서 외부로 재시드 (번들엔 절대 쓰지 않음 — seal 보호)
         if (problems.contains("python_missing")) {
-            log("  Python 바이너리가 없습니다. 전체 재설치...", "warning", "settings");
+            log("  Python 바이너리가 없습니다. 번들에서 재설치 시도...", "warning", "settings");
 
-            // bundle_python.sh 실행
-            QString appBundle = QCoreApplication::applicationDirPath() + "/../..";
-            QString scriptPath = appBundle + "/../../scripts/bundle_python.sh";
-
-            // 스크립트가 없으면 직접 수행
-            if (!QFile::exists(scriptPath)) {
-                log("  번들 스크립트를 찾을 수 없습니다. 업그레이드 기능을 사용하세요.", "error", "settings");
-                m_pythonBusy = false;
-                runJs("setPythonEnvBusy(false, '복구 실패')");
-                return;
-            }
-
-            QProcess proc;
-            proc.setProcessEnvironment(Common::bundledProcessEnv());
-            // marker 삭제하여 강제 재빌드
+            // 깨진 외부본 표식 제거 후, activePythonEnvDir() 가 번들→외부 재복사(시드)를 수행하도록 유도.
             QFile::remove(pythonDir + "/.bundled_ok");
-            proc.start("bash", {scriptPath, appBundle});
-            proc.waitForFinished(600000);
-            log(QString::fromUtf8(proc.readAllStandardOutput()), "info", "settings");
+            Common::activePythonEnvDir();
+            python = Common::bundledPythonPath();
 
             if (!QFile::exists(python)) {
-                log("  ❌ 재설치 실패. Python 업그레이드를 시도하세요.", "error", "settings");
+                log("  ❌ 재설치 실패. 'Python 업그레이드'로 새로 받으세요.", "error", "settings");
                 m_pythonBusy = false;
                 runJs("setPythonEnvBusy(false, '복구 실패')");
                 return;

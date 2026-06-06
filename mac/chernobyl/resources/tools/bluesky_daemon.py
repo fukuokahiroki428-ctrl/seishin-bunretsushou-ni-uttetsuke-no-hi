@@ -21,7 +21,7 @@ Commands:
   {"action":"quit"}
 """
 
-import sys, json, os, time, asyncio, re
+import sys, json, os, time, asyncio, re, subprocess, shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -356,8 +356,12 @@ def main():
                         os.utime(filepath, (ts, ts))
                         # macOS creation date
                         mac_date = dt.strftime('%m/%d/%Y %H:%M:%S')
-                        os.system(f'SetFile -d "{mac_date}" "{filepath}" 2>/dev/null')
-                    except:
+                        # ★ os.system + f-string 금지 — filepath 에 " $ ` \ 가 있으면 셸 주입.
+                        #   argv 로 직접 실행(셸 미경유). SetFile 은 legacy 라 없으면 조용히 스킵.
+                        if shutil.which('SetFile'):
+                            subprocess.run(['SetFile', '-d', mac_date, filepath],
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
                         pass
                 # macOS xattr: kMDItemWhereFroms (소스 URL 메타데이터)
                 post_url_for_xattr = ''
