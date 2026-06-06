@@ -38,17 +38,18 @@ void setFileTimes(const QString &filePath, const QString &timestampStr)
 void setFinderComment(const QString &filePath, const QString &comment)
 {
 #ifdef Q_OS_MACOS
-    QString escaped = comment;
-    escaped.replace("\"", "\\\"");
-    escaped.replace("\\", "\\\\");
-
-    QString script = QString(
-        "osascript -e 'tell application \"Finder\" to set comment of "
-        "(POSIX file \"%1\" as alias) to \"%2\"'"
-    ).arg(filePath, escaped);
+    // ★ 셸/AppleScript 문자열 보간 금지 — 값은 osascript 의 argv 로 전달한다.
+    //   이전엔 sh -c + 따옴표 보간이라 파일명/코멘트에 ' 또는 " 가 있으면
+    //   AppleScript 가 깨지거나 셸 명령 주입이 가능했다 (이스케이프 순서도 거꾸로였음).
+    static const QString script = QStringLiteral(
+        "on run argv\n"
+        "  set p to item 1 of argv\n"
+        "  set c to item 2 of argv\n"
+        "  tell application \"Finder\" to set comment of (POSIX file p as alias) to c\n"
+        "end run");
 
     QProcess proc;
-    proc.start("sh", {"-c", script});
+    proc.start("/usr/bin/osascript", {"-e", script, filePath, comment});
     proc.waitForFinished(5000);
 #else
     Q_UNUSED(filePath);

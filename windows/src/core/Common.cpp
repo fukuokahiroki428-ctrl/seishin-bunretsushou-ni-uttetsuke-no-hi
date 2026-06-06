@@ -11,6 +11,7 @@
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QMutex>
 #include <QRegularExpression>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -311,13 +312,64 @@ QString bundledResourcesDir()
 #endif
 }
 
+QString userPythonEnvDir()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/python_env";
+}
+
+#ifdef Q_OS_MACOS
+// 심볼릭 링크/실행권한 보존이 필요(standalone python 은 symlink 포함) → cp -a 로 복사.
+static bool copyTreePreserving(const QString &src, const QString &dst)
+{
+    QProcess cp;
+    cp.start("/bin/cp", {"-a", src, dst});
+    if (!cp.waitForStarted(5000)) return false;
+    if (!cp.waitForFinished(180000)) { cp.kill(); cp.waitForFinished(2000); return false; }
+    return cp.exitStatus() == QProcess::NormalExit && cp.exitCode() == 0;
+}
+#endif
+
+QString activePythonEnvDir()
+{
+#ifdef Q_OS_MACOS
+    // 번들은 codesign 으로 sealed → 외부 복사본을 쓴다. 없으면 번들에서 1회 시드.
+    static QMutex seedMutex;
+    const QString ext = userPythonEnvDir();
+    const QString extPy = ext + "/bin/python3";
+    if (QFile::exists(extPy)) return ext;
+
+    QMutexLocker lock(&seedMutex);
+    if (QFile::exists(extPy)) return ext;   // 락 대기 중 다른 스레드가 끝냈을 수 있음
+
+    const QString bundled = bundledResourcesDir() + "/python_env";
+    if (!QFile::exists(bundled + "/bin/python3"))
+        return ext;   // 번들에도 없음 → 외부 경로 반환(새 설치 대상이 됨)
+
+    QDir().mkpath(QFileInfo(ext).absolutePath());
+    const QString tmp = ext + ".seeding";
+    QDir(tmp).removeRecursively();
+    if (copyTreePreserving(bundled, tmp) && QFile::exists(tmp + "/bin/python3")) {
+        QDir(ext).removeRecursively();          // 깨진 기존 외부본이 있으면 교체
+        if (QDir().rename(tmp, ext) && QFile::exists(extPy)) {
+            qDebug() << "[Common] python_env seeded to writable location:" << ext;
+            return ext;
+        }
+    }
+    QDir(tmp).removeRecursively();
+    qWarning() << "[Common] python_env seed failed — using read-only bundle (upgrade disabled)";
+    return bundled;   // 복사 실패 → 읽기전용 번들 (upgrade/repair 가 거부함)
+#else
+    // Windows/Linux: 서명 seal 없음 → 설치 위치의 python_env 그대로.
+    return bundledResourcesDir() + "/python_env";
+#endif
+}
+
 QString bundledPythonPath()
 {
-    QString resDir = bundledResourcesDir();
 #ifdef Q_OS_WIN
-    return resDir + "/python_env/python.exe";
+    return activePythonEnvDir() + "/python.exe";
 #else
-    return resDir + "/python_env/bin/python3";
+    return activePythonEnvDir() + "/bin/python3";
 #endif
 }
 

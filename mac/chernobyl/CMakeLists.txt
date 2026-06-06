@@ -7,14 +7,17 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 # Qt6
+#   ★ GuiPrivate 명시 — QXlsx 가 Qt6::GuiPrivate 를 링크하므로 private 컴포넌트를 직접 요청해
+#     Qt6::GuiPrivate 타깃을 생성해야 한다(Gui 만으론, transitive 만으론 미생성).
 find_package(Qt6 REQUIRED COMPONENTS
-    Core Widgets WebEngineWidgets WebChannel Network WebSockets)
+    Core Gui GuiPrivate Widgets WebEngineWidgets WebChannel Network WebSockets)
 
 # QXlsx
 include(FetchContent)
 FetchContent_Declare(QXlsx
     GIT_REPOSITORY https://github.com/QtExcel/QXlsx.git
-    GIT_TAG master
+    GIT_TAG v1.5.0   # ★ master 고정 금지 — 릴리스 태그로 핀 (재현 가능 빌드). commit 0333829.
+    GIT_SHALLOW TRUE
     SOURCE_SUBDIR QXlsx)
 FetchContent_MakeAvailable(QXlsx)
 

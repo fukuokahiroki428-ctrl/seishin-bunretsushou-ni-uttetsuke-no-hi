@@ -2,15 +2,20 @@
 set -e
 cd "$(dirname "$0")"
 
-APPDIR="build/見よ.app"
-FWDIR="$APPDIR/Contents/Frameworks"
-RESDIR="$APPDIR/Contents/Resources"
-
 echo "=== Building ==="
 cmake --build build --target Miyo
 
-echo "=== macdeployqt ==="
-/opt/homebrew/opt/qtbase/bin/macdeployqt "$APPDIR" 2>&1 | grep -v "^$\|File exists"
+# 빌드 산출 .app 자동 탐색(이름은 -DAPP_NAME 옵션에 따라 달라짐 — 하드코딩 금지). 인자/ENV 로 지정 가능.
+APPDIR="${1:-${APPDIR:-$(ls -d build/*.app 2>/dev/null | head -1)}}"
+if [ -z "$APPDIR" ] || [ ! -d "$APPDIR" ]; then
+    echo "❌ build/ 에 .app 이 없습니다. cmake 구성/빌드를 확인하세요."
+    exit 1
+fi
+FWDIR="$APPDIR/Contents/Frameworks"
+
+echo "=== macdeployqt ($APPDIR) ==="
+MACDEPLOYQT="$(command -v macdeployqt || echo /opt/homebrew/opt/qtbase/bin/macdeployqt)"
+"$MACDEPLOYQT" "$APPDIR" 2>&1 | grep -v "^$\|File exists" || true
 
 echo "=== Fixing framework paths ==="
 for fwbin in "$FWDIR"/Qt*.framework/Versions/A/Qt*; do
@@ -42,21 +47,13 @@ if [ -f "$PROC" ]; then
   [ -n "$ARGS" ] && eval install_name_tool $ARGS "\"$PROC\"" 2>/dev/null
 fi
 
-echo "=== Restoring sub-apps ==="
-rm -rf "$RESDIR/anipo.app" "$RESDIR/anipo-2.app" "$RESDIR/AINU.app"
-cp -a "$(dirname "$0")/../anipo 원본/dist/anipo.app" "$RESDIR/anipo.app"
-cp -a "$(dirname "$0")/../anipo/dist/anipo-2.app" "$RESDIR/anipo-2.app"
-cp -a "$(dirname "$0")/../ainu/dist/AINU.app" "$RESDIR/AINU.app"
+# ★ companion sub-app(anipo/AINU) 재복사 제거 — CMakeLists 가 의도적으로 제외한 것.
+#   이들은 codesign "sealed resource missing" → 번들이 macOS 에서 SIGKILL 되는 원인이었다.
+#   (이전 build.sh 가 이걸 다시 넣어 CMake 가 고친 버그를 재현하고 있었음)
 
-echo "=== Signing ==="
-for fw in "$FWDIR"/Qt*.framework; do codesign --force --sign - "$fw" 2>/dev/null; done
-for dl in "$FWDIR"/*.dylib; do codesign --force --sign - "$dl" 2>/dev/null; done
-find "$APPDIR/Contents/PlugIns" -name "*.dylib" | while read pl; do codesign --force --sign - "$pl" 2>/dev/null; done
-codesign --force --sign - "$FWDIR/QtWebEngineCore.framework/Versions/A/Helpers/QtWebEngineProcess.app" 2>/dev/null
-codesign --force --sign - "$APPDIR/Contents/MacOS/ffprobe" 2>/dev/null
-codesign --force --sign - "$APPDIR/Contents/MacOS/ffmpeg" 2>/dev/null
-codesign --force --sign - "$APPDIR/Contents/MacOS/yt-dlp" 2>/dev/null
-codesign --force --sign - "$APPDIR" 2>/dev/null
+echo "=== Codesign (inside-out + --deep --strict verify) ==="
+# 단일 서명 경로로 위임 — 서명/검증 실패 시 codesign_app.sh 가 exit 1 → set -e 로 중단.
+bash "$(dirname "$0")/codesign_app.sh" "$APPDIR"
 
 echo "=== Done! ==="
 echo "Run: open \"$APPDIR\""
