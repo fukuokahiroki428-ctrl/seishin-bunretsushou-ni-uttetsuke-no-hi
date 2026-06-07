@@ -935,6 +935,7 @@
                                     <option value="reposts">4. 리포스트</option>
                                     <option value="thread_comments">5. 게시물 댓글 (다른 사람 답글)</option>
                                     <option value="thread">🧵 스레드 (트윗 URL)</option>
+                                    <option value="space">🎙️ 스페이스 (스페이스 URL · yt-dlp)</option>
                                     <option value="highlights">✨ 하이라이트</option>
                                     <option value="favoriters">❤️ 좋아요한 유저 (트윗 URL)</option>
                                     <option value="retweeters">🔁 리트윗한 유저 (트윗 URL)</option>
@@ -956,6 +957,14 @@
                                     <option value="incremental">새 글만</option>
                                     <option value="period">기간 지정</option>
                                 </select>
+                            </div>
+                        </div>
+                        <!-- 🧵🎙️ URL 입력 — 스레드/좋아요·리트윗 유저/리스트/커뮤니티/스페이스 선택 시 표시 -->
+                        <div class="field" id="twitter-url-field" style="display:none; margin-bottom:12px;">
+                            <label class="field-label" id="twitter-url-label">트윗 URL</label>
+                            <div style="display:flex; gap:6px;">
+                                <input type="text" class="input" id="twitter-url" placeholder="https://x.com/유저/status/1234567890">
+                                <button class="btn btn-secondary btn-sm" onclick="pasteToField('twitter-url')">붙여넣기</button>
                             </div>
                         </div>
                         <div id="twitter-period-section" style="display: none;">
@@ -3797,9 +3806,28 @@
         function browseFolder(p) { if (backend) backend.browsePath(p); }
 
         // ── Twitter ──
+        // URL 입력이 필요한 유형 → 라벨/placeholder 매핑
+        const TWITTER_URL_TYPES = {
+            thread:     { label:'트윗 URL',      ph:'https://x.com/유저/status/1234567890' },
+            favoriters: { label:'트윗 URL',      ph:'https://x.com/유저/status/1234567890' },
+            retweeters: { label:'트윗 URL',      ph:'https://x.com/유저/status/1234567890' },
+            list:       { label:'리스트 URL',    ph:'https://x.com/i/lists/1234567890' },
+            community:  { label:'커뮤니티 URL',  ph:'https://x.com/i/communities/1234567890' },
+            space:      { label:'스페이스 URL',  ph:'https://x.com/i/spaces/1ABCDxyz... (또는 broadcasts URL)' }
+        };
         function toggleTwitterOptions() {
             const t = document.getElementById('twitter-type').value;
             document.getElementById('twitter-mode-field').style.display = (t==='tweets'||t==='media'||t==='replies'||t==='reposts'||t==='bookmarks'||t==='thread_comments') ? 'block' : 'none';
+            // 트윗/리스트/커뮤니티/스페이스 URL 입력란 — 해당 유형일 때만 표시
+            const urlInfo = TWITTER_URL_TYPES[t];
+            const urlField = document.getElementById('twitter-url-field');
+            if (urlInfo) {
+                urlField.style.display = 'block';
+                document.getElementById('twitter-url-label').textContent = urlInfo.label;
+                document.getElementById('twitter-url').placeholder = urlInfo.ph;
+            } else {
+                urlField.style.display = 'none';
+            }
         }
         function toggleTwitterPeriod() {
             document.getElementById('twitter-period-section').style.display = document.getElementById('twitter-mode').value==='period'?'block':'none';
@@ -3819,11 +3847,21 @@
         }
         function startTwitter() {
             if (!backend) return;
-            if (platformTargets.twitter && platformTargets.twitter.length) { startPlatformMulti('twitter'); return; }
-            let target=document.getElementById('twitter-target').value.trim().replace(/^@/,'').split(/[\s\n\r]/)[0].trim();
-            document.getElementById('twitter-target').value = target;
-            if (!target) { appendLog('대상 유저이름을 입력하세요','error','twitter'); return; }
-            if (!accounts.twitter||accounts.twitter.length===0) { appendLog('계정을 먼저 추가하세요','error','twitter'); return; }
+            const type = document.getElementById('twitter-type').value;
+            const urlInfo = TWITTER_URL_TYPES[type];
+            let target;
+            if (urlInfo) {
+                // 스레드/좋아요·리트윗 유저/리스트/커뮤니티/스페이스 — URL 입력란 사용
+                target = document.getElementById('twitter-url').value.trim();
+                if (!target) { appendLog(urlInfo.label + '을(를) 입력하세요','error','twitter'); return; }
+            } else {
+                if (platformTargets.twitter && platformTargets.twitter.length) { startPlatformMulti('twitter'); return; }
+                target = document.getElementById('twitter-target').value.trim().replace(/^@/,'').split(/[\s\n\r]/)[0].trim();
+                document.getElementById('twitter-target').value = target;
+                if (!target) { appendLog('대상 유저이름을 입력하세요','error','twitter'); return; }
+            }
+            // 스페이스(yt-dlp)는 계정 불필요. 그 외 유형은 twikit 인증 계정 필요.
+            if (type !== 'space' && (!accounts.twitter || accounts.twitter.length===0)) { appendLog('계정을 먼저 추가하세요','error','twitter'); return; }
             const config = {
                 platform:'twitter', target:target,
                 path:document.getElementById('twitter-path').value,
