@@ -56,6 +56,9 @@ private:
     QPair<QJsonArray, QString> searchTweets(const QString &query, const QString &cursor = QString());
     QPair<QJsonArray, QString> getUserTweets(const QString &userId, const QString &cursor = QString());
     QPair<QJsonArray, QString> getTweetDetail(const QString &tweetId, const QString &cursor = QString());
+    // 전체 수집(all) 후속 자동탐지 — 저장된 _complete.xlsx 를 스캔
+    void collectSpacesFromTimeline(const QJsonObject &config, const QString &target, const QString &userDir, bool &isRunning);
+    void collectThreadsAuto(const QJsonObject &config, const QString &target, const QString &userDir, bool &isRunning);
     QPair<QJsonArray, QString> getLikes(const QString &userId, const QString &cursor = QString());
     QPair<QJsonArray, QString> getBookmarks(const QString &cursor = QString());
     QPair<QJsonArray, QString> getHighlights(const QString &userId, const QString &cursor = QString());
