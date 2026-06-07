@@ -6346,9 +6346,83 @@ void MiyoBackend::runRealChromeCollection(const QJsonObject &config)
 
 // ===== Collection Runners =====
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 트위터 스페이스(오디오 라이브) 다운로드 — yt-dlp 사용.
+//   twikit 텍스트/미디어 수집과 무관. config["target"] 에 스페이스 URL 이 온다.
+//   트위터 탭의 로그/중지 버튼/실행상태와 일관되게 platform="twitter" 로 동작.
+// ═══════════════════════════════════════════════════════════════════════════
+void MiyoBackend::runTwitterSpace(const QJsonObject &config)
+{
+    QString url = config["target"].toString().trimmed();
+    if (url.isEmpty()) {
+        log("스페이스 URL을 입력하세요. (예: https://x.com/i/spaces/...)", "error", "twitter");
+        return;
+    }
+    QString savePath = config["path"].toString();
+    savePath.replace("~", QDir::homePath());
+    if (savePath.isEmpty()) { log("저장 경로가 없습니다.", "error", "twitter"); return; }
+
+    const QString outDir = savePath + "/twitter/spaces";
+    QDir().mkpath(outDir);
+
+    const QString ytdlp = Common::ytDlpExecutable();
+    const QString appDir = QCoreApplication::applicationDirPath();  // 번들 ffmpeg 위치(스페이스 mux 에 필요)
+
+    QStringList args;
+    args << "--no-mtime"
+         << "--newline"
+         << "--no-playlist"
+         << "--ffmpeg-location" << appDir
+         << "--embed-metadata"
+         << "-o" << (outDir + "/%(title).180s [%(id)s].%(ext)s")
+         << url;
+
+    log(QString("🎙️ 스페이스 다운로드 시작: %1").arg(url), "info", "twitter");
+    log(QString("   저장 위치: %1").arg(outDir), "info", "twitter");
+
+    QProcess proc;
+    proc.setProcessEnvironment(Common::bundledProcessEnv());
+    proc.setProcessChannelMode(QProcess::MergedChannels);
+    proc.start(ytdlp, args);
+    if (!proc.waitForStarted(10000)) {
+        log("yt-dlp 실행 실패 — 번들/설치 상태를 확인하세요.", "error", "twitter");
+        return;
+    }
+
+    while (proc.state() != QProcess::NotRunning) {
+        if (!platformRunning("twitter")) {            // 중지 버튼 → m_isRunning["twitter"]=false
+            proc.terminate();
+            if (!proc.waitForFinished(3000)) proc.kill();
+            log("⏹ 스페이스 다운로드를 중단했습니다.", "warning", "twitter");
+            return;
+        }
+        if (proc.waitForReadyRead(400)) {
+            const QStringList lines = QString::fromUtf8(proc.readAll()).split('\n', Qt::SkipEmptyParts);
+            for (const QString &ln : lines) {
+                const QString t = ln.trimmed();
+                if (!t.isEmpty()) log(t, "info", "twitter");
+            }
+        }
+    }
+    const QString tail = QString::fromUtf8(proc.readAll()).trimmed();
+    if (!tail.isEmpty()) log(tail, "info", "twitter");
+
+    if (proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0) {
+        log("✅ 스페이스 다운로드 완료.", "success", "twitter");
+    } else {
+        log(QString("❌ 스페이스 다운로드 실패 (종료코드 %1). 스페이스가 종료/만료됐거나 비공개일 수 있습니다.")
+            .arg(proc.exitCode()), "error", "twitter");
+    }
+}
+
 void MiyoBackend::runTwitterCollection(const QJsonObject &config)
 {
     CollectionGuard _cg(platformSem("twitter"), this, "twitter");
+    // ★ 스페이스(오디오 라이브) — twikit 경로가 아니라 yt-dlp 로 직접 다운로드
+    if (config["type"].toString() == "space") {
+        runTwitterSpace(config);
+        return;
+    }
     setIntegrityActiveForPlatform("twitter", config["integrityCheck"].toBool(false));
     // 실제 Chrome (CDP) 모드 — 사이트 봇 차단 회피
     if (config["method"].toString() == "chrome") {
