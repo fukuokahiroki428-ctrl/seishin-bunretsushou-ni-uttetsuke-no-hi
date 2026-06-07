@@ -6327,18 +6327,11 @@ void MiyoBackend::runRealChromeCollection(const QJsonObject &config)
 //   twikit 텍스트/미디어 수집과 무관. config["target"] 에 스페이스 URL 이 온다.
 //   트위터 탭의 로그/중지 버튼/실행상태와 일관되게 platform="twitter" 로 동작.
 // ═══════════════════════════════════════════════════════════════════════════
-void MiyoBackend::runTwitterSpace(const QJsonObject &config)
+// 단일 스페이스 URL → yt-dlp 다운로드. 스페이스 자동탐지(전체 수집)에서도 재사용.
+bool MiyoBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir)
 {
-    QString url = config["target"].toString().trimmed();
-    if (url.isEmpty()) {
-        log("스페이스 URL을 입력하세요. (예: https://x.com/i/spaces/...)", "error", "twitter");
-        return;
-    }
-    QString savePath = config["path"].toString();
-    savePath.replace("~", QDir::homePath());
-    if (savePath.isEmpty()) { log("저장 경로가 없습니다.", "error", "twitter"); return; }
-
-    const QString outDir = savePath + "/twitter/spaces";
+    const QString url = urlIn.trimmed();
+    if (url.isEmpty()) return false;
     QDir().mkpath(outDir);
 
     const QString ytdlp = Common::ytDlpExecutable();
@@ -6353,8 +6346,7 @@ void MiyoBackend::runTwitterSpace(const QJsonObject &config)
          << "-o" << (outDir + "/%(title).180s [%(id)s].%(ext)s")
          << url;
 
-    log(QString("🎙️ 스페이스 다운로드 시작: %1").arg(url), "info", "twitter");
-    log(QString("   저장 위치: %1").arg(outDir), "info", "twitter");
+    log(QString("🎙️ 스페이스 다운로드: %1").arg(url), "info", "twitter");
 
     QProcess proc;
     proc.setProcessEnvironment(Common::bundledProcessEnv());
@@ -6362,15 +6354,14 @@ void MiyoBackend::runTwitterSpace(const QJsonObject &config)
     proc.start(ytdlp, args);
     if (!proc.waitForStarted(10000)) {
         log("yt-dlp 실행 실패 — 번들/설치 상태를 확인하세요.", "error", "twitter");
-        return;
+        return false;
     }
-
     while (proc.state() != QProcess::NotRunning) {
         if (!platformRunning("twitter")) {            // 중지 버튼 → m_isRunning["twitter"]=false
             proc.terminate();
             if (!proc.waitForFinished(3000)) proc.kill();
             log("⏹ 스페이스 다운로드를 중단했습니다.", "warning", "twitter");
-            return;
+            return false;
         }
         if (proc.waitForReadyRead(400)) {
             const QStringList lines = QString::fromUtf8(proc.readAll()).split('\n', Qt::SkipEmptyParts);
@@ -6383,12 +6374,24 @@ void MiyoBackend::runTwitterSpace(const QJsonObject &config)
     const QString tail = QString::fromUtf8(proc.readAll()).trimmed();
     if (!tail.isEmpty()) log(tail, "info", "twitter");
 
-    if (proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0) {
-        log("✅ 스페이스 다운로드 완료.", "success", "twitter");
-    } else {
-        log(QString("❌ 스페이스 다운로드 실패 (종료코드 %1). 스페이스가 종료/만료됐거나 비공개일 수 있습니다.")
-            .arg(proc.exitCode()), "error", "twitter");
+    const bool ok = (proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0);
+    log(ok ? "✅ 스페이스 다운로드 완료."
+           : QString("❌ 스페이스 다운로드 실패 (종료코드 %1). 종료/만료됐거나 비공개일 수 있습니다.").arg(proc.exitCode()),
+        ok ? "success" : "error", "twitter");
+    return ok;
+}
+
+void MiyoBackend::runTwitterSpace(const QJsonObject &config)
+{
+    const QString url = config["target"].toString().trimmed();
+    if (url.isEmpty()) {
+        log("스페이스 URL을 입력하세요. (예: https://x.com/i/spaces/...)", "error", "twitter");
+        return;
     }
+    QString savePath = config["path"].toString();
+    savePath.replace("~", QDir::homePath());
+    if (savePath.isEmpty()) { log("저장 경로가 없습니다.", "error", "twitter"); return; }
+    downloadSpaceUrl(url, savePath + "/twitter/spaces");
 }
 
 void MiyoBackend::runTwitterCollection(const QJsonObject &config)

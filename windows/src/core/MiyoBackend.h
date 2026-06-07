@@ -37,6 +37,9 @@ public:
     void log(const QString &message, const QString &type = "info", const QString &platform = QString());
     void updateStats(int posts, int media, const QString &status, const QString &platform = QString());
 
+    // 단일 스페이스 URL 을 outDir 에 yt-dlp 로 다운로드(스페이스 자동탐지에서도 재사용). 성공 시 true.
+    bool downloadSpaceUrl(const QString &url, const QString &outDir);
+
 signals:
     void jsSignal(const QString &js);
     void logSignal(const QString &message, const QString &type, const QString &platform);
