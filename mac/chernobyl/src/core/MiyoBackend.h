@@ -330,6 +330,7 @@ public:
 
     // Collection runners (all inline in main app)
     void runTwitterCollection(const QJsonObject &config);
+    void runTwitterSpace(const QJsonObject &config);   // 트위터 스페이스(오디오) — yt-dlp 다운로드
     void runBlueskyCollection(const QJsonObject &config);
     void runDiscordCollection(const QJsonObject &config);
     void runInstagramCollection(const QJsonObject &config);
