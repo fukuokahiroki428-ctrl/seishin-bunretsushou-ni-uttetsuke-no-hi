@@ -3705,17 +3705,23 @@ void MiyoBackend::startCollection(const QString &configJson)
     // Prevent system sleep during collection
     if (m_window) m_window->holdAwake();
 
-    // 중복 방지 — sequential 모드만 체크 (병렬은 trackKey가 unique이므로 자연스럽게 격리)
+    // 중복 방지 — '진짜 실행 중'일 때만 막는다.
+    //   끝났거나(완료 정리 레이스) 중지된(stale) 스레드 엔트리는 정리하고 새로 시작
+    //   → "이미 수집 중" 거짓양성 방지. (실행 플래그가 꺼졌으면 더 이상 수집 중이 아님)
     if (m_collectionThreads.contains(trackKey)) {
         QThread *existing = m_collectionThreads[trackKey];
-        if (existing && !existing->isFinished()) {
+        const bool reallyRunning = existing && !existing->isFinished()
+                                   && (platformRunning(trackKey) || platformRunning(platformName));
+        if (reallyRunning) {
             dbg("EARLY RETURN: 이미 수집 중", platformName);
             log(QString("이미 수집 중입니다! (%1)").arg(trackKey), "warning", platformName);
             return;
         }
-        // 끝난 스레드 정리
-        existing->deleteLater();
+        // stale 정리: 끝난 스레드만 직접 deleteLater. (실행 중인데 플래그만 꺼진 경우엔
+        //   finished→deleteLater 연결에 맡기고 맵 참조만 제거 — 러닝 스레드 삭제/이중삭제 방지)
+        if (existing && existing->isFinished()) existing->deleteLater();
         m_collectionThreads.remove(trackKey);
+        dbg("stale collection thread cleared — 재시작 허용", platformName);
     }
     dbg("collection thread check OK", platformName);
 
