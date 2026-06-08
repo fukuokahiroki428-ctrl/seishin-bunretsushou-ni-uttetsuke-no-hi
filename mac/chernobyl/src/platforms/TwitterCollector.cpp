@@ -2153,17 +2153,20 @@ void TwitterCollector::collectSpacesFromTimeline(const QJsonObject &config, cons
 {
     Q_UNUSED(config);
     if (!isRunning) return;
-    const QString completePath = userDir + "/" + target + "_complete.xlsx";
-    if (!QFile::exists(completePath)) {
-        m_backend->log("🎙️ 스페이스 자동탐지: 트윗 데이터(_complete.xlsx)가 없어 건너뜁니다.", "info", "twitter");
-        return;
-    }
-    m_backend->log("🎙️ 스페이스 자동탐지: 타임라인에서 스페이스 링크 검색...", "info", "twitter");
+    m_backend->log("🎙️ 스페이스 자동탐지: 게시물에서 스페이스 검색...", "info", "twitter");
 
-    QSet<QString> spaceIds;
-    QStringList spaceUrls;
-    QRegularExpression rx(R"((?:x\.com|twitter\.com)/i/(?:spaces|broadcasts)/([A-Za-z0-9]+))");
-    {
+    QStringList targets;
+    QSet<QString> seen;
+    // 1) (주 신호) 수집 중 발견한 '스페이스 카드' 트윗의 status URL — 유저가 호스팅/공유한 스페이스.
+    //    yt-dlp 가 status URL 에서 스페이스를 추출한다(검증됨).
+    for (const QString &u : m_spaceCardTweetUrls) {
+        if (!u.isEmpty() && !seen.contains(u)) { seen.insert(u); targets << u; }
+    }
+    // 2) (보강) 저장된 _complete.xlsx 의 text/urls/quoted_tweet_url 에 박힌 i/spaces|broadcasts 링크
+    //    — 리트윗/인용/직접 링크된 스페이스.
+    const QString completePath = userDir + "/" + target + "_complete.xlsx";
+    if (QFile::exists(completePath)) {
+        QRegularExpression rx(R"((?:x\.com|twitter\.com)/i/(?:spaces|broadcasts)/([A-Za-z0-9]+))");
         QXlsx::Document doc(completePath);
         const int lastRow = doc.dimension().lastRow();
         for (int r = 2; r <= lastRow; ++r) {
@@ -2172,28 +2175,26 @@ void TwitterCollector::collectSpacesFromTimeline(const QJsonObject &config, cons
                                + doc.read(r, 25).toString();
             auto it = rx.globalMatch(blob);
             while (it.hasNext()) {
-                const QString id = it.next().captured(1);
-                if (id.isEmpty() || spaceIds.contains(id)) continue;
-                spaceIds.insert(id);
-                spaceUrls << ("https://x.com/i/spaces/" + id);
+                const QString url = "https://x.com/i/spaces/" + it.next().captured(1);
+                if (!seen.contains(url)) { seen.insert(url); targets << url; }
             }
         }
     }
 
-    if (spaceUrls.isEmpty()) {
+    if (targets.isEmpty()) {
         m_backend->log("🎙️ 스페이스 자동탐지: 발견된 스페이스 없음.", "info", "twitter");
         return;
     }
-    m_backend->log(QString("🎙️ 스페이스 %1개 발견 — 다운로드 시작 (녹화본만 가능).").arg(spaceUrls.size()),
+    m_backend->log(QString("🎙️ 스페이스 %1개 발견 — 다운로드 시작 (녹화본만 가능).").arg(targets.size()),
                    "success", "twitter");
 
     const QString outDir = userDir + "/spaces";
     int ok = 0;
-    for (const QString &u : spaceUrls) {
+    for (const QString &u : targets) {
         if (!isRunning) break;
         if (m_backend->downloadSpaceUrl(u, outDir)) ok++;
     }
-    m_backend->log(QString("🎙️ 스페이스 자동탐지 완료: %1/%2 성공.").arg(ok).arg(spaceUrls.size()),
+    m_backend->log(QString("🎙️ 스페이스 자동탐지 완료: %1/%2 성공.").arg(ok).arg(targets.size()),
                    ok > 0 ? "success" : "warning", "twitter");
 }
 
@@ -2405,6 +2406,7 @@ void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
     // ── ALL: 전체 수집 (트윗 + 답글 + 좋아요 + 리포스트 + 팔로워 + 팔로잉 + 프로필) ──
     if (type == "all") {
         m_backend->log("═══ 전체 수집 모드 ═══", "success", "twitter");
+        m_spaceCardTweetUrls.clear();   // 이번 전체수집에서 발견할 스페이스 카드 트윗 누적용 초기화
 
         // 1. Profile
         m_backend->log("[1/7] 프로필 수집...", "info", "twitter");
@@ -3926,6 +3928,12 @@ void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
             QJsonObject cardObj = tweet["card"].toObject();
             QString cardName = cardObj["legacy"].toObject()["name"].toString();
             bool hasPoll = cardName.startsWith("poll");
+            // 🎙️ 스페이스 카드 트윗 — status URL 을 모아 전체수집 끝에 yt-dlp 로 추출/다운로드.
+            //   (호스팅/공유한 스페이스는 URL 엔티티가 아니라 카드라서, status URL 을 yt-dlp 에 넘겨 추출)
+            if (cardName.contains("audiospace", Qt::CaseInsensitive)
+                || cardName.contains("broadcast", Qt::CaseInsensitive)) {
+                if (!tweetUrl.isEmpty()) m_spaceCardTweetUrls.insert(tweetUrl);
+            }
             // 고정 트윗: 최상위에 pinned = true 마킹
             bool isPinned = tweet["pinned"].toBool(false);
             QString tweetType = "Tweet";
