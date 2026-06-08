@@ -6359,14 +6359,18 @@ bool MiyoBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir)
     QDir().mkpath(outDir);
 
     const QString ytdlp = Common::ytDlpExecutable();
-    const QString appDir = QCoreApplication::applicationDirPath();  // 번들 ffmpeg 위치(스페이스 mux 에 필요)
+    const QString appDir = QCoreApplication::applicationDirPath();
 
     QStringList args;
-    args << "--no-mtime"
-         << "--newline"
-         << "--no-playlist"
-         << "--ffmpeg-location" << appDir
-         << "--embed-metadata"
+    args << "--no-mtime" << "--newline" << "--no-playlist";
+    // ★ ffmpeg 위치 — 스페이스는 m3u8(HLS) 라 ffmpeg 필수. 번들→시스템 순으로 '실제 존재하는' 것만 지정.
+    //   (이전엔 ffmpeg 없는 번들 디렉토리를 무조건 가리켜 "ffmpeg could not be found" 로 실패했음)
+    for (const QString &ff : QStringList{ appDir + "/ffmpeg", appDir + "/ffmpeg.exe",
+                                          "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg" }) {
+        if (QFile::exists(ff)) { args << "--ffmpeg-location" << ff; break; }
+    }
+    // 위 후보가 모두 없으면 --ffmpeg-location 생략 → PATH 에서 탐색.
+    args << "--embed-metadata"
          << "-o" << (outDir + "/%(title).180s [%(id)s].%(ext)s")
          << url;
 
