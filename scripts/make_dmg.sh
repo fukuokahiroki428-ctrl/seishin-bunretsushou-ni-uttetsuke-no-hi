@@ -48,6 +48,14 @@ make_dmg() {
     cp -R "$APP_PATH" "$STAGE_DIR/"
     ln -s /Applications "$STAGE_DIR/Applications"
 
+    # 서명/실행허용 헬퍼 동봉 (Gatekeeper 차단 시 더블클릭으로 해제)
+    local HELPER; HELPER="$(cd "$(dirname "$0")" && pwd)/dmg_fix_open.command"
+    if [ -f "$HELPER" ]; then
+        cp "$HELPER" "$STAGE_DIR/실행이_안되면_더블클릭.command"
+        chmod +x "$STAGE_DIR/실행이_안되면_더블클릭.command"
+        xattr -cr "$STAGE_DIR/실행이_안되면_더블클릭.command" 2>/dev/null || true
+    fi
+
     local OUT_DMG="$DIST_DIR/$DMG_NAME.dmg"
     rm -f "$OUT_DMG"
 
