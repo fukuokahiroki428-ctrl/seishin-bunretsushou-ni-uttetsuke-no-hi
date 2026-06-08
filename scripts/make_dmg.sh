@@ -9,14 +9,15 @@ DIST_DIR="${DIST_DIR:-/Users/shio/Downloads/무제폴더/귀찮아/dist}"
 mkdir -p "$DIST_DIR"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 서명 ID — 배포에 유효한 "Developer ID Application" 우선, 없으면 ad-hoc(-).
-#   ★ 이전엔 "Apple Development: ..." 인증서를 하드코딩했는데, 이건 배포에 무효라
-#     Gatekeeper 가 차단한다(앱 서명 문제의 원인). 개발 인증서는 절대 쓰지 않는다.
-#   SIGN_ID 환경변수로 강제 지정 가능.
+# 서명 ID: 1) Developer ID Application(배포+공증) 2) Apple Development(사용자 개발자 ID —
+#   이전 버전이 이걸로 서명·배포됨; 받는 쪽은 우클릭→열기) 3) ad-hoc(-).
+#   (하드코딩 금지 — 인증서가 바뀌어도 자동 탐지). SIGN_ID 환경변수로 강제 지정 가능.
 # ─────────────────────────────────────────────────────────────────────────────
 if [ -z "$SIGN_ID" ]; then
     SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
         | grep -oE '"Developer ID Application:[^"]+"' | head -1 | tr -d '"')
+    [ -z "$SIGN_ID" ] && SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep -oE '"Apple Development:[^"]+"' | head -1 | tr -d '"')
     [ -z "$SIGN_ID" ] && SIGN_ID="-"
 fi
 if [ "$SIGN_ID" = "-" ]; then

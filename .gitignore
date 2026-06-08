@@ -31,3 +31,6 @@ Thumbs.db
 moc_*.cpp
 qrc_*.cpp
 ui_*.h
+
+# 대용량 아트(이전 앱에서 가져옴 — 빌드 시 로컬에 위치)
+mac/Chernobyl.png
