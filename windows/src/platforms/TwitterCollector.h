@@ -114,6 +114,8 @@ private:
     QString m_authToken;
     QString m_ct0;
     QString m_csrfToken;
+    // 수집 중 발견한 스페이스 카드 트윗의 status URL (전체수집 끝에 yt-dlp 로 일괄 다운로드)
+    QSet<QString> m_spaceCardTweetUrls;
 
     // Transaction IDs cache (legacy)
     QMap<QString, QString> m_transactionIds;
