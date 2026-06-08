@@ -8278,7 +8278,15 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 
     QStringList baseArgs;
     baseArgs << "--no-mtime";
-    baseArgs << "--ffmpeg-location" << appDir;
+    baseArgs << "--no-restrict-filenames";   // ★ 유니코드(한/일 등) 제목 그대로 보존
+    // ★ ffmpeg 위치 — 번들→시스템 순으로 '실제 존재하는' 것만 지정(오디오 mp3 추출/영상 병합에 필수).
+    //   이전엔 ffmpeg 없는 디렉토리를 무조건 가리켜 "ffmpeg could not be found" 로 실패했음(윈도우 오디오 오류 원인).
+    for (const QString &ff : QStringList{ appDir + "/ffmpeg.exe", appDir + "/ffmpeg",
+                                          appDir + "/tools/ffmpeg.exe",
+                                          "C:/ffmpeg/bin/ffmpeg.exe" }) {
+        if (QFile::exists(ff)) { baseArgs << "--ffmpeg-location" << ff; break; }
+    }
+    // (위 후보가 없으면 --ffmpeg-location 생략 → PATH 에서 탐색)
     // Rate limit 방지: 영상 간 딜레이
     baseArgs << "--sleep-interval" << "3" << "--max-sleep-interval" << "8";
     baseArgs << "--sleep-requests" << "1";
