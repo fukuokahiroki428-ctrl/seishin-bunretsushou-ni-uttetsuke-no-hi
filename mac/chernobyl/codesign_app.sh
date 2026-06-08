@@ -14,38 +14,33 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENTITLEMENTS="${ENTITLEMENTS:-$SCRIPT_DIR/chernobyl.entitlements}"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 서명 ID 선택
-#   배포에 유효한 건 "Developer ID Application" 인증서뿐이다(Gatekeeper 통과 + 공증 가능).
-#   "Apple Development" 인증서는 배포에 무효 — 오히려 ad-hoc 보다 Gatekeeper 차단이 심하다.
-#     (이전 버전이 Apple Development 로 서명한 게 바로 "앱 서명 문제"의 원인이었음)
-#   적합한 인증서가 없으면 ad-hoc(-): Apple Silicon 실행에 필요한 최소 서명(로컬 실행용).
+# 서명 ID 선택 (우선순위)
+#   1) Developer ID Application — 배포+공증 가능(Gatekeeper 통과). 하드닝 런타임+entitlements 적용.
+#   2) Apple Development (사용자 개발자 ID) — 로컬 안정 식별자 → TCC 권한 영구 유지.
+#        이전 버전 Chernobyl 이 이걸로 서명됨. 평범 서명(하드닝 런타임 X) — 이전과 동일 동작.
+#   3) ad-hoc(-) — 인증서가 하나도 없을 때. 매 빌드 해시가 바뀌어 권한이 재설정됨.
 #   SIGN_ID 환경변수로 강제 지정 가능.
 # ─────────────────────────────────────────────────────────────────────────────
 if [ -z "$SIGN_ID" ]; then
     SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
         | grep -oE '"Developer ID Application:[^"]+"' | head -1 | tr -d '"')
+    [ -z "$SIGN_ID" ] && SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep -oE '"Apple Development:[^"]+"' | head -1 | tr -d '"')
+    [ -z "$SIGN_ID" ] && SIGN_ID="-"
 fi
-if [ -z "$SIGN_ID" ] || [ "$SIGN_ID" = "-" ]; then
-    SIGN_ID="-"
-    echo "[codesign] Developer ID Application 인증서 없음 → ad-hoc(-) 서명."
-    echo "[codesign]   로컬 실행은 되지만 배포본은 첫 실행 시 우클릭→'열기' 필요."
-    echo "[codesign]   경고 없는 배포는 Developer ID + 공증(notarytool)이 필요함."
-else
-    echo "[codesign] Using identity: $SIGN_ID"
-fi
+case "$SIGN_ID" in
+    "Developer ID Application:"*) IS_DEVID=1; echo "[codesign] Using Developer ID: $SIGN_ID" ;;
+    "-")  IS_DEVID=0; echo "[codesign] 서명 인증서 없음 → ad-hoc(-)." ;;
+    *)    IS_DEVID=0; echo "[codesign] Using identity: $SIGN_ID (개발자 ID — 로컬 안정 식별자)" ;;
+esac
 
-# Developer ID 로 서명할 때만 하드닝 런타임 + 타임스탬프 + entitlements(공증 준비).
-#   ad-hoc 에 하드닝 런타임을 켜면 의미도 없고 오히려 실행이 막힐 수 있어 적용하지 않는다.
+# 하드닝 런타임+타임스탬프+entitlements 는 Developer ID(공증 경로)에서만.
+#   Apple Development/ad-hoc 은 이전 버전처럼 평범하게 서명(하드닝 런타임 켜면 entitlements 없이 막힐 위험).
 SIGN_FLAGS=(--force --sign "$SIGN_ID")
 RUNTIME_FLAGS=()
-if [ "$SIGN_ID" != "-" ]; then
+if [ "$IS_DEVID" = "1" ]; then
     RUNTIME_FLAGS=(--options runtime --timestamp)
-    if [ -f "$ENTITLEMENTS" ]; then
-        RUNTIME_FLAGS+=(--entitlements "$ENTITLEMENTS")
-        echo "[codesign] entitlements: $ENTITLEMENTS"
-    else
-        echo "[codesign] ⚠ entitlements 파일 없음($ENTITLEMENTS) — WebEngine/python 이 공증 후 막힐 수 있음."
-    fi
+    [ -f "$ENTITLEMENTS" ] && RUNTIME_FLAGS+=(--entitlements "$ENTITLEMENTS")
 fi
 
 # 실행 코드/번들용(하드닝 런타임 포함). nested 라이브러리에도 적용해도 무해.

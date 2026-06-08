@@ -13,24 +13,26 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENTITLEMENTS="${ENTITLEMENTS:-$SCRIPT_DIR/pen.entitlements}"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 서명 ID 선택 — 배포에 유효한 건 "Developer ID Application" 뿐(Gatekeeper 통과 + 공증 가능).
-#   "Apple Development" 인증서는 배포에 무효(오히려 ad-hoc 보다 차단이 심함) → 무시.
-#   적합한 인증서 없으면 ad-hoc(-): 로컬 실행용 최소 서명. SIGN_ID 로 강제 지정 가능.
+# 서명 ID 선택: 1) Developer ID Application(배포+공증) 2) Apple Development(사용자 개발자 ID —
+#   로컬 안정 식별자, 이전 버전과 동일) 3) ad-hoc(-). SIGN_ID 로 강제 지정 가능.
 # ─────────────────────────────────────────────────────────────────────────────
 if [ -z "$SIGN_ID" ]; then
     SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
         | grep -oE '"Developer ID Application:[^"]+"' | head -1 | tr -d '"')
+    [ -z "$SIGN_ID" ] && SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep -oE '"Apple Development:[^"]+"' | head -1 | tr -d '"')
+    [ -z "$SIGN_ID" ] && SIGN_ID="-"
 fi
-if [ -z "$SIGN_ID" ] || [ "$SIGN_ID" = "-" ]; then
-    SIGN_ID="-"
-    echo "[codesign] Developer ID Application 인증서 없음 → ad-hoc(-) 서명. (배포본은 첫 실행 시 우클릭→열기 필요)"
-else
-    echo "[codesign] Using identity: $SIGN_ID"
-fi
+case "$SIGN_ID" in
+    "Developer ID Application:"*) IS_DEVID=1; echo "[codesign] Using Developer ID: $SIGN_ID" ;;
+    "-")  IS_DEVID=0; echo "[codesign] 서명 인증서 없음 → ad-hoc(-)." ;;
+    *)    IS_DEVID=0; echo "[codesign] Using identity: $SIGN_ID (개발자 ID)" ;;
+esac
 
+# 하드닝 런타임+entitlements 는 Developer ID(공증 경로)에서만. Apple Development/ad-hoc 은 평범 서명.
 SIGN_FLAGS=(--force --sign "$SIGN_ID")
 RUNTIME_FLAGS=()
-if [ "$SIGN_ID" != "-" ]; then
+if [ "$IS_DEVID" = "1" ]; then
     RUNTIME_FLAGS=(--options runtime --timestamp)
     [ -f "$ENTITLEMENTS" ] && RUNTIME_FLAGS+=(--entitlements "$ENTITLEMENTS")
 fi

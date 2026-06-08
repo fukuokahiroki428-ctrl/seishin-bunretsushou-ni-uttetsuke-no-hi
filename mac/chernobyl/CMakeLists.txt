@@ -150,7 +150,7 @@ if(APPLE)
         set(APP_NAME "ABIWA")
     endif()
     if(NOT APP_ICON)
-        set(APP_ICON "abiwa.icns")
+        set(APP_ICON "chernobyl.icns")
     endif()
     if(NOT APP_ID)
         set(APP_ID "com.miyo.app")
@@ -291,7 +291,7 @@ if(APPLE)
 
     # Icon — APP_ICON_PATH can be overridden via -DAPP_ICON_PATH="..."
     if(NOT APP_ICON_PATH)
-        set(APP_ICON_PATH "${CMAKE_SOURCE_DIR}/resources/abiwa.icns")
+        set(APP_ICON_PATH "${CMAKE_SOURCE_DIR}/resources/chernobyl.icns")
     endif()
     if(EXISTS "${APP_ICON_PATH}")
         add_custom_command(TARGET Miyo POST_BUILD
