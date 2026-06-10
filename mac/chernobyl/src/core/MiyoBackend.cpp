@@ -66,24 +66,45 @@ struct CollectionGuard {
 QSemaphore* MiyoBackend::platformSem(const QString &platform)
 {
     QMutexLocker lock(&m_platformSemsMutex);
-    if (m_platformSems.contains(platform)) return m_platformSems[platform];
-    int cap = 2;  // default
-    // platform 별 capacity (동시 작업 한도)
-    if (platform == "youtube") cap = 1;        // yt-dlp/ffmpeg 무거움, NAS write 부담
-    else if (platform == "instagram") cap = 1; // login pause / rate limit
-    else if (platform == "pixiv") cap = 2;     // API + 이미지
-    else if (platform == "fanbox") cap = 2;    // 멤버십 컨텐츠
-    else if (platform == "twitter") cap = 2;   // API rate limit
-    else if (platform == "bluesky") cap = 2;   // API rate limit
-    else if (platform == "tumblr") cap = 3;
-    else if (platform == "spinspin") cap = 3;
-    else if (platform == "asked") cap = 3;
-    else if (platform == "discord") cap = 3;
-    else if (platform == "crawl") cap = 3;
-    else if (platform == "naikakukai") cap = 2;
-    else if (platform == "trad") cap = 1;      // 압축 + ZIP 무거움
-    QSemaphore *sem = new QSemaphore(cap);
-    m_platformSems[platform] = sem;
+    // platform 별 기본 capacity (동시 작업 한도)
+    int def = 2;
+    if (platform == "youtube") def = 1;        // yt-dlp/ffmpeg 무거움, NAS write 부담
+    else if (platform == "instagram") def = 1; // login pause / rate limit
+    else if (platform == "pixiv") def = 2;     // API + 이미지
+    else if (platform == "fanbox") def = 2;    // 멤버십 컨텐츠
+    else if (platform == "twitter") def = 2;   // API rate limit
+    else if (platform == "bluesky") def = 2;   // API rate limit
+    else if (platform == "tumblr") def = 3;
+    else if (platform == "spinspin") def = 3;
+    else if (platform == "asked") def = 3;
+    else if (platform == "discord") def = 3;
+    else if (platform == "crawl") def = 3;
+    else if (platform == "naikakukai") def = 2;
+    else if (platform == "trad") def = 1;      // 압축 + ZIP 무거움
+
+    // ★ 사용자 설정 override — maxConcurrent>0 이면 모든 플랫폼에 그 값을 동시 한도로 적용.
+    int desired = def;
+    if (m_config) {
+        int mc = m_config->maxConcurrent();
+        if (mc > 0) desired = mc;
+    }
+    if (desired < 1) desired = 1;
+
+    if (!m_platformSems.contains(platform)) {
+        m_platformSems[platform] = new QSemaphore(desired);
+        m_platformSemCap[platform] = desired;
+        return m_platformSems[platform];
+    }
+    // 이미 있으면 라이브 조정 — 늘리기는 즉시(release), 줄이기는 유휴(미사용 permit 있을 때)만.
+    QSemaphore *sem = m_platformSems[platform];
+    int cur = m_platformSemCap.value(platform, def);
+    if (desired > cur) {
+        sem->release(desired - cur);
+        m_platformSemCap[platform] = desired;
+    } else if (desired < cur) {
+        if (sem->tryAcquire(cur - desired))   // 사용 중이면 실패 → 다음 호출 때 반영
+            m_platformSemCap[platform] = desired;
+    }
     return sem;
 }
 #include <QTimer>

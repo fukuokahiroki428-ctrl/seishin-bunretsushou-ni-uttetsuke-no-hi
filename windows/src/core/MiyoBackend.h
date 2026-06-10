@@ -422,8 +422,9 @@ public:
     //   Twitter/Bluesky: API rate limit → 2
     //   Tumblr/Discord/SpinSpin/Asked/Crawl: 비교적 가벼움 → 3
     QMap<QString, QSemaphore*> m_platformSems;
+    QMap<QString, int> m_platformSemCap;   // 현재 논리적 capacity (설정 변경 시 라이브 조정용)
     QMutex m_platformSemsMutex;
-    QSemaphore* platformSem(const QString &platform);  // 동적 생성 / 조회
+    QSemaphore* platformSem(const QString &platform);  // 동적 생성 / 조회 (설정 maxConcurrent 반영)
 
     // ★ 로그인 대기 — platform별로 분리 (Instagram/Pixiv 동시 대기 가능)
     QMap<QString, QSemaphore*> m_loginPauseSems;
