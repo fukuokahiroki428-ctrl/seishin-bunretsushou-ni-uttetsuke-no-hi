@@ -1706,7 +1706,39 @@ void PenBackend::crawlSiteMirror(const QString &startUrl, int maxPages, bool sam
                 }, Qt::QueuedConnection);
                 continue;
             }
-            QThread::sleep(2);
+            // ★ Cloudflare/인터스티셜(JS 챌린지·리다이렉트) 대기 — 실제 Chrome(CDP)이라 챌린지는
+            //   브라우저가 자동 통과한다. "Just a moment…" 같은 챌린지 페이지를 그대로 캡쳐하지 않도록
+            //   실제 콘텐츠가 뜰 때까지 최대 25초 폴링한다. (정상 페이지는 첫 검사에서 바로 통과)
+            {
+                const int maxWaitMs = 25000;
+                int waited = 0;
+                bool announced = false;
+                while (waited < maxWaitMs && !m_autoCrawlStop.load()) {
+                    auto chkSem = std::make_shared<QSemaphore>(0);
+                    auto challenge = std::make_shared<bool>(false);
+                    QMetaObject::invokeMethod(this, [this, chkSem, challenge]() {
+                        if (!m_crawlChrome) { chkSem->release(); return; }
+                        const QString js = R"JS((()=>{
+                            const t=(document.title||'').toLowerCase();
+                            const sel='#cf-challenge-running,.cf-browser-verification,#challenge-form,#challenge-running,[data-translate="checking_browser"]';
+                            return t.includes('just a moment')||t.includes('attention required')||t.includes('checking your browser')||!!document.querySelector(sel);
+                        })())JS";
+                        m_crawlChrome->evaluate(js, [chkSem, challenge](const QJsonValue &v){ *challenge = v.toBool(); chkSem->release(); });
+                    }, Qt::QueuedConnection);
+                    chkSem->tryAcquire(1, 8000);
+                    if (!*challenge) break;   // 실제 콘텐츠 떴음
+                    if (!announced) {
+                        announced = true;
+                        QString u2 = url;
+                        QMetaObject::invokeMethod(this, [this, u2]() {
+                            log(QString("⏳ 챌린지/로딩 통과 대기 중(Cloudflare 등): %1").arg(u2), "info");
+                        }, Qt::QueuedConnection);
+                    }
+                    QThread::msleep(1500);
+                    waited += 1500;
+                }
+            }
+            QThread::sleep(2);   // 렌더 안정화
 
             // 캡쳐 — 직접 chrome 호출 (savePath 가 매번 다름)
             auto capSem = std::make_shared<QSemaphore>(0);
