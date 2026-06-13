@@ -1657,9 +1657,16 @@ void PenBackend::crawlSiteMirror(const QString &startUrl, int maxPages, bool sam
             QUrl qu(url);
             QString host = qu.host();
             QString path = qu.path();
+            const QString query = qu.query();
             if (path.isEmpty() || path == "/") path = "/index.html";
             else if (path.endsWith("/")) path += "index.html";
             else if (!path.contains('.')) path += ".html";
+            // ★ 쿼리스트링 다른 페이지가 같은 파일로 덮어써지는 것 방지 — 확장자 앞에 쿼리 해시 삽입
+            if (!query.isEmpty()) {
+                QString q = "__" + QString(query).replace(QRegularExpression("[^A-Za-z0-9]"), "_").left(40);
+                int dot = path.lastIndexOf('.');
+                if (dot > 0) path.insert(dot, q); else path += q;
+            }
             // 안전 파일명
             path.replace(QRegularExpression("[?#:*<>|\"\\\\]"), "_");
             return savePath + "/mirror/" + host + path;
@@ -1792,7 +1799,7 @@ void PenBackend::crawlSiteMirror(const QString &startUrl, int maxPages, bool sam
             QMetaObject::invokeMethod(this, [this, linkSem, linkList]() {
                 if (!m_crawlChrome) { linkSem->release(); return; }
                 m_crawlChrome->evaluate(
-                    "Array.from(document.querySelectorAll('a[href]')).map(a=>a.href).filter(u=>u && u.startsWith('http')).slice(0,200)",
+                    "Array.from(document.querySelectorAll('a[href]')).map(a=>a.href).filter(u=>u && u.startsWith('http')).slice(0,500)",
                     [linkSem, linkList](const QJsonValue &v) {
                         *linkList = v.toArray();
                         linkSem->release();
@@ -1816,7 +1823,7 @@ void PenBackend::crawlSiteMirror(const QString &startUrl, int maxPages, bool sam
                     if (qu.host() != rootHost) continue;
                 }
                 queue.enqueue({u, curDepth + 1});
-                if (++added >= 50) break;
+                if (++added >= 200) break;
             }
         }
 
@@ -1840,12 +1847,21 @@ void PenBackend::crawlSiteMirror(const QString &startUrl, int maxPages, bool sam
                 const QString &srcUrl = m.key();
                 const QString &dstPath = m.value();
                 if (srcUrl == it.key()) continue;  // 자기 자신 제외
-                QString relPath = QDir(baseDir).relativeFilePath(dstPath);
-                // href 와 src 안의 정확 매칭 (URL 인코딩 차이 회피 위해 단순 치환)
-                QString quoted1 = "\"" + srcUrl + "\"";
-                QString quoted2 = "'" + srcUrl + "'";
-                if (html.contains(quoted1)) html.replace(quoted1, "\"" + relPath + "\"");
-                if (html.contains(quoted2)) html.replace(quoted2, "'" + relPath + "'");
+                const QString relPath = QDir(baseDir).relativeFilePath(dstPath);
+                // ★ URL 변형(끝슬래시 ±, http/https 스왑)까지 매칭 — 정확-문자열만 보면 로컬 링크가 안 걸려
+                //   클릭 시 라이브 사이트로 빠지던 문제 해결.
+                QStringList variants{ srcUrl };
+                if (srcUrl.endsWith('/')) variants << srcUrl.left(srcUrl.length() - 1);
+                else                       variants << srcUrl + "/";
+                for (const QString &b : QStringList(variants)) {
+                    if (b.startsWith("https://"))     variants << ("http://"  + b.mid(8));
+                    else if (b.startsWith("http://"))  variants << ("https://" + b.mid(7));
+                }
+                variants.removeDuplicates();
+                for (const QString &v : variants) {
+                    html.replace("\"" + v + "\"", "\"" + relPath + "\"");
+                    html.replace("'" + v + "'",  "'" + relPath + "'");
+                }
             }
 
             // 다시 쓰기
