@@ -167,47 +167,58 @@
             <div class="card" style="border:2px solid var(--accent)">
                 <div class="card-title">⬇ 다운로드 (한 버튼)</div>
                 <div class="hint" style="margin-bottom:10px">
-                    URL 입력 → [다운로드 시작] 한 번 클릭. Chrome 자동 시작 + 옵션 따라 자동 분기.<br>
-                    Twitter/X URL 은 자동 스크롤 모드.
+                    ① URL 넣고 → ② 유형 고르고 → ③ [시작]. Chrome 은 자동으로 켜집니다.
                 </div>
 
                 <div class="field">
                     <label class="field-label">URL</label>
-                    <input id="dlUrl" class="input" type="text" placeholder="https://... (비우면 현재 페이지만)">
-                </div>
-
-                <div class="row" style="gap:6px">
-                    <div class="field" style="flex:1; margin-bottom:0">
-                        <label class="field-label">깊이</label>
-                        <select id="dlDepth" class="input">
-                            <option value="0">0 — 단일</option>
-                            <option value="1">1 — 직접 링크</option>
-                            <option value="2" selected>2 — 2단계</option>
-                            <option value="3">3 — 3단계</option>
-                            <option value="999">∞ 전체</option>
-                        </select>
-                    </div>
-                    <div class="field" style="flex:1; margin-bottom:0">
-                        <label class="field-label">최대 페이지</label>
-                        <input id="dlMaxPages" class="input" type="number" value="30" min="1" max="9999">
-                    </div>
+                    <input id="dlUrl" class="input" type="text" placeholder="https://...  ('현재 페이지' 유형은 비워도 됨)">
                 </div>
 
                 <div class="field" style="margin-top:8px">
-                    <label class="field-label">모드</label>
-                    <select id="dlMode" class="input">
-                        <option value="inline" selected>SingleFile inline (한 페이지=한 HTML, base64 내장)</option>
-                        <option value="deep">분리 파일 (wget -mkp — 디렉토리 구조 보존)</option>
+                    <label class="field-label">무엇을 받을까요?</label>
+                    <select id="dlMode" class="input" onchange="toggleDlOptions()">
+                        <option value="current">현재 페이지 1장 (지금 Chrome에 열린 화면)</option>
+                        <option value="inline" selected>사이트 통째 미러 · 한 파일씩 (1페이지=1 HTML, 자산 내장)</option>
+                        <option value="deep">사이트 통째 미러 · 분리 파일 (원본 폴더/구조 보존)</option>
+                        <option value="twitter">트위터 프로필 통째 (자동 스크롤)</option>
                     </select>
                 </div>
 
+                <!-- 미러 옵션 (사이트 미러일 때만) -->
+                <div id="dlMirrorOpts">
+                    <div class="row" style="gap:6px; margin-top:8px">
+                        <div class="field" style="flex:1; margin-bottom:0">
+                            <label class="field-label">깊이</label>
+                            <select id="dlDepth" class="input">
+                                <option value="1">1 — 직접 링크만</option>
+                                <option value="2" selected>2 — 2단계</option>
+                                <option value="3">3 — 3단계</option>
+                                <option value="999">∞ 전체</option>
+                            </select>
+                        </div>
+                        <div class="field" style="flex:1; margin-bottom:0">
+                            <label class="field-label">최대 페이지</label>
+                            <input id="dlMaxPages" class="input" type="number" value="50" min="1" max="9999">
+                        </div>
+                    </div>
+                    <label class="checkbox-row" style="margin-top:8px">
+                        <input id="dlSameDomain" type="checkbox" checked>
+                        <span>같은 도메인만</span>
+                    </label>
+                </div>
+
+                <!-- 트위터 옵션 -->
+                <div id="dlTwOpts" style="display:none">
+                    <div class="field" style="margin-top:8px">
+                        <label class="field-label">스크롤 횟수 (많을수록 더 과거 트윗까지)</label>
+                        <input id="dlScrolls" class="input" type="number" value="30" min="5" max="500">
+                    </div>
+                </div>
+
                 <label class="checkbox-row" style="margin-top:8px">
-                    <input id="dlSameDomain" type="checkbox" checked>
-                    <span>같은 도메인만</span>
-                </label>
-                <label class="checkbox-row" style="margin-top:4px">
                     <input id="dlMedia" type="checkbox">
-                    <span>이미지/비디오 별도 다운로드</span>
+                    <span>이미지/비디오도 별도 파일로 저장</span>
                 </label>
 
                 <div class="btn-row" style="margin-top:12px">
@@ -644,46 +655,51 @@ function _isChromeReady() {
     return dot && dot.classList.contains('on');
 }
 
+// 유형 선택에 따라 관련 옵션만 표시
+function toggleDlOptions() {
+    const m = document.getElementById('dlMode').value;
+    const mir = document.getElementById('dlMirrorOpts');
+    const tw  = document.getElementById('dlTwOpts');
+    if (mir) mir.style.display = (m === 'inline' || m === 'deep') ? 'block' : 'none';
+    if (tw)  tw.style.display  = (m === 'twitter') ? 'block' : 'none';
+}
+
 function dlStart() {
     if (!backend) return;
     const url = document.getElementById('dlUrl').value.trim();
-    const depth = parseInt(document.getElementById('dlDepth').value) || 0;
-    const maxP = parseInt(document.getElementById('dlMaxPages').value) || 30;
     const mode = document.getElementById('dlMode').value;
-    const sd = document.getElementById('dlSameDomain').checked;
     const media = document.getElementById('dlMedia').checked;
 
-    // 실제 다운로드 액션
+    // 실제 다운로드 액션 — 유형(mode)에 따라 명확히 분기
     const doDownload = () => {
-        const isTwitter = /^(https?:\/\/)?(www\.)?(x|twitter)\.com\//i.test(url);
-        if (!url && depth === 0) {
-            appendLog('현재 페이지 캡쳐...', 'info');
-            backend.crawlCaptureCurrent('');
-            if (media) setTimeout(() => backend.crawlDownloadMedia(), 1000);
+        if (mode === 'current') {
+            if (url) {
+                appendLog(`현재 페이지 저장: ${url}`, 'info');
+                backend.crawlNavigate(url);
+                setTimeout(() => { backend.crawlCaptureCurrent(''); if (media) setTimeout(() => backend.crawlDownloadMedia(), 2000); }, 3000);
+            } else {
+                appendLog('현재 페이지 저장...', 'info');
+                backend.crawlCaptureCurrent('');
+                if (media) setTimeout(() => backend.crawlDownloadMedia(), 1000);
+            }
             return;
         }
         if (!url) { appendLog('URL 입력 필요', 'warning'); return; }
-
-        if (isTwitter && depth >= 1) {
-            const scrolls = Math.max(10, maxP);
-            appendLog(`Twitter 미러 — ${scrolls}회 스크롤`, 'info');
+        if (mode === 'twitter') {
+            const scrolls = parseInt(document.getElementById('dlScrolls').value) || 30;
+            appendLog(`트위터 프로필 미러 — ${scrolls}회 스크롤`, 'info');
             backend.crawlTwitterMirror(url, scrolls);
             return;
         }
-        if (depth === 0) {
-            appendLog(`단일 페이지 다운로드: ${url}`, 'info');
-            backend.crawlNavigate(url);
-            setTimeout(() => {
-                backend.crawlCaptureCurrent('');
-                if (media) setTimeout(() => backend.crawlDownloadMedia(), 2000);
-            }, 3000);
-            return;
-        }
+        const depth = parseInt(document.getElementById('dlDepth').value) || 2;
+        const maxP = parseInt(document.getElementById('dlMaxPages').value) || 50;
+        const sd = document.getElementById('dlSameDomain').checked;
+        const dLabel = depth === 999 ? '∞' : String(depth);
         if (mode === 'deep') {
-            appendLog(`딥 미러 (분리 파일): ${url} — 깊이 ${depth}, 최대 ${maxP}페이지`, 'info');
+            appendLog(`사이트 미러(분리 파일): ${url} — 깊이 ${dLabel}, 최대 ${maxP}페이지`, 'info');
             backend.crawlDeepMirror(url, maxP, sd, depth);
-        } else {
-            appendLog(`사이트 미러 (inline): ${url} — 깊이 ${depth}, 최대 ${maxP}페이지`, 'info');
+        } else { // inline
+            appendLog(`사이트 미러(한 파일씩): ${url} — 깊이 ${dLabel}, 최대 ${maxP}페이지`, 'info');
             backend.crawlSiteMirror(url, maxP, sd, media, depth);
         }
     };
