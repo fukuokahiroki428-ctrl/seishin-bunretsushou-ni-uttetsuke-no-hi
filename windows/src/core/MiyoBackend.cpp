@@ -8374,6 +8374,8 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 
     QString script;
     script += "@echo off\r\nchcp 65001 >nul\r\n";
+    // ★ 한글/유니코드 채널·제목 파일명 — Python(yt-dlp) UTF-8 강제 (윈도우 ANSI 코드페이지 폴백 → UnicodeError 방지)
+    script += "set PYTHONUTF8=1\r\nset PYTHONIOENCODING=UTF-8\r\n";
     script += "title ABIWA - YouTube\r\n";
     script += "set \"STATUS=" + QDir::toNativeSeparators(statusFile) + "\"\r\n";
     script += "set \"STOP_MARKER=" + QDir::toNativeSeparators(stopMarker) + "\"\r\n";
@@ -8430,6 +8432,9 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     QString script;
     script += "#!/bin/bash\n";
     script += "export PATH=" + esc(appDir) + ":/opt/homebrew/bin:/usr/local/bin:\"$PATH\"\n";
+    // ★ 한글/유니코드 파일명 — Python(yt-dlp) UTF-8 강제
+    script += "export PYTHONUTF8=1\nexport PYTHONIOENCODING=UTF-8\n";
+    script += "export LANG=\"${LANG:-en_US.UTF-8}\"\nexport LC_ALL=\"${LC_ALL:-en_US.UTF-8}\"\n";
     script += "STATUS=" + esc(statusFile) + "\n";
     script += "STOP_MARKER=" + esc(stopMarker) + "\n";
     script += "echo 'STARTED' > \"$STATUS\"\n\n";
@@ -8584,12 +8589,18 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                     QString ytUrl = info["webpage_url"].toString();
                     QString uploader = info["uploader"].toString();
                     QString title = info["title"].toString().left(200);
-                    // EXIF → Finder comment → xattr → mtime 순서
+                    QString descr = info["description"].toString();   // ★ 영상에 달린 설명
+                    // EXIF: description 필드에 '영상 설명' 적용 (없으면 제목으로 폴백)
                     Common::addExifMetadata(mediaPath,
                         uploader.isEmpty() ? "" : "@" + uploader,
-                        title, "YouTube @" + uploader, ytUrl,
+                        descr.isEmpty() ? title : descr,
+                        "YouTube @" + uploader, ytUrl,
                         dt.isValid() ? dt.toString("yyyy:MM:dd HH:mm:ss") : "");
-                    FileHelper::setFinderComment(mediaPath, ytUrl);
+                    // 코멘트 = URL + 제목 + 설명(앞부분). 전체 설명은 .description 사이드카에도 저장됨.
+                    QString ytComment = ytUrl;
+                    if (!title.isEmpty()) ytComment += "\n" + title;
+                    if (!descr.isEmpty()) ytComment += "\n\n" + descr.left(1800);
+                    FileHelper::setFinderComment(mediaPath, ytComment);
                     FileHelper::applyPostMetadata(mediaPath, dt, ytUrl);
                     // _complete 미러 (채널별 서브폴더 유지)
                     QString channelName = info["channel"].toString();
@@ -8602,7 +8613,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                     QString mirrorPath = mirrorChannelDir + "/" + QFileInfo(mediaPath).fileName();
                     if (!QFile::exists(mirrorPath)) QFile::copy(mediaPath, mirrorPath);
                     if (QFile::exists(mirrorPath)) {
-                        FileHelper::setFinderComment(mirrorPath, ytUrl);
+                        FileHelper::setFinderComment(mirrorPath, ytComment);
                         FileHelper::applyPostMetadata(mirrorPath, dt, ytUrl);
                     }
                     // 経済産業省 연계: 페이지 캡처
