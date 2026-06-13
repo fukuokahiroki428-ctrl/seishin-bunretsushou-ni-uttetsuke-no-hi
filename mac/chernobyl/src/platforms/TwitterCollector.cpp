@@ -2230,7 +2230,7 @@ void TwitterCollector::collectThreadsAuto(const QJsonObject &config, const QStri
     }
 
     QStringList convList = threadConvs.values();
-    const int MAX_THREADS = 300;   // 과도한 재구성 방지 상한
+    const int MAX_THREADS = 30;    // 과도한 재구성(데몬 재시작 반복으로 먹통처럼 보임) 방지 상한
     if (convList.size() > MAX_THREADS) {
         m_backend->log(QString("🧵 스레드 %1개 발견 — 상한 %2개까지만 재구성.").arg(convList.size()).arg(MAX_THREADS),
                        "warning", "twitter");
