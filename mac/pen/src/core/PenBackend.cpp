@@ -2124,36 +2124,46 @@ void PenBackend::crawlDeepMirror(const QString &startUrl, int maxPages, bool sam
                 if (QFile::exists(resLocal)) { dlSkip++; continue; }
                 QDir().mkpath(QFileInfo(resLocal).absolutePath());
 
-                QProcess curl;
-                curl.start("curl", {
-                    "-sSL", "-k",
-                    "-A", "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/605.1.15",
-                    "-o", resLocal,
-                    "--max-time", "30",
-                    resUrl
-                });
-                if (curl.waitForFinished(35000) && curl.exitCode() == 0
-                    && QFileInfo(resLocal).size() > 0) {
-                    dlOk++;
-                } else {
-                    QFile::remove(resLocal);
+                bool saved = false;
+                // ★ 1순위: 브라우저 세션의 fetch 로 받는다 — Chrome 의 쿠키 + Cloudflare clearance(cf_clearance,
+                //   httpOnly 라 curl 로는 불가)를 그대로 써서 보호된 사이트의 자산도 받힌다. (≤40MB)
+                {
+                    auto fSem = std::make_shared<QSemaphore>(0);
+                    auto b64 = std::make_shared<QString>();
+                    QString jsUrl = QString(resUrl).replace("\\", "\\\\").replace("'", "\\'");
+                    QString fjs = QString(R"JS((async()=>{try{const r=await fetch('%1',{credentials:'include'});if(!r.ok)return'';const b=await r.arrayBuffer();const u=new Uint8Array(b);if(u.length>41943040)return'';let s='';const C=0x8000;for(let i=0;i<u.length;i+=C)s+=String.fromCharCode.apply(null,u.subarray(i,i+C));return btoa(s);}catch(e){return'';}})())JS").arg(jsUrl);
+                    QMetaObject::invokeMethod(this, [this, fjs, fSem, b64]() {
+                        if (!m_crawlChrome) { fSem->release(); return; }
+                        m_crawlChrome->evaluate(fjs, [fSem, b64](const QJsonValue &v){ *b64 = v.toString(); fSem->release(); });
+                    }, Qt::QueuedConnection);
+                    fSem->tryAcquire(1, 45000);
+                    if (!b64->isEmpty()) {
+                        const QByteArray data = QByteArray::fromBase64(b64->toUtf8());
+                        if (!data.isEmpty()) {
+                            QFile rf(resLocal);
+                            if (rf.open(QIODevice::WriteOnly)) { rf.write(data); rf.close(); saved = true; }
+                        }
+                    }
                 }
+                // ★ 2순위: curl 폴백 (브라우저 fetch 실패 시 — 공개 자산 등)
+                if (!saved) {
+                    QProcess curl;
+                    curl.start("curl", {
+                        "-sSL", "-k",
+                        "-A", "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/605.1.15",
+                        "-o", resLocal, "--max-time", "30", resUrl
+                    });
+                    if (curl.waitForFinished(35000) && curl.exitCode() == 0
+                        && QFileInfo(resLocal).size() > 0) saved = true;
+                }
+                if (saved) dlOk++; else QFile::remove(resLocal);
             }
             QMetaObject::invokeMethod(this, [this, dlOk, dlSkip]() {
                 log(QString("  다운로드 %1개 (스킵 %2개)").arg(dlOk).arg(dlSkip), "info");
             }, Qt::QueuedConnection);
 
-            // 4) HTML 안의 URL → 로컬 상대 경로 치환
-            QString pageBaseDir = QFileInfo(pageLocal).absolutePath();
-            for (auto it = m_mirrorUrlMap.constBegin(); it != m_mirrorUrlMap.constEnd(); ++it) {
-                if (it.key() == pageUrl) continue;
-                QString rel = QDir(pageBaseDir).relativeFilePath(it.value());
-                // 정확 매칭 우선 (quoted)
-                if (html.contains("\"" + it.key() + "\"")) html.replace("\"" + it.key() + "\"", "\"" + rel + "\"");
-                if (html.contains("'" + it.key() + "'")) html.replace("'" + it.key() + "'", "'" + rel + "'");
-                // 비-quote 도 (srcset 등)
-                if (html.contains(it.key() + " ")) html.replace(it.key() + " ", rel + " ");
-            }
+            // 4) 링크/자산 치환은 '최종 패스'(아래 BFS 종료 후)에서 일괄 처리 — 여기선 raw HTML 그대로 저장.
+            //    페이지마다 치환하면 나중에 발견될 페이지/자산 참조가 누락된다(현재 맵만 보므로).
 
             // 5) HTML 저장
             QFile pf(pageLocal);
@@ -2183,8 +2193,61 @@ void PenBackend::crawlDeepMirror(const QString &startUrl, int maxPages, bool sam
                     if (qu.host() != rootHost) continue;
                 }
                 pageQueue.enqueue({u, curDepth + 1});
-                if (++added >= 50) break;
+                if (++added >= 200) break;
             }
+        }
+
+        // ── 최종 패스: 모든 페이지의 링크/자산 참조를 로컬 상대경로로 (전체 맵 확정 후) ──
+        //   상대경로(/img/x.png 등)는 페이지 원본 URL 기준으로 절대화 → 정규화 매칭 → 로컬 상대경로.
+        //   이렇게 해야 로컬에서 페이지 간 이동 + 이미지/CSS/JS 가 실제로 붙는다("한데 모아 페이지로 작동").
+        {
+            auto norm = [](QString u) -> QString {
+                int h = u.indexOf('#'); if (h >= 0) u = u.left(h);
+                if (u.endsWith('/')) u.chop(1);
+                if (u.startsWith("https://"))     u = "//" + u.mid(8);
+                else if (u.startsWith("http://")) u = "//" + u.mid(7);
+                return u;
+            };
+            QMap<QString, QString> absMap;
+            for (auto it = m_mirrorUrlMap.constBegin(); it != m_mirrorUrlMap.constEnd(); ++it)
+                absMap.insert(norm(it.key()), it.value());
+
+            QRegularExpression attrRe(R"((\s(?:href|src|poster))\s*=\s*(["'])([^"']*)\2)",
+                                      QRegularExpression::CaseInsensitiveOption);
+            int rewritten = 0;
+            for (auto it = m_mirrorUrlMap.constBegin(); it != m_mirrorUrlMap.constEnd(); ++it) {
+                if (m_autoCrawlStop.load()) break;
+                if (!it.value().endsWith(".html")) continue;   // 페이지(HTML)만 재작성
+                QFile f(it.value());
+                if (!f.open(QIODevice::ReadOnly)) continue;
+                QString html = QString::fromUtf8(f.readAll()); f.close();
+                const QUrl pageU(it.key());
+                const QString baseDir = QFileInfo(it.value()).absolutePath();
+
+                QString out; out.reserve(html.size());
+                int last = 0;
+                auto mi = attrRe.globalMatch(html);
+                while (mi.hasNext()) {
+                    const auto mm = mi.next();
+                    out += html.mid(last, mm.capturedStart(0) - last);
+                    const QString attr = mm.captured(1), q = mm.captured(2), raw = mm.captured(3);
+                    QString repl = raw;
+                    if (!raw.isEmpty() && !raw.startsWith("data:") && !raw.startsWith("#")
+                        && !raw.startsWith("javascript:") && !raw.startsWith("mailto:")) {
+                        const QString abs = pageU.resolved(QUrl(raw)).toString();
+                        const auto found = absMap.constFind(norm(abs));
+                        if (found != absMap.constEnd())
+                            repl = QDir(baseDir).relativeFilePath(found.value());
+                    }
+                    out += attr + "=" + q + repl + q;
+                    last = mm.capturedEnd(0);
+                }
+                out += html.mid(last);
+                if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) { f.write(out.toUtf8()); f.close(); rewritten++; }
+            }
+            QMetaObject::invokeMethod(this, [this, rewritten]() {
+                log(QString("[링크 재작성] %1개 페이지 → 로컬 경로 연결 완료").arg(rewritten), "info");
+            }, Qt::QueuedConnection);
         }
 
         // 인덱스 생성
