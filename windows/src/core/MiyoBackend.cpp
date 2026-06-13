@@ -6411,6 +6411,9 @@ bool MiyoBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir)
         log("yt-dlp 실행 실패 — 번들/설치 상태를 확인하세요.", "error", "twitter");
         return false;
     }
+    // ★ 정체 워치독 — 출력이 STALL_MS 동안 없으면 멈춘 것으로 보고 종료(전체수집 무한 대기 방지).
+    QElapsedTimer stall; stall.start();
+    const qint64 STALL_MS = 120000;   // 120초
     while (proc.state() != QProcess::NotRunning) {
         if (!platformRunning("twitter")) {            // 중지 버튼 → m_isRunning["twitter"]=false
             proc.terminate();
@@ -6424,6 +6427,12 @@ bool MiyoBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir)
                 const QString t = ln.trimmed();
                 if (!t.isEmpty()) log(t, "info", "twitter");
             }
+            stall.restart();   // 출력 있음 → 정체 타이머 리셋
+        } else if (stall.elapsed() > STALL_MS) {
+            log("⚠️ 스페이스 다운로드 응답 없음(정체) — 건너뜁니다.", "warning", "twitter");
+            proc.terminate();
+            if (!proc.waitForFinished(3000)) proc.kill();
+            return false;
         }
     }
     const QString tail = QString::fromUtf8(proc.readAll()).trimmed();
