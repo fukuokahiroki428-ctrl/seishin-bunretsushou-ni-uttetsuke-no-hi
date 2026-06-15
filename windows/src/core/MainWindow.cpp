@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "MiyoBackend.h"
+#include "PenBackend.h"   // ★ PEN(팬을 잘 쓰고 싶다) 통합
 
 #include <QWebEngineSettings>
 #include <QVBoxLayout>
@@ -51,9 +52,16 @@ protected:
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle("Chernobyl");
-    setMinimumSize(400, 700);
-    resize(420, 850);
+    setWindowTitle("カメラ");
+    // ★ 새 대시보드 UI 는 와이드 데스크톱 레이아웃 (사이드바 246px + 대시보드 2단 그리드 720+300px).
+    //   옛 단일컬럼 시절 420px 기본값이면 내용이 세로로 찌그러짐 → 와이드 기본/최소로 조정.
+    setMinimumSize(1024, 660);
+    resize(1280, 820);
+
+    // ★ Frameless — 네이티브 흰 타이틀바 제거. HTML 의 다크 툴바가 곧 타이틀바.
+    //   드래그/리사이즈는 JS 가 backend.winStartMove()/winStartResize() 로
+    //   QWindow::startSystemMove()/startSystemResize() 를 호출 → 네이티브 스냅·이동 유지.
+    setWindowFlag(Qt::FramelessWindowHint);
 
     // QMainWindow 배경 — 흰색 (HTML 페이지 배경과 일치).
     //   이전: #0A0A0A (검은색) → 창 가장자리/타이틀바 주변에 검은 띠가 보임 → 사용자 불만
@@ -98,6 +106,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_channel = new QWebChannel(this);
     m_backend = new MiyoBackend(this);
     m_channel->registerObject(QStringLiteral("backend"), m_backend);
+    // ★ PEN(팬을 잘 쓰고 싶다) 통합 — 같은 페이지에 2번째 백엔드 객체로 노출.
+    //   UI 의 사이트 미러 탭이 penBackend.crawl* 를 호출. runJs/log 는 jsSignal/logSignal
+    //   로 동작(JS 측에서 connect) — MiyoBackend 와 동일 메커니즘, 같은 webView 공유.
+    m_penBackend = new PenBackend(this);
+    m_channel->registerObject(QStringLiteral("penBackend"), m_penBackend);
     m_webView->page()->setWebChannel(m_channel);
 
     // ★ file:// 페이지에서 qrc:// 리소스 (qwebchannel.js, 폰트 등) 접근 허용 — CORS 우회
@@ -148,6 +161,11 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Menu bar
     setupMenu();
+#ifdef Q_OS_WIN
+    // frameless 에선 네이티브 메뉴바가 콘텐츠 맨 위에 떠서 보기 안 좋음 → 숨김.
+    //   (QAction 단축키 Ctrl+O/Ctrl+Q 는 메뉴바를 숨겨도 그대로 동작)
+    menuBar()->hide();
+#endif
 
     // Apply dark titlebar after show
     QTimer::singleShot(0, this, &MainWindow::applyDarkTitlebar);
@@ -164,7 +182,7 @@ QMenu *MainWindow::createDockMenu()
 {
     auto *menu = new QMenu(this);
 
-    auto *showAction = menu->addAction("Chernobyl 열기");
+    auto *showAction = menu->addAction("カメラ 열기");
     connect(showAction, &QAction::triggered, this, [this]() {
         show();
         raise();
@@ -278,7 +296,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     if (m_backend && m_backend->isAnyRunning()) {
         auto reply = QMessageBox::question(
             this,
-            "Chernobyl",
+            "カメラ",
             "수집이 진행 중입니다. 종료하시겠습니까?",
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No
@@ -461,11 +479,55 @@ void MainWindow::applyDarkTitlebar()
     SEL setAppearanceSel = sel_registerName("setAppearance:");
     reinterpret_cast<void (*)(id, SEL, id)>(objc_msgSend)(app, setAppearanceSel, lightAppearance);
 #elif defined(Q_OS_WIN)
-    // Windows 10/11: light titlebar
     HWND hwnd = reinterpret_cast<HWND>(winId());
+    // (frameless 라 네이티브 타이틀바는 없지만, 만약을 위해 남겨둠)
     BOOL useDarkMode = FALSE;
     if (FAILED(DwmSetWindowAttribute(hwnd, 20, &useDarkMode, sizeof(useDarkMode)))) {
         DwmSetWindowAttribute(hwnd, 19, &useDarkMode, sizeof(useDarkMode));
     }
+    // ★ Windows 11 네이티브 둥근 모서리 — Win32 DWM (HTML/CSS border-radius 도, Qt region 마스크도 아님).
+    //   OS 가 창을 둥글게 클리핑 + 네이티브 테두리/그림자를 그림. 다른 Win11 앱과 동일한 방식.
+    //   DWMWA_WINDOW_CORNER_PREFERENCE=33, DWMWCP_ROUND=2 (Win10 에선 무시 → 무해).
+    //   frameless(WS_POPUP) 는 자동 라운딩이 안 되므로 명시 호출 필요.
+    {
+        DWORD cornerPref = 2; // DWMWCP_ROUND
+        DwmSetWindowAttribute(hwnd, 33, &cornerPref, sizeof(cornerPref));
+    }
 #endif
 }
+
+// ★ 창 상태(최대화/복원) 변경 시 JS 의 최대화 버튼 아이콘 갱신 (Win+↑ 등 외부 변경도 반영)
+void MainWindow::changeEvent(QEvent *event)
+{
+    if (event->type() == QEvent::WindowStateChange && m_backend) {
+        const bool maxed = isMaximized();
+        m_backend->runJs(QStringLiteral("window.__winMaxChanged && window.__winMaxChanged(%1)")
+                             .arg(maxed ? "true" : "false"));
+    }
+    QMainWindow::changeEvent(event);
+}
+
+#ifdef Q_OS_WIN
+// frameless 창을 최대화하면 기본적으로 모니터 전체(작업표시줄 위까지)를 덮음 →
+//   WM_GETMINMAXINFO 에서 최대화 크기를 작업영역(rcWork)으로 제한해 작업표시줄을 가리지 않게 함.
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
+{
+    MSG *msg = static_cast<MSG *>(message);
+    if (msg && msg->message == WM_GETMINMAXINFO) {
+        HMONITOR mon = MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi; mi.cbSize = sizeof(mi);
+        if (GetMonitorInfo(mon, &mi)) {
+            MINMAXINFO *mmi = reinterpret_cast<MINMAXINFO *>(msg->lParam);
+            mmi->ptMaxPosition.x = mi.rcWork.left - mi.rcMonitor.left;
+            mmi->ptMaxPosition.y = mi.rcWork.top  - mi.rcMonitor.top;
+            mmi->ptMaxSize.x     = mi.rcWork.right  - mi.rcWork.left;
+            mmi->ptMaxSize.y     = mi.rcWork.bottom - mi.rcWork.top;
+            mmi->ptMinTrackSize.x = minimumWidth();
+            mmi->ptMinTrackSize.y = minimumHeight();
+            if (result) *result = 0;
+            return true;
+        }
+    }
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
+#endif
