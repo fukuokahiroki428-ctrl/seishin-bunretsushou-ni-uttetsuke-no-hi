@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(Miyo VERSION 1.0 LANGUAGES CXX)
+project(Miyo VERSION 3.0 LANGUAGES CXX)
 
 # ★ UTF-8 소스 — MSVC 가 narrow/wide 문자열 리터럴(일본어 カメラ, 한글)을 올바르게 컴파일.
 #   이게 없으면 시스템 ACP 로 해석돼 제목/메뉴가 깨짐.
