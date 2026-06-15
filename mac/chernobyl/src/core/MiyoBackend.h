@@ -38,7 +38,8 @@ public:
     void updateStats(int posts, int media, const QString &status, const QString &platform = QString());
 
     // 단일 스페이스 URL 을 outDir 에 yt-dlp 로 다운로드(스페이스 자동탐지에서도 재사용). 성공 시 true.
-    bool downloadSpaceUrl(const QString &url, const QString &outDir);
+    //   running: 중지 판단용 실행 플래그(병렬 트랙 flag). nullptr 이면 platformRunning("twitter") 사용.
+    bool downloadSpaceUrl(const QString &url, const QString &outDir, const bool *running = nullptr);
 
 signals:
     void jsSignal(const QString &js);

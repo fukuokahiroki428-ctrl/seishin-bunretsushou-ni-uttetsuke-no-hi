@@ -6355,7 +6355,7 @@ void MiyoBackend::runRealChromeCollection(const QJsonObject &config)
 //   트위터 탭의 로그/중지 버튼/실행상태와 일관되게 platform="twitter" 로 동작.
 // ═══════════════════════════════════════════════════════════════════════════
 // 단일 스페이스 URL → yt-dlp 다운로드. 스페이스 자동탐지(전체 수집)에서도 재사용.
-bool MiyoBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir)
+bool MiyoBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir, const bool *running)
 {
     const QString url = urlIn.trimmed();
     if (url.isEmpty()) return false;
@@ -6391,7 +6391,9 @@ bool MiyoBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir)
     QElapsedTimer stall; stall.start();
     const qint64 STALL_MS = 120000;   // 120초
     while (proc.state() != QProcess::NotRunning) {
-        if (!platformRunning("twitter")) {            // 중지 버튼 → m_isRunning["twitter"]=false
+        // 중지 판단 — running 이 주어지면(병렬 트랙) 그 플래그로, 아니면 플랫폼 플래그로.
+        //   (병렬 수집에서 platformRunning("twitter") 만 보면 트랙은 살아있는데 오판해 즉시 중단되던 버그)
+        if (running ? !(*running) : !platformRunning("twitter")) {
             proc.terminate();
             if (!proc.waitForFinished(3000)) proc.kill();
             log("⏹ 스페이스 다운로드를 중단했습니다.", "warning", "twitter");

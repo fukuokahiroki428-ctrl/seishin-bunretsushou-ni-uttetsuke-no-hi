@@ -2192,7 +2192,7 @@ void TwitterCollector::collectSpacesFromTimeline(const QJsonObject &config, cons
     int ok = 0;
     for (const QString &u : targets) {
         if (!isRunning) break;
-        if (m_backend->downloadSpaceUrl(u, outDir)) ok++;
+        if (m_backend->downloadSpaceUrl(u, outDir, &isRunning)) ok++;
     }
     m_backend->log(QString("🎙️ 스페이스 자동탐지 완료: %1/%2 성공.").arg(ok).arg(targets.size()),
                    ok > 0 ? "success" : "warning", "twitter");
