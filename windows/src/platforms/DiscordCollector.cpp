@@ -404,7 +404,9 @@ void DiscordCollector::runCollection()
             script.write(content.toUtf8());
             script.close();
         }
-        QProcess::startDetached("cmd.exe", {"/c", "start", "ABIWA-Discord", QDir::toNativeSeparators(scriptPath)});
+        // ★ 외부 콘솔창 비활성 — detached cmd 는 작업관리자에 카메라와 별개 최상위로 떴다.
+        //   로그는 앱 내부(카메라)에 그대로 표시되므로 외부 콘솔 불필요.
+        (void)scriptPath;
     }
 #else
     QString scriptPath = tempDir + "/miyo_discord_tail.command";

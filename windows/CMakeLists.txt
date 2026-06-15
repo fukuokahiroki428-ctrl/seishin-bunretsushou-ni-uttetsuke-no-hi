@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 project(Miyo VERSION 1.0 LANGUAGES CXX)
 
+# ★ UTF-8 소스 — MSVC 가 narrow/wide 문자열 리터럴(일본어 カメラ, 한글)을 올바르게 컴파일.
+#   이게 없으면 시스템 ACP 로 해석돼 제목/메뉴가 깨짐.
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -22,6 +28,7 @@ FetchContent_MakeAvailable(QXlsx)
 set(CORE_SOURCES
     src/core/MainWindow.cpp
     src/core/MiyoBackend.cpp
+    src/core/PenBackend.cpp
     src/core/Common.cpp
     src/core/Config.cpp
 )
@@ -29,6 +36,7 @@ set(CORE_SOURCES
 set(CORE_HEADERS
     src/core/MainWindow.h
     src/core/MiyoBackend.h
+    src/core/PenBackend.h
     src/core/WorkerSignals.h
     src/core/Common.h
     src/core/Config.h
@@ -60,6 +68,7 @@ set(PLATFORM_SOURCES
     src/platforms/TwitterCollector.cpp
     src/platforms/SiteCrawler.cpp
     src/platforms/RealChromeCrawler.cpp
+    src/platforms/PenChromeCrawler.cpp
 )
 
 set(PLATFORM_HEADERS
@@ -70,6 +79,7 @@ set(PLATFORM_HEADERS
     src/platforms/TwitterCollector.h
     src/platforms/SiteCrawler.h
     src/platforms/RealChromeCrawler.h
+    src/platforms/PenChromeCrawler.h
 )
 
 # Resources

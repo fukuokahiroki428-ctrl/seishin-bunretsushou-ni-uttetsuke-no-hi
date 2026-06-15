@@ -106,8 +106,9 @@ int main(int argc, char *argv[])
         // ★ 번들 식별자(com.chernobyl.app) 기반으로 활성화 — 번들 이름(ASCII/일본어) 무관
         system("osascript -e 'tell application id \"com.chernobyl.app\" to activate' &");
 #elif defined(Q_OS_WIN)
-        // 윈도우 제목은 MainWindow 에서 "Chernobyl" 로 설정됨 (이전엔 "ABIWA" 로 찾아서 매번 못 잡았음)
-        HWND hwnd = FindWindowW(nullptr, L"Chernobyl");
+        // 윈도우 제목은 MainWindow 에서 "カメラ" 로 설정됨 — 여기 문자열과 반드시 일치해야 기존 창을 잡음.
+        //   (/utf-8 컴파일 플래그 덕분에 wide 리터럴 L"カメラ" 가 올바른 UTF-16 으로 들어감)
+        HWND hwnd = FindWindowW(nullptr, L"カメラ");
         if (hwnd) {
             SetForegroundWindow(hwnd);
             if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);

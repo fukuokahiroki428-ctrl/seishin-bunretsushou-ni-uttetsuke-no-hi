@@ -139,6 +139,14 @@ public slots:
     Q_INVOKABLE void getDiagnosticInfo();
     Q_INVOKABLE void killZombieChromes();
 
+    // ★ Frameless 창 컨트롤 — 커스텀 타이틀바(JS)에서 호출
+    Q_INVOKABLE void winMinimize();
+    Q_INVOKABLE void winToggleMaximize();
+    Q_INVOKABLE void winClose();
+    Q_INVOKABLE bool winIsMaximized() const;
+    Q_INVOKABLE void winStartMove();
+    Q_INVOKABLE void winStartResize(int edges);  // 비트: 1=top 2=right 4=bottom 8=left
+
     // ★ WebDAV NAS 업로드 (Synology 등)
     Q_INVOKABLE void setWebDavConfig(const QString &url, const QString &user, const QString &pass, bool enabled);
     Q_INVOKABLE void testWebDavConnection();

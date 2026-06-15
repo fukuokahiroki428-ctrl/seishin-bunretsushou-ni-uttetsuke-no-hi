@@ -13,6 +13,7 @@
 #endif
 
 class MiyoBackend;
+class PenBackend;   // ★ PEN(팬을 잘 쓰고 싶다) 통합 — 2번째 백엔드 객체
 
 class MainWindow : public QMainWindow
 {
@@ -40,6 +41,11 @@ public:
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
+    void changeEvent(QEvent *event) override;   // 최대화/복원 시 JS 버튼 아이콘 동기화
+#ifdef Q_OS_WIN
+    // frameless 최대화가 작업표시줄을 덮지 않도록 WM_GETMINMAXINFO 처리
+    bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
+#endif
 
 private:
     void setupMenu();
@@ -51,6 +57,7 @@ private:
     QMainWindow *m_browserWindow = nullptr;
     QWebChannel *m_channel = nullptr;
     MiyoBackend *m_backend = nullptr;
+    PenBackend *m_penBackend = nullptr;   // ★ PEN 통합
     QMenu *m_dockMenu = nullptr;
 
 #ifdef Q_OS_MACOS

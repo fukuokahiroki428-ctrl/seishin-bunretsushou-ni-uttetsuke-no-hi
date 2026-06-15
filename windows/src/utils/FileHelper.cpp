@@ -59,7 +59,8 @@ void setFinderComment(const QString &filePath, const QString &comment)
 QString sanitizeFilename(const QString &name, int maxLength)
 {
     QString result = name;
-    // Remove invalid characters
+    // ★ 크로스플랫폼 — Windows 금지문자 제거. Windows-safe ⊂ macOS-safe 라
+    //   이 기준이면 맥/윈도우 어디서나 열리는 이름이 됨 (NAS·파일 이동 시 안전).
     result.replace(QRegularExpression("[/\\\\:*?\"<>|\\x00-\\x1f]"), "_");
     // Trim whitespace
     result = result.trimmed();
@@ -67,6 +68,13 @@ QString sanitizeFilename(const QString &name, int maxLength)
     if (result.length() > maxLength) {
         result = result.left(maxLength);
     }
+    // ★ Windows 는 끝의 점(.)/공백을 허용하지 않음 ("name." / "name " → 생성 실패/깨짐) → 제거.
+    while (result.endsWith('.') || result.endsWith(' ')) result.chop(1);
+    // ★ Windows 예약 장치명(CON/PRN/AUX/NUL/COM1-9/LPT1-9)은 파일명으로 쓸 수 없음 → 접두사로 회피.
+    static const QRegularExpression reserved(
+        "^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\\.|$)",
+        QRegularExpression::CaseInsensitiveOption);
+    if (reserved.match(result).hasMatch()) result = "_" + result;
     if (result.isEmpty()) {
         result = "unnamed";
     }

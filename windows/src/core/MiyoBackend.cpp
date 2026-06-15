@@ -28,6 +28,7 @@ using FileHelper::sanitizeFilename;
 #include <QImage>
 #include <QStorageInfo>
 #include <QWebEngineView>
+#include <QWindow>   // startSystemMove/startSystemResize (frameless 창 컨트롤)
 #include <QWebEnginePage>
 #include <QWebEngineProfile>
 #include <QWebEngineCookieStore>
@@ -99,6 +100,44 @@ QSemaphore* MiyoBackend::platformSem(const QString &platform)
 
 // Forward declaration — 정의는 upgradePython() 앞에
 static QStringList diagnosePythonEnv(const QString &python);
+
+// ───────────────────────────────────────────────────────────
+// ★ Frameless 창 컨트롤 — m_window(MainWindow*) 를 통해 네이티브 창 조작.
+//   JS 커스텀 타이틀바(최소화/최대화/닫기 버튼 + 드래그/리사이즈)에서 호출.
+// ───────────────────────────────────────────────────────────
+void MiyoBackend::winMinimize()
+{
+    if (m_window) m_window->showMinimized();
+}
+void MiyoBackend::winToggleMaximize()
+{
+    if (!m_window) return;
+    if (m_window->isMaximized()) m_window->showNormal();
+    else m_window->showMaximized();
+}
+void MiyoBackend::winClose()
+{
+    if (m_window) m_window->close();   // closeEvent → 수집 중이면 확인 다이얼로그
+}
+bool MiyoBackend::winIsMaximized() const
+{
+    return m_window && m_window->isMaximized();
+}
+void MiyoBackend::winStartMove()
+{
+    if (m_window && m_window->windowHandle())
+        m_window->windowHandle()->startSystemMove();
+}
+void MiyoBackend::winStartResize(int edges)
+{
+    if (!m_window || !m_window->windowHandle()) return;
+    Qt::Edges e;
+    if (edges & 1) e |= Qt::TopEdge;
+    if (edges & 2) e |= Qt::RightEdge;
+    if (edges & 4) e |= Qt::BottomEdge;
+    if (edges & 8) e |= Qt::LeftEdge;
+    m_window->windowHandle()->startSystemResize(e);
+}
 
 MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     : QObject(parent)
@@ -3236,25 +3275,12 @@ void MiyoBackend::closeAllTerminalLogs()
 //   - 추적(m_childConsoleProcs) → closeAllTerminalLogs 에서 트리 kill (앱 종료 시 같이 종료)
 void MiyoBackend::launchChildConsole(const QString &scriptPath)
 {
-#ifdef Q_OS_WIN
-    QProcess *p = new QProcess(this);
-    p->setProgram("cmd.exe");
-    p->setArguments({"/c", QDir::toNativeSeparators(scriptPath)});
-    p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) {
-        a->flags |= CREATE_NEW_CONSOLE;
-        if (a->startupInfo) a->startupInfo->dwFlags &= ~STARTF_USESTDHANDLES;
-    });
-    QProcess *raw = p;
-    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-        [this, raw](int, QProcess::ExitStatus) {
-            m_childConsoleProcs.removeAll(raw);
-            raw->deleteLater();
-        });
-    m_childConsoleProcs.append(p);
-    p->start();
-#else
+    // ★ 외부 콘솔 창을 더 이상 띄우지 않는다.
+    //   이전엔 CREATE_NEW_CONSOLE 로 수집기(twitter·bluesky·naikakukai·backup)마다
+    //   별도 콘솔 창이 보였다(카메라 자식이긴 해도 "백그라운드"가 아님). 동일한 로그가
+    //   이미 앱 내부(카메라)에 실시간 표시되므로 외부 콘솔은 불필요 → 완전 백그라운드.
+    //   (.bat tail 스크립트 기록/로그 파일 자체는 그대로 유지)
     Q_UNUSED(scriptPath);
-#endif
 }
 
 void MiyoBackend::updateStats(int posts, int media, const QString &status, const QString &platform)
@@ -8232,10 +8258,23 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     QString ytExcelDir = ytBaseDir + "/excel";
     QDir().mkpath(ytExcelDir);
 
+    // ★ 입력 형태별 URL 리졸버 — 전체 URL 뿐 아니라 핸들(@foo)·채널명(foo)·채널ID(UC…)·스킴없는 URL 도 허용.
+    //   (기존엔 http 로 시작하는 줄만 받아 핸들/이름 입력이 무시됐고, 잘못된 핸들은 yt-dlp 가 404 [youtube:tab]).
     QStringList urls;
     for (const auto &line : url.split('\n')) {
-        QString trimmed = line.trimmed();
-        if (trimmed.startsWith("http")) urls.append(trimmed);
+        QString t = line.trimmed();
+        if (t.isEmpty()) continue;
+        if (t.startsWith("http://") || t.startsWith("https://")) {
+            urls.append(t);                                              // 전체 URL (영상/재생목록/채널 그대로)
+        } else if (t.contains("youtube.com") || t.contains("youtu.be")) {
+            urls.append("https://" + t);                                 // 스킴 없는 URL
+        } else if (t.startsWith("@")) {
+            urls.append("https://www.youtube.com/" + t + "/videos");     // @핸들 (이중 @ 방지)
+        } else if (t.startsWith("UC") && t.length() == 24) {
+            urls.append("https://www.youtube.com/channel/" + t + "/videos"); // 채널 ID
+        } else {
+            urls.append("https://www.youtube.com/@" + t + "/videos");    // 맨 핸들/채널명
+        }
     }
 
     if (urls.isEmpty()) {
@@ -8254,20 +8293,44 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     baseArgs << "--sleep-interval" << "3" << "--max-sleep-interval" << "8";
     baseArgs << "--sleep-requests" << "1";
 
+    // ★ 파일명 크로스플랫폼 — yt-dlp 가 Windows 금지문자/예약어를 모든 OS에서 회피하도록 강제.
+    //   Windows-safe ⊂ macOS-safe 라 맥/윈도우 어디서나 열리는 이름이 됨 (NAS·이동 시 안전).
+    baseArgs << "--windows-filenames" << "--trim-filenames" << "150";
+
     if (type == "audio") {
-        baseArgs << "-x" << "--audio-format" << "mp3";
+        // 오디오: AAC(m4a) 우선 추출 → mp4/m4a 컨테이너로 맥·윈도우 모두 재생.
+        //   (mp3 재인코딩 대신 원본 AAC 유지; AAC 없을 때만 best 추출)
+        baseArgs << "-f" << "bestaudio[ext=m4a]/bestaudio/best";
+        baseArgs << "-x" << "--audio-format" << "m4a";
     } else if (type == "thumbnail") {
         baseArgs << "--write-thumbnail" << "--skip-download";
     } else {
-        QMap<QString, QString> qMap = {
-            {"4K","bestvideo[height<=2160]+bestaudio/best"},
-            {"1440p","bestvideo[height<=1440]+bestaudio/best"},
-            {"1080p","bestvideo[height<=1080]+bestaudio/best"},
-            {"720p","bestvideo[height<=720]+bestaudio/best"},
-            {"480p","bestvideo[height<=480]+bestaudio/best"},
-            {"360p","bestvideo[height<=360]+bestaudio/best"},
+        // ★ 호환 우선 포맷 — Mac(QuickTime)·Windows 모두 재생되도록 H.264(avc1)+AAC(m4a) mp4 선호.
+        //   YouTube 의 bestaudio 는 보통 opus(webm) 라 mp4 에 넣으면 일부 플레이어에서 소리가
+        //   안 나는 "오디오 코덱" 문제 발생 → m4a(AAC) 오디오를 우선 선택해 해결.
+        //   비디오도 mp4(H.264) 우선, 해당 화질이 mp4 로 없으면(예: 4K=AV1) best 로 폴백.
+        QMap<QString, QString> hMap = {
+            {"4K","2160"}, {"1440p","1440"}, {"1080p","1080"},
+            {"720p","720"}, {"480p","480"}, {"360p","360"},
         };
-        baseArgs << "-f" << qMap.value(quality, "bestvideo+bestaudio/best");
+        QString h = hMap.value(quality);
+        QString fmt;
+        // 우선순위: H.264(avc1)+AAC(mp4a) → mp4(AV1 가능)+AAC → 임의비디오+AAC → 임의 → best.
+        //   1순위가 Mac QuickTime·Windows 모두 재생되는 완전 호환 조합. 해당 화질에 H.264 가
+        //   없으면(1440p/4K 는 보통 VP9/AV1 만 존재) 자동으로 다음 후보로 폴백.
+        if (h.isEmpty()) {
+            fmt = "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+                  "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+                  "bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best";
+        } else {
+            fmt = QString(
+                "bestvideo[height<=%1][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+                "bestvideo[height<=%1][ext=mp4]+bestaudio[ext=m4a]/"
+                "bestvideo[height<=%1]+bestaudio[ext=m4a]/"
+                "bestvideo[height<=%1]+bestaudio/"
+                "best[height<=%1]/best").arg(h);
+        }
+        baseArgs << "-f" << fmt;
         baseArgs << "--merge-output-format" << "mp4";
     }
 
@@ -8277,10 +8340,19 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     if (config["playlist"].toBool()) baseArgs << "--yes-playlist"; else baseArgs << "--no-playlist";
     if (config["sponsor"].toBool()) baseArgs << "--sponsorblock-remove" << "all";
 
-    // 썸네일을 동영상에 임베드 + 설명 저장 + info JSON (Excel 생성용)
+    // 썸네일을 동영상에 임베드 + 설명 저장(.description 사이드카) + 설명을 파일 메타데이터에 임베드 + info JSON.
+    //   --embed-metadata 로 영상에 달린 "설명"을 mp4 메타데이터에 적용(파일 자체에 들어감).
     baseArgs << "--embed-thumbnail";
     baseArgs << "--write-description";
+    baseArgs << "--embed-metadata";        // ★ 설명+메타데이터를 파일에 임베드 (항상)
     baseArgs << "--write-info-json";
+
+    // ★ 댓글 수집 — 작성자 이름(author)·프로필(author_thumbnail/author_url)·텍스트·좋아요가 .info.json 에 저장됨.
+    //   다운로드 후 읽기 좋은 .comments.txt 로도 변환(아래 후처리). 과부하 방지: 상위 정렬 + 상한 300.
+    if (config["comments"].toBool()) {
+        baseArgs << "--write-comments";
+        baseArgs << "--extractor-args" << "youtube:comment_sort=top;max_comments=300";
+    }
 
     // ★ 임시 script/status 는 로컬 temp 에 (NAS 는 POSIX 실행권한 보존 안 함 → .command 실행 실패).
     //   yt-dlp output 은 ytBaseDir (NAS 가능) 로 그대로.
@@ -8334,7 +8406,12 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
         script += "  del /f \"%STOP_MARKER%\" 2>nul\r\n";
         script += "  pause >nul\r\n  exit /b 0\r\n)\r\n";
         script += QString("echo PROGRESS:%1:%2 > \"%STATUS%\"\r\n").arg(i + 1).arg(urls.size());
-        script += QString("echo [%1/%2] %3\r\n").arg(i + 1).arg(urls.size()).arg(urls[i]);
+        // ★ echo 표시용 URL — cmd 특수문자 이스케이프 (URL 의 &t=... 등이 명령 구분자로
+        //   해석돼 "'t' is not recognized" 가 뜨던 버그 수정). yt-dlp 호출은 esc()(따옴표)라 무관.
+        QString uEcho = urls[i];
+        uEcho.replace("^", "^^").replace("&", "^&").replace("<", "^<").replace(">", "^>")
+             .replace("|", "^|").replace("(", "^(").replace(")", "^)").replace("%", "%%");
+        script += QString("echo [%1/%2] %3\r\n").arg(i + 1).arg(urls.size()).arg(uEcho);
         script += "echo -----------------------------------------\r\n";
         script += "set RETRY=0\r\n";
         script += ":RETRY_LOOP_" + QString::number(i) + "\r\n";
@@ -8525,34 +8602,69 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 
                 // 메타데이터 적용 + _complete 미러
                 if (!mediaPath.isEmpty()) {
+                    // ★ 댓글(--write-comments) → 읽기 좋은 .comments.txt (작성자 이름 + 프로필 + 텍스트 + 좋아요).
+                    //   info.json 의 comments[] 에 author/author_thumbnail/author_url/text/like_count 가 들어있음.
+                    {
+                        QJsonArray comments = info["comments"].toArray();
+                        QString commentsPath = base + ".comments.txt";
+                        if (!comments.isEmpty() && !QFileInfo::exists(commentsPath)) {
+                            QString out = info["title"].toString() + "\n"
+                                        + info["webpage_url"].toString() + "\n"
+                                        + QString("댓글 %1개\n").arg(comments.size())
+                                        + QString(60, '=') + "\n\n";
+                            for (const auto &cv : comments) {
+                                QJsonObject c = cv.toObject();
+                                QString author = c["author"].toString();
+                                QString prof = c["author_url"].toString();
+                                if (prof.isEmpty()) prof = c["author_thumbnail"].toString();
+                                QString text = c["text"].toString();
+                                int likes = c["like_count"].toInt();
+                                out += "■ " + author + (c["author_is_uploader"].toBool() ? " [작성자]" : "") + "\n";
+                                if (!prof.isEmpty()) out += "  프로필: " + prof + "\n";
+                                out += "  " + text.replace("\n", "\n  ") + "\n";
+                                if (likes > 0) out += QString("  👍 %1\n").arg(likes);
+                                out += "\n";
+                            }
+                            QFile cf(commentsPath);
+                            if (cf.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                                cf.write(out.toUtf8());
+                                cf.close();
+                                log(QString("댓글 %1개 저장: %2").arg(comments.size()).arg(QFileInfo(commentsPath).fileName()), "success", "youtube");
+                            }
+                        }
+                    }
                     QString ytUrl = info["webpage_url"].toString();
                     QString uploader = info["uploader"].toString();
                     QString title = info["title"].toString().left(200);
-                    // EXIF → Finder comment → xattr → mtime 순서
-                    Common::addExifMetadata(mediaPath,
-                        uploader.isEmpty() ? "" : "@" + uploader,
-                        title, "YouTube @" + uploader, ytUrl,
-                        dt.isValid() ? dt.toString("yyyy:MM:dd HH:mm:ss") : "");
-                    FileHelper::setFinderComment(mediaPath, ytUrl);
-                    FileHelper::applyPostMetadata(mediaPath, dt, ytUrl);
-                    // _complete 미러 (채널별 서브폴더 유지)
+                    // _complete 미러 경로 (채널별 서브폴더 유지)
                     QString channelName = info["channel"].toString();
                     if (channelName.isEmpty()) channelName = info["uploader"].toString();
                     if (channelName.isEmpty()) channelName = "_unknown";
-                    // 파일시스템 안전 문자로 치환
                     channelName.replace(QRegularExpression("[\\\\/:*?\"<>|]"), "_");
                     QString mirrorChannelDir = ytCompleteDir + "/" + channelName;
-                    QDir().mkpath(mirrorChannelDir);
                     QString mirrorPath = mirrorChannelDir + "/" + QFileInfo(mediaPath).fileName();
-                    if (!QFile::exists(mirrorPath)) QFile::copy(mediaPath, mirrorPath);
-                    if (QFile::exists(mirrorPath)) {
-                        FileHelper::setFinderComment(mirrorPath, ytUrl);
-                        FileHelper::applyPostMetadata(mirrorPath, dt, ytUrl);
+                    // ★ 이미 미러된 파일은 무거운 후처리(메타데이터/복사) 전부 건너뜀.
+                    //   571개 같은 대형 채널에서 매 세션 전체를 재처리하면 사실상 끝나지 않아
+                    //   _complete 가 일부만 채워지던 문제 → 새 파일만 처리하므로 항상 완주.
+                    if (!QFile::exists(mirrorPath)) {
+                        // 원본에 메타데이터 (EXIF → comment → mtime)
+                        Common::addExifMetadata(mediaPath,
+                            uploader.isEmpty() ? "" : "@" + uploader,
+                            title, "YouTube @" + uploader, ytUrl,
+                            dt.isValid() ? dt.toString("yyyy:MM:dd HH:mm:ss") : "");
+                        FileHelper::setFinderComment(mediaPath, ytUrl);
+                        FileHelper::applyPostMetadata(mediaPath, dt, ytUrl);
+                        // _complete 로 복사 + 메타데이터
+                        QDir().mkpath(mirrorChannelDir);
+                        QFile::copy(mediaPath, mirrorPath);
+                        if (QFile::exists(mirrorPath)) {
+                            FileHelper::setFinderComment(mirrorPath, ytUrl);
+                            FileHelper::applyPostMetadata(mirrorPath, dt, ytUrl);
+                        }
+                        // ※ 영상별 페이지 캡처(capturePageHtml) 제거 — YouTube 는 JS shell 이라
+                        //   캡처가 무의미한데 영상마다 30초 네트워크 요청이라 대형 채널 후처리를
+                        //   사실상 멈추게 하는 병목이었음. _complete 미러가 최우선.
                     }
-                    // 経済産業省 연계: 페이지 캡처
-                    QString ytCapturesDir = ytBaseDir + "/captures";
-                    FileHelper::capturePageHtml(ytCapturesDir, ytUrl,
-                        FileHelper::uploadOrderPrefix(dt) + info["id"].toString());
                 }
 
                 // Excel row
