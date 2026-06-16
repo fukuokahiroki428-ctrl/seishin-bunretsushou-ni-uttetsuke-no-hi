@@ -881,9 +881,6 @@
                     <div class="nav-icon crawl">経</div> 経済産業省
                 </div>
                 -->
-                <div class="nav-item" onclick="switchTab('penmirror')">
-                    <div class="nav-icon" style="background:#7c5cff">미</div> 미러
-                </div>
                 <div class="nav-item" onclick="switchTab('trad')">
                     <div class="nav-icon trad">F</div> trad
                 </div>
@@ -1963,63 +1960,6 @@
                     </div>
                 </div>
 
-                <!-- ━━ 미러 (Pen 통합 — 인터랙티브 CDP 사이트 통째 미러) ━━ -->
-                <div class="tab-content" id="tab-penmirror">
-                    <div class="section">
-                        <div class="section-label">URL</div>
-                        <div class="input-row" style="gap:6px;">
-                            <div class="field" style="flex:1;">
-                                <input type="text" class="input" id="penmirror-url" placeholder="https://example.com (GNUBoard 등 게시판도)">
-                            </div>
-                            <button class="btn btn-secondary btn-sm" onclick="penBackend.pasteToField('penmirror-url')">붙여넣기</button>
-                        </div>
-                        <div class="hint" style="margin-top:6px;color:var(--text-tertiary);font-size:11px;">
-                            실제 Chrome(CDP)으로 JS 렌더 페이지까지 캡쳐 · Cloudflare 자동 통과 대기 · 링크 재작성으로 오프라인 클릭 네비게이션
-                        </div>
-                    </div>
-                    <div class="section">
-                        <div class="section-label">설정 <span id="engineBadge" style="display:none;margin-left:8px;padding:2px 8px;border-radius:6px;background:rgba(124,92,255,.15);color:#7c5cff;font-size:11px;"></span></div>
-                        <div class="input-row" style="margin-bottom:8px;">
-                            <div class="field">
-                                <label class="field-label">방식</label>
-                                <select class="input" id="penmirror-mode">
-                                    <option value="inline">한 파일씩 (SingleFile 인라인 — 권장)</option>
-                                    <option value="deep">분리 파일 (원본 구조 보존)</option>
-                                </select>
-                            </div>
-                            <div class="field">
-                                <label class="field-label">최대 깊이 (999=∞)</label>
-                                <input type="number" class="input" id="penmirror-depth" value="2" min="1" max="999">
-                            </div>
-                            <div class="field">
-                                <label class="field-label">최대 페이지 수</label>
-                                <input type="number" class="input" id="penmirror-maxpages" value="50" min="1">
-                            </div>
-                        </div>
-                        <div class="option-row">
-                            <label class="option-item"><input type="checkbox" id="penmirror-same-domain" checked> 같은 도메인만</label>
-                            <label class="option-item"><input type="checkbox" id="penmirror-media"> 미디어(이미지/영상) 다운</label>
-                            <label class="option-item"><input type="checkbox" id="penmirror-user-profile"> 내 Chrome 프로필 사용</label>
-                        </div>
-                    </div>
-                    <div class="section">
-                        <div class="section-label">저장 경로</div>
-                        <div class="input-row">
-                            <div class="field" style="flex:1;"><input type="text" class="input" id="penmirror-path" value="~/Downloads"></div>
-                            <button class="btn btn-secondary btn-sm" onclick="penBackend.browseSavePath()">찾아보기</button>
-                        </div>
-                    </div>
-                    <div class="btn-row">
-                        <button class="btn btn-primary" id="penmirror-start-btn" onclick="penMirrorStart()">미러 시작</button>
-                        <button class="btn btn-secondary" id="penmirror-stop-btn" onclick="penMirrorStop()" disabled>중지</button>
-                        <button class="btn btn-primary" id="penmirror-login-ok-btn" onclick="penBackend.crawlResumeFromUser()" style="display:none; background:#28a745;">로그인/캡챠 완료 ✓</button>
-                    </div>
-                    <div class="section" style="margin-top:16px;">
-                        <div class="section-label">로그</div>
-                        <div class="log-box" id="penmirror-log"></div>
-                    </div>
-                </div>
-
                 <!-- ━━ trad ━━ -->
                 <div class="tab-content" id="tab-trad">
                     <div class="section">
@@ -2461,7 +2401,6 @@
     <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
     <script>
         let backend = null;
-        let penBackend = null;   // ★ Pen 통합 — 사이트 미러 엔진
         let currentTab = 'twitter';
         let currentPlatform = 'twitter';
         let accounts = { twitter: [], bluesky: [], discord: [], instagram: [], pixiv: [], tumblr: [], spinspin: [], asked: [] };
@@ -3272,10 +3211,8 @@
 
         new QWebChannel(qt.webChannelTransport, function(channel) {
             backend = channel.objects.backend;
-            penBackend = channel.objects.penBackend;   // ★ Pen 통합 — 사이트 미러
             // ★ 별도 IIFE (예: 로그인 대기 배너)에서 접근 가능하게 window 글로벌로도 노출
             window.backend = backend;
-            window.penBackend = penBackend;
             if (backend) backend.loadConfig();
             // NAS/외장 버튼 자동 삽입
             const _tryAttachNas = () => {
@@ -3306,7 +3243,7 @@
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             const tabEl = document.getElementById('tab-' + tab);
             if (tabEl) tabEl.classList.add('active');
-            const names = {twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',penmirror:'사이트 미러',trad:'trad',naikakukai:'内閣会',crawl:'経済産業省',settings:'설정'};
+            const names = {twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',naikakukai:'内閣会',crawl:'経済産業省',settings:'설정'};
             document.getElementById('toolbar-title').textContent = names[tab] || tab;
             // Load system info when switching to settings
             if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); }
@@ -4449,72 +4386,6 @@
         window.showCrawlLoginConfirm = function(show){
             const btn = document.getElementById('crawl-login-ok-btn');
             if(btn) btn.style.display = show ? 'inline-block' : 'none';
-        };
-
-        // ── 미러 (Pen 통합 — penBackend) ──
-        //   crawlStart 로 Chrome 띄우고, 준비되면(onCrawlStarted) 대기 중이던 미러 실행.
-        let _penChromeReady = false;
-        let _penPendingMirror = null;
-        function penMirrorStart() {
-            if (!penBackend) { appendLog('penBackend 미연결','error','penmirror'); return; }
-            const url = document.getElementById('penmirror-url').value.trim();
-            if (!url) { appendLog('URL 입력 필요','warning','penmirror'); return; }
-            const mode = document.getElementById('penmirror-mode').value;
-            const depth = parseInt(document.getElementById('penmirror-depth').value) || 2;
-            const maxP = parseInt(document.getElementById('penmirror-maxpages').value) || 50;
-            const sd = document.getElementById('penmirror-same-domain').checked;
-            const media = document.getElementById('penmirror-media').checked;
-            const up = document.getElementById('penmirror-user-profile').checked;
-            const sp = document.getElementById('penmirror-path').value.trim();
-            const dLabel = depth === 999 ? '∞' : String(depth);
-            const doMirror = () => {
-                if (mode === 'deep') {
-                    appendLog(`사이트 미러(분리 파일): ${url} — 깊이 ${dLabel}, 최대 ${maxP}페이지`,'info','penmirror');
-                    penBackend.crawlDeepMirror(url, maxP, sd, depth);
-                } else {
-                    appendLog(`사이트 미러(한 파일씩): ${url} — 깊이 ${dLabel}, 최대 ${maxP}페이지`,'info','penmirror');
-                    penBackend.crawlSiteMirror(url, maxP, sd, media, depth);
-                }
-            };
-            setPenRunning(true);
-            if (!_penChromeReady) {
-                appendLog('Chrome 자동 시작...','info','penmirror');
-                _penPendingMirror = doMirror;
-                penBackend.crawlStart(url, sp, up);
-            } else {
-                doMirror();
-            }
-        }
-        function penMirrorStop() {
-            if (penBackend) { penBackend.crawlStop(); appendLog('중지 중...','warning','penmirror'); }
-            setPenRunning(false);
-        }
-        function setPenRunning(running) {
-            const s = document.getElementById('penmirror-start-btn');
-            const t = document.getElementById('penmirror-stop-btn');
-            if (s) s.disabled = running;
-            if (t) t.disabled = !running;
-        }
-        // penBackend → JS 콜백들
-        window.onCrawlStarted = function(ok) {
-            _penChromeReady = !!ok;
-            appendLog(ok ? 'Chrome 준비됨' : 'Chrome 시작 실패', ok ? 'success' : 'error', 'penmirror');
-            if (ok && _penPendingMirror) { const fn = _penPendingMirror; _penPendingMirror = null; setTimeout(fn, 500); }
-            else if (!ok) setPenRunning(false);
-        };
-        window.onCrawlStopped = function() { _penChromeReady = false; setPenRunning(false); appendLog('미러 종료','info','penmirror'); };
-        window.onCrawlPaused = function() {
-            const b = document.getElementById('penmirror-login-ok-btn'); if (b) b.style.display = 'inline-block';
-        };
-        window.onCrawlResumed = function() {
-            const b = document.getElementById('penmirror-login-ok-btn'); if (b) b.style.display = 'none';
-        };
-        window.onEngineDetected = function(engine) {
-            const b = document.getElementById('engineBadge');
-            if (b) { b.textContent = '🔎 ' + engine; b.style.display = (engine && engine !== 'unknown') ? 'inline-block' : 'none'; }
-        };
-        window.onSavePathPicked = function(p) {
-            const el = document.getElementById('penmirror-path'); if (el && p) el.value = p;
         };
 
         // ── 内閣会 (Naikakukai) ──
