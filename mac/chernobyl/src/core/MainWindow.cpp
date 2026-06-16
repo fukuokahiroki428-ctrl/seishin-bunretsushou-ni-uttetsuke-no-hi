@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "MiyoBackend.h"
+#include "PenBackend.h"
 
 #include <QWebEngineSettings>
 #include <QVBoxLayout>
@@ -98,6 +99,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_channel = new QWebChannel(this);
     m_backend = new MiyoBackend(this);
     m_channel->registerObject(QStringLiteral("backend"), m_backend);
+    // ★ PEN(팬을 잘 쓰고 싶다) 통합 — 사이트 미러 엔진을 2번째 WebChannel 객체로 등록.
+    //   UI 의 미러/캡쳐 탭이 penBackend.crawl* 를 호출. PenBackend 는 같은 m_webView 를 공유
+    //   (생성자에서 jsSignal/logSignal 을 자가 연결 → MainWindow::webView() 페이지에서 실행).
+    m_penBackend = new PenBackend(this);
+    m_channel->registerObject(QStringLiteral("penBackend"), m_penBackend);
     m_webView->page()->setWebChannel(m_channel);
 
     // ★ file:// 페이지에서 qrc:// 리소스 (qwebchannel.js, 폰트 등) 접근 허용 — CORS 우회
