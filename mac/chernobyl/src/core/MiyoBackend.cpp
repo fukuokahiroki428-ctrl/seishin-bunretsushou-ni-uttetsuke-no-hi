@@ -8325,6 +8325,11 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     baseArgs << "--embed-thumbnail";
     baseArgs << "--write-description";
     baseArgs << "--write-info-json";
+    // ★ 댓글 수집(설정 토글) — info.json 에 comments[] 가 담기고, 후처리에서 .comments.txt 로 변환.
+    if (config["comments"].toBool()) {
+        baseArgs << "--write-comments";
+        baseArgs << "--extractor-args" << "youtube:comment_sort=top;max_comments=300";
+    }
 
     // ★ 임시 script/status 는 로컬 temp 에 (NAS 는 POSIX 실행권한 보존 안 함 → .command 실행 실패).
     //   yt-dlp output 은 ytBaseDir (NAS 가능) 로 그대로.
@@ -8598,6 +8603,43 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                     QString ytCapturesDir = ytBaseDir + "/captures";
                     FileHelper::capturePageHtml(ytCapturesDir, ytUrl,
                         FileHelper::uploadOrderPrefix(dt) + info["id"].toString());
+                }
+
+                // ★ 댓글 → 읽기 좋은 <base>.comments.txt (info.json 의 comments[] 변환)
+                //   필드: author / author_url / author_thumbnail / text / like_count / author_is_uploader
+                {
+                    const QJsonArray comments = info["comments"].toArray();
+                    if (!comments.isEmpty()) {
+                        QString txt;
+                        txt += QString("# %1\n# %2\n# 댓글 %3개 (yt-dlp 수집)\n\n")
+                                   .arg(info["title"].toString(),
+                                        info["webpage_url"].toString())
+                                   .arg(comments.size());
+                        for (const auto &cv : comments) {
+                            const QJsonObject c = cv.toObject();
+                            const QString author = c["author"].toString();
+                            const QString text   = c["text"].toString();
+                            const qint64 likes   = c["like_count"].toVariant().toLongLong();
+                            const bool isUploader = c["author_is_uploader"].toBool();
+                            txt += author;
+                            if (isUploader) txt += " [작성자]";
+                            const QString aurl = c["author_url"].toString();
+                            if (!aurl.isEmpty()) txt += "  " + aurl;
+                            txt += "\n";
+                            txt += text + "\n";
+                            if (likes > 0) txt += QString("👍 %1\n").arg(likes);
+                            txt += "\n";
+                        }
+                        QFile cf(base + ".comments.txt");
+                        if (cf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                            cf.write(txt.toUtf8());
+                            cf.close();
+                            log(QString("💬 댓글 %1개 저장: %2")
+                                    .arg(comments.size())
+                                    .arg(QFileInfo(base + ".comments.txt").fileName()),
+                                "success", "youtube");
+                        }
+                    }
                 }
 
                 // Excel row

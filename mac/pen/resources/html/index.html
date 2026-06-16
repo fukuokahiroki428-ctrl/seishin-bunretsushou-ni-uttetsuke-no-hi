@@ -492,6 +492,14 @@ window.onCrawlResumed = function() {
     document.getElementById('pauseBanner').classList.remove('show');
     setStatus('on');
 };
+window.onEngineDetected = function(engine) {
+    appendLog('🔎 사이트 엔진 감지: ' + engine, engine === 'unknown' ? 'info' : 'success', 'crawl');
+    var b = document.getElementById('engineBadge');
+    if (b) {
+        b.textContent = '🔎 ' + engine;
+        b.style.display = (engine && engine !== 'unknown') ? 'inline-block' : 'none';
+    }
+};
 window.onSavePathPicked = function(p) {
     document.getElementById('savePath').value = p;
     saveForm();

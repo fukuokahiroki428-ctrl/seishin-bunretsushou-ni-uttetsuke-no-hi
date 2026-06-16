@@ -28,6 +28,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QUrl>
+#include <QUrlQuery>
+#include <QCryptographicHash>
+#include <QJsonObject>
 #include <QCoreApplication>
 #include <QRegularExpression>
 #include <QTimer>
@@ -1633,6 +1636,8 @@ void PenBackend::crawlSiteMirror(const QString &startUrl, int maxPages, bool sam
     m_autoPageCount = 0;
     m_autoMediaCount = 0;
     m_mirrorUrlMap.clear();
+    m_mirrorTitles.clear();
+    m_detectedEngine.clear();
 
     log(QString("━━ 사이트 미러 시작: %1 (최대 %2페이지, 깊이 %3) ━━").arg(startUrl)
             .arg(maxPages > 0 ? QString::number(maxPages) : "무제한")
@@ -1647,29 +1652,81 @@ void PenBackend::crawlSiteMirror(const QString &startUrl, int maxPages, bool sam
 
     QThread *t = QThread::create([this, start, maxP, maxD, sd, dm, savePath]() {
         QSet<QString> visited;
+        QSet<QString> usedLocalPaths;       // 파일명 충돌 방지
         QQueue<QPair<QString, int>> queue;  // <URL, depth>
         queue.enqueue({start, 0});
         QUrl startQ(start);
         QString rootHost = startQ.host();
 
+        // 파일/경로 세그먼트 안전화 (금칙어 + 제어문자)
+        auto seg = [](QString s) -> QString {
+            s.replace(QRegularExpression("[<>:\"/\\\\|?*\\x00-\\x1f]"), "_");
+            return s;
+        };
+
         // URL → 로컬 파일 경로 매핑 빌더
-        auto urlToLocalPath = [&savePath](const QString &url) -> QString {
+        //   ★ 쿼리스트링까지 파일명에 반영 — GNUBoard 등 게시판 엔진은
+        //   board.php?bo_table=X&wr_id=N 처럼 쿼리로 글이 갈리므로, 경로만 쓰면
+        //   모든 글이 같은 파일(bbs/board.php)로 충돌해 미러가 비어버린다.
+        auto urlToLocalPath = [&savePath, &seg](const QString &url) -> QString {
             QUrl qu(url);
             QString host = qu.host();
             QString path = qu.path();
-            const QString query = qu.query();
-            if (path.isEmpty() || path == "/") path = "/index.html";
-            else if (path.endsWith("/")) path += "index.html";
-            else if (!path.contains('.')) path += ".html";
-            // ★ 쿼리스트링 다른 페이지가 같은 파일로 덮어써지는 것 방지 — 확장자 앞에 쿼리 해시 삽입
-            if (!query.isEmpty()) {
-                QString q = "__" + QString(query).replace(QRegularExpression("[^A-Za-z0-9]"), "_").left(40);
-                int dot = path.lastIndexOf('.');
-                if (dot > 0) path.insert(dot, q); else path += q;
+            QString query = qu.query(QUrl::FullyDecoded);
+            if (path.isEmpty()) path = "/";
+            QString dir, base;
+            if (path.endsWith("/")) { dir = path; base = "index"; }
+            else {
+                int sl = path.lastIndexOf('/');
+                dir  = (sl >= 0) ? path.left(sl + 1) : "/";
+                base = (sl >= 0) ? path.mid(sl + 1) : path;
+                if (base.isEmpty()) base = "index";
             }
-            // 안전 파일명
-            path.replace(QRegularExpression("[?#:*<>|\"\\\\]"), "_");
-            return savePath + "/mirror/" + host + path;
+            // 쿼리 → 파일명 접미사 (key=val 을 -, & 를 __ 로). 너무 길면 해시 축약.
+            if (!query.isEmpty()) {
+                QString q = query;
+                q.replace('&', "__").replace('=', "-");
+                q = seg(q);
+                if (q.length() > 80) {
+                    QString h = QString(QCryptographicHash::hash(query.toUtf8(),
+                                          QCryptographicHash::Md5).toHex()).left(8);
+                    q = q.left(60) + "_" + h;
+                }
+                base += "__" + q;
+            }
+            // board.php 등도 브라우저가 렌더하도록 항상 .html 보장
+            if (!base.endsWith(".html", Qt::CaseInsensitive) &&
+                !base.endsWith(".htm",  Qt::CaseInsensitive))
+                base += ".html";
+            base = seg(base);
+            QStringList segs = dir.split('/', Qt::SkipEmptyParts);
+            QString safeDir;
+            for (const QString &s : segs) safeDir += "/" + seg(s);
+            return savePath + "/mirror/" + host + safeDir + "/" + base;
+        };
+
+        // ★ 크롤 제외 URL — 로그인/글쓰기/삭제/추천 등 백엔드 액션, 검색결과(무한 변형),
+        //   추적 파라미터. 오프라인 미러에서 의미 없고 크롤 폭주의 주범이다.
+        //   액션 스크립트는 항상 /bbs/<script>.php 라서 '/login.php' 처럼 슬래시+.php 로
+        //   정확 매칭 → bo_table=login 같은 게시판 이름 오탐을 피한다. (gnuboard5 소스 기준)
+        auto shouldSkip = [](const QString &u) -> bool {
+            static const char *bad[] = {
+                "mailto:", "javascript:", "tel:", "captcha",
+                "/wp-login.php", "/wp-admin/", "wp-comments-post", "/wp-json",
+                "onesignal", "&device=", "?device=", "act=procmemberlogout", "do=login",
+                "/login.php", "/login_check", "/logout.php", "/register",
+                "/password", "/member_", "/profile.php", "/email_certify", "/email_stop",
+                "/write.php", "/write_", "/delete.php", "/delete_", "/move.php", "/move_update",
+                "/good.php", "/scrap", "/memo", "/poll_", "/sns_send",
+                "/ajax.", "/current_connect", "/alert.php", "/alert_close", "/confirm.php",
+                "/db_table", "/link.php", "/list.php", "/new.php", "/search.php", "/rss.php",
+                "/download.php", "/view_image", "/view_comment", "/point.php", "/formmail",
+                "/qawrite", "/qadelete", "/qadownload",
+                "sfl=", "stx=", "sst=", "sod=", "sop=", "spt=", "sca=",
+            };
+            QString low = u.toLower();
+            for (auto b : bad) if (low.contains(QLatin1String(b))) return true;
+            return false;
         };
 
         // 1) BFS 캡쳐 — depth 추적
@@ -1679,6 +1736,16 @@ void PenBackend::crawlSiteMirror(const QString &startUrl, int maxPages, bool sam
             visited.insert(url);
 
             QString localPath = urlToLocalPath(url);
+            // 서로 다른 URL이 같은 파일명으로 떨어지면 -2, -3 … 붙여 분리
+            if (usedLocalPaths.contains(localPath)) {
+                QFileInfo fi(localPath);
+                QString stem = fi.completeBaseName(), ext = fi.suffix(), d = fi.absolutePath();
+                int n = 2; QString cand;
+                do { cand = d + "/" + stem + "-" + QString::number(n++) + "." + ext; }
+                while (usedLocalPaths.contains(cand));
+                localPath = cand;
+            }
+            usedLocalPaths.insert(localPath);
             QDir().mkpath(QFileInfo(localPath).absolutePath());
 
             // URL → 로컬 경로 매핑 저장 (재작성 시 사용)
@@ -1739,6 +1806,50 @@ void PenBackend::crawlSiteMirror(const QString &startUrl, int maxPages, bool sam
                 }
             }
             QThread::sleep(2);   // 렌더 안정화
+
+            // ★ 첫 페이지에서 사이트 엔진 감지 (GNUBoard / WordPress / XE·Rhymix …)
+            //   → UI 배지 + 로그. (감지 결과는 인덱스 그룹핑에 활용). generator 메타 의존 금지
+            //   (GNUBoard 는 안 씀) — JS 시그니처로 판별.
+            if (m_autoPageCount == 0) {
+                auto engSem = std::make_shared<QSemaphore>(0);
+                auto engVal = std::make_shared<QString>();
+                QString probe = R"JS(
+                    (() => {
+                        const gen = (document.querySelector('meta[name=generator]')||{}).content||'';
+                        const h = document.documentElement.outerHTML;
+                        const L = Array.from(document.querySelectorAll('a[href]')).map(a=>a.getAttribute('href')||'').join(' ');
+                        const has = s => h.indexOf(s)>=0 || L.indexOf(s)>=0;
+                        let e='unknown';
+                        if (/var g5_bbs_url|var g5_is_member|var g5_bo_table|var g5_url/.test(h) || has('/js/wrest.js') || /gnuboard|youngcart/i.test(gen) || has('/bbs/board.php') || has('bo_table=') || (has('/bbs/') && has('wr_id='))) e='GNUBoard';
+                        else if (/wordpress/i.test(gen) || has('/wp-content/') || has('/wp-includes/') || has('wp-json')) e='WordPress';
+                        else if (/xpressengine|rhymix/i.test(gen) || has('?mid=') || has('act=disp')) e='XpressEngine/Rhymix';
+                        else if (/drupal/i.test(gen) || has('/sites/default/files/')) e='Drupal';
+                        else if (/joomla/i.test(gen) || has('option=com_')) e='Joomla';
+                        else if (has('cdn.shopify') || has('Shopify.theme')) e='Shopify';
+                        else if (/mediawiki/i.test(gen) || (has('/wiki/') && has('mw-'))) e='MediaWiki';
+                        return JSON.stringify({engine:e, gen:gen.slice(0,120)});
+                    })()
+                )JS";
+                QMetaObject::invokeMethod(this, [this, probe, engSem, engVal]() {
+                    if (!m_crawlChrome) { engSem->release(); return; }
+                    m_crawlChrome->evaluate(probe, [engSem, engVal](const QJsonValue &v) {
+                        *engVal = v.toString(); engSem->release();
+                    });
+                }, Qt::QueuedConnection);
+                engSem->tryAcquire(1, 8000);
+                QString eng = "unknown", gen;
+                {
+                    QJsonDocument d = QJsonDocument::fromJson(engVal->toUtf8());
+                    if (d.isObject()) { eng = d.object()["engine"].toString("unknown"); gen = d.object()["gen"].toString(); }
+                }
+                m_detectedEngine = eng;
+                QMetaObject::invokeMethod(this, [this, eng, gen]() {
+                    log(QString("🔎 사이트 엔진 감지: %1%2").arg(eng,
+                            gen.isEmpty() ? QString() : QString(" (generator: %1)").arg(gen)),
+                        eng == "unknown" ? "info" : "success");
+                    runJs("if(window.onEngineDetected) onEngineDetected('" + eng + "');");
+                }, Qt::QueuedConnection);
+            }
 
             // 캡쳐 — 직접 chrome 호출 (savePath 가 매번 다름)
             auto capSem = std::make_shared<QSemaphore>(0);
@@ -1823,6 +1934,20 @@ void PenBackend::crawlSiteMirror(const QString &startUrl, int maxPages, bool sam
             capSem->tryAcquire(1, 60000);
             m_autoPageCount++;
 
+            // 페이지 제목 수집 (인덱스/오프라인 검색용) — 아직 현재 페이지가 로드돼 있을 때
+            {
+                auto tSem = std::make_shared<QSemaphore>(0);
+                auto tVal = std::make_shared<QString>();
+                QMetaObject::invokeMethod(this, [this, tSem, tVal]() {
+                    if (!m_crawlChrome) { tSem->release(); return; }
+                    m_crawlChrome->evaluate("document.title || location.pathname",
+                        [tSem, tVal](const QJsonValue &v) { *tVal = v.toString(); tSem->release(); });
+                }, Qt::QueuedConnection);
+                tSem->tryAcquire(1, 5000);
+                QString tt = tVal->trimmed();
+                m_mirrorTitles[url] = tt.isEmpty() ? url : tt;
+            }
+
             if (maxP > 0 && m_autoPageCount >= maxP) break;
 
             // 다음 페이지 링크 추출
@@ -1850,6 +1975,7 @@ void PenBackend::crawlSiteMirror(const QString &startUrl, int maxPages, bool sam
                 int hashIdx = u.indexOf('#');
                 if (hashIdx > 0) u = u.left(hashIdx);
                 if (visited.contains(u)) continue;
+                if (shouldSkip(u)) continue;   // 로그인/글쓰기/검색결과 등 제외
                 if (sd) {
                     QUrl qu(u);
                     if (qu.host() != rootHost) continue;
@@ -1889,6 +2015,11 @@ void PenBackend::crawlSiteMirror(const QString &startUrl, int maxPages, bool sam
                     if (b.startsWith("https://"))     variants << ("http://"  + b.mid(8));
                     else if (b.startsWith("http://"))  variants << ("https://" + b.mid(7));
                 }
+                // ★ DOM 의 a.href 는 디코드된 '&' 인데, 직렬화된 HTML 속성은 '&amp;' 로 들어있다.
+                //   게시판 쿼리 링크(board.php?bo_table=x&amp;wr_id=y)가 로컬로 연결되려면 양쪽 폼 모두 치환.
+                for (const QString &b : QStringList(variants)) {
+                    if (b.contains('&')) variants << QString(b).replace("&", "&amp;");
+                }
                 variants.removeDuplicates();
                 for (const QString &v : variants) {
                     html.replace("\"" + v + "\"", "\"" + relPath + "\"");
@@ -1903,28 +2034,64 @@ void PenBackend::crawlSiteMirror(const QString &startUrl, int maxPages, bool sam
             }
         }
 
-        // 3) index.html 생성 — 전체 페이지 리스트
+        // 3) index.html 생성 — ★ 엔진별 그룹핑 + 실시간 검색 필터 (오프라인 상호작용)
         QString indexPath = savePath + "/mirror/index.html";
+        QString mirrorRootDir = savePath + "/mirror";
+
+        // localPath 기준 중복 제거 (url / url+'/' 별칭 합치기) → 대표 url(가장 짧은 것)
+        QMap<QString, QString> byPath;   // localPath -> url
+        for (auto it = m_mirrorUrlMap.constBegin(); it != m_mirrorUrlMap.constEnd(); ++it) {
+            const QString &lp = it.value();
+            if (!byPath.contains(lp) || it.key().length() < byPath[lp].length())
+                byPath[lp] = it.key();
+        }
+        // 그룹 분류 (GNUBoard: bo_table, XE/Rhymix: mid, 그 외: 첫 경로 세그먼트)
+        auto groupOf = [](const QString &url) -> QString {
+            QUrl qu(url);
+            QUrlQuery q(qu);
+            if (q.hasQueryItem("bo_table")) return QString("📋 ") + q.queryItemValue("bo_table");
+            if (q.hasQueryItem("mid"))      return QString("📋 ") + q.queryItemValue("mid");
+            QStringList segs = qu.path().split('/', Qt::SkipEmptyParts);
+            return segs.isEmpty() ? QString("🏠 (루트)") : (QString("📁 ") + segs.first());
+        };
+        QMap<QString, QList<QPair<QString, QString>>> groups;  // group -> [(relPath, title)]
+        for (auto it = byPath.constBegin(); it != byPath.constEnd(); ++it) {
+            if (it.key() == indexPath) continue;
+            QString rel   = QDir(mirrorRootDir).relativeFilePath(it.key());
+            QString title = m_mirrorTitles.value(it.value());
+            if (title.isEmpty()) title = it.value();
+            groups[groupOf(it.value())].append({rel, title});
+        }
+
         QFile idx(indexPath);
         if (idx.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            QString html = "<!DOCTYPE html><html><head><meta charset=utf-8>";
-            html += "<title>사이트 미러 인덱스</title>";
-            html += "<style>body{font-family:system-ui;padding:20px;background:#0e0e10;color:#e7e7ea}";
-            html += "a{color:#7c5cff;text-decoration:none;display:block;padding:6px 0}";
-            html += "a:hover{text-decoration:underline}";
-            html += "h1{font-size:18px;border-bottom:1px solid #333;padding-bottom:8px}";
-            html += ".count{color:#888;font-size:13px;margin-bottom:16px}";
-            html += "</style></head><body>";
-            html += "<h1>사이트 미러</h1>";
-            html += QString("<div class=count>총 %1개 페이지 — %2</div>")
-                .arg(m_mirrorUrlMap.size()).arg(QDateTime::currentDateTime().toString());
-
-            for (auto it = m_mirrorUrlMap.constBegin(); it != m_mirrorUrlMap.constEnd(); ++it) {
-                QString relPath = QDir(savePath + "/mirror").relativeFilePath(it.value());
-                QString displayUrl = it.key();
-                html += QString("<a href=\"%1\">%2</a>").arg(relPath, displayUrl.toHtmlEscaped());
+            QString eng = m_detectedEngine.isEmpty() ? "unknown" : m_detectedEngine;
+            QString html;
+            html += "<!DOCTYPE html><html lang=ko><head><meta charset=utf-8>";
+            html += "<meta name=viewport content=\"width=device-width,initial-scale=1\">";
+            html += "<title>미러 인덱스</title><style>";
+            html += R"CSS(:root{color-scheme:dark}*{box-sizing:border-box}body{font-family:system-ui,'Segoe UI',sans-serif;margin:0;background:#0e0e10;color:#e7e7ea}.wrap{max-width:1000px;margin:0 auto;padding:24px}h1{font-size:20px;margin:0 0 4px}.meta{color:#9a9aa3;font-size:13px;margin-bottom:16px}.badge{display:inline-block;background:#7c5cff22;color:#b9a7ff;border:1px solid #7c5cff55;border-radius:6px;padding:2px 8px;font-size:12px;margin-right:6px}#q{width:100%;padding:11px 14px;border-radius:10px;border:1px solid #2a2a30;background:#161619;color:#e7e7ea;font-size:14px;margin-bottom:18px}#q:focus{outline:none;border-color:#7c5cff}.grp{margin:18px 0 6px;font-size:13px;color:#8a8a93;font-weight:600;border-bottom:1px solid #232329;padding-bottom:6px}a.item{color:#cdd0ff;text-decoration:none;display:block;padding:7px 10px;border-radius:8px;font-size:14px}a.item:hover{background:#17171b}a.item .u{color:#6a6a73;font-size:11px;display:block;margin-top:1px;word-break:break-all}.hidden{display:none!important}.empty{color:#6a6a73;padding:30px;text-align:center})CSS";
+            html += "</style></head><body><div class=wrap>";
+            html += "<h1>🗂 사이트 미러</h1>";
+            html += QString("<div class=meta><span class=badge>엔진: %1</span>"
+                            "<span class=badge>%2개 페이지</span> %3</div>")
+                        .arg(eng.toHtmlEscaped())
+                        .arg(m_autoPageCount)
+                        .arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm"));
+            html += "<input id=q placeholder='🔍 제목·URL 검색 (오프라인)' autocomplete=off>";
+            for (auto g = groups.constBegin(); g != groups.constEnd(); ++g) {
+                html += QString("<div class=grp data-grp>%1 <span style='color:#5a5a63'>(%2)</span></div>")
+                            .arg(g.key().toHtmlEscaped()).arg(g.value().size());
+                for (const auto &pr : g.value()) {
+                    QString s = (pr.second + " " + pr.first).toLower();
+                    html += QString("<a class=item href=\"%1\" data-s=\"%2\">%3<span class=u>%4</span></a>")
+                                .arg(pr.first.toHtmlEscaped(), s.toHtmlEscaped(),
+                                     pr.second.toHtmlEscaped(), pr.first.toHtmlEscaped());
+                }
             }
-            html += "</body></html>";
+            html += "<div class=empty hidden id=nohit>검색 결과 없음</div>";
+            html += R"JS(<script>var q=document.getElementById('q'),items=[].slice.call(document.querySelectorAll('a.item')),grps=[].slice.call(document.querySelectorAll('[data-grp]')),nh=document.getElementById('nohit');function f(){var t=q.value.trim().toLowerCase(),hit=0;items.forEach(function(a){var ok=!t||a.getAttribute('data-s').indexOf(t)>=0;a.classList.toggle('hidden',!ok);if(ok)hit++;});grps.forEach(function(g){var n=g.nextElementSibling,vis=false;while(n&&n.classList&&n.classList.contains('item')){if(!n.classList.contains('hidden'))vis=true;n=n.nextElementSibling;}g.classList.toggle('hidden',!vis);});nh.classList.toggle('hidden',hit>0);}q.addEventListener('input',f);</script>)JS";
+            html += "</div></body></html>";
             idx.write(html.toUtf8());
             idx.close();
             // ★ WebDAV 자동 업로드 (index 도)

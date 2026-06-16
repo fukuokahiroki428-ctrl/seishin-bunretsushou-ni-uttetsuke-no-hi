@@ -178,6 +178,8 @@ private:
 
     // 사이트 미러 — URL → 로컬 파일 경로 매핑 (링크 재작성용)
     QMap<QString, QString> m_mirrorUrlMap;
+    QMap<QString, QString> m_mirrorTitles;   // url -> 페이지 제목 (인덱스 그룹/검색용)
+    QString m_detectedEngine;                // 감지된 사이트 엔진 (GNUBoard/WordPress 등)
 
     // 터미널 로그 — 별도 Terminal.app 창에서 실시간 로그 표시 (Chernobyl 패턴)
     QString m_terminalLogPath;
