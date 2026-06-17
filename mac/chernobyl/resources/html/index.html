@@ -944,6 +944,7 @@
                                     <option value="likes">좋아요한 트윗</option>
                                     <option value="bookmarks">북마크</option>
                                     <option value="media">미디어만</option>
+                                    <option value="narrow">🔎 포스트 좁히기 (키워드/기간)</option>
                                     <option value="followers">팔로워</option>
                                     <option value="following">팔로잉</option>
                                     <option value="profile">프로필</option>
@@ -971,6 +972,14 @@
                             <div class="input-row">
                                 <div class="field"><label class="field-label">시작</label><input type="date" class="input" id="twitter-since" value="2006-03-21"></div>
                                 <div class="field"><label class="field-label">종료</label><input type="date" class="input" id="twitter-until"></div>
+                            </div>
+                        </div>
+                        <!-- 🔎 포스트 좁히기 키워드 — '포스트 좁히기' 유형 + 전체(all) 자동 좁히기용 -->
+                        <div class="field" id="twitter-narrow-field" style="display:none; margin-bottom:12px;">
+                            <label class="field-label" id="twitter-narrow-label">🔎 좁히기 키워드/문구 (비우면 기간만으로 좁힘 · X 고급검색식 가능)</label>
+                            <div style="display:flex; gap:6px;">
+                                <input type="text" class="input" id="twitter-narrow-query" placeholder='예: 신곡  또는  "정확한 문구"  filter:images  min_faves:50'>
+                                <button class="btn btn-secondary btn-sm" onclick="pasteToField('twitter-narrow-query')">붙여넣기</button>
                             </div>
                         </div>
                     </div>
@@ -3859,6 +3868,14 @@
             } else {
                 urlField.style.display = 'none';
             }
+            // 🔎 포스트 좁히기: 'narrow' 유형이면 키워드+기간 노출, 'all' 이면 (자동 좁히기용) 키워드만 노출
+            const narrowField = document.getElementById('twitter-narrow-field');
+            narrowField.style.display = (t==='narrow' || t==='all') ? 'block' : 'none';
+            document.getElementById('twitter-narrow-label').textContent = (t==='all')
+                ? '🔎 전체 시 좁히기 키워드 (입력 시 전체수집 후 자동으로 좁혀 별도 수집 · 비우면 건너뜀)'
+                : '🔎 좁히기 키워드/문구 (비우면 기간만으로 좁힘 · X 고급검색식 가능)';
+            // narrow 는 기간 좁히기도 쓰므로 날짜 섹션도 노출
+            if (t==='narrow') document.getElementById('twitter-period-section').style.display = 'block';
         }
         function toggleTwitterPeriod() {
             document.getElementById('twitter-period-section').style.display = document.getElementById('twitter-mode').value==='period'?'block':'none';
@@ -3900,6 +3917,7 @@
                 mode:document.getElementById('twitter-mode').value,
                 since:document.getElementById('twitter-since').value,
                 until:document.getElementById('twitter-until').value,
+                narrowQuery:document.getElementById('twitter-narrow-query').value.trim(),
                 count:parseInt(document.getElementById('twitter-count').value)||0,
                 delay:0,
                 mediaQuality:document.getElementById('twitter-media-quality').value,
@@ -4972,7 +4990,7 @@
 
         // ── Form Persistence (config 파일 저장) ──
         var _formFieldIds = [
-            'twitter-target','twitter-path','twitter-type','twitter-mode','twitter-since','twitter-until',
+            'twitter-target','twitter-path','twitter-type','twitter-mode','twitter-since','twitter-until','twitter-narrow-query',
             'twitter-media-quality','twitter-media','twitter-excel','twitter-count','twitter-thread-comments','twitter-real-capture',
             'twitter-method','twitter-progress','twitter-resume-mode','twitter-cookie',
             'bsky-target','bsky-path','bsky-type','bsky-mode','bsky-since','bsky-until',
@@ -5363,6 +5381,7 @@
                         config.mode = document.getElementById('twitter-mode').value;
                         config.since = document.getElementById('twitter-since').value;
                         config.until = document.getElementById('twitter-until').value;
+                        config.narrowQuery = document.getElementById('twitter-narrow-query').value.trim();
                         config.count = _mk('count', parseInt(document.getElementById('twitter-count').value) || 0);
                         config.delay = 0;
                         config.mediaQuality = document.getElementById('twitter-media-quality').value;

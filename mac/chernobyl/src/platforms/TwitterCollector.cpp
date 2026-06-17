@@ -2610,6 +2610,16 @@ void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
         // 10. 🧵 스레드 자동탐지 (자기-답글 체인 루트 → thread 재구성)
         collectThreadsAuto(config, target, userDir, isRunning);
 
+        // 11. 🔎 포스트 좁히기 자동 — '전체 시 좁히기 키워드'가 설정된 경우에만 실행.
+        //     (키워드 없으면 step 2 의 from:user 전수 백필과 중복이므로 건너뜀)
+        if (isRunning && !config["narrowQuery"].toString().trimmed().isEmpty()) {
+            setupClient(accounts[0].toObject()["auth_token"].toString(), accounts[0].toObject()["ct0"].toString());
+            if (!startDaemon()) initTransactionIds();
+            getUserByScreenName(target);
+            m_backend->log(QString("[자동] 🔎 포스트 좁히기: \"%1\"").arg(config["narrowQuery"].toString().trimmed()), "info", "twitter");
+            collect(makeSubConfig("narrow"), isRunning);
+        }
+
         m_backend->log("═══ 전체 수집 완료! ═══", "success", "twitter");
         return;
     }
@@ -3584,6 +3594,16 @@ void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
         excelSuffix = "tweets";  // tweets_api도 같은 Excel에 합산
         logLabel = "트윗 보충";
         m_backend->log("2. UserTweets API 보충 (기존 트윗에 추가)...", "info", "twitter");
+    } else if (type == "narrow") {
+        // 포스트 좁히기 — from:user + 키워드/기간 검색 (별도 _narrow.xlsx)
+        excelSuffix = "narrow";
+        logLabel = "포스트 좁히기";
+        // mode 무관하게 since/until 을 읽음 (기간 좁히기)
+        const QString nSince = config["since"].toString();
+        const QString nUntil = config["until"].toString();
+        if (!nSince.isEmpty()) sinceDate = QDateTime::fromString(nSince + "T00:00:00", Qt::ISODate);
+        if (!nUntil.isEmpty()) untilDate = QDateTime::fromString(nUntil + "T23:59:59", Qt::ISODate);
+        m_backend->log("🔎 포스트 좁히기 (키워드/기간 검색)...", "info", "twitter");
     } else {
         m_backend->log("1. 트윗 수집 (아니포 검색)...", "info", "twitter");
     }
@@ -4493,6 +4513,41 @@ void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
     // ══════════════════════════════════════════════════════════════
     bool searchFailed = false;  // Phase 1 검색 실패 플래그 (Phase 2에서 사용)
     // Phase 1: tweets, media, all 일 때만 실행 (tweets_api, replies는 건너뜀)
+    // ── 포스트 좁히기 (narrow) — from:user [키워드] [since/until] SearchTimeline ──
+    //   복잡한 아니포 백트래킹 없이, 좁힌 쿼리로 커서 페이지네이션만 한다.
+    if (isRunning && type == "narrow") {
+        const QString kw = config["narrowQuery"].toString().trimmed();
+        QString q = QString("from:%1").arg(target);
+        if (!kw.isEmpty()) q += " " + kw;
+        if (sinceDate.isValid()) q += QString(" since:%1").arg(sinceDate.toString("yyyy-MM-dd"));
+        if (untilDate.isValid()) q += QString(" until:%1").arg(untilDate.toString("yyyy-MM-dd"));
+        m_backend->log(QString("🔎 포스트 좁히기 검색: %1").arg(q), "info", "twitter");
+        const int before = collectedIds.size();
+        QString cur;
+        int pages = 0;
+        const int NARROW_MAX_PAGES = 400;   // 과도한 페이지네이션 상한
+        while (isRunning && pages < NARROW_MAX_PAGES) {
+            auto [tweets, nextCursor] = searchTweets(q, cur);
+            if (nextCursor == "RATE_LIMITED") { handleRateLimit(accounts, currentAccountIdx, isRunning); continue; }
+            if (nextCursor == "ERROR") { for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1); continue; }
+            if (tweets.isEmpty()) break;
+            processTweetBatch(tweets);
+            pages++;
+            if (pages % 5 == 0) {
+                saveExcelStreaming(userDir, target, collectedData, excelSuffix);
+                m_backend->log(QString("🔎 좁히기 진행: %1페이지 · %2개")
+                                   .arg(pages).arg(collectedIds.size() - before), "info", "twitter");
+            }
+            if (nextCursor.isEmpty() || nextCursor == cur) break;
+            cur = nextCursor;
+            QThread::sleep(1);
+        }
+        saveExcelStreaming(userDir, target, collectedData, excelSuffix);
+        m_backend->log(QString("🔎 포스트 좁히기 완료: %1개 (%2)")
+                           .arg(collectedIds.size() - before).arg(q), "success", "twitter");
+        // 미디어는 processTweetBatch 내부 downloadTweetMedia 로 트윗별 자동 다운로드됨.
+    }
+
     if (isRunning && (type == "tweets"|| type == "media"|| type == "all"))
     {
         // Resume support
