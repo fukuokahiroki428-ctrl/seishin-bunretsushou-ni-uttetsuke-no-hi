@@ -7625,11 +7625,22 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
                         QString p = part.trimmed();
                         if (p.startsWith("sessionid=")) { sid = p.mid(10); break; }
                     }
-                    // 두 번째 시도면서 같은 sessionid 라면 정말 실패
-                    if (sid.isEmpty() || sid == sessionId) {
-                        log("세션 자동 갱신 실패 — Chrome 에서 instagram.com 로그인 상태 확인. 또는 csrftoken 등 부족.",
-                            "error", "instagram");
+                    // 두 번째 시도면서 같은 sessionid 라면 정말 실패 — 케이스별로 정확히 안내.
+                    if (sid.isEmpty()) {
+                        log("세션 자동 갱신 실패 — Chrome 에 instagram.com 로그인이 없습니다. "
+                            "Chrome 에서 Instagram 에 로그인한 뒤 다시 시도하세요.", "error", "instagram");
                         log("  대안: 인스타 탭 → 'sessionid + 추가 cookie' 직접 입력 (capture cookie 필드)",
+                            "info", "instagram");
+                        break;
+                    }
+                    if (sid == sessionId) {
+                        // Chrome 쿠키 == 앱이 쓰던 그 세션 → 같은 세션이 서버에서 만료(401)된 것.
+                        //   쿠키 만료(browser expiry)가 아니라 IG 서버측 무효화라 '갱신'으로는 못 살림.
+                        log("세션 자동 갱신 실패 — Chrome 의 세션이 앱과 동일하고 Instagram 서버에서 만료(401)되었습니다.",
+                            "error", "instagram");
+                        log("  해결: Instagram 에서 한 번 로그아웃 → 다시 로그인해 '새 sessionid' 를 발급받은 뒤 재시도하세요.",
+                            "info", "instagram");
+                        log("  또는: 인스타 탭 → 'sessionid + 추가 cookie' 필드에 새 세션을 직접 붙여넣기.",
                             "info", "instagram");
                         break;
                     }
