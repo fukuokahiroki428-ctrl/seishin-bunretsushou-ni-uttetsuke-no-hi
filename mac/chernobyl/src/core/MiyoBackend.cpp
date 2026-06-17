@@ -7417,6 +7417,10 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     baseHeaders["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
     baseHeaders["Cookie"] = "sessionid=" + sessionId;
     baseHeaders["X-IG-App-ID"] = "936619743392459";
+    // ★ www.instagram.com 비공개 API(highlights/stories/clips)는 웹 XHR 헤더를 요구 — 추가해 404/403 방지.
+    //   (feed/user 등 기존 동작 엔드포인트엔 무해)
+    baseHeaders["X-Requested-With"] = "XMLHttpRequest";
+    baseHeaders["Referer"] = "https://www.instagram.com/";
 
     // ★ Cookie 우선순위:
     //   1) config["captureCookie"] — 사용자가 [Instagram] 버튼으로 추출한 전체 cookie (UI 표시됨)
@@ -7965,15 +7969,18 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     // ── Reels 수집 ──
     if (effectiveConfig["reels"].toBool(false) && m_isRunning.value("instagram", false)) {
         log("릴스 수집 중...", "info", "instagram");
-        QString reelsUrl = QString("https://i.instagram.com/api/v1/clips/user/?target_user_id=%1&page_size=12").arg(userId);
+        // ★ clips/user 는 웹에서 POST(form) 방식 — i.instagram.com GET 은 실패(릴스 0)했음.
+        const QString reelsUrl = "https://www.instagram.com/api/v1/clips/user/";
+        QMap<QString, QString> reelsHeaders = baseHeaders;
+        reelsHeaders["Content-Type"] = "application/x-www-form-urlencoded";
         int reelsCount = 0;
         QString reelsMaxId;
 
         while (m_isRunning.value("instagram", false)) {
-            QString reqUrl = reelsUrl;
-            if (!reelsMaxId.isEmpty()) reqUrl += "&max_id=" + reelsMaxId;
+            QString reelsBody = QString("target_user_id=%1&page_size=12").arg(userId);
+            if (!reelsMaxId.isEmpty()) reelsBody += "&max_id=" + reelsMaxId;
 
-            HttpResponse reelsResp = http.get(reqUrl, baseHeaders);
+            HttpResponse reelsResp = http.post(reelsUrl, reelsBody.toUtf8(), reelsHeaders);
             if (!reelsResp.isOk()) break;
 
             QJsonObject reelsData = reelsResp.json();
@@ -8028,7 +8035,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     // ── Stories 수집 ──
     if (effectiveConfig["stories"].toBool(false) && m_isRunning.value("instagram", false)) {
         log("스토리 수집 중...", "info", "instagram");
-        QString storiesUrl = QString("https://i.instagram.com/api/v1/feed/reels_media/?reel_ids=%1").arg(userId);
+        QString storiesUrl = QString("https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=%1").arg(userId);
         HttpResponse storiesResp = http.get(storiesUrl, baseHeaders);
         if (storiesResp.isOk()) {
             QJsonArray reels = storiesResp.json()["reels_media"].toArray();
@@ -8083,7 +8090,9 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
         log("하이라이트 수집 중...", "info", "instagram");
 
         // Step 1: Get highlight tray (list of highlight reels)
-        QString highlightsTrayUrl = QString("https://i.instagram.com/api/v1/highlights/%1/highlights_tray/").arg(userId);
+        //   ★ highlights_tray 는 i.instagram.com 에서 404 → www.instagram.com 으로 호출해야 함.
+        //     (feed/user·web_profile_info 는 i. 에서 동작하지만 highlights_tray 는 www 전용)
+        QString highlightsTrayUrl = QString("https://www.instagram.com/api/v1/highlights/%1/highlights_tray/").arg(userId);
         HttpResponse hlResp = http.get(highlightsTrayUrl, baseHeaders);
         int highlightsMediaCount = 0;
 
@@ -8100,7 +8109,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
                 log(QString("  [%1/%2] %3").arg(hi + 1).arg(tray.size()).arg(highlightTitle), "info", "instagram");
 
                 // Step 2: Get items for each highlight reel
-                QString hlItemsUrl = QString("https://i.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight:%1").arg(highlightId.contains(":") ? highlightId.split(":").last() : highlightId);
+                QString hlItemsUrl = QString("https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight:%1").arg(highlightId.contains(":") ? highlightId.split(":").last() : highlightId);
                 HttpResponse hlItemsResp = http.get(hlItemsUrl, baseHeaders);
 
                 if (hlItemsResp.isOk()) {
