@@ -9,6 +9,7 @@
 #include <QSpinBox>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QMap>
 
 #include "core/WorkerSignals.h"
 
@@ -37,6 +38,9 @@ private:
     void saveToExcel(const QJsonArray &mediaData, const QString &saveDir, const QString &username);
 
     // Instagram API (direct HTTP)
+    // ★ 브라우저처럼 보이게 하는 공통 헤더 — UA/X-ASBD-ID/WWW-Claim 누락 시 Instagram 이
+    //   401 대신 빈 200(소프트 차단)을 줘서 "게시물 0개"가 됨.
+    QMap<QString, QString> igWebHeaders(const QString &sessionId, const QString &csrfToken = QString());
     QString login(const QString &sessionId);
     QJsonObject getUserInfo(const QString &username, const QString &csrfToken, const QString &sessionId);
     QJsonArray getUserMedia(const QString &userId, const QString &csrfToken,

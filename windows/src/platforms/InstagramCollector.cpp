@@ -252,13 +252,28 @@ void InstagramCollector::stopCollection()
     emit m_signals->log("⏹️ 중지 중...");
 }
 
+QMap<QString, QString> InstagramCollector::igWebHeaders(const QString &sessionId, const QString &csrfToken)
+{
+    QMap<QString, QString> h;
+    h["Cookie"] = "sessionid=" + sessionId;
+    h["X-IG-App-ID"] = "936619743392459";
+    h["X-Requested-With"] = "XMLHttpRequest";
+    h["X-ASBD-ID"] = "129477";
+    h["X-IG-WWW-Claim"] = "0";
+    // ★ 실제 브라우저 User-Agent 가 없으면 Instagram 웹 API 가 빈 응답(소프트 차단)을 준다.
+    h["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+    h["Accept"] = "*/*";
+    h["Referer"] = "https://www.instagram.com/";
+    h["Origin"] = "https://www.instagram.com";
+    if (!csrfToken.isEmpty()) h["X-CSRFToken"] = csrfToken;
+    return h;
+}
+
 QString InstagramCollector::login(const QString &sessionId)
 {
     // Instagram GraphQL API with session cookie
-    QMap<QString, QString> headers;
-    headers["Cookie"] = "sessionid=" + sessionId;
-    headers["X-IG-App-ID"] = "936619743392459";
-    headers["X-Requested-With"] = "XMLHttpRequest";
+    QMap<QString, QString> headers = igWebHeaders(sessionId);
 
     HttpResponse resp = m_http->get("https://www.instagram.com/api/v1/accounts/current_user/", headers);
     if (resp.isOk()) {
@@ -273,11 +288,7 @@ QJsonObject InstagramCollector::getUserInfo(const QString &username, const QStri
 {
     QString url = QString("https://www.instagram.com/api/v1/users/web_profile_info/?username=%1").arg(username);
 
-    QMap<QString, QString> headers;
-    headers["Cookie"] = "sessionid=" + sessionId;
-    if (!csrfToken.isEmpty()) headers["X-CSRFToken"] = csrfToken;
-    headers["X-IG-App-ID"] = "936619743392459";
-    headers["X-Requested-With"] = "XMLHttpRequest";
+    QMap<QString, QString> headers = igWebHeaders(sessionId, csrfToken);
 
     HttpResponse resp = m_http->get(url, headers);
     if (resp.isOk()) {
@@ -303,9 +314,7 @@ QJsonArray InstagramCollector::getUserMedia(const QString &userId, const QString
             url += "&max_id=" + endCursor;
         }
 
-        QMap<QString, QString> headers;
-        headers["Cookie"] = "sessionid=" + sessionId;
-        headers["X-IG-App-ID"] = "936619743392459";
+        QMap<QString, QString> headers = igWebHeaders(sessionId, csrfToken);
 
         HttpResponse resp = m_http->get(url, headers);
         if (!resp.isOk()) {
