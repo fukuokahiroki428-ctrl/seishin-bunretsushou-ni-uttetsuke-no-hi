@@ -4176,13 +4176,15 @@
         }
         function startInstagram() {
             if (!backend) return;
-            // 목록에 "계정 지정" 정보가 있으면 다중 큐 사용, 없으면 기존 로직
-            const hasAccountPick = (platformTargets.instagram||[]).some(function(e){ return e.accountIdx !== 'all' && e.accountIdx !== undefined; });
-            if (hasAccountPick) { startPlatformMulti('instagram'); return; }
-            // Use targets list or fallback to single input
-            let targets = (platformTargets.instagram||[]).map(function(e){return e.target;});
+            // ★ 목록에 대상이 있으면 '항상' 다중 큐로 → 체크박스(enabled) + 계정지정을 그대로 반영.
+            //   (기존 버그: 계정지정이 있을 때만 멀티로 가고, 전부 '전체 계정'이면 단일 경로로 빠져
+            //    enabled 를 무시한 채 targets[0](목록 첫 번째)만 받아 → 체크한 대상이 아니라
+            //    다른 타겟이 다운로드되던 문제. Twitter 처럼 목록 있으면 무조건 멀티로 통일.)
+            if ((platformTargets.instagram||[]).length) { startPlatformMulti('instagram'); return; }
+            // 목록이 비어 있으면 단일 입력 필드 사용
             const singleUser = ((document.getElementById('instagram-target')||{value:''}).value||'').trim().replace(/^@/,'');
-            if (targets.length===0 && singleUser) targets.push(singleUser);
+            let targets = [];
+            if (singleUser) targets.push(singleUser);
             if (targets.length===0) { appendLog('대상 유저를 추가하세요','error','instagram'); return; }
             if (!accounts.instagram||accounts.instagram.length===0) { appendLog('계정을 먼저 추가하세요','error','instagram'); return; }
             const igType = document.getElementById('instagram-type').value;
