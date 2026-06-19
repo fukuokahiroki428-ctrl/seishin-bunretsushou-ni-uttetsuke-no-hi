@@ -7472,7 +7472,8 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     }
 
     // Get user info
-    QString userInfoUrl = QString("https://i.instagram.com/api/v1/users/web_profile_info/?username=%1").arg(username);
+    // ★ i.instagram.com 은 이제 web_profile_info 에 401 → www.instagram.com 으로 호출(검증: 200).
+    QString userInfoUrl = QString("https://www.instagram.com/api/v1/users/web_profile_info/?username=%1").arg(username);
     HttpResponse resp = http.get(userInfoUrl, baseHeaders);
 
     // ★ 401 시 한 번 더 자동 갱신 + 재시도
@@ -7617,7 +7618,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
 
     // Use API v1 feed endpoint (more reliable than GraphQL query_hash)
     while (hasMore && m_isRunning.value("instagram", false)) {
-        QString feedUrl = QString("https://i.instagram.com/api/v1/feed/user/%1/?count=12").arg(userId);
+        QString feedUrl = QString("https://www.instagram.com/api/v1/feed/user/%1/?count=12").arg(userId);
         if (!nextMaxId.isEmpty()) feedUrl += "&max_id=" + nextMaxId;
 
         HttpResponse mediaResp = http.get(feedUrl, baseHeaders);
