@@ -3281,6 +3281,18 @@
             }
         }
 
+        // ── 수집 종료 통지 (백엔드 CollectionGuard 소멸자) — 시작/정지 버튼 동기화 보장 ──
+        //   어떤 경로로 끝나든(정상/오류/조기 return/세션실패) 호출됨. 멀티 진행 중이면 유지.
+        window.onCollectionEnded = function(platform) {
+            let basePlat = platform || currentPlatform;
+            const hashIdx = basePlat.indexOf('#');
+            if (hashIdx > 0) basePlat = basePlat.substring(0, hashIdx);
+            if (basePlat === 'bsky') basePlat = 'bluesky';
+            const m = _multis[basePlat];
+            const stillRunning = m && Object.values(m.states).some(s => s === 'running' || s === 'pending');
+            if (!stillRunning) setRunning(basePlat, false);
+        };
+
         // ── Stats (플랫폼별 개별 저장) ──
         function updateStats(posts, media, status, platform) {
             const p = platform || currentPlatform;
