@@ -7444,30 +7444,35 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     baseHeaders["Referer"] = "https://www.instagram.com/";
     baseHeaders["Origin"] = "https://www.instagram.com";
 
-    // ★ Cookie 우선순위:
-    //   1) config["captureCookie"] — 사용자가 [Instagram] 버튼으로 추출한 전체 cookie (UI 표시됨)
-    //      또는 직접 입력한 raw cookie
-    //   2) extractInstagramSessionSync() — 위 둘 다 없으면 즉시 Chrome 에서 자동 추출
-    //   3) UI 의 sessionid input — fallback (이게 부족하면 401)
+    // ★ Cookie — www.instagram.com 웹 API 는 sessionid 만으론 302(미인증 리다이렉트).
+    //   csrftoken + ds_user_id 가 반드시 함께 있어야 200. 따라서 '완전한' 쿠키를 우선한다.
+    //   우선순위: ① csrftoken 포함 완전한 captureCookie  ② Chrome 전체 쿠키(자동추출)
+    //            ③ 불완전 captureCookie(경고)  — sessionid 만 있으면 www 가 거부.
+    auto cookieHas = [](const QString &c, const char *k){ return c.contains(QString(k) + "="); };
     QString userCaptureCookie = config["captureCookie"].toString();
-    if (!userCaptureCookie.isEmpty() && userCaptureCookie.contains("sessionid=")) {
-        baseHeaders["Cookie"] = userCaptureCookie;
-        log(QString("🍪 사용자 입력 cookie 사용 (%1개)").arg(userCaptureCookie.count(';') + 1),
-            "info", "instagram");
-        for (const QString &part : userCaptureCookie.split(';', Qt::SkipEmptyParts)) {
-            QString p = part.trimmed();
-            if (p.startsWith("sessionid=")) { sessionId = p.mid(10); break; }
-        }
+    QString chosenCookie;
+    if (!userCaptureCookie.isEmpty() && cookieHas(userCaptureCookie, "sessionid")
+            && cookieHas(userCaptureCookie, "csrftoken") && cookieHas(userCaptureCookie, "ds_user_id")) {
+        chosenCookie = userCaptureCookie;
+        log("🍪 사용자 입력 cookie 사용 (완전)", "info", "instagram");
     } else {
-        QString preFullCookie = extractInstagramSessionSync();
-        if (!preFullCookie.isEmpty()) {
-            baseHeaders["Cookie"] = preFullCookie;
-            log(QString("🍪 Chrome 에서 인스타 쿠키 자동 추출 (%1개)").arg(preFullCookie.count(';') + 1),
-                "info", "instagram");
-            for (const QString &part : preFullCookie.split(';', Qt::SkipEmptyParts)) {
-                QString p = part.trimmed();
-                if (p.startsWith("sessionid=")) { sessionId = p.mid(10); break; }
-            }
+        QString full = extractInstagramSessionSync();
+        if (!full.isEmpty() && cookieHas(full, "csrftoken")) {
+            chosenCookie = full;
+            log(QString("🍪 Chrome 전체 쿠키 자동 추출 (%1개)").arg(full.count(';') + 1), "info", "instagram");
+        } else if (!userCaptureCookie.isEmpty() && cookieHas(userCaptureCookie, "sessionid")) {
+            chosenCookie = userCaptureCookie;
+            log("⚠️ cookie 에 csrftoken/ds_user_id 누락 — www API 가 거부(302/401)할 수 있음. "
+                "Chrome 에서 instagram.com 로그인 또는 capture cookie 에 전체 쿠키 붙여넣기.", "warning", "instagram");
+        }
+    }
+    if (!chosenCookie.isEmpty()) {
+        baseHeaders["Cookie"] = chosenCookie;
+        for (const QString &part : chosenCookie.split(';', Qt::SkipEmptyParts)) {
+            QString p = part.trimmed();
+            if (p.startsWith("sessionid=")) sessionId = p.mid(10);
+            // ★ csrftoken → X-CSRFToken 헤더 (POST 계열 clips/user 등에 필요)
+            else if (p.startsWith("csrftoken=")) baseHeaders["X-CSRFToken"] = p.mid(10);
         }
     }
 
