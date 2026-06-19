@@ -178,6 +178,22 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
                 if (m_backend) m_backend->log(QString("이전 Chrome 좀비 종료 (PID %1)").arg(pid), "info", "crawl");
             }
         }
+        // ★ 포트뿐 아니라 '같은 캡쳐 프로필'을 쓰는 잔존 Chrome 도 정리.
+        //   (포트가 안 열린 좀비가 프로필을 쥐고 있으면, 새 Chrome 이 그 인스턴스로 핸드오프되며 즉시 종료 →
+        //    캡쳐 시 "로그인 사전 navigate 실패" 가 트윗마다 반복됨). 개인 Chrome 은 경로가 달라 안 건드림.
+        if (!m_userDataDir.isEmpty()) {
+            QProcess pg;
+            pg.start("pgrep", {"-f", m_userDataDir});
+            pg.waitForFinished(2000);
+            const QString pgo = QString::fromUtf8(pg.readAllStandardOutput()).trimmed();
+            for (const QString &pidStr : pgo.split('\n', Qt::SkipEmptyParts)) {
+                qint64 pid = pidStr.toLongLong();
+                if (pid > 0) {
+                    ::kill(static_cast<pid_t>(pid), SIGTERM);
+                    if (m_backend) m_backend->log(QString("이전 Chrome(프로필) 좀비 종료 (PID %1)").arg(pid), "info", "crawl");
+                }
+            }
+        }
 #endif
         QThread::msleep(500);
     }

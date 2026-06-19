@@ -58,7 +58,13 @@ struct CollectionGuard {
             if (backend) backend->log(QString("▶ [%1] 수집 시작 (큐 해제)").arg(platform), "info", platform);
         }
     }
-    ~CollectionGuard() { sem->release(1); }
+    ~CollectionGuard() {
+        sem->release(1);
+        // ★ 수집이 어떤 경로로 끝나든(정상/오류/조기 return/세션실패) UI 버튼을 동기화.
+        //   최종 updateStats("완료"/"Done") 를 못 부르고 return 하면 시작/정지 버튼이 멈춰
+        //   있던 문제 → 종료 시 항상 onCollectionEnded 통지(멀티 진행 중이면 JS 가 유지 판단).
+        if (backend) backend->notifyCollectionEnded(platform);
+    }
 };
 }
 
@@ -3237,6 +3243,16 @@ void MiyoBackend::updateStats(int posts, int media, const QString &status, const
     }
     m_lastStatsUpdate[p] = now;
     runJs(QString("updateStats(%1, %2, '%3', '%4')").arg(posts).arg(media).arg(status, p));
+}
+
+void MiyoBackend::notifyCollectionEnded(const QString &platform)
+{
+    // 수집 스레드 종료 시 호출 — JS 가 멀티 진행 여부를 보고 시작/정지 버튼을 안전하게 리셋.
+    //   (단일 수집: 즉시 리셋. 병렬: 마지막 트랙 종료 시 리셋.)
+    QString p = platform;
+    if (p.isEmpty()) { QString tk = currentThreadTrackKey(); p = tk.isEmpty() ? m_currentPlatform : tk; }
+    runJs(QString("if(window.onCollectionEnded)window.onCollectionEnded(%1);")
+              .arg(Common::jsStringLiteral(p)));
 }
 
 void MiyoBackend::showLog(const QString &message)
@@ -7414,13 +7430,19 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     HttpClient http;
     http.setRunFlag(&m_isRunning["instagram"]);  // 중지 시 즉시 abort
     QMap<QString, QString> baseHeaders;
-    baseHeaders["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+    // ★ 완전한 브라우저 UA — 잘린 UA("…AppleWebKit/537.36")는 product 토큰이 없어 봇 핑거프린트로
+    //   Instagram 이 401 대신 '빈 200'(소프트 차단)을 줘서 게시물 0개가 됨.
+    baseHeaders["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
     baseHeaders["Cookie"] = "sessionid=" + sessionId;
     baseHeaders["X-IG-App-ID"] = "936619743392459";
-    // ★ www.instagram.com 비공개 API(highlights/stories/clips)는 웹 XHR 헤더를 요구 — 추가해 404/403 방지.
-    //   (feed/user 등 기존 동작 엔드포인트엔 무해)
+    // ★ www.instagram.com 웹 API 가 요구하는 XHR 헤더. 특히 X-ASBD-ID 누락 시 '빈 200' 소프트 차단.
     baseHeaders["X-Requested-With"] = "XMLHttpRequest";
+    baseHeaders["X-ASBD-ID"] = "129477";
+    baseHeaders["X-IG-WWW-Claim"] = "0";
+    baseHeaders["Accept"] = "*/*";
     baseHeaders["Referer"] = "https://www.instagram.com/";
+    baseHeaders["Origin"] = "https://www.instagram.com";
 
     // ★ Cookie 우선순위:
     //   1) config["captureCookie"] — 사용자가 [Instagram] 버튼으로 추출한 전체 cookie (UI 표시됨)
@@ -12920,7 +12942,8 @@ void MiyoBackend::runFanboxCollection(const QJsonObject &config)
     HttpClient http;
     http.setRunFlag(&m_isRunning["fanbox"]);
     QMap<QString, QString> headers;
-    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
     headers["Cookie"] = cookie;
     headers["Origin"] = "https://www.fanbox.cc";
     headers["Referer"] = "https://www.fanbox.cc/";
@@ -14525,7 +14548,8 @@ void MiyoBackend::runAskedCollection(const QJsonObject &config)
     http.setRunFlag(&m_isRunning["asked"]);  // 중지 시 즉시 abort
 
     QMap<QString, QString> headers;
-    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
     headers["Accept"] = "application/json, text/html";
     if (!cookie.isEmpty()) headers["Cookie"] = cookie;
 
