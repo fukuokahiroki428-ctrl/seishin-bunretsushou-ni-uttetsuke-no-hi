@@ -7403,7 +7403,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     HttpClient http;
     http.setRunFlag(&m_isRunning["instagram"]);  // 중지 시 즉시 abort
     QMap<QString, QString> baseHeaders;
-    baseHeaders["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+    baseHeaders["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
     baseHeaders["Cookie"] = "sessionid=" + sessionId;
     baseHeaders["X-IG-App-ID"] = "936619743392459";
 
@@ -8404,7 +8404,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
         script += "  echo 사용자에 의해 중지됨\r\n";
         script += "  echo DONE:!SUCCESS!:!FAIL! > \"%STATUS%\"\r\n";
         script += "  del /f \"%STOP_MARKER%\" 2>nul\r\n";
-        script += "  pause >nul\r\n  exit /b 0\r\n)\r\n";
+        script += "  exit /b 0\r\n)\r\n";
         script += QString("echo PROGRESS:%1:%2 > \"%STATUS%\"\r\n").arg(i + 1).arg(urls.size());
         // ★ echo 표시용 URL — cmd 특수문자 이스케이프 (URL 의 &t=... 등이 명령 구분자로
         //   해석돼 "'t' is not recognized" 가 뜨던 버그 수정). yt-dlp 호출은 esc()(따옴표)라 무관.
@@ -8422,7 +8422,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
         script += "  if !RETRY! LEQ 3 (\r\n";
         script += "    set /a WAIT_SEC=60*!RETRY!\r\n";
         script += "    echo >> Rate limit / 실패 — !WAIT_SEC!초 대기 후 재시도 ^(!RETRY!/3^)\r\n";
-        script += "    timeout /t !WAIT_SEC! /nobreak >nul\r\n";
+        script += "    ping -n !WAIT_SEC! 127.0.0.1 >nul 2>&1\r\n";
         script += "    goto RETRY_LOOP_" + QString::number(i) + "\r\n";
         script += "  ) else (\r\n    set /a FAIL+=1\r\n    echo >> 실패\r\n  )\r\n)\r\n";
         script += "echo.\r\n";
@@ -8433,7 +8433,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     script += "echo =========================================\r\n";
     script += "echo DONE:%SUCCESS%:%FAIL% > \"%STATUS%\"\r\n";
     script += "del /f \"%STOP_MARKER%\" 2>nul\r\n";
-    script += "echo.\r\necho 터미널을 닫아도 됩니다.\r\npause >nul\r\n";
+    script += "echo.\r\n";   // ★ 헤드리스 실행 — pause 제거(콘솔 없음). DONE 은 위에서 status 파일에 기록됨.
 #else
     // macOS/Linux: generate .command script
     QString scriptPath = tempDir + "/miyo_yt_download.command";
@@ -8547,7 +8547,23 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     // Launch terminal with script
     log(QString("터미널에서 %1개 URL 다운로드 시작...").arg(urls.size()), "info", "youtube");
 #ifdef Q_OS_WIN
-    launchChildConsole(scriptPath);  // 자체 콘솔 창 + Chernobyl 자식 프로세스 (nested)
+    // ★ yt-dlp .bat 를 콘솔 창 없이(CREATE_NO_WINDOW) 백그라운드 자식 프로세스로 실행.
+    //   (launchChildConsole 은 콘솔 제거로 no-op 화됐는데, 그게 다운로드 실행까지 막았던 회귀 수정.)
+    //   진행상황은 status 파일로 모니터링 → 콘솔 불필요. 종료/정리는 m_childConsoleProcs 로 추적.
+    {
+        QProcess *p = new QProcess(this);
+        p->setProgram("cmd.exe");
+        p->setArguments({"/c", QDir::toNativeSeparators(scriptPath)});
+        p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) {
+            a->flags |= CREATE_NO_WINDOW;
+            if (a->startupInfo) a->startupInfo->dwFlags &= ~STARTF_USESTDHANDLES;
+        });
+        QProcess *raw = p;
+        connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, raw](int, QProcess::ExitStatus) { m_childConsoleProcs.removeAll(raw); raw->deleteLater(); });
+        m_childConsoleProcs.append(p);
+        p->start();
+    }
 #else
     QProcess::startDetached("/usr/bin/open", {scriptPath});
 #endif
@@ -12958,7 +12974,7 @@ void MiyoBackend::runFanboxCollection(const QJsonObject &config)
     HttpClient http;
     http.setRunFlag(&m_isRunning["fanbox"]);
     QMap<QString, QString> headers;
-    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+    headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
     headers["Cookie"] = cookie;
     headers["Origin"] = "https://www.fanbox.cc";
     headers["Referer"] = "https://www.fanbox.cc/";
@@ -14563,7 +14579,7 @@ void MiyoBackend::runAskedCollection(const QJsonObject &config)
     http.setRunFlag(&m_isRunning["asked"]);  // 중지 시 즉시 abort
 
     QMap<QString, QString> headers;
-    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+    headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
     headers["Accept"] = "application/json, text/html";
     if (!cookie.isEmpty()) headers["Cookie"] = cookie;
 
