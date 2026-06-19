@@ -5377,6 +5377,13 @@ bool MiyoBackend::captureRealPageCDPLoginAware(const QString &url,
             });
         };
 
+        // ★ 죽은(연결 끊긴) 캡쳐 Chrome 인스턴스 재사용 방지 — m_ready=false 면 정리 후 재생성.
+        //   이게 없으면 첫 캡쳐 뒤 Chrome 이 한 번 끊기면 *chromePP 가 non-null 인 채 남아
+        //   start() 를 건너뛰고 → 이후 모든 트윗이 "로그인 사전 navigate 실패" 로 무한 실패.
+        if (*chromePP && !(*chromePP)->isReady()) {
+            (*chromePP)->deleteLater();
+            *chromePP = nullptr;
+        }
         if (!*chromePP) {
             *chromePP = new RealChromeCrawler(this, this);
             (*chromePP)->setUseUserProfile(false);
