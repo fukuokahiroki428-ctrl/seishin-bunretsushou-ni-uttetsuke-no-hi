@@ -2608,6 +2608,28 @@
                     list.innerHTML = '';
                     const accs = _platAccountList(plat);
                     const schema = TARGET_OPTIONS_SCHEMA[plat] || [];
+
+                    // ★ 전체 선택/해제 헤더 — 대상이 많을 때 일괄 토글 (개별 체크 번거로움 해소)
+                    {
+                        const enCnt = arr.filter(function(e){ return e.enabled !== false; }).length;
+                        const hdr = document.createElement('div');
+                        hdr.className = 'bti-head';
+                        hdr.style.cssText = 'display:flex;align-items:center;gap:7px;padding:5px 6px;margin-bottom:4px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-secondary);';
+                        const allCb = document.createElement('input');
+                        allCb.type = 'checkbox';
+                        allCb.className = 'bti-enable-cb';
+                        allCb.checked = enCnt === arr.length;
+                        allCb.indeterminate = enCnt > 0 && enCnt < arr.length;
+                        allCb.title = '전체 선택/해제';
+                        allCb.onchange = function(){ toggleAllPlatformTargets(plat, this.checked); };
+                        hdr.appendChild(allCb);
+                        const hl = document.createElement('span');
+                        hl.textContent = '전체 선택  (' + enCnt + ' / ' + arr.length + ')';
+                        hl.style.cssText = 'cursor:pointer;flex:1;';
+                        hl.onclick = function(){ toggleAllPlatformTargets(plat, !(enCnt === arr.length)); };
+                        hdr.appendChild(hl);
+                        list.appendChild(hdr);
+                    }
                     arr.forEach(function(entry, i) {
                         if (!entry.options) entry.options = {};
                         const hasOverrides = Object.keys(entry.options).length > 0;
@@ -2631,7 +2653,7 @@
                         enableCb.className = 'bti-enable-cb';
                         enableCb.checked = !!entry.enabled;
                         enableCb.title = '수집 대상 포함';
-                        enableCb.onchange = function(){ togglePlatformTargetEnabled(plat, i, this.checked); };
+                        enableCb.onchange = function(){ togglePlatformTargetEnabled(plat, i, this.checked, this); };
                         main.appendChild(enableCb);
 
                         // 번호
@@ -2788,14 +2810,44 @@
             appendLog('대상 수정: #'+(idx+1)+' → '+clean, 'info', plat==='bluesky'?'bsky':plat);
         }
         // ★ 항목 활성/비활성 토글 — 비활성 항목은 다중 큐에서 스킵
-        function togglePlatformTargetEnabled(plat, idx, enabled) {
+        function togglePlatformTargetEnabled(plat, idx, enabled, cbEl) {
             if (!platformTargets[plat] || !platformTargets[plat][idx]) return;
             platformTargets[plat][idx].enabled = !!enabled;
             saveConfig();
-            renderPlatformTargetList(plat);
+            updateStartButtonLabels();
+            // ★ 전체 재렌더(innerHTML='') 안 함 → 스크롤 위치 유지.
+            //   기존엔 체크할 때마다 목록이 맨 위로 튀어 아래쪽 대상 다중 체크가 사실상 불가능했음.
+            //   해당 행 disabled 표시 + 헤더 카운트만 부분 갱신.
+            if (cbEl) { const row = cbEl.closest('.batch-target-item'); if (row) row.classList.toggle('disabled', !enabled); }
+            refreshTargetHeader(plat);
             const t = platformTargets[plat][idx].target;
             appendLog((enabled ? '활성화: ' : '비활성화: ') + '#' + (idx+1) + ' ' + t,
                 enabled ? 'info' : 'warning', plat==='bluesky'?'bsky':plat);
+        }
+        // 전체선택 헤더(카운트 + 마스터 체크박스)만 부분 갱신 — 재렌더 없이
+        function refreshTargetHeader(plat) {
+            const dk = _TARGET_DOM_KEY[plat] || plat;
+            const list = document.getElementById(dk + '-target-list');
+            if (!list) return;
+            const hd = list.querySelector('.bti-head');
+            if (!hd) return;
+            const arr = platformTargets[plat] || [];
+            const enCnt = arr.filter(function(e){ return e.enabled !== false; }).length;
+            const cb = hd.querySelector('input[type=checkbox]');
+            const lab = hd.querySelector('span');
+            if (cb) { cb.checked = enCnt === arr.length; cb.indeterminate = enCnt > 0 && enCnt < arr.length; }
+            if (lab) lab.textContent = '전체 선택  (' + enCnt + ' / ' + arr.length + ')';
+        }
+        // ★ 전체 선택/해제 — 헤더 체크박스에서 호출
+        function toggleAllPlatformTargets(plat, checked) {
+            const arr = platformTargets[plat] || [];
+            if (!arr.length) return;
+            arr.forEach(function(e){ e.enabled = !!checked; });
+            saveConfig();
+            renderPlatformTargetList(plat);
+            updateStartButtonLabels();
+            appendLog((checked ? '전체 선택' : '전체 해제') + ' (' + arr.length + '개)',
+                checked ? 'info' : 'warning', plat==='bluesky'?'bsky':plat);
         }
         // 목록 항목 수정 — 계정 지정
         function updatePlatformTargetAccount(plat, idx, accIdx) {
