@@ -7448,22 +7448,23 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     //   csrftoken + ds_user_id 가 반드시 함께 있어야 200. 따라서 '완전한' 쿠키를 우선한다.
     //   우선순위: ① csrftoken 포함 완전한 captureCookie  ② Chrome 전체 쿠키(자동추출)
     //            ③ 불완전 captureCookie(경고)  — sessionid 만 있으면 www 가 거부.
+    //   ★ Chrome 실시간 전체 쿠키를 '우선' — captureCookie 는 sessionid/csrftoken/ds_user_id 가
+    //     서로 다른 시점 값이라(stale) 섞이면 401 을 유발한다. Chrome 추출본은 항상 일관됨(검증).
+    //     Chrome 추출이 실패할 때만 captureCookie 로 폴백.
     auto cookieHas = [](const QString &c, const char *k){ return c.contains(QString(k) + "="); };
     QString userCaptureCookie = config["captureCookie"].toString();
     QString chosenCookie;
-    if (!userCaptureCookie.isEmpty() && cookieHas(userCaptureCookie, "sessionid")
-            && cookieHas(userCaptureCookie, "csrftoken") && cookieHas(userCaptureCookie, "ds_user_id")) {
-        chosenCookie = userCaptureCookie;
-        log("🍪 사용자 입력 cookie 사용 (완전)", "info", "instagram");
-    } else {
+    {
         QString full = extractInstagramSessionSync();
-        if (!full.isEmpty() && cookieHas(full, "csrftoken")) {
+        if (!full.isEmpty() && cookieHas(full, "csrftoken") && cookieHas(full, "ds_user_id")) {
             chosenCookie = full;
-            log(QString("🍪 Chrome 전체 쿠키 자동 추출 (%1개)").arg(full.count(';') + 1), "info", "instagram");
+            log(QString("🍪 Chrome 전체 쿠키 사용 (%1개, 값 일관)").arg(full.count(';') + 1), "info", "instagram");
         } else if (!userCaptureCookie.isEmpty() && cookieHas(userCaptureCookie, "sessionid")) {
             chosenCookie = userCaptureCookie;
-            log("⚠️ cookie 에 csrftoken/ds_user_id 누락 — www API 가 거부(302/401)할 수 있음. "
-                "Chrome 에서 instagram.com 로그인 또는 capture cookie 에 전체 쿠키 붙여넣기.", "warning", "instagram");
+            log(cookieHas(userCaptureCookie, "csrftoken")
+                    ? "🍪 사용자 입력 cookie 사용 (Chrome 추출 실패 폴백)"
+                    : "⚠️ cookie 에 csrftoken/ds_user_id 누락 — www API 가 거부할 수 있음 (Chrome 에서 instagram 로그인 권장)",
+                "info", "instagram");
         }
     }
     if (!chosenCookie.isEmpty()) {
