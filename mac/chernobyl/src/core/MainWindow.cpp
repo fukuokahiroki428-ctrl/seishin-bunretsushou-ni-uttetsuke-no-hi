@@ -52,7 +52,7 @@ protected:
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle("Chernobyl");
+    setWindowTitle("カメラ");
     setMinimumSize(400, 700);
     resize(420, 850);
 
