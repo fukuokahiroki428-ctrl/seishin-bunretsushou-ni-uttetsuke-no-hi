@@ -1125,9 +1125,6 @@
                     <div class="nav-icon" style="background:#7c3aed">内</div> 内閣会
                 </div>
             </div>
-            <div class="sidebar-footer">
-                <div class="nav-item" onclick="switchTab('settings')">설정</div>
-            </div>
         </div>
 
         <!-- Main -->
@@ -2707,6 +2704,34 @@
 
                 <!-- ━━ Settings ━━ -->
                 <div class="tab-content nt-tab" id="tab-settings">
+                    <style>
+                    /* 테마 세그먼트 + 전역 애니메이션 부드럽게 */
+                    .theme-seg{ display:flex; gap:6px; background:var(--panel2); padding:4px; border-radius:13px; }
+                    .theme-seg-btn{ flex:1; padding:10px 8px; border:none; background:transparent; color:var(--muted);
+                        border-radius:10px; font-size:13px; font-weight:500; cursor:pointer;
+                        transition:background .2s cubic-bezier(.4,0,.2,1), color .2s, transform .1s; }
+                    .theme-seg-btn:hover{ color:var(--text); background:var(--panel); }
+                    .theme-seg-btn.active{ background:var(--accent); color:#fff; box-shadow:0 2px 8px rgba(0,0,0,.18); }
+                    .theme-seg-btn:active{ transform:scale(.96); }
+                    .nav-item, .nt-pcard, .nt-btn, .nt-pillbtn, .bar-icon-btn, .win-ctl, .metric-chip, .nt-theme{
+                        transition:background .2s cubic-bezier(.4,0,.2,1), color .2s cubic-bezier(.4,0,.2,1),
+                                   border-color .2s, box-shadow .2s, transform .14s cubic-bezier(.34,1.4,.64,1) !important; }
+                    .nt-btn:active, .nt-pillbtn:active, .nav-item:active, .nt-pcard:active{ transform:scale(.975); }
+                    .tab-content.active{ animation:tabFade .26s cubic-bezier(.4,0,.2,1); }
+                    @keyframes tabFade{ from{ opacity:0; transform:translateY(8px); } to{ opacity:1; transform:none; } }
+                    </style>
+                    <div class="nt-group">
+                        <h3>🎨 테마 (외관)</h3>
+                        <div class="nt-card">
+                            <div class="nt-hint">라이트 · 다크 · 자동(시스템 설정 따름) 중 선택.</div>
+                            <div class="theme-seg" id="themeSeg">
+                                <button type="button" class="theme-seg-btn" data-theme-mode="auto">🌗 자동</button>
+                                <button type="button" class="theme-seg-btn" data-theme-mode="light">☀ 라이트</button>
+                                <button type="button" class="theme-seg-btn" data-theme-mode="dark">🌙 다크</button>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="nt-group">
                         <h3>💾 사용자 정보 백업 / 복원</h3>
                         <div class="nt-card">
@@ -6530,27 +6555,27 @@
     })();
     </script>
     <script>
-    /* v2 theme toggle (auto / light / dark) */
+    /* v3 theme — 설정 패널의 세그먼트 컨트롤(자동/라이트/다크) 연동 */
     (function(){
         function applyTheme(mode){
             var el=document.documentElement, r=mode;
             if(mode==='auto') r=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';
             el.setAttribute('data-theme',r);
             try{localStorage.setItem('ntTheme',mode);}catch(e){}
-            var b=document.getElementById('ntThemeBtn');
-            if(b){ var ti=b.querySelector('.ti'), tl=b.querySelector('.tl');
-                if(ti) ti.textContent = mode==='dark'?'🌙':(mode==='light'?'☀':'🌗');
-                if(tl) tl.textContent = mode==='dark'?'다크':(mode==='light'?'라이트':'자동'); }
+            var seg=document.getElementById('themeSeg');
+            if(seg){ seg.querySelectorAll('.theme-seg-btn').forEach(function(x){ x.classList.toggle('active', x.getAttribute('data-theme-mode')===mode); }); }
         }
         function cur(){ try{return localStorage.getItem('ntTheme')||'auto';}catch(e){return 'auto';} }
-        function inject(){
-            var f=document.querySelector('.sidebar-footer'); if(!f||document.getElementById('ntThemeBtn'))return;
-            var b=document.createElement('button'); b.id='ntThemeBtn'; b.className='nt-theme';
-            b.innerHTML='<span class="ti"></span><span class="tl"></span>'; b.title='테마 전환 (자동/라이트/다크)';
-            b.addEventListener('click',function(){ var o=['auto','light','dark']; applyTheme(o[(o.indexOf(cur())+1)%3]); });
-            f.appendChild(b); applyTheme(cur());
+        function wire(){
+            var seg=document.getElementById('themeSeg'); if(!seg) return;
+            seg.querySelectorAll('.theme-seg-btn').forEach(function(b){
+                b.addEventListener('click',function(){ applyTheme(b.getAttribute('data-theme-mode')); });
+            });
+            applyTheme(cur());
         }
-        if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',inject); else inject();
+        // 시스템 테마 변경 시 auto 모드면 자동 추종
+        if(window.matchMedia){ try{ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(){ if(cur()==='auto') applyTheme('auto'); }); }catch(e){} }
+        if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',wire); else wire();
     })();
     </script>
 </body>
