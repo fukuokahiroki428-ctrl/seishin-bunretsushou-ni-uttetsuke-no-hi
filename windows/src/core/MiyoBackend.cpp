@@ -3275,12 +3275,28 @@ void MiyoBackend::closeAllTerminalLogs()
 //   - 추적(m_childConsoleProcs) → closeAllTerminalLogs 에서 트리 kill (앱 종료 시 같이 종료)
 void MiyoBackend::launchChildConsole(const QString &scriptPath)
 {
-    // ★ 외부 콘솔 창을 더 이상 띄우지 않는다.
-    //   이전엔 CREATE_NEW_CONSOLE 로 수집기(twitter·bluesky·naikakukai·backup)마다
-    //   별도 콘솔 창이 보였다(카메라 자식이긴 해도 "백그라운드"가 아님). 동일한 로그가
-    //   이미 앱 내부(카메라)에 실시간 표시되므로 외부 콘솔은 불필요 → 완전 백그라운드.
-    //   (.bat tail 스크립트 기록/로그 파일 자체는 그대로 유지)
+    // ★ 수집 모니터링 터미널 — CREATE_NEW_CONSOLE 로 콘솔 창을 띄우되 카메라의 자식 QProcess 로
+    //   생성(작업관리자에서 카메라 휘하로 중첩). 다중/병렬 수집 시 진행 상황을 별도 창으로 본다.
+    //   (작업관리자 문제였던 detached 'cmd /c start' 최상위 콘솔은 계속 제거 유지 — 이건 그것과 별개.)
+#ifdef Q_OS_WIN
+    QProcess *p = new QProcess(this);
+    p->setProgram("cmd.exe");
+    p->setArguments({"/c", QDir::toNativeSeparators(scriptPath)});
+    p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) {
+        a->flags |= CREATE_NEW_CONSOLE;
+        if (a->startupInfo) a->startupInfo->dwFlags &= ~STARTF_USESTDHANDLES;
+    });
+    QProcess *raw = p;
+    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+        [this, raw](int, QProcess::ExitStatus) {
+            m_childConsoleProcs.removeAll(raw);
+            raw->deleteLater();
+        });
+    m_childConsoleProcs.append(p);
+    p->start();
+#else
     Q_UNUSED(scriptPath);
+#endif
 }
 
 void MiyoBackend::updateStats(int posts, int media, const QString &status, const QString &platform)
