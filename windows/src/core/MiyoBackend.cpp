@@ -8371,6 +8371,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     baseArgs << "--embed-thumbnail";
     baseArgs << "--write-description";
     baseArgs << "--embed-metadata";        // ★ 설명+메타데이터를 파일에 임베드 (항상)
+    baseArgs << "--embed-chapters";        // ★ 유튜브 챕터(타임스탬프 구간)를 mp4 챕터 마커로 임베드 — 챕터 없으면 자동 무시
     baseArgs << "--write-info-json";
 
     // ★ 댓글 수집 — 작성자 이름(author)·프로필(author_thumbnail/author_url)·텍스트·좋아요가 .info.json 에 저장됨.
