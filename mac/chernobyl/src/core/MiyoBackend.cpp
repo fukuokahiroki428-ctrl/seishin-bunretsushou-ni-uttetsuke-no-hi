@@ -3811,11 +3811,24 @@ void MiyoBackend::startCollection(const QString &configJson)
             runFanboxCollection(config);
         }
         // ★ 수집 끝 — manifest 생성 (무결성 검증 + 통계 파일)
-        //   path 가 root, 그 안의 모든 파일 walk 해서 __CHERNOBYL_MANIFEST__.json + .txt
+        //   ★ 저장 루트 전체(모든 플랫폼·유저, 수십 GB)를 매번 walk 하면 느리고,
+        //     작은 증분 수집 후에도 "80GB/17만 파일" 같은 혼란스러운 숫자가 나온다.
+        //     → 이번 수집의 대상 폴더(플랫폼/유저)로 한정. 못 찾으면 플랫폼 폴더, 그것도
+        //       없으면 루트로 폴백.
         QString plPath = config["path"].toString();
         plPath.replace("~", QDir::homePath());
         if (!plPath.isEmpty() && QDir(plPath).exists()) {
-            writeDownloadManifest(plPath, platformName);
+            QString manifestDir = plPath;
+            if (!platformName.isEmpty()) {
+                const QString platDir = plPath + "/" + platformName;
+                QString tgt = config["target"].toString();
+                if (tgt.isEmpty()) tgt = config["username"].toString();
+                tgt = tgt.trimmed(); tgt.remove('@');
+                const QString tgtDir = platDir + "/" + tgt;
+                if (!tgt.isEmpty() && QDir(tgtDir).exists())      manifestDir = tgtDir;
+                else if (QDir(platDir).exists())                  manifestDir = platDir;
+            }
+            writeDownloadManifest(manifestDir, platformName);
         }
         // 워커 스레드 종료 직전 trackKey 등록 해제
         if (isParallel) clearThreadTrackKey();
