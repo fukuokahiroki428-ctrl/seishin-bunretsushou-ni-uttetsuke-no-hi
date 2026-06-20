@@ -166,6 +166,22 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
                 }
             }
         }
+        // ★ 포트 리스닝 여부와 무관하게 — 같은 캡쳐 프로필(per-thread 포함)을 쓰는 잔존/고아 Chrome 정리.
+        //   안 그러면 새 캡쳐 Chrome 이 기존 인스턴스로 핸드오프되며 즉시 종료(m_ready=false → navigate 실패).
+        //   앱 재시작 후 남은 고아 캡쳐 Chrome 이 "로그인 사전 navigate 실패" 의 원인.
+        {
+            QString ud = m_userDataDir; ud.replace('\\', '/');
+            QString marker = ud.section('/', -1);   // chrome_capture_profile[_<trackKey>]
+            marker.replace("'", "''");
+            if (!marker.isEmpty()) {
+                QString ps = QString(
+                    "Get-CimInstance Win32_Process | "
+                    "Where-Object { $_.Name -eq 'chrome.exe' -and $_.CommandLine -like '*%1*' } | "
+                    "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+                ).arg(marker);
+                QProcess::execute("powershell", {"-NoProfile", "-NonInteractive", "-Command", ps});
+            }
+        }
 #else
         QProcess lsof;
         lsof.start("lsof", {"-ti", QString(":%1").arg(m_debugPort)});
