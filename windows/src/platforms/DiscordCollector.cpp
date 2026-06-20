@@ -396,7 +396,7 @@ void DiscordCollector::runCollection()
             content += "@echo off\r\nchcp 65001 >nul\r\ncls\r\n";
             content += "type \"" + logNative + "\"\r\n";
             content += ":loop\r\n";
-            content += "timeout /t 1 >nul\r\n";
+            content += "%SystemRoot%\\System32\\timeout.exe /t 1 >nul\r\n";   // ★ Windows timeout 강제
             content += "findstr /c:\"[DONE]\" \"" + logNative + "\" >nul 2>&1\r\n";
             content += "if %errorlevel%==0 (\r\n";
             content += "  echo.\r\n  echo 터미널을 닫아도 됩니다.\r\n  pause >nul\r\n  exit /b 0\r\n)\r\n";
