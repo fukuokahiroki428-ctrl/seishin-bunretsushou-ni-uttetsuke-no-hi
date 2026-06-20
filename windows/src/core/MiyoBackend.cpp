@@ -3053,12 +3053,20 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
 {
     // ★ .command 는 로컬 temp 에 (NAS/외장 마운트는 POSIX 실행권한 보존 X)
     //   사용자 tempDir 이 NAS 면 .command 실행 실패. 로컬 /tmp 사용.
-    QString scriptDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_" + platform;
+    // ★ 다중 수집: trackKey(twitter#0/#1 …)마다 따로 열지 말고 베이스 플랫폼(twitter) 하나로 통합.
+    //   타겟 N개여도 터미널 1개 — 모든 타겟이 같은 통합 로그에 쓰고, 그 로그를 한 터미널이 tail.
+    QString base = platform.section('#', 0, 0);
+    QString scriptDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_" + base;
     QDir().mkpath(scriptDir);
 
-    QString logPath = scriptDir + "/.miyo_" + platform + "_log.txt";
-    m_terminalLogPaths[platform] = logPath;
+    QString logPath = scriptDir + "/.miyo_" + base + "_log.txt";
+    m_terminalLogPaths[platform] = logPath;   // 이 trackKey 의 writeTerminalLog → 통합 로그
+    m_terminalLogPaths[base]     = logPath;    // closeTerminalLog(base) 가 [DONE] 쓸 대상
     m_terminalLogPath = logPath;  // backward compat
+
+    // 이미 이 베이스의 터미널이 열려있으면 새 터미널을 안 엶 — 같은 로그만 공유.
+    if (m_openTerminalBases.contains(base)) return;
+    m_openTerminalBases.insert(base);
     QFile::remove(logPath);
 
     // Create the log file
@@ -3907,9 +3915,11 @@ void MiyoBackend::startCollection(const QString &configJson)
             bool platformIdle = !m_isRunning.value(platformName, false);
             if (platformIdle) {
                 runJs(QString("setRunning('%1', false)").arg(platformName));
+                // ★ 통합 터미널은 같은 베이스의 모든 trackKey 가 끝났을 때만 닫는다(조기 종료 방지).
+                closeTerminalLog(platformName);
+                m_openTerminalBases.remove(platformName);
             }
             m_stopRequested[trackKey] = false;
-            closeTerminalLog(trackKey);
             m_collectionThreads.remove(trackKey);
             // 모든 수집이 끝났으면 절전 해제
             if (m_collectionThreads.isEmpty()) {
