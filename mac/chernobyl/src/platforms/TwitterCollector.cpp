@@ -4721,8 +4721,15 @@ void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
 
                 // ★ "현재 이어서" 모드는 한 iteration만 — backtrack 안 함
                 if (resumeMode == "future") {
-                    m_backend->log(QString("[현재 이어서] 1회 검색 완료 — backtrack 생략 (총 %1개 새 트윗)").arg(iterNewCount),
-                                   "success", "twitter");
+                    if (iterNewCount > 0) {
+                        m_backend->log(QString("[현재 이어서] 새 트윗 %1개 수집 (과거 backtrack 생략)").arg(iterNewCount),
+                                       "success", "twitter");
+                    } else {
+                        // 새 트윗 0개 — '아무것도 안 함'처럼 보이지 않게 명확히 안내.
+                        m_backend->log("[현재 이어서] 새로 올라온 트윗이 없습니다 — 이미 최신 상태입니다.", "success", "twitter");
+                        m_backend->log("  ↳ 빠진 과거 트윗을 더 받으려면 '이어서 수집' 방향을 '과거에서 이어서' 또는 '양방향'으로 선택하세요.",
+                                       "info", "twitter");
+                    }
                     break;
                 }
 
