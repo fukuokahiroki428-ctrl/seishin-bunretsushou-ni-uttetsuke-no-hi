@@ -2522,7 +2522,7 @@ void PenBackend::openTerminalLog()
         content += ":loop\r\n";
         content += "cls\r\n";
         content += "type \"" + QDir::toNativeSeparators(m_terminalLogPath) + "\"\r\n";
-        content += "timeout /t 2 /nobreak >nul\r\n";
+        content += "%SystemRoot%\\System32\\timeout.exe /t 2 /nobreak >nul\r\n";   // ★ Windows timeout 강제
         content += "findstr /C:\"[DONE]\" \"" + QDir::toNativeSeparators(m_terminalLogPath) + "\" >nul 2>&1\r\n";
         content += "if %errorlevel%==0 (\r\n";
         content += "  echo.\r\n";

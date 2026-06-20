@@ -2978,7 +2978,7 @@ void MiyoBackend::openBackupTerminalLog()
         content += "  pause >nul\r\n";
         content += "  exit /b 0\r\n";
         content += ")\r\n";
-        content += "timeout /t 1 /nobreak >nul\r\n";
+        content += "%SystemRoot%\\System32\\timeout.exe /t 1 /nobreak >nul\r\n";   // ★ Windows timeout 강제
         content += "goto loop\r\n";
         script.write(content.toUtf8());
         script.close();
@@ -3081,7 +3081,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
         content += ":loop\r\n";
         content += "cls\r\n";
         content += "type \"" + QDir::toNativeSeparators(logPath) + "\"\r\n";
-        content += "timeout /t 2 /nobreak >nul\r\n";
+        content += "%SystemRoot%\\System32\\timeout.exe /t 2 /nobreak >nul\r\n";   // ★ PATH 에 GNU timeout 있어도 Windows timeout 강제
         content += "findstr /C:\"[DONE]\" \"" + QDir::toNativeSeparators(logPath) + "\" >nul 2>&1\r\n";
         content += "if %errorlevel%==0 (\r\n";
         content += "  echo.\r\n";
