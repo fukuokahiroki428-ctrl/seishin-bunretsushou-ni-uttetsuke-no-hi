@@ -5655,7 +5655,8 @@
         var _origUpdateStats = window.updateStats;
         window.updateStats = function(posts, media, status, platform) {
             _origUpdateStats(posts, media, status, platform);
-            var isDone = (status === '완료' || status === 'Done' || status === 'Ready' || status === '대기');
+            // ★ '대기'(idle/대기중)는 완료가 아님 — done 목록에서 제외 (게이지 거짓 100% 원인).
+            var isDone = (status === '완료' || status === 'Done' || status === 'Ready');
             var isError = (status === '오류' || status === 'Error');
             var isStopped = (status === '중단됨' || status === 'Stopped');
 
@@ -5696,6 +5697,12 @@
                         updateMultiProgress(lookupPlat);
                         checkMultiAllDone(lookupPlat);
                     } else {
+                        // ★ 비종료 상태(수집 중 / RL待機 / 대기 등)가 오면 트랙은 아직 진행 중이다.
+                        //   이전에 잘못 'done'(또는 'pending')으로 잡혀 게이지가 거짓 100% 가 됐으면
+                        //   'running'으로 보정 → "RL待機 인데 100% 완료" 모순 해소.
+                        if (m.states[parallelKey] === 'done' || m.states[parallelKey] === 'pending') {
+                            m.states[parallelKey] = 'running';
+                        }
                         updateMultiProgress(lookupPlat);
                     }
                     return;
