@@ -2713,12 +2713,13 @@
                     .theme-seg-btn:hover{ color:var(--text); background:var(--panel); }
                     .theme-seg-btn.active{ background:var(--accent); color:#fff; box-shadow:0 2px 8px rgba(0,0,0,.18); }
                     .theme-seg-btn:active{ transform:scale(.96); }
+                    /* GPU-가벼운 전환만 — transform 바운스/box-shadow/scale 제거(버벅임 방지) */
                     .nav-item, .nt-pcard, .nt-btn, .nt-pillbtn, .bar-icon-btn, .win-ctl, .metric-chip, .nt-theme{
-                        transition:background .2s cubic-bezier(.4,0,.2,1), color .2s cubic-bezier(.4,0,.2,1),
-                                   border-color .2s, box-shadow .2s, transform .14s cubic-bezier(.34,1.4,.64,1) !important; }
-                    .nt-btn:active, .nt-pillbtn:active, .nav-item:active, .nt-pcard:active{ transform:scale(.975); }
-                    .tab-content.active{ animation:tabFade .26s cubic-bezier(.4,0,.2,1); }
-                    @keyframes tabFade{ from{ opacity:0; transform:translateY(8px); } to{ opacity:1; transform:none; } }
+                        transition:background .15s ease, color .15s ease, border-color .15s ease; }
+                    .tab-content.active{ animation:tabFade .18s ease; }
+                    @keyframes tabFade{ from{ opacity:0; } to{ opacity:1; } }
+                    /* 시스템이 모션 감소를 요청하면 모든 전환/애니메이션 끔 */
+                    @media (prefers-reduced-motion: reduce){ *{ transition:none !important; animation:none !important; } }
                     </style>
                     <div class="nt-group">
                         <h3>🎨 테마 (외관)</h3>
@@ -5693,7 +5694,10 @@
             'settings-disk-path'
         ];
         var _formSaveTimer = null;
+        var _formLoaded = false;   // ★ 폼 복원(restoreFormData) 전에는 저장 금지.
+        //   blur/beforeunload 가 로드 전에 발화하면 빈 폼을 저장해 저장된 쿠키/세션을 통째로 덮어버린다(wipe).
         function _doSaveForm() {
+            if (!_formLoaded) return;   // ★ 로드 완료 전 저장 차단 (쿠키 wipe 방지)
             var data = {};
             _formFieldIds.forEach(function(id) {
                 var el = document.getElementById(id);
@@ -5717,6 +5721,7 @@
         });
         // C++ 에서 호출 — config 파일에서 폼 복원
         function restoreFormData(jsonStr) {
+            _formLoaded = true;   // ★ C++ 가 폼 복원을 호출 = 로드 완료 → 이제부터 저장 허용 (동기 실행이라 중간 blur 없음)
             try {
                 var data = JSON.parse(jsonStr);
                 _formFieldIds.forEach(function(id) {
@@ -5766,6 +5771,8 @@
             }
             if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
             else init();
+            // ★ 폴백: restoreFormData 가 끝내 안 불려도(첫 실행/로드 실패) 8초 후 저장 재허용 — 사용자 입력 유실 방지.
+            setTimeout(function(){ _formLoaded = true; }, 8000);
         })();
     </script>
     <script>
