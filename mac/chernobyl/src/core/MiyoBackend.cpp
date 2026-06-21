@@ -8393,6 +8393,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     // 썸네일을 동영상에 임베드 + 설명 저장 + info JSON (Excel 생성용)
     baseArgs << "--embed-thumbnail";
     baseArgs << "--write-description";
+    baseArgs << "--embed-chapters";     // ★ 유튜브 챕터를 mp4 챕터 마커로 임베드 (챕터 없으면 자동 무시 · ffmpeg 이미 사용)
     baseArgs << "--write-info-json";
     // ★ 댓글 수집(설정 토글) — info.json 에 comments[] 가 담기고, 후처리에서 .comments.txt 로 변환.
     if (config["comments"].toBool()) {
