@@ -5085,7 +5085,13 @@
             'settings-disk-path'
         ];
         var _formSaveTimer = null;
+        // ★★ 설정 wipe 방지 가드 — 앱 재시작 중 창이 포커스를 잃으면(blur/beforeunload)
+        //   restoreFormData(폼 복원) 전에 _doSaveForm 이 호출돼 '빈 폼'을 저장 → 저장된
+        //   쿠키/세션을 통째로 wipe 하던 버그. restoreFormData 가 한 번 돌기 전엔 저장 금지.
+        var _formLoaded = false;
+        setTimeout(function(){ _formLoaded = true; }, 8000);  // 폴백: 복원 콜백이 영영 안 와도 8초 뒤 저장 허용
         function _doSaveForm() {
+            if (!_formLoaded) return;   // 폼 로드 전엔 저장 금지 (빈 폼 wipe 방지)
             var data = {};
             _formFieldIds.forEach(function(id) {
                 var el = document.getElementById(id);
@@ -5109,6 +5115,7 @@
         });
         // C++ 에서 호출 — config 파일에서 폼 복원
         function restoreFormData(jsonStr) {
+            _formLoaded = true;   // ★ 복원 1회 완료 → 이후부터 저장 허용 (wipe 가드 해제)
             try {
                 var data = JSON.parse(jsonStr);
                 _formFieldIds.forEach(function(id) {
