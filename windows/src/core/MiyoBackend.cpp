@@ -8339,6 +8339,29 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     baseArgs << "--sleep-interval" << "3" << "--max-sleep-interval" << "8";
     baseArgs << "--sleep-requests" << "1";
 
+    // ★ YouTube 봇 차단("Sign in to confirm you're not a bot") 우회 — 로그인 쿠키 전달.
+    //   Chrome/Edge/Brave 는 v127+ 앱-바운드 쿠키 암호화(yt-dlp #10927, "Failed to decrypt with DPAPI")
+    //   때문에 --cookies-from-browser 가 안 됨 → 브라우저 확장으로 내보낸 cookies.txt(Netscape) 를 우선 사용.
+    //   관례: exe 폴더의 youtube_cookies.txt 가 있으면 UI 설정 없이 자동 사용.
+    {
+        QString cookiesFile = config["ytCookiesFile"].toString().trimmed();
+        if (cookiesFile.isEmpty()) {
+            QString def = appDir + "/youtube_cookies.txt";
+            if (QFile::exists(def)) cookiesFile = def;
+        }
+        QString cookiesBrowser = config["ytCookiesBrowser"].toString().trimmed();
+        if (!cookiesFile.isEmpty() && QFile::exists(cookiesFile)) {
+            baseArgs << "--cookies" << QDir::toNativeSeparators(cookiesFile);
+            log("YouTube 쿠키 파일 사용 — 봇 차단 우회", "info", "youtube");
+        } else if (!cookiesBrowser.isEmpty() && cookiesBrowser != "none") {
+            // 비-Chromium(firefox 등)에서만 신뢰 가능. Chromium 은 DPAPI 로 실패할 수 있음.
+            baseArgs << "--cookies-from-browser" << cookiesBrowser;
+            log(QString("YouTube 쿠키: 브라우저 %1 에서 읽기 시도").arg(cookiesBrowser), "info", "youtube");
+        }
+        // 차단되는 android_vr 대신 견고한 player_client 우선(쿠키 있으면 default=web 가 인증되어 동작).
+        baseArgs << "--extractor-args" << "youtube:player_client=default,tv,web_safari";
+    }
+
     // ★ 파일명 크로스플랫폼 — yt-dlp 가 Windows 금지문자/예약어를 모든 OS에서 회피하도록 강제.
     //   Windows-safe ⊂ macOS-safe 라 맥/윈도우 어디서나 열리는 이름이 됨 (NAS·이동 시 안전).
     baseArgs << "--windows-filenames" << "--trim-filenames" << "150";
