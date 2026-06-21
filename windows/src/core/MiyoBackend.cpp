@@ -8362,6 +8362,12 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
         baseArgs << "--extractor-args" << "youtube:player_client=default,tv,web_safari";
     }
 
+    // ★ 대량 다운로드 이어받기 — 봇 차단으로 일부가 실패해도 재실행 시 완료분은 건너뛰고
+    //   실패분만 재시도(완료 video ID 를 .yt_archive.txt 에 기록). 차단이 간헐적이라
+    //   같은 다운로드를 몇 번 다시 돌리면 100% 수렴한다. 무로그인 봇차단 대응의 핵심.
+    baseArgs << "--download-archive" << QDir::toNativeSeparators(ytBaseDir + "/.yt_archive.txt");
+    baseArgs << "--ignore-errors";   // 한 영상 실패가 전체 재생목록/채널 배치를 멈추지 않게
+
     // ★ 파일명 크로스플랫폼 — yt-dlp 가 Windows 금지문자/예약어를 모든 OS에서 회피하도록 강제.
     //   Windows-safe ⊂ macOS-safe 라 맥/윈도우 어디서나 열리는 이름이 됨 (NAS·이동 시 안전).
     baseArgs << "--windows-filenames" << "--trim-filenames" << "150";
