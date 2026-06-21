@@ -3064,6 +3064,8 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
     m_terminalLogPaths[base]     = logPath;    // closeTerminalLog(base) 가 [DONE] 쓸 대상
     m_terminalLogPath = logPath;  // backward compat
 
+    qWarning() << "[openTerminalLog] platform=" << platform << "base=" << base
+               << "alreadyOpen=" << m_openTerminalBases.contains(base);
     // 이미 이 베이스의 터미널이 열려있으면 새 터미널을 안 엶 — 같은 로그만 공유.
     if (m_openTerminalBases.contains(base)) return;
     m_openTerminalBases.insert(base);
@@ -3291,8 +3293,16 @@ void MiyoBackend::launchChildConsole(const QString &scriptPath)
     p->setProgram("cmd.exe");
     p->setArguments({"/c", QDir::toNativeSeparators(scriptPath)});
     p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) {
+        // ★ Qt 는 부모가 콘솔 없는 GUI 앱(カメラ)이면 자식에 CREATE_NO_WINDOW 를 자동으로 붙인다
+        //   (GetConsoleWindow()==NULL). 그러면 CREATE_NEW_CONSOLE 를 줘도 새 콘솔이 숨겨져 안 뜬다.
+        //   → CREATE_NO_WINDOW 를 반드시 끄고, 창을 보이게 표시.
         a->flags |= CREATE_NEW_CONSOLE;
-        if (a->startupInfo) a->startupInfo->dwFlags &= ~STARTF_USESTDHANDLES;
+        a->flags &= ~CREATE_NO_WINDOW;
+        if (a->startupInfo) {
+            a->startupInfo->dwFlags &= ~STARTF_USESTDHANDLES;
+            a->startupInfo->dwFlags |= STARTF_USESHOWWINDOW;
+            a->startupInfo->wShowWindow = SW_SHOWNORMAL;
+        }
     });
     QProcess *raw = p;
     connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
@@ -3300,7 +3310,17 @@ void MiyoBackend::launchChildConsole(const QString &scriptPath)
             m_childConsoleProcs.removeAll(raw);
             raw->deleteLater();
         });
+    // ★ 진단: 콘솔 프로세스가 안 뜰 때 원인을 in-app 로그로 노출 (cmd 미해결/권한 등).
+    connect(p, &QProcess::errorOccurred, this, [this, scriptPath](QProcess::ProcessError e) {
+        qWarning() << "[launchChildConsole] errorOccurred" << e << scriptPath;
+        log(QString("⚠️ 모니터링 터미널 실행 실패 (QProcess error %1: %2)")
+                .arg(int(e)).arg(scriptPath), "warning");
+    });
+    connect(p, &QProcess::started, this, [scriptPath]() {
+        qWarning() << "[launchChildConsole] started OK" << scriptPath;
+    });
     m_childConsoleProcs.append(p);
+    qWarning() << "[launchChildConsole] starting" << scriptPath;
     p->start();
 #else
     Q_UNUSED(scriptPath);
@@ -8460,7 +8480,9 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     script += "echo =========================================\r\n";
     script += "echo DONE:%SUCCESS%:%FAIL% > \"%STATUS%\"\r\n";
     script += "del /f \"%STOP_MARKER%\" 2>nul\r\n";
-    script += "echo.\r\n";   // ★ 헤드리스 실행 — pause 제거(콘솔 없음). DONE 은 위에서 status 파일에 기록됨.
+    script += "echo.\r\n";
+    script += "echo   다운로드가 끝났습니다. 이 창을 닫아도 됩니다.\r\n";
+    script += "pause >nul\r\n";   // ★ 보이는 콘솔 — 사용자가 결과를 읽도록 대기. DONE 은 위에서 status 파일에 기록됨(앱은 status 로 감지).
 #else
     // macOS/Linux: generate .command script
     QString scriptPath = tempDir + "/miyo_yt_download.command";
@@ -8574,16 +8596,21 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     // Launch terminal with script
     log(QString("터미널에서 %1개 URL 다운로드 시작...").arg(urls.size()), "info", "youtube");
 #ifdef Q_OS_WIN
-    // ★ yt-dlp .bat 를 콘솔 창 없이(CREATE_NO_WINDOW) 백그라운드 자식 프로세스로 실행.
-    //   (launchChildConsole 은 콘솔 제거로 no-op 화됐는데, 그게 다운로드 실행까지 막았던 회귀 수정.)
-    //   진행상황은 status 파일로 모니터링 → 콘솔 불필요. 종료/정리는 m_childConsoleProcs 로 추적.
+    // ★ yt-dlp .bat 를 보이는 콘솔(CREATE_NEW_CONSOLE)로 실행 — 사용자가 다운로드 진행상황을 직접 본다.
+    //   Qt 는 부모가 콘솔 없는 GUI 앱(カメラ)이면 자식에 CREATE_NO_WINDOW 를 자동으로 붙여 창을 숨긴다
+    //   (GetConsoleWindow()==NULL) → 반드시 끄고 콘솔을 보이게 표시. 종료/정리는 m_childConsoleProcs 로 추적.
     {
         QProcess *p = new QProcess(this);
         p->setProgram("cmd.exe");
         p->setArguments({"/c", QDir::toNativeSeparators(scriptPath)});
         p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) {
-            a->flags |= CREATE_NO_WINDOW;
-            if (a->startupInfo) a->startupInfo->dwFlags &= ~STARTF_USESTDHANDLES;
+            a->flags |= CREATE_NEW_CONSOLE;
+            a->flags &= ~CREATE_NO_WINDOW;
+            if (a->startupInfo) {
+                a->startupInfo->dwFlags &= ~STARTF_USESTDHANDLES;
+                a->startupInfo->dwFlags |= STARTF_USESHOWWINDOW;
+                a->startupInfo->wShowWindow = SW_SHOWNORMAL;
+            }
         });
         QProcess *raw = p;
         connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
