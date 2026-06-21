@@ -3867,9 +3867,28 @@ void MiyoBackend::startCollection(const QString &configJson)
             m_stopRequested[trackKey] = false;
             closeTerminalLog(trackKey);
             m_collectionThreads.remove(trackKey);
-            // 모든 수집이 끝났으면 절전 해제
+            // ★ 이 트랙의 캡쳐용 Chrome 창 자동 닫기 — 수집/다운로드 끝났으니 더 안 씀.
+            {
+                QMutexLocker mapLock(&m_capChromeMapMutex);
+                if (m_captureChromesPerThread.contains(trackKey)) {
+                    RealChromeCrawler *cc = m_captureChromesPerThread.take(trackKey);
+                    if (cc) { cc->stop(); cc->deleteLater(); }
+                }
+            }
+            // 모든 수집이 끝났으면 절전 해제 + 남은 캡쳐 Chrome(단일/잔여) 전부 닫기
             if (m_collectionThreads.isEmpty()) {
                 if (m_window) m_window->releaseAwake();
+                if (m_captureChrome) {
+                    m_captureChrome->stop();
+                    m_captureChrome->deleteLater();
+                    m_captureChrome = nullptr;
+                    m_captureChromeStarted = false;
+                }
+                QMutexLocker mapLock(&m_capChromeMapMutex);
+                for (auto it = m_captureChromesPerThread.begin(); it != m_captureChromesPerThread.end(); ++it) {
+                    if (it.value()) { it.value()->stop(); it.value()->deleteLater(); }
+                }
+                m_captureChromesPerThread.clear();
             }
         });
     });
