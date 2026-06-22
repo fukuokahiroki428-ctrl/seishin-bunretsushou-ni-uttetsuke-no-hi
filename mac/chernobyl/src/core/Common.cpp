@@ -237,6 +237,7 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
     static QString exiftoolPath;
     static QString exiftoolPerl;  // 번들 exiftool용 Perl 인터프리터
     static QString exiftoolPerlLib;
+    static QString exiftoolPerlCoreLib;  // ★ 번들 Perl 의 코어 @INC (자체완결 perl 사용 시)
     if (exiftoolPath.isEmpty()) {
         // 번들된 exiftool (Resources/tools/exiftool/exiftool)
         QString bundledExiftool = bundledResourcesDir() + "/tools/exiftool/exiftool";
@@ -245,12 +246,18 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
         if (QFile::exists(bundledExiftool)) {
             exiftoolPath = bundledExiftool;
             exiftoolPerlLib = bundledResourcesDir() + "/tools/exiftool/lib/perl5";
-            // macOS/Linux 시스템 Perl 사용
-            QStringList perls = {"/usr/bin/perl", "/usr/bin/perl5.34", "/usr/bin/perl5.30"};
-            for (const QString &p : perls) {
-                if (QFile::exists(p)) { exiftoolPerl = p; break; }
+            // ★ 번들 Perl 우선 (자체완결 — 시스템 perl 없어도 동작). 없으면 시스템 perl 폴백.
+            QString bundledPerl = bundledResourcesDir() + "/tools/perl/bin/perl";
+            if (QFile::exists(bundledPerl)) {
+                exiftoolPerl = bundledPerl;
+                exiftoolPerlCoreLib = bundledResourcesDir() + "/tools/perl/lib";  // 번들 perl 코어 @INC
+            } else {
+                QStringList perls = {"/usr/bin/perl", "/usr/bin/perl5.34", "/usr/bin/perl5.30"};
+                for (const QString &p : perls) {
+                    if (QFile::exists(p)) { exiftoolPerl = p; break; }
+                }
+                if (exiftoolPerl.isEmpty()) exiftoolPerl = "perl";
             }
-            if (exiftoolPerl.isEmpty()) exiftoolPerl = "perl";
             qDebug() << "[Common] bundled exiftool:" << exiftoolPath
                      << "perl:" << exiftoolPerl << "lib:" << exiftoolPerlLib;
         } else {
@@ -275,6 +282,11 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
     if (!exiftoolPerl.isEmpty()) {
         // 번들 exiftool: perl -I<lib> exiftool <args>
         QStringList perlArgs;
+        // ★ 번들 perl 코어 @INC (arch lib + base) 먼저 — 시스템 /System/Library/Perl 없이도 동작.
+        if (!exiftoolPerlCoreLib.isEmpty()) {
+            perlArgs << "-I" + exiftoolPerlCoreLib + "/darwin-thread-multi-2level";
+            perlArgs << "-I" + exiftoolPerlCoreLib;
+        }
         if (!exiftoolPerlLib.isEmpty())
             perlArgs << "-I" + exiftoolPerlLib;
         perlArgs << exiftoolPath;
