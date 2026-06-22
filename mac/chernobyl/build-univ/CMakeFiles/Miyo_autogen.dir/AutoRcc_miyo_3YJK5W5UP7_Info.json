@@ -1,0 +1,28 @@
+{
+	"BUILD_DIR" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ/Miyo_autogen",
+	"CMAKE_BINARY_DIR" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ",
+	"CMAKE_CURRENT_BINARY_DIR" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ",
+	"CMAKE_CURRENT_SOURCE_DIR" : "/Users/shio/chernobyl-app/mac/chernobyl",
+	"CMAKE_SOURCE_DIR" : "/Users/shio/chernobyl-app/mac/chernobyl",
+	"CROSS_CONFIG" : false,
+	"GENERATOR" : "Unix Makefiles",
+	"INCLUDE_DIR" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ/Miyo_autogen/include",
+	"INPUTS" : 
+	[
+		"/Users/shio/chernobyl-app/mac/chernobyl/resources/trad_cover.png",
+		"/Users/shio/chernobyl-app/mac/chernobyl/resources/html/index.html",
+		"/Users/shio/chernobyl-app/mac/chernobyl/resources/fonts/NanumGothic-Bold.ttf",
+		"/Users/shio/chernobyl-app/mac/chernobyl/resources/fonts/NanumGothic-Regular.ttf"
+	],
+	"LOCK_FILE" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ/CMakeFiles/Miyo_autogen.dir/AutoRcc_miyo_3YJK5W5UP7_Lock.lock",
+	"MULTI_CONFIG" : false,
+	"OPTIONS" : [ "--no-zstd", "-name", "miyo" ],
+	"OUTPUT_CHECKSUM" : "3YJK5W5UP7",
+	"OUTPUT_NAME" : "qrc_miyo.cpp",
+	"RCC_EXECUTABLE" : "/tmp/qt-univ/6.11.1/macos/libexec/rcc",
+	"RCC_LIST_OPTIONS" : [ "--list" ],
+	"SETTINGS_FILE" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ/CMakeFiles/Miyo_autogen.dir/AutoRcc_miyo_3YJK5W5UP7_Used.txt",
+	"SOURCE" : "/Users/shio/chernobyl-app/mac/chernobyl/resources/miyo.qrc",
+	"USE_BETTER_GRAPH" : true,
+	"VERBOSITY" : 0
+}

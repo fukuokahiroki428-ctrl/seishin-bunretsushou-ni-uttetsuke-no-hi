@@ -1,0 +1,149 @@
+
+---
+events:
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineSystem.cmake:12 (find_program)"
+      - "CMakeLists.txt:16 (project)"
+    mode: "program"
+    variable: "CMAKE_UNAME"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "uname"
+    candidate_directories:
+      - "/tmp/qt-univ/6.11.1/macos/bin/"
+      - "/tmp/qt-univ/6.11.1/macos/sbin/"
+      - "/tmp/qt-univ/6.11.1/macos/"
+      - "/opt/homebrew/opt/python@3.12/bin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/pkg/env/global/bin/"
+      - "/Library/Apple/usr/bin/"
+      - "/opt/homebrew/bin/"
+      - "/Users/shio/Library/Python/3.9/bin/"
+      - "/Users/shio/Library/Application Support/Claude/local-agent-mode-sessions/530a06b2-cc1c-410d-8cfc-8ad5889241da/e351f3f0-6af7-4bab-be36-9161f73f6708/rpm/plugin_0155zZVATbJU3jHUmPP9NvMC/bin/"
+      - "/Users/shio/Library/Application Support/Claude/local-agent-mode-sessions/530a06b2-cc1c-410d-8cfc-8ad5889241da/e351f3f0-6af7-4bab-be36-9161f73f6708/rpm/plugin_01XXJmxLXPEhPMmnxmrgntNw/bin/"
+      - "/Users/shio/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/e351f3f0-6af7-4bab-be36-9161f73f6708/530a06b2-cc1c-410d-8cfc-8ad5889241da/bin/"
+    searched_directories:
+      - "/tmp/qt-univ/6.11.1/macos/bin/uname"
+      - "/tmp/qt-univ/6.11.1/macos/sbin/uname"
+      - "/tmp/qt-univ/6.11.1/macos/uname"
+      - "/opt/homebrew/opt/python@3.12/bin/uname"
+      - "/usr/local/bin/uname"
+      - "/System/Cryptexes/App/usr/bin/uname"
+    found: "/usr/bin/uname"
+    search_context:
+      ENV{CMAKE_PREFIX_PATH}:
+        - "/tmp/qt-univ/6.11.1/macos"
+      ENV{PATH}:
+        - "/opt/homebrew/opt/python@3.12/bin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/pkg/env/global/bin"
+        - "/Library/Apple/usr/bin"
+        - "/opt/homebrew/bin"
+        - "/Users/shio/Library/Python/3.9/bin"
+        - "/Users/shio/Library/Application Support/Claude/local-agent-mode-sessions/530a06b2-cc1c-410d-8cfc-8ad5889241da/e351f3f0-6af7-4bab-be36-9161f73f6708/rpm/plugin_0155zZVATbJU3jHUmPP9NvMC/bin"
+        - "/Users/shio/Library/Application Support/Claude/local-agent-mode-sessions/530a06b2-cc1c-410d-8cfc-8ad5889241da/e351f3f0-6af7-4bab-be36-9161f73f6708/rpm/plugin_01XXJmxLXPEhPMmnxmrgntNw/bin"
+        - "/Users/shio/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/e351f3f0-6af7-4bab-be36-9161f73f6708/530a06b2-cc1c-410d-8cfc-8ad5889241da/bin"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/CMakeDetermineSystem.cmake:212 (message)"
+      - "CMakeLists.txt:16 (project)"
+    message: |
+      The system is: Darwin - 25.5.0 - arm64
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/homebrew/share/cmake/Modules/Platform/Darwin.cmake:76 (find_program)"
+      - "/opt/homebrew/share/cmake/Modules/CMakeSystemSpecificInformation.cmake:32 (include)"
+      - "CMakeLists.txt:16 (project)"
+    mode: "program"
+    variable: "CMAKE_INSTALL_NAME_TOOL"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "install_name_tool"
+    candidate_directories:
+      - "/tmp/qt-univ/6.11.1/macos/bin/"
+      - "/tmp/qt-univ/6.11.1/macos/sbin/"
+      - "/tmp/qt-univ/6.11.1/macos/"
+      - "/opt/homebrew/opt/python@3.12/bin/"
+      - "/usr/local/bin/"
+      - "/System/Cryptexes/App/usr/bin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin/"
+      - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin/"
+      - "/pkg/env/global/bin/"
+      - "/Library/Apple/usr/bin/"
+      - "/opt/homebrew/bin/"
+      - "/Users/shio/Library/Python/3.9/bin/"
+      - "/Users/shio/Library/Application Support/Claude/local-agent-mode-sessions/530a06b2-cc1c-410d-8cfc-8ad5889241da/e351f3f0-6af7-4bab-be36-9161f73f6708/rpm/plugin_0155zZVATbJU3jHUmPP9NvMC/bin/"
+      - "/Users/shio/Library/Application Support/Claude/local-agent-mode-sessions/530a06b2-cc1c-410d-8cfc-8ad5889241da/e351f3f0-6af7-4bab-be36-9161f73f6708/rpm/plugin_01XXJmxLXPEhPMmnxmrgntNw/bin/"
+      - "/Users/shio/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/e351f3f0-6af7-4bab-be36-9161f73f6708/530a06b2-cc1c-410d-8cfc-8ad5889241da/bin/"
+    searched_directories:
+      - "/tmp/qt-univ/6.11.1/macos/bin/install_name_tool"
+      - "/tmp/qt-univ/6.11.1/macos/sbin/install_name_tool"
+      - "/tmp/qt-univ/6.11.1/macos/install_name_tool"
+      - "/opt/homebrew/opt/python@3.12/bin/install_name_tool"
+      - "/usr/local/bin/install_name_tool"
+      - "/System/Cryptexes/App/usr/bin/install_name_tool"
+    found: "/usr/bin/install_name_tool"
+    search_context:
+      ENV{CMAKE_PREFIX_PATH}:
+        - "/tmp/qt-univ/6.11.1/macos"
+      ENV{PATH}:
+        - "/opt/homebrew/opt/python@3.12/bin"
+        - "/usr/local/bin"
+        - "/System/Cryptexes/App/usr/bin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin"
+        - "/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin"
+        - "/pkg/env/global/bin"
+        - "/Library/Apple/usr/bin"
+        - "/opt/homebrew/bin"
+        - "/Users/shio/Library/Python/3.9/bin"
+        - "/Users/shio/Library/Application Support/Claude/local-agent-mode-sessions/530a06b2-cc1c-410d-8cfc-8ad5889241da/e351f3f0-6af7-4bab-be36-9161f73f6708/rpm/plugin_0155zZVATbJU3jHUmPP9NvMC/bin"
+        - "/Users/shio/Library/Application Support/Claude/local-agent-mode-sessions/530a06b2-cc1c-410d-8cfc-8ad5889241da/e351f3f0-6af7-4bab-be36-9161f73f6708/rpm/plugin_01XXJmxLXPEhPMmnxmrgntNw/bin"
+        - "/Users/shio/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/e351f3f0-6af7-4bab-be36-9161f73f6708/530a06b2-cc1c-410d-8cfc-8ad5889241da/bin"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+...

@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ/_deps/qxlsx-subbuild/CMakeFiles/qxlsx-populate"
+		},
+		{
+			"file" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ/_deps/qxlsx-subbuild/CMakeFiles/qxlsx-populate.rule"
+		},
+		{
+			"file" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ/_deps/qxlsx-subbuild/CMakeFiles/qxlsx-populate-complete.rule"
+		},
+		{
+			"file" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ/_deps/qxlsx-subbuild/qxlsx-populate-prefix/src/qxlsx-populate-stamp/qxlsx-populate-build.rule"
+		},
+		{
+			"file" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ/_deps/qxlsx-subbuild/qxlsx-populate-prefix/src/qxlsx-populate-stamp/qxlsx-populate-configure.rule"
+		},
+		{
+			"file" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ/_deps/qxlsx-subbuild/qxlsx-populate-prefix/src/qxlsx-populate-stamp/qxlsx-populate-download.rule"
+		},
+		{
+			"file" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ/_deps/qxlsx-subbuild/qxlsx-populate-prefix/src/qxlsx-populate-stamp/qxlsx-populate-install.rule"
+		},
+		{
+			"file" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ/_deps/qxlsx-subbuild/qxlsx-populate-prefix/src/qxlsx-populate-stamp/qxlsx-populate-mkdir.rule"
+		},
+		{
+			"file" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ/_deps/qxlsx-subbuild/qxlsx-populate-prefix/src/qxlsx-populate-stamp/qxlsx-populate-patch.rule"
+		},
+		{
+			"file" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ/_deps/qxlsx-subbuild/qxlsx-populate-prefix/src/qxlsx-populate-stamp/qxlsx-populate-test.rule"
+		},
+		{
+			"file" : "/Users/shio/chernobyl-app/mac/chernobyl/build-univ/_deps/qxlsx-subbuild/qxlsx-populate-prefix/src/qxlsx-populate-stamp/qxlsx-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"qxlsx-populate"
+		],
+		"name" : "qxlsx-populate"
+	}
+}

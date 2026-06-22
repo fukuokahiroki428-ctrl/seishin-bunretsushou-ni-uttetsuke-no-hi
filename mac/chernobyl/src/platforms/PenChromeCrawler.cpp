@@ -43,10 +43,15 @@ QString PenChromeCrawler::findChromeExecutable() const
     // 후보 경로 — 사용자가 어떤 Chromium 계열 브라우저든 깔려있을 가능성을 모두 검사
     QStringList candidates;
 #ifdef Q_OS_MACOS
-    // ★ 번들된 Chromium 최우선 (있으면)
-    QString bundledChromium = QCoreApplication::applicationDirPath()
-        + "/../Resources/chromium/Chromium.app/Contents/MacOS/Google Chrome for Testing";
-    candidates << bundledChromium;
+    // ★ 번들된 Chromium 최우선 — 유니버설 빌드: arch 슬라이스별 자기 arch 선택.
+    const QString resDir = QCoreApplication::applicationDirPath() + "/../Resources/";
+    const QString chromeExe = "/Contents/MacOS/Google Chrome for Testing";
+#if defined(__aarch64__)
+    candidates << resDir + "chromium_arm64/Chromium.app" + chromeExe;
+#else
+    candidates << resDir + "chromium_x86_64/Chromium.app" + chromeExe;
+#endif
+    candidates << resDir + "chromium/Chromium.app" + chromeExe;   // 호환 폴백
     candidates
         << "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         << "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"

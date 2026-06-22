@@ -324,9 +324,20 @@ QString bundledResourcesDir()
 #endif
 }
 
+// ★ 유니버설 빌드: arch 슬라이스별로 #if 가 각각 컴파일되므로 런타임 arch 에 맞는 접미사가 박힌다.
+//   (arm64 슬라이스 → _arm64, x86_64 슬라이스 → _x86_64). Intel/Apple Silicon 둘 다 자체 python 사용.
+#if defined(Q_OS_MACOS) && defined(__aarch64__)
+#  define KAMERA_PY_ARCH "_arm64"
+#elif defined(Q_OS_MACOS)
+#  define KAMERA_PY_ARCH "_x86_64"
+#else
+#  define KAMERA_PY_ARCH ""
+#endif
+
 QString userPythonEnvDir()
 {
-    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/python_env";
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+           + "/python_env" KAMERA_PY_ARCH;
 }
 
 #ifdef Q_OS_MACOS
@@ -353,7 +364,10 @@ QString activePythonEnvDir()
     QMutexLocker lock(&seedMutex);
     if (QFile::exists(extPy)) return ext;   // 락 대기 중 다른 스레드가 끝냈을 수 있음
 
-    const QString bundled = bundledResourcesDir() + "/python_env";
+    QString bundled = bundledResourcesDir() + "/python_env" KAMERA_PY_ARCH;
+    // 호환: arch 별 디렉토리가 없으면 단일 python_env 로 폴백 (구 번들/단일 arch 빌드).
+    if (!QFile::exists(bundled + "/bin/python3"))
+        bundled = bundledResourcesDir() + "/python_env";
     if (!QFile::exists(bundled + "/bin/python3"))
         return ext;   // 번들에도 없음 → 외부 경로 반환(새 설치 대상이 됨)
 
