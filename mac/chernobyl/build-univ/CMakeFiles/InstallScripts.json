@@ -1,8 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/Users/shio/chernobyl-app/mac/chernobyl/build-univ/cmake_install.cmake",
-		"/Users/shio/chernobyl-app/mac/chernobyl/build-univ/_deps/qxlsx-build/cmake_install.cmake"
-	],
-	"Parallel" : false
-}
