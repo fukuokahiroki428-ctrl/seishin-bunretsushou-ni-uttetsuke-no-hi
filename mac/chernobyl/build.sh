@@ -51,6 +51,10 @@ fi
 #   이들은 codesign "sealed resource missing" → 번들이 macOS 에서 SIGKILL 되는 원인이었다.
 #   (이전 build.sh 가 이걸 다시 넣어 CMake 가 고친 버그를 재현하고 있었음)
 
+# ★ QtWebEngineProcess 헬퍼의 /opt/homebrew 절대경로 → @rpath 정정 (macdeployqt 가 헬퍼는 안 고침).
+#   안 하면 배포본에서 렌더러가 못 떠 '백지 창'이 된다. (위 @executable_path 처리와 상보적)
+bash "$(dirname "$0")/fix_webengine_helper.sh" "$APPDIR" || true
+
 echo "=== Codesign (inside-out + --deep --strict verify) ==="
 # 단일 서명 경로로 위임 — 서명/검증 실패 시 codesign_app.sh 가 exit 1 → set -e 로 중단.
 bash "$(dirname "$0")/codesign_app.sh" "$APPDIR"
