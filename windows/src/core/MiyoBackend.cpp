@@ -8359,7 +8359,12 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
             log(QString("YouTube 쿠키: 브라우저 %1 에서 읽기 시도").arg(cookiesBrowser), "info", "youtube");
         }
         // 차단되는 android_vr 대신 견고한 player_client 우선(쿠키 있으면 default=web 가 인증되어 동작).
-        baseArgs << "--extractor-args" << "youtube:player_client=default,tv,web_safari";
+        //   ★ player_client + (댓글 옵션)을 하나의 youtube extractor-args 로 합쳐 1회만 전달한다.
+        //   yt-dlp 는 같은 extractor 를 여러 --extractor-args 로 주면 뒤엣것이 앞 dict 를 덮어쓸 수
+        //   있어, 댓글의 comment_sort 가 player_client 를 날릴 위험이 있음 → 합쳐서 회피.
+        QString ytExtractorArgs = "youtube:player_client=default,tv,web_safari";
+        if (config["comments"].toBool()) ytExtractorArgs += ";comment_sort=top;max_comments=300";
+        baseArgs << "--extractor-args" << ytExtractorArgs;
     }
 
     // ★ 대량 다운로드 이어받기 — 봇 차단으로 일부가 실패해도 재실행 시 완료분은 건너뛰고
@@ -8427,7 +8432,8 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     //   다운로드 후 읽기 좋은 .comments.txt 로도 변환(아래 후처리). 과부하 방지: 상위 정렬 + 상한 300.
     if (config["comments"].toBool()) {
         baseArgs << "--write-comments";
-        baseArgs << "--extractor-args" << "youtube:comment_sort=top;max_comments=300";
+        // comment_sort/max_comments 는 위 player_client 와 합쳐 youtube extractor-args 로 1회 전달함
+        // (별도 --extractor-args 로 주면 player_client 를 덮어쓸 수 있어 통합).
     }
 
     // ★ 임시 script/status 는 로컬 temp 에 (NAS 는 POSIX 실행권한 보존 안 함 → .command 실행 실패).
