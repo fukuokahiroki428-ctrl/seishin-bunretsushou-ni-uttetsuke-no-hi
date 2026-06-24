@@ -2,6 +2,7 @@
 #include "FileHelper.h"
 #include <QTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QThread>
 #include <QDateTime>
 #include <QProcess>
@@ -67,6 +68,14 @@ HttpResponse HttpClient::postJson(const QString &url, const QJsonObject &json,
 bool HttpClient::downloadFile(const QString &url, const QString &filePath,
                                const QMap<QString, QString> &headers)
 {
+    // ★ 이어받기(resume) — 이미 받은(완료) 파일이면 재다운로드 없이 스킵.
+    //   이 함수는 실패/빈 파일을 항상 지우므로(하단), 존재하는 size>0 파일 = 이전 완료분이다.
+    //   덕분에 이 헬퍼를 쓰는 모든 수집기(Twitter/Instagram/Discord/Pixiv/Fanbox/Tumblr/
+    //   Asked/SpinSpin)가 중단·재실행 시 이미 받은 미디어를 건너뛰고 새 것만 받는다.
+    {
+        QFileInfo _fi(filePath);
+        if (_fi.exists() && _fi.size() > 0) return true;
+    }
     waitForRateLimit();
 
     QNetworkRequest request{QUrl(url)};
@@ -149,6 +158,24 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
                                                       const QMap<QString, QString> &headers)
 {
     DownloadResult result;
+    // ★ 이어받기 — 이미 받은 파일이면 스킵하되, 호출부(SiteCrawler 의 중복제거/보안스캔)가 쓰는
+    //   sha256/headBytes/contentLength 는 기존 파일에서 다시 계산해 채운다(동작 동일성 보장).
+    {
+        QFileInfo _fi(filePath);
+        if (_fi.exists() && _fi.size() > 0) {
+            QFile _ef(filePath);
+            if (_ef.open(QIODevice::ReadOnly)) {
+                result.headBytes = _ef.peek(512);
+                QCryptographicHash _h(QCryptographicHash::Sha256);
+                if (_h.addData(&_ef)) result.sha256 = _h.result();
+                _ef.close();
+            }
+            result.success = true;
+            result.statusCode = 200;
+            result.contentLength = _fi.size();
+            return result;
+        }
+    }
     waitForRateLimit();
 
     QNetworkRequest request{QUrl(url)};
