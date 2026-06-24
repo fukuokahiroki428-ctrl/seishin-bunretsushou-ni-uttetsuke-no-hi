@@ -12237,11 +12237,17 @@ void MiyoBackend::upgradePython()
         }
 
         // GitHub API로 최신 릴리스 찾기
-        QString arch = "aarch64-apple-darwin";
-#ifdef Q_OS_WIN
-        arch = "x86_64-pc-windows-msvc-shared";
+        // ★ 유니버설 빌드: 슬라이스별 arch 에 맞는 standalone python 을 받는다.
+        //   인텔 Mac(x86_64 슬라이스)이 aarch64 python 을 받으면 실행 불가 → 자동 보수가 깨진다.
+        //   유니버설 바이너리는 슬라이스마다 __x86_64__ / __aarch64__ 가 따로 컴파일됨.
+#if defined(Q_OS_WIN)
+        QString arch = "x86_64-pc-windows-msvc-shared";
 #elif defined(Q_OS_LINUX)
-        arch = "x86_64-unknown-linux-gnu";
+        QString arch = "x86_64-unknown-linux-gnu";
+#elif defined(__x86_64__)
+        QString arch = "x86_64-apple-darwin";   // 인텔 Mac
+#else
+        QString arch = "aarch64-apple-darwin";  // Apple Silicon
 #endif
 
         // curl로 최신 릴리스 검색
@@ -12350,7 +12356,8 @@ void MiyoBackend::upgradePython()
         log("  정리 중...", "info", "settings");
         // ★ rm -rf 안전 가드 — pythonDir 이 비었거나 예상 밖 경로면 정리 스킵.
         //   (pythonDir 이 빈 문자열이면 rm -rf '/share' 같은 사고가 날 수 있음)
-        if (pythonDir.endsWith("/python_env") && QDir(pythonDir + "/bin").exists()) {
+        // ★ arch 접미사(python_env_arm64/_x86_64)까지 매칭 — 마지막 경로 요소가 python_env* 인지로 가드.
+        if (QFileInfo(pythonDir).fileName().startsWith("python_env") && QDir(pythonDir + "/bin").exists()) {
             QProcess cleanProc;
             cleanProc.start("bash", {"-c", QString(
                 "find '%1' -name tests -type d -exec rm -rf {} + 2>/dev/null;"
