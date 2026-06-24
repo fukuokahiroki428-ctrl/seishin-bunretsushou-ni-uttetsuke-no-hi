@@ -3088,18 +3088,28 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
         content += "@echo off\r\n";
         content += "chcp 65001 >nul\r\n";
         content += "title ABIWA - " + platform.toUpper() + "\r\n";
-        content += ":loop\r\n";
-        content += "cls\r\n";
-        content += "type \"" + QDir::toNativeSeparators(logPath) + "\"\r\n";
-        content += "%SystemRoot%\\System32\\timeout.exe /t 2 /nobreak >nul\r\n";   // ★ PATH 에 GNU timeout 있어도 Windows timeout 강제
-        content += "findstr /C:\"[DONE]\" \"" + QDir::toNativeSeparators(logPath) + "\" >nul 2>&1\r\n";
-        content += "if %errorlevel%==0 (\r\n";
-        content += "  echo.\r\n";
-        content += "  echo 터미널을 닫아도 됩니다.\r\n";
-        content += "  pause >nul\r\n";
-        content += "  exit /b 0\r\n";
-        content += ")\r\n";
-        content += "goto loop\r\n";
+        // ★ 렉 방지 — 옛 방식은 `:loop / cls / type 전체파일 / timeout 2 / goto loop` 라
+        //   로그가 길어지면 매 2초 전체 파일을 다시 그려(콘솔 full clear+redraw) CPU/GPU 부담 → 렉.
+        //   PowerShell `Get-Content -Wait -Tail` 로 교체: 마지막 N줄만 띄우고 이후 신규 라인만 append
+        //   (전체 재그리기/재읽기 X) → 가볍고 실시간. [DONE] 라인 만나면 종료. (macOS 의 tail -f 와 동등)
+        //   ※ Get-Content -Wait 는 파일을 잡아 앱의 append 쓰기를 막을 수 있어(라인 누락) 사용 X.
+        //   수동 증분 tail: FileShare.ReadWrite 로 열어(앱 동시 쓰기 허용) 새 바이트만 읽고 즉시 닫음.
+        QString nativeLog = QDir::toNativeSeparators(logPath);
+        content += "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
+                   "$p='" + nativeLog + "'; $pos=0;"
+                   " [Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+                   " $enc=[System.Text.Encoding]::UTF8;"
+                   " while($true){ try{"
+                   " $fs=[System.IO.File]::Open($p,'Open','Read','ReadWrite');"
+                   " [void]$fs.Seek($pos,'Begin');"
+                   " $sr=New-Object System.IO.StreamReader($fs,$enc);"
+                   " $n=$sr.ReadToEnd(); $pos=$fs.Position; $sr.Dispose(); $fs.Dispose();"
+                   " if($n){ [Console]::Out.Write($n); [Console]::Out.Flush();"
+                   " if($n -match '\\[DONE\\]'){break} } }catch{}"
+                   " Start-Sleep -Milliseconds 700 }\"\r\n";
+        content += "echo.\r\n";
+        content += "echo 터미널을 닫아도 됩니다.\r\n";
+        content += "pause >nul\r\n";
         script.write(content.toUtf8());
         script.close();
     }
