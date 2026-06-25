@@ -8382,6 +8382,12 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     //   같은 다운로드를 몇 번 다시 돌리면 100% 수렴한다. 무로그인 봇차단 대응의 핵심.
     baseArgs << "--download-archive" << QDir::toNativeSeparators(ytBaseDir + "/.yt_archive.txt");
     baseArgs << "--ignore-errors";   // 한 영상 실패가 전체 재생목록/채널 배치를 멈추지 않게
+    // ★ 이어서 받기 보강 — 아카이브(ID 기록)만으론 그 전에 이미 받아둔 영상(기록 없음)을 못 거른다.
+    //   --no-overwrites : 최종 파일이 이미 있으면 건너뜀(파일 존재 기준 — 기존 다운로드분도 스킵.
+    //                     수집기의 이어받기와 동일한 동작). 아카이브와 병행해 이중 안전망.
+    //   --continue      : 중간에 끊긴 영상은 .part 부터 이어받음(처음부터 다시 받지 않음).
+    baseArgs << "--no-overwrites";
+    baseArgs << "--continue";
 
     // ★ 파일명 크로스플랫폼 — yt-dlp 가 Windows 금지문자/예약어를 모든 OS에서 회피하도록 강제.
     //   Windows-safe ⊂ macOS-safe 라 맥/윈도우 어디서나 열리는 이름이 됨 (NAS·이동 시 안전).
