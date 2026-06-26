@@ -4539,6 +4539,42 @@ void MiyoBackend::stopYoutube()
     runJs("setYoutubeProgress(0)");
 }
 
+// ───────── 니코니코동화(니코동) — yt-dlp 파이프라인 재사용 (platform="niconico") ─────────
+void MiyoBackend::startNiconico(const QString &configJson)
+{
+    QJsonDocument doc = QJsonDocument::fromJson(configJson.toUtf8());
+    if (doc.isNull()) return;
+    QJsonObject config = doc.object();
+    config["platform"] = "niconico";          // runYoutubeDownload 가 <path>/niconico 로 저장 + 로그/게이지 키
+    m_lastConfig["niconico"] = config;
+    m_isRunning["niconico"] = true;
+    if (m_window) m_window->holdAwake();
+
+    QThread *thread = QThread::create([this, config]() {
+        runYoutubeDownload(config);
+        QMetaObject::invokeMethod(this, [this]() {
+            m_isRunning["niconico"] = false;
+            if (!isAnyRunning() && m_window) m_window->releaseAwake();
+        });
+    });
+    connect(thread, &QThread::finished, thread, &QThread::deleteLater);
+    thread->start();
+}
+
+void MiyoBackend::stopNiconico()
+{
+    m_isRunning["niconico"] = false;   // 모니터 루프 즉시 탈출
+    // 터미널 스크립트에 stop 신호 (스크립트가 STOP_MARKER 폴링하며 자기 yt-dlp 만 kill — 동시 youtube 보호)
+    QString tempDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_niconico";
+    QFile stopFile(tempDir + "/miyo_yt_status.txt.stop");
+    if (stopFile.open(QIODevice::WriteOnly)) { stopFile.write("STOP"); stopFile.close(); }
+    QFile sf(tempDir + "/miyo_yt_status.txt");
+    if (sf.open(QIODevice::WriteOnly)) { sf.write("DONE:0:0"); sf.close(); }
+    log("ニコニコ 다운로드 중지됨", "warning", "niconico");
+    updateStats(0, 0, "중지됨", "niconico");
+    runJs("var _e=document.getElementById('niconico-progress-fill'); if(_e)_e.style.width='0%';");
+}
+
 void MiyoBackend::analyzeYoutube(const QString &url)
 {
     QThread *thread = QThread::create([this, url]() {
@@ -8342,6 +8378,11 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
 
 void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 {
+    // ★ platform: "youtube"(기본) 또는 "niconico" — yt-dlp 파이프라인 공용 (니코동도 yt-dlp 가 처리).
+    const QString platform = config.value("platform").toString().isEmpty()
+                             ? QStringLiteral("youtube") : config["platform"].toString();
+    const QString plabel = (platform == "niconico") ? QStringLiteral("ニコニコ") : QStringLiteral("YouTube");
+
     QString url = config["url"].toString();
     QString path = config["path"].toString();
     path.replace("~", QDir::homePath());
@@ -8349,8 +8390,8 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     QString quality = config["quality"].toString("1080p");
     QString type = config["type"].toString("video");
 
-    // 공통 저장 정책: youtube/{video|audio|thumbnail}/ + youtube/_complete/
-    QString ytBaseDir = path + "/youtube";
+    // 공통 저장 정책: <platform>/{video|audio|thumbnail}/ + <platform>/_complete/
+    QString ytBaseDir = path + "/" + platform;
     QDir().mkpath(ytBaseDir);
     QString ytTypeDir = FileHelper::typeFolder(ytBaseDir, type);
     QString ytCompleteDir = FileHelper::typeFolder(ytBaseDir, "complete");
@@ -8364,7 +8405,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     }
 
     if (urls.isEmpty()) {
-        log("No valid URLs", "error", "youtube");
+        log("No valid URLs", "error", platform);
         return;
     }
 
@@ -8415,14 +8456,21 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     baseArgs << "--embed-chapters";     // ★ 유튜브 챕터를 mp4 챕터 마커로 임베드 (챕터 없으면 자동 무시 · ffmpeg 이미 사용)
     baseArgs << "--write-info-json";
     // ★ 댓글 수집(설정 토글) — info.json 에 comments[] 가 담기고, 후처리에서 .comments.txt 로 변환.
-    if (config["comments"].toBool()) {
+    if (config["comments"].toBool() && platform == "youtube") {
         baseArgs << "--write-comments";
         baseArgs << "--extractor-args" << "youtube:comment_sort=top;max_comments=300";
+    } else if (config["comments"].toBool()) {
+        baseArgs << "--write-comments";   // 니코동 등: 정렬 옵션 없이 댓글만
     }
+    // ★ 니코동 로그인 필요 영상 — 사용자 Chrome 쿠키 사용(옵션)
+    if (config["browserCookies"].toBool())
+        baseArgs << "--cookies-from-browser" << "chrome";
 
     // ★ 임시 script/status 는 로컬 temp 에 (NAS 는 POSIX 실행권한 보존 안 함 → .command 실행 실패).
     //   yt-dlp output 은 ytBaseDir (NAS 가능) 로 그대로.
-    QString tempDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_yt";
+    // youtube 는 기존 abiwa_yt 유지(stopYoutube 호환), 그 외 플랫폼은 abiwa_<platform>
+    QString tempDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString())
+                      + "/abiwa_" + (platform == "youtube" ? QStringLiteral("yt") : platform);
     QDir().mkpath(tempDir);
 
     QString statusFile = tempDir + "/miyo_yt_status.txt";
@@ -8511,7 +8559,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     script += "echo 'STARTED' > \"$STATUS\"\n\n";
     script += "clear\n";
     script += "echo '========================================='\n";
-    script += "echo '  ABIWA - YouTube ダウンロード'\n";
+    script += "echo '  ABIWA - " + plabel + " ダウンロード'\n";
     script += QString("echo '  총 %1개 URL'\n").arg(urls.size());
     script += "echo '========================================='\n";
     script += "echo ''\n\n";
@@ -8586,7 +8634,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     // Write script
     QFile scriptFile(scriptPath);
     if (!scriptFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        log("스크립트 생성 실패", "error", "youtube");
+        log("스크립트 생성 실패", "error", platform);
         return;
     }
     scriptFile.write(script.toUtf8());
@@ -8600,7 +8648,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 #endif
 
     // Launch terminal with script
-    log(QString("터미널에서 %1개 URL 다운로드 시작...").arg(urls.size()), "info", "youtube");
+    log(QString("터미널에서 %1개 URL 다운로드 시작...").arg(urls.size()), "info", platform);
 #ifdef Q_OS_WIN
     QProcess::startDetached("cmd.exe", {"/c", "start", "ABIWA-YouTube", QDir::toNativeSeparators(scriptPath)});
 #else
@@ -8608,7 +8656,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 #endif
 
     // Monitor progress from status file
-    while (m_isRunning.value("youtube", false)) {
+    while (m_isRunning.value(platform, false)) {
         QThread::sleep(1);
 
         QFile sf(statusFile);
@@ -8620,10 +8668,11 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
             QStringList parts = status.split(":");
             int success = parts.value(1).toInt();
             int fail = parts.value(2).toInt();
-            runJs("setYoutubeProgress(100)");
-            log(QString("Complete! Success: %1, Failed: %2").arg(success).arg(fail), "success", "youtube");
-            log("Path: " + path, "info", "youtube");
-            updateStats(success, fail, "Done", "youtube");
+            runJs(QString("var _e=document.getElementById('%1-progress-fill'); if(_e)_e.style.width='100%';").arg(platform));
+            if (platform == "youtube") runJs("if(window.setYoutubeProgress)setYoutubeProgress(100)");
+            log(QString("Complete! Success: %1, Failed: %2").arg(success).arg(fail), "success", platform);
+            log("Path: " + path, "info", platform);
+            updateStats(success, fail, "Done", platform);
 
             // ── Post-processing: _complete 미러 + Excel 생성 ──
             QDirIterator it(ytTypeDir, {"*.info.json"}, QDir::Files, QDirIterator::Subdirectories);
@@ -8665,7 +8714,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                     Common::addExifMetadata(mediaPath,
                         uploader.isEmpty() ? "" : "@" + uploader,
                         descr.isEmpty() ? title : descr,
-                        "YouTube @" + uploader, ytUrl,
+                        plabel + " @" + uploader, ytUrl,
                         dt.isValid() ? dt.toString("yyyy:MM:dd HH:mm:ss") : "");
                     // Finder/Spotlight 코멘트 = URL + 제목 + 설명(앞부분) → Get Info/검색에서 보임.
                     //   (전체 설명은 yt-dlp --write-description 의 .description 사이드카에도 저장됨)
@@ -8726,7 +8775,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                             log(QString("💬 댓글 %1개 저장: %2")
                                     .arg(comments.size())
                                     .arg(QFileInfo(base + ".comments.txt").fileName()),
-                                "success", "youtube");
+                                "success", platform);
                         }
                     }
                 }
@@ -8777,9 +8826,9 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                 writer.save(excelPath);
             };
             if (!rows.isEmpty()) {
-                writeExcel(FileHelper::typeExcelPath(ytExcelDir, "youtube", type));
-                writeExcel(FileHelper::typeExcelPath(ytExcelDir, "youtube", "complete"));
-                log(QString("📊 Excel 저장: %1개 항목").arg(rows.size()), "success", "youtube");
+                writeExcel(FileHelper::typeExcelPath(ytExcelDir, platform, type));
+                writeExcel(FileHelper::typeExcelPath(ytExcelDir, platform, "complete"));
+                log(QString("📊 Excel 저장: %1개 항목").arg(rows.size()), "success", platform);
             }
             break;
         } else if (status.startsWith("PROGRESS:")) {
@@ -8787,8 +8836,9 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
             int current = parts.value(1).toInt();
             int total = parts.value(2).toInt();
             int pct = (current * 100) / qMax(total, 1);
-            runJs(QString("setYoutubeProgress(%1)").arg(pct));
-            updateStats(current, 0, "Downloading", "youtube");
+            runJs(QString("var _e=document.getElementById('%1-progress-fill'); if(_e)_e.style.width='%2%';").arg(platform).arg(pct));
+            if (platform == "youtube") runJs(QString("if(window.setYoutubeProgress)setYoutubeProgress(%1)").arg(pct));
+            updateStats(current, 0, "Downloading", platform);
         }
     }
 
