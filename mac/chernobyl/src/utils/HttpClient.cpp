@@ -1,4 +1,5 @@
 #include "HttpClient.h"
+#include <QFileInfo>
 #include "FileHelper.h"
 #include <QTimer>
 #include <QFile>
@@ -67,6 +68,8 @@ HttpResponse HttpClient::postJson(const QString &url, const QJsonObject &json,
 bool HttpClient::downloadFile(const QString &url, const QString &filePath,
                                const QMap<QString, QString> &headers)
 {
+    // ★ 핸드오프 F: 이어받기 — 이미 받은(존재 + size>0) 파일은 스킵. (실패/빈 파일은 항상 지워지므로 안전)
+    { QFileInfo fi(filePath); if (fi.exists() && fi.size() > 0) return true; }
     waitForRateLimit();
 
     QNetworkRequest request{QUrl(url)};
@@ -149,6 +152,26 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
                                                       const QMap<QString, QString> &headers)
 {
     DownloadResult result;
+    // ★ 핸드오프 F: 이어받기 — 이미 받은(존재 + size>0) 파일은 스킵하되,
+    //   호출부(중복제거/보안스캔)가 쓰는 sha256/headBytes/contentLength 를 기존 파일에서 재계산해 채운 뒤 return.
+    {
+        QFileInfo fi(filePath);
+        if (fi.exists() && fi.size() > 0) {
+            QFile ef(filePath);
+            if (ef.open(QIODevice::ReadOnly)) {
+                result.headBytes = ef.peek(512);
+                QCryptographicHash h(QCryptographicHash::Sha256);
+                QByteArray buf;
+                while (!(buf = ef.read(1 << 20)).isEmpty()) h.addData(buf);
+                ef.close();
+                result.sha256 = h.result();
+                result.contentLength = fi.size();
+                result.statusCode = 200;
+                result.success = true;
+                return result;   // 동작 동일성 보장 (필드 채워 반환)
+            }
+        }
+    }
     waitForRateLimit();
 
     QNetworkRequest request{QUrl(url)};

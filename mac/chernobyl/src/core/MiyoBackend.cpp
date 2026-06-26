@@ -8456,15 +8456,27 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     baseArgs << "--embed-chapters";     // ★ 유튜브 챕터를 mp4 챕터 마커로 임베드 (챕터 없으면 자동 무시 · ffmpeg 이미 사용)
     baseArgs << "--write-info-json";
     // ★ 댓글 수집(설정 토글) — info.json 에 comments[] 가 담기고, 후처리에서 .comments.txt 로 변환.
-    if (config["comments"].toBool() && platform == "youtube") {
-        baseArgs << "--write-comments";
-        baseArgs << "--extractor-args" << "youtube:comment_sort=top;max_comments=300";
-    } else if (config["comments"].toBool()) {
-        baseArgs << "--write-comments";   // 니코동 등: 정렬 옵션 없이 댓글만
+    if (config["comments"].toBool()) baseArgs << "--write-comments";
+
+    // ★ 핸드오프 G: YouTube 봇차단 대응 — player_client 로 android_vr 차단 회피.
+    //   yt-dlp 는 같은 extractor 에 --extractor-args 를 여러 번 주면 덮어쓰므로,
+    //   player_client 와 댓글 정렬(comment_sort/max_comments)을 '단일' youtube extractor-args 로 통합한다.
+    if (platform == "youtube") {
+        QString ea = "youtube:player_client=default,tv,web_safari";
+        if (config["comments"].toBool()) ea += ";comment_sort=top;max_comments=300";
+        baseArgs << "--extractor-args" << ea;
+        // 앱 폴더 youtube_cookies.txt(Netscape) 있으면 자동 사용 (--cookies-from-browser 는 Chrome v127+ 앱바운드 암호화로 불가)
+        QString ck = QCoreApplication::applicationDirPath() + "/youtube_cookies.txt";
+        if (QFile::exists(ck)) { baseArgs << "--cookies" << ck; log("youtube_cookies.txt 사용", "info", platform); }
     }
-    // ★ 니코동 로그인 필요 영상 — 사용자 Chrome 쿠키 사용(옵션)
+    // 니코동 로그인 필요 영상 — 사용자 Chrome 쿠키 사용(옵션)
     if (config["browserCookies"].toBool())
         baseArgs << "--cookies-from-browser" << "chrome";
+
+    // ★ 핸드오프 F/G: 이어받기 + 봇차단 수렴 (전 플랫폼) — 완료 ID 기록/스킵, .part 이어받기, 간헐 오류 무시.
+    baseArgs << "--download-archive" << (ytBaseDir + "/.yt_archive.txt");
+    baseArgs << "--ignore-errors";
+    baseArgs << "--no-overwrites" << "--continue";
 
     // ★ 임시 script/status 는 로컬 temp 에 (NAS 는 POSIX 실행권한 보존 안 함 → .command 실행 실패).
     //   yt-dlp output 은 ytBaseDir (NAS 가능) 로 그대로.
