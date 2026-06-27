@@ -920,6 +920,168 @@ void MiyoBackend::runRcloneBackup(const QStringList &srcDirs, const QString &des
     t->start();
 }
 
+// ───────── 원격 백업 업로드(rclone) — WebDAV/HTTPS · FTP · SFTP · S3, 이어올리기(resume) ─────────
+//   runRcloneBackup 은 type=webdav 고정 + macOS WebDAV 마운트 전용이었음.
+//   이 함수는 사용자가 종류/주소/자격증명을 직접 넣어 URL 로 직접 업로드(마운트 불필요) + 전 플랫폼(Windows 포함).
+//   rclone copy 는 기본이 skip-existing(같은 크기·시각 건너뜀) + 끊긴 전송 재개 → "이어서 올리기" 가 내장.
+void MiyoBackend::startRemoteBackup(const QString &configJson)
+{
+    QJsonObject c = QJsonDocument::fromJson(configJson.toUtf8()).object();
+    const QString type = c.value("type").toString("webdav").trimmed().toLower();  // webdav|ftp|sftp|s3
+    QString srcPath = c.value("srcPath").toString().trimmed();
+    srcPath.replace("~", QDir::homePath());
+    QString destPath = c.value("destPath").toString().trimmed();  // 원격 경로 (앞 슬래시 무관)
+    while (destPath.startsWith('/')) destPath.remove(0, 1);
+    const QString plabel = type.toUpper();
+
+    if (srcPath.isEmpty() || !QDir(srcPath).exists()) {
+        log("❌ 원격 백업: 소스 폴더가 비었거나 없습니다 — [소스 폴더] 를 지정하세요", "error", "settings");
+        runJs("if(window.setRemoteBackupBusy)setRemoteBackupBusy(false)");
+        return;
+    }
+
+    // rclone 탐색 (yt-dlp.exe 와 동일 레이아웃 — exe 옆)
+    QString rclonePath = QCoreApplication::applicationDirPath() + "/rclone.exe";
+#ifndef Q_OS_WIN
+    rclonePath = QCoreApplication::applicationDirPath() + "/../Resources/tools/rclone";
+    if (!QFile::exists(rclonePath)) rclonePath = QCoreApplication::applicationDirPath() + "/rclone";
+#endif
+    if (!QFile::exists(rclonePath)) {
+        log("❌ rclone 바이너리 없음", "error", "settings");
+        runJs("if(window.setRemoteBackupBusy)setRemoteBackupBusy(false)");
+        return;
+    }
+
+    // 비번 obscure (webdav/ftp/sftp 만 — s3 는 secret 평문)
+    const bool needObscure = (type == "webdav" || type == "ftp" || type == "sftp");
+    QString obscuredPass;
+    if (needObscure) {
+        const QString pass = c.value("pass").toString();
+        if (pass.isEmpty()) {
+            log("❌ 원격 백업: 비밀번호를 입력하세요", "error", "settings");
+            runJs("if(window.setRemoteBackupBusy)setRemoteBackupBusy(false)");
+            return;
+        }
+        QProcess obs; obs.start(rclonePath, {"obscure", pass}); obs.waitForFinished(5000);
+        obscuredPass = QString::fromUtf8(obs.readAllStandardOutput()).trimmed();
+        if (obscuredPass.isEmpty()) {
+            log("❌ rclone obscure 실패", "error", "settings");
+            runJs("if(window.setRemoteBackupBusy)setRemoteBackupBusy(false)");
+            return;
+        }
+    }
+
+    // 종류별 rclone.conf 본문 + 대상(remote:path) 빌드
+    QString confBody, remoteDest;
+    if (type == "webdav") {
+        const QString u = c.value("url").toString().trimmed();
+        if (u.isEmpty()) { log("❌ 원격 백업: WebDAV URL 을 입력하세요 (예: https://nas.example.com/dav)", "error", "settings"); runJs("if(window.setRemoteBackupBusy)setRemoteBackupBusy(false)"); return; }
+        confBody = QString("[abiwa_remote]\ntype = webdav\nurl = %1\nvendor = other\nuser = %2\npass = %3\n")
+                       .arg(u, c.value("user").toString(), obscuredPass);
+        remoteDest = "abiwa_remote:" + destPath;
+    } else if (type == "ftp" || type == "sftp") {
+        const QString h = c.value("host").toString().trimmed();
+        if (h.isEmpty()) { log("❌ 원격 백업: 호스트를 입력하세요", "error", "settings"); runJs("if(window.setRemoteBackupBusy)setRemoteBackupBusy(false)"); return; }
+        const QString defPort = (type == "ftp") ? QStringLiteral("21") : QStringLiteral("22");
+        confBody = QString("[abiwa_remote]\ntype = %1\nhost = %2\nport = %3\nuser = %4\npass = %5\n")
+                       .arg(type, h, c.value("port").toString(defPort), c.value("user").toString(), obscuredPass);
+        if (type == "ftp") confBody += "explicit_tls = true\nno_check_certificate = true\n";
+        remoteDest = "abiwa_remote:" + destPath;
+    } else if (type == "s3") {
+        const QString bucket = c.value("bucket").toString().trimmed();
+        if (bucket.isEmpty()) { log("❌ 원격 백업: S3 버킷명을 입력하세요", "error", "settings"); runJs("if(window.setRemoteBackupBusy)setRemoteBackupBusy(false)"); return; }
+        confBody = QString("[abiwa_remote]\ntype = s3\nprovider = %1\naccess_key_id = %2\nsecret_access_key = %3\n")
+                       .arg(c.value("provider").toString("AWS"), c.value("accessKey").toString(), c.value("secret").toString());
+        const QString region = c.value("region").toString().trimmed();
+        const QString endpoint = c.value("endpoint").toString().trimmed();
+        if (!region.isEmpty())   confBody += "region = " + region + "\n";
+        if (!endpoint.isEmpty()) confBody += "endpoint = " + endpoint + "\n";
+        remoteDest = "abiwa_remote:" + bucket + (destPath.isEmpty() ? "" : ("/" + destPath));
+    } else {
+        log("❌ 지원하지 않는 백업 종류: " + type, "error", "settings");
+        runJs("if(window.setRemoteBackupBusy)setRemoteBackupBusy(false)");
+        return;
+    }
+
+    QString tempBase = Common::resolveTempBase(m_config->tempDir());
+    QString confPath = tempBase + "/abiwa_remote.conf";
+    { QFile cf(confPath);
+      if (!cf.open(QIODevice::WriteOnly | QIODevice::Truncate)) { log("❌ rclone conf 생성 실패", "error", "settings"); runJs("if(window.setRemoteBackupBusy)setRemoteBackupBusy(false)"); return; }
+      cf.write(confBody.toUtf8()); cf.close();
+      QFile::setPermissions(confPath, QFile::ReadOwner | QFile::WriteOwner); }
+
+    openBackupTerminalLog();
+    m_backupTerminalActive = true;
+    m_backupStartMs = QDateTime::currentMSecsSinceEpoch();
+    log(QString("🌐 원격 백업 시작 (%1) — %2 → %3").arg(plabel, srcPath, remoteDest), "info", "settings");
+
+    QThread *t = QThread::create([this, srcPath, remoteDest, rclonePath, confPath, plabel]() {
+        writeTerminalLog(QString("\033[1;34m[rclone %1] %2 → %3\033[0m").arg(plabel, srcPath, remoteDest), "backup");
+        writeTerminalLog("\033[90m이어올리기: 이미 올라간 같은 파일은 건너뛰고, 끊긴 전송은 이어서 보냅니다.\033[0m", "backup");
+        QProcess rc;
+        rc.setProcessChannelMode(QProcess::MergedChannels);
+        QStringList args;
+        args << "copy" << srcPath << remoteDest
+             << "--config" << confPath
+             << "--transfers" << "4"
+             << "--progress" << "--stats" << "2s" << "--stats-one-line"
+             << "--retries" << "5" << "--low-level-retries" << "10"
+             << "--exclude" << ".abiwa_**" << "--exclude" << ".DS_Store"
+             << "--exclude" << ".git/**" << "--exclude" << "__CHERNOBYL_MANIFEST__*";
+        rc.start(rclonePath, args);
+        int exitCode = -1;
+        if (!rc.waitForStarted(5000)) {
+            writeTerminalLog("\033[31m[rclone] 시작 실패\033[0m", "backup");
+        } else {
+            QByteArray leftover;
+            while (rc.state() != QProcess::NotRunning) {
+                if (!m_backupTerminalActive.load()) { rc.terminate(); if (!rc.waitForFinished(3000)) rc.kill(); break; }
+                if (!rc.waitForReadyRead(500)) continue;
+                QByteArray chunk = rc.readAll(); chunk.replace('\r', '\n'); leftover += chunk;
+                int nl;
+                while ((nl = leftover.indexOf('\n')) >= 0) {
+                    QByteArray line = leftover.left(nl); leftover.remove(0, nl + 1);
+                    QString s = QString::fromUtf8(line).trimmed();
+                    if (!s.isEmpty()) writeTerminalLog(QString("  \033[90m│\033[0m %1").arg(s), "backup");
+                }
+            }
+            rc.waitForFinished(2000);
+            exitCode = rc.exitCode();
+        }
+        const bool ok = (exitCode == 0);
+        QFile::remove(confPath);  // 보안 — obscured pass 라도 디스크에 남기지 않음
+        writeTerminalLog("\033[1;36m═══════════════════════════════════════════════════════════════\033[0m", "backup");
+        writeTerminalLog(ok ? "\033[1;32m✅ 원격 백업 완료 (이어올리기 적용)\033[0m"
+                            : QString("\033[1;31m✗ 원격 백업 실패 (exit=%1) — 주소/자격증명/방화벽 확인\033[0m").arg(exitCode), "backup");
+        writeTerminalLog("[DONE]", "backup");
+        QMetaObject::invokeMethod(this, [this, ok]() {
+            m_backupTerminalActive = false;
+            log(ok ? "✅ 원격 백업 완료" : "✗ 원격 백업 실패", ok ? "success" : "error", "settings");
+            runJs("if(window.setRemoteBackupBusy)setRemoteBackupBusy(false)");
+            closeTerminalLog("backup");
+        }, Qt::QueuedConnection);
+    });
+    connect(t, &QThread::finished, t, &QThread::deleteLater);
+    t->start();
+}
+
+void MiyoBackend::stopRemoteBackup()
+{
+    m_backupTerminalActive = false;  // 스레드 루프가 감지 → 진행 중 rclone terminate/kill
+    log("🛑 원격 백업 중지 요청", "warning", "settings");
+    runJs("if(window.setRemoteBackupBusy)setRemoteBackupBusy(false)");
+}
+
+void MiyoBackend::pickRemoteBackupSrc()
+{
+    QString dir = QFileDialog::getExistingDirectory(
+        m_window, QStringLiteral("🌐 원격 백업 — 업로드할 로컬 폴더 선택"),
+        QString(), QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+    if (dir.isEmpty()) return;
+    QString safe = Common::jsStringLiteral(dir);
+    runJs(QString("(function(){var e=document.getElementById('rbk-src'); if(e)e.value=%1;})()").arg(safe));
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 // backupNow — 1회성 즉시 백업 (toggle off 여도 강제 실행).
 //   경로 미설정 시 안내. 모든 플랫폼 폴더 → backup 경로 통째 enqueue.
