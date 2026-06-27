@@ -5,6 +5,7 @@
 #include <QLocale>
 #include <QFile>
 #include <QDir>
+#include <QRandomGenerator>
 #include <QStorageInfo>
 #include <QDebug>
 #include <QCoreApplication>
@@ -271,6 +272,7 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
 
     QProcess proc;
     proc.setProcessEnvironment(bundledProcessEnv());
+    QString exifArgFile;   // ★ Windows UTF-8 argfile (사용 시 경로 보관 → 끝나면 삭제)
     if (!exiftoolPerl.isEmpty()) {
         // 번들 exiftool: perl -I<lib> exiftool <args>
         QStringList perlArgs;
@@ -280,7 +282,27 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
         perlArgs.append(args);
         proc.start(exiftoolPerl, perlArgs);
     } else {
+#ifdef Q_OS_WIN
+        // ★ Windows mojibake 수정 — exiftool.exe 는 명령줄 인자를 시스템 ANSI 코드페이지(cp949 등)로
+        //   받아 일본어/한글 메타데이터(작가명·설명)가 깨진다. → 인자를 UTF-8 argfile 에 한 줄씩 쓰고
+        //   `-charset filename=utf8 -charset utf8 -@ argfile` 로 전달해 우회.
+        //   (실측: 직접 인자/-charset 만으론 깨지고, UTF-8 argfile 만 정상으로 써짐.)
+        exifArgFile = QDir::tempPath() + QString("/.miyo_exifargs_%1.txt")
+                          .arg(QRandomGenerator::global()->generate(), 0, 16);
+        QFile af(exifArgFile);
+        if (af.open(QIODevice::WriteOnly)) {
+            QByteArray body;
+            for (const QString &a : args) body += (a + "\n").toUtf8();
+            af.write(body);
+            af.close();
+            proc.start(exiftoolPath, {"-charset", "filename=utf8", "-charset", "utf8", "-@", exifArgFile});
+        } else {
+            exifArgFile.clear();
+            proc.start(exiftoolPath, args);   // argfile 못 쓰면 기존 방식 폴백
+        }
+#else
         proc.start(exiftoolPath, args);
+#endif
     }
     if (!proc.waitForStarted(3000)) {
         if (exiftoolAvailable == -1) {
@@ -289,6 +311,7 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
                        << "error:" << proc.errorString();
             exiftoolAvailable = 0;
         }
+        if (!exifArgFile.isEmpty()) QFile::remove(exifArgFile);
         return;
     }
     exiftoolAvailable = 1;
@@ -296,6 +319,7 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
     if (proc.exitCode() != 0) {
         qWarning() << "[Common] exiftool error:" << proc.readAllStandardError().trimmed();
     }
+    if (!exifArgFile.isEmpty()) QFile::remove(exifArgFile);   // ★ argfile 정리
 }
 
 // ─── Cross-platform path helpers ───
