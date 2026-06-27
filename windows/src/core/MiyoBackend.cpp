@@ -3119,29 +3119,38 @@ void MiyoBackend::openBackupTerminalLog()
     }
 
 #ifdef Q_OS_WIN
-    // Windows — 단순 tail (애니메이션 X — PowerShell ANSI 제약)
+    // Windows — PowerShell 증분 tail (UTF-8 + ANSI strip).
+    //   옛 방식(:loop/cls/Get-Content -Tail 30)은 (1) Get-Content 가 UTF-8 로그를 cp949 로 읽어
+    //   한글 mojibake, (2) ANSI 색코드(\033[..m)가 콘솔에서 해석 안 돼 "[0m" 날것 노출,
+    //   (3) cls 전체 재그리기 렉. → 수집 터미널(openTerminalLog)과 동일한 증분 tail 로 교체:
+    //   UTF-8 StreamReader 로 신규 바이트만 읽고, ANSI 색코드 제거 후 출력. [DONE] 만나면 종료.
     QString scriptPath = scriptDir + "/miyo_backup_tail.bat";
     QFile script(scriptPath);
     if (script.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QString nativeLog = QDir::toNativeSeparators(logPath);
         QString content;
         content += "@echo off\r\n";
         content += "chcp 65001 >nul\r\n";
         content += "title ABIWA Backup Monitor\r\n";
-        content += ":loop\r\n";
-        content += "cls\r\n";
         content += "echo ===============================================\r\n";
         content += "echo   📦 ABIWA 백업 진행 모니터\r\n";
         content += "echo ===============================================\r\n";
-        content += "powershell -NoProfile -Command \"Get-Content -Tail 30 '" + QDir::toNativeSeparators(logPath) + "'\"\r\n";
-        content += "findstr /C:\"[DONE]\" \"" + QDir::toNativeSeparators(logPath) + "\" >nul 2>&1\r\n";
-        content += "if %errorlevel%==0 (\r\n";
-        content += "  echo.\r\n";
-        content += "  echo 백업 완료 — 터미널을 닫아도 됩니다.\r\n";
-        content += "  pause >nul\r\n";
-        content += "  exit /b 0\r\n";
-        content += ")\r\n";
-        content += "%SystemRoot%\\System32\\timeout.exe /t 1 /nobreak >nul\r\n";   // ★ Windows timeout 강제
-        content += "goto loop\r\n";
+        content += "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
+                   "$p='" + nativeLog + "'; $pos=0; $esc=[char]27;"
+                   " [Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+                   " $enc=[System.Text.Encoding]::UTF8;"
+                   " while($true){ try{"
+                   " $fs=[System.IO.File]::Open($p,'Open','Read','ReadWrite');"
+                   " [void]$fs.Seek($pos,'Begin');"
+                   " $sr=New-Object System.IO.StreamReader($fs,$enc);"
+                   " $n=$sr.ReadToEnd(); $pos=$fs.Position; $sr.Dispose(); $fs.Dispose();"
+                   " if($n){ $n=$n -replace ($esc+'\\[[0-9;]*m'),'';"
+                   " [Console]::Out.Write($n); [Console]::Out.Flush();"
+                   " if($n -match '\\[DONE\\]'){break} } }catch{}"
+                   " Start-Sleep -Milliseconds 700 }\"\r\n";
+        content += "echo.\r\n";
+        content += "echo 백업 완료 — 터미널을 닫아도 됩니다.\r\n";
+        content += "pause >nul\r\n";
         script.write(content.toUtf8());
         script.close();
     }
@@ -3258,7 +3267,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
         //   수동 증분 tail: FileShare.ReadWrite 로 열어(앱 동시 쓰기 허용) 새 바이트만 읽고 즉시 닫음.
         QString nativeLog = QDir::toNativeSeparators(logPath);
         content += "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
-                   "$p='" + nativeLog + "'; $pos=0;"
+                   "$p='" + nativeLog + "'; $pos=0; $esc=[char]27;"
                    " [Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
                    " $enc=[System.Text.Encoding]::UTF8;"
                    " while($true){ try{"
@@ -3266,7 +3275,8 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
                    " [void]$fs.Seek($pos,'Begin');"
                    " $sr=New-Object System.IO.StreamReader($fs,$enc);"
                    " $n=$sr.ReadToEnd(); $pos=$fs.Position; $sr.Dispose(); $fs.Dispose();"
-                   " if($n){ [Console]::Out.Write($n); [Console]::Out.Flush();"
+                   " if($n){ $n=$n -replace ($esc+'\\[[0-9;]*m'),'';"
+                   " [Console]::Out.Write($n); [Console]::Out.Flush();"
                    " if($n -match '\\[DONE\\]'){break} } }catch{}"
                    " Start-Sleep -Milliseconds 700 }\"\r\n";
         content += "echo.\r\n";
