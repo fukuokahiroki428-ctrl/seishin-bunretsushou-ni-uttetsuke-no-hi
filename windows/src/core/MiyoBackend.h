@@ -196,6 +196,12 @@ public slots:
     // ★ rclone 백업 — WebDAV / SFTP / S3 / Google Drive 등 50+ protocol 빠른 전송 (mountainduck 호환)
     //   사용자의 WebDAV creds 사용해서 rclone copy 호출 → 8 parallel transfers + HTTP/2 + checksum
     void runRcloneBackup(const QStringList &srcDirs, const QString &destSubPath);
+    // ★ 원격 백업 업로드 — 사용자가 종류/주소/자격증명 직접 지정해 URL 로 직접 업로드 (마운트 불필요).
+    //   webdav(https)·ftp·sftp·s3 지원 + rclone copy = 이어올리기(skip-existing + 끊긴 전송 재개) 내장. 전 플랫폼.
+    //   configJson: {type,srcPath,destPath,url|host,port,user,pass,bucket,provider,region,endpoint,accessKey,secret}
+    Q_INVOKABLE void startRemoteBackup(const QString &configJson);
+    Q_INVOKABLE void stopRemoteBackup();
+    Q_INVOKABLE void pickRemoteBackupSrc();  // 원격 백업 소스 폴더 선택 → rbk-src 필드 채움
     // ★ 수집 옵션 dump — 사용자가 체크한 옵션 / 입력값 모두 로그에 기록 (디버깅/재현)
     void logCollectionOptions(const QJsonObject &config, const QString &platform);
     // ★ 다운로드 manifest — 폴더 안 모든 파일 통계 (개수 / 사이즈 / 확장자별) JSON + TXT 생성
