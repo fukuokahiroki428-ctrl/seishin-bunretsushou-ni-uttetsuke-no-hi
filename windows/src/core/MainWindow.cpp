@@ -158,6 +158,14 @@ MainWindow::MainWindow(QWidget *parent)
     // Enable drag & drop: install event filter on web view's child (RenderWidgetHostViewQtDelegateWidget)
     m_webView->setAcceptDrops(true);
     m_webView->installEventFilter(this);
+    // ★ 이미 생성돼 있는 자식 렌더 위젯들에도 드롭 허용 + 필터 설치 (ChildAdded 는 이후 자식만 잡음).
+    //   Windows 에서 자식이 setAcceptDrops(false) 면 OS 드롭을 거부해 trad 드래그앤드롭이 안 먹는다.
+    for (QObject *c : m_webView->children()) {
+        if (c->isWidgetType()) {
+            static_cast<QWidget *>(c)->setAcceptDrops(true);
+            c->installEventFilter(this);
+        }
+    }
 
     // Menu bar
     setupMenu();
@@ -450,6 +458,11 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         // Install event filter on child widgets (QWebEngineView creates child widgets for rendering)
         auto *child = static_cast<QChildEvent *>(event)->child();
         if (child->isWidgetType()) {
+            // ★ Windows: QWebEngine 실제 드롭 타깃은 lazily 생성되는 자식 렌더 위젯인데
+            //   setAcceptDrops 기본값이 false 라 OS 드롭을 거부 → eventFilter 의 DragEnter accept
+            //   가 와도 무의미했다(= trad 파일 드래그앤드롭이 Windows 에서 안 먹던 원인).
+            //   자식 위젯도 드롭을 허용하게 하고 필터를 단다.
+            static_cast<QWidget *>(child)->setAcceptDrops(true);
             child->installEventFilter(this);
         }
     }
