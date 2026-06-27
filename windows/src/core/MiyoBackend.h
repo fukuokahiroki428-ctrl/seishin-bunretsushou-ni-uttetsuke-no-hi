@@ -78,6 +78,10 @@ public slots:
     void stopYoutube();
     void analyzeYoutube(const QString &url);
 
+    // 니코니코동화(니코동) — yt-dlp 파이프라인 재사용 (맥에서 온 지령 포팅)
+    void startNiconico(const QString &configJson);
+    void stopNiconico();
+
     // Log
     void showLog(const QString &message);
 

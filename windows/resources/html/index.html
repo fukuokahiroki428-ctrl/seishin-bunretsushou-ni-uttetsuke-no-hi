@@ -89,6 +89,7 @@
         .nav-icon.twitter { background: #1D9BF0; }
         .nav-icon.bluesky { background: #0085FF; }
         .nav-icon.youtube { background: #FF0000; }
+        .nav-icon.niconico { background: #252525; color:#fff; font-weight:700; }
         .nav-icon.discord { background: #5865F2; }
         .nav-icon.instagram { background: #E4405F; }
         .nav-icon.trad { background: #333333; }
@@ -1093,6 +1094,9 @@
                 <div class="nav-item" onclick="switchTab('youtube')">
                     <div class="nav-icon youtube">Y</div> YouTube
                 </div>
+                <div class="nav-item" onclick="switchTab('niconico')">
+                    <div class="nav-icon niconico">ニ</div> ニコニコ
+                </div>
                 <div class="nav-item" onclick="switchTab('discord')">
                     <div class="nav-icon discord">D</div> Discord
                 </div>
@@ -1604,6 +1608,80 @@
                 </div>
 
                 <!-- ━━ Discord ━━ -->
+                <div class="tab-content nt-tab" id="tab-niconico">
+                    <div class="nt-group">
+                        <h3>URL</h3>
+                        <div class="nt-card">
+                            <div class="nt-row nt-stack"><div class="nt-rc">
+                                <textarea class="nt-input" id="niconico-url" placeholder="니코니코동화 영상 URL 붙여넣기 (줄당 하나, 예: https://www.nicovideo.jp/watch/sm00000000)" rows="4" style="width:100%;"></textarea>
+                                <div style="display:flex;gap:8px;margin-top:9px;">
+                                    <button class="nt-pillbtn" onclick="pasteNiconico()">붙여넣기</button>
+                                    <button class="nt-pillbtn" onclick="clearNiconico()">지우기</button>
+                                </div>
+                            </div></div>
+                        </div>
+                    </div>
+
+                    <div class="nt-group">
+                        <h3>설정</h3>
+                        <div class="nt-card">
+                            <div class="nt-row">
+                                <div class="nt-rl">화질</div>
+                                <div class="nt-rc"><select class="nt-input" id="niconico-quality" style="max-width:220px;">
+                                    <option value="1080p" selected>최고화질</option>
+                                    <option value="720p">720p</option>
+                                    <option value="480p">480p</option>
+                                    <option value="360p">360p</option>
+                                </select></div>
+                            </div>
+                            <div class="nt-row">
+                                <div class="nt-rl">유형</div>
+                                <div class="nt-rc"><select class="nt-input" id="niconico-type" style="max-width:220px;">
+                                    <option value="video">동영상</option>
+                                    <option value="audio">오디오만</option>
+                                    <option value="thumbnail">썸네일만</option>
+                                </select></div>
+                            </div>
+                            <div class="nt-row nt-stack"><div class="nt-rc">
+                                <div class="nt-checks">
+                                    <label class="nt-check"><input type="checkbox" id="niconico-thumb"> 썸네일</label>
+                                    <label class="nt-check"><input type="checkbox" id="niconico-metadata" checked> 메타데이터</label>
+                                    <label class="nt-check"><input type="checkbox" id="niconico-comments"> 댓글 수집</label>
+                                </div>
+                                <div style="margin-top:9px;color:var(--muted);font-size:12px;">로그인 영상은 앱 폴더에 <b>niconico_cookies.txt</b>(브라우저 확장으로 내보낸 Netscape 쿠키)를 두면 자동 사용됩니다.</div>
+                            </div></div>
+                        </div>
+                    </div>
+
+                    <div class="nt-group">
+                        <h3>저장 경로</h3>
+                        <div class="nt-card">
+                            <div class="nt-row nt-stack"><div class="nt-rc">
+                                <div class="nt-checks" style="margin-bottom:9px;">
+                                    <label class="nt-check"><input type="checkbox" id="niconico-nas-toggle" onchange="onPlatformStorage(this,'niconico','nas')"> 🌐 NAS</label>
+                                    <label class="nt-check"><input type="checkbox" id="niconico-external-toggle" onchange="onPlatformStorage(this,'niconico','external')"> 💾 외장 디스크</label>
+                                </div>
+                                <div style="display:flex;gap:8px;">
+                                    <input type="text" class="nt-input" id="niconico-path" value="~/Downloads/Niconico" style="flex:1;">
+                                    <button class="nt-pillbtn" onclick="browseFolder('niconico')">찾아보기</button>
+                                </div>
+                            </div></div>
+                        </div>
+                    </div>
+
+                    <div class="nt-actions">
+                        <button class="nt-btn primary" id="niconico-start-btn" onclick="startNiconico()">다운로드</button>
+                        <button class="nt-btn ghost" id="niconico-stop-btn" onclick="stopNiconico()" disabled>중지</button>
+                    </div>
+
+                    <div class="progress-bar" id="niconico-progress-bar"><div class="progress-fill" id="niconico-progress-fill"></div></div>
+
+                    <div class="nt-group">
+                        <h3>로그</h3>
+                        <div class="nt-log" id="niconico-log"></div>
+                    </div>
+                </div>
+
                 <div class="tab-content nt-tab" id="tab-discord">
                     <div class="nt-group">
                         <h3>대상 <span style="text-transform:none;letter-spacing:0;color:var(--faint);font-weight:400;">— 여러 서버/채널 · 계정 지정</span></h3>
@@ -3954,7 +4032,7 @@
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             const tabEl = document.getElementById('tab-' + tab);
             if (tabEl) tabEl.classList.add('active');
-            const names = {dashboard:'대시보드',twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',naikakukai:'内閣会',crawl:'Capture',settings:'설정'};
+            const names = {dashboard:'대시보드',twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',niconico:'ニコニコ',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',naikakukai:'内閣会',crawl:'Capture',settings:'설정'};
             document.getElementById('toolbar-title').textContent = names[tab] || tab;
             // Load system info when switching to settings
             if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); }
@@ -4264,6 +4342,7 @@
             {id:'twitter-path', name:'Twitter'},
             {id:'bsky-path', name:'Bluesky'},
             {id:'youtube-path', name:'YouTube'},
+            {id:'niconico-path', name:'ニコニコ'},
             {id:'discord-path', name:'Discord'},
             {id:'instagram-path', name:'Instagram'},
             {id:'pixiv-path', name:'Pixiv'},
@@ -4653,6 +4732,30 @@
             backend.startYoutube(JSON.stringify(config));
         }
         function stopYoutube() { if(backend){ backend.stopYoutube(); appendLog('중지 중...','warning','youtube'); } }
+
+        // ── ニコニコ動画(니코동) — yt-dlp 파이프라인 공용 (맥에서 온 지령 포팅) ──
+        function pasteNiconico() { var t=document.getElementById('niconico-url'); if(t)t.focus(); if(backend) backend.pasteClipboard(); }
+        function clearNiconico() { document.getElementById('niconico-url').value=''; }
+        function startNiconico() {
+            if (!backend) return;
+            const url=document.getElementById('niconico-url').value;
+            if (!url) { appendLog('URL을 입력하세요','error','niconico'); return; }
+            const config = {
+                url:url, path:document.getElementById('niconico-path').value,
+                type:document.getElementById('niconico-type').value,
+                quality:document.getElementById('niconico-quality').value,
+                thumb:document.getElementById('niconico-thumb').checked,
+                metadata:document.getElementById('niconico-metadata').checked,
+                comments:document.getElementById('niconico-comments').checked
+            };
+            setRunning('niconico', true);
+            clearLog('niconico');
+            var _e=document.getElementById('niconico-progress-fill'); if(_e)_e.style.width='0%';
+            appendLog('다운로드 시작...','info','niconico');
+            updateStats(0,0,'다운로드 중','niconico');
+            backend.startNiconico(JSON.stringify(config));
+        }
+        function stopNiconico() { if(backend){ backend.stopNiconico(); appendLog('중지 중...','warning','niconico'); } }
 
         // ── Discord ──
         function addDiscordAccount() {

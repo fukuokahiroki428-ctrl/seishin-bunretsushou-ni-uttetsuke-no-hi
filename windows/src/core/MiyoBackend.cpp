@@ -4628,6 +4628,51 @@ void MiyoBackend::stopYoutube()
     runJs("setYoutubeProgress(0)");
 }
 
+// ───────── 니코니코동화(니코동) — yt-dlp 파이프라인 재사용 (platform="niconico") ─────────
+//   맥에서 온 지령(니코동 추가)을 Windows 패턴으로 포팅. runYoutubeDownload 를 platform 으로 일반화해 공용.
+void MiyoBackend::startNiconico(const QString &configJson)
+{
+    QJsonDocument doc = QJsonDocument::fromJson(configJson.toUtf8());
+    if (doc.isNull()) return;
+    QJsonObject config = doc.object();
+    config["platform"] = "niconico";        // runYoutubeDownload 가 <path>/niconico 저장 + 로그/게이지 키 분리
+    m_lastConfig["niconico"] = config;
+    m_isRunning["niconico"] = true;
+    if (m_window) m_window->holdAwake();
+
+    QThread *thread = QThread::create([this, config]() {
+        runYoutubeDownload(config);
+        QMetaObject::invokeMethod(this, [this]() {
+            m_isRunning["niconico"] = false;
+            if (!isAnyRunning() && m_window) m_window->releaseAwake();
+        });
+    });
+    connect(thread, &QThread::finished, thread, &QThread::deleteLater);
+    thread->start();
+}
+
+void MiyoBackend::stopNiconico()
+{
+    m_isRunning["niconico"] = false;   // 모니터 루프 즉시 탈출
+    // 터미널/yt-dlp 에 stop 신호 + DONE — runYoutubeDownload 의 niconico tempDir(abiwa_niconico)과 일치.
+    QString tempDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_niconico";
+    QFile stopFile(tempDir + "/miyo_yt_status.txt.stop");
+    if (stopFile.open(QIODevice::WriteOnly)) { stopFile.write("STOP"); stopFile.close(); }
+#ifdef Q_OS_WIN
+    QProcess::execute("taskkill", {"/F", "/IM", "yt-dlp.exe"});
+    QProcess::execute("taskkill", {"/F", "/IM", "ffmpeg.exe"});
+#else
+    QProcess::execute("pkill", {"-f", "yt-dlp"});
+    QProcess::execute("pkill", {"-f", "ffmpeg.*abiwa_tmp"});
+#endif
+    QString statusFile = tempDir + "/miyo_yt_status.txt";
+    QFile sf(statusFile);
+    if (sf.open(QIODevice::WriteOnly)) { sf.write("DONE:0:0"); sf.close(); }
+    log("ニコニコ 다운로드 중지됨", "warning", "niconico");
+    updateStats(0, 0, "중지됨", "niconico");
+    runJs("var _e=document.getElementById('niconico-progress-fill'); if(_e)_e.style.width='0%';");
+}
+
 void MiyoBackend::analyzeYoutube(const QString &url)
 {
     QThread *thread = QThread::create([this, url]() {
@@ -8299,6 +8344,12 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
 
 void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 {
+    // ★ platform: "youtube"(기본) 또는 "niconico" — yt-dlp 파이프라인 공용(니코동도 yt-dlp 가 nicovideo 처리).
+    //   맥에서 온 지령(니코동 추가)을 Windows 패턴에 맞춰 포팅. youtube 동작은 불변.
+    const QString platform = config.value("platform").toString().isEmpty()
+                             ? QStringLiteral("youtube") : config["platform"].toString();
+    const QString plabel = (platform == "niconico") ? QStringLiteral("ニコニコ") : QStringLiteral("YouTube");
+
     QString url = config["url"].toString();
     QString path = config["path"].toString();
     path.replace("~", QDir::homePath());
@@ -8306,8 +8357,8 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     QString quality = config["quality"].toString("1080p");
     QString type = config["type"].toString("video");
 
-    // 공통 저장 정책: youtube/{video|audio|thumbnail}/ + youtube/_complete/
-    QString ytBaseDir = path + "/youtube";
+    // 공통 저장 정책: <platform>/{video|audio|thumbnail}/ + <platform>/_complete/
+    QString ytBaseDir = path + "/" + platform;
     QDir().mkpath(ytBaseDir);
     QString ytTypeDir = FileHelper::typeFolder(ytBaseDir, type);
     QString ytCompleteDir = FileHelper::typeFolder(ytBaseDir, "complete");
@@ -8334,7 +8385,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     }
 
     if (urls.isEmpty()) {
-        log("No valid URLs", "error", "youtube");
+        log("No valid URLs", "error", platform);
         return;
     }
 
@@ -8354,27 +8405,30 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     //   때문에 --cookies-from-browser 가 안 됨 → 브라우저 확장으로 내보낸 cookies.txt(Netscape) 를 우선 사용.
     //   관례: exe 폴더의 youtube_cookies.txt 가 있으면 UI 설정 없이 자동 사용.
     {
+        // 관례: exe 폴더의 <platform>_cookies.txt (youtube_cookies.txt / niconico_cookies.txt) 자동 사용.
+        //   니코동 로그인 영상도 이 쿠키로. (맥은 --cookies-from-browser chrome 이지만 Windows 는
+        //   Chrome v127+ 앱-바운드 암호화로 DPAPI 실패 → 파일 방식만 신뢰.)
         QString cookiesFile = config["ytCookiesFile"].toString().trimmed();
         if (cookiesFile.isEmpty()) {
-            QString def = appDir + "/youtube_cookies.txt";
+            QString def = appDir + "/" + platform + "_cookies.txt";
             if (QFile::exists(def)) cookiesFile = def;
         }
         QString cookiesBrowser = config["ytCookiesBrowser"].toString().trimmed();
         if (!cookiesFile.isEmpty() && QFile::exists(cookiesFile)) {
             baseArgs << "--cookies" << QDir::toNativeSeparators(cookiesFile);
-            log("YouTube 쿠키 파일 사용 — 봇 차단 우회", "info", "youtube");
+            log(plabel + " 쿠키 파일 사용", "info", platform);
         } else if (!cookiesBrowser.isEmpty() && cookiesBrowser != "none") {
             // 비-Chromium(firefox 등)에서만 신뢰 가능. Chromium 은 DPAPI 로 실패할 수 있음.
             baseArgs << "--cookies-from-browser" << cookiesBrowser;
-            log(QString("YouTube 쿠키: 브라우저 %1 에서 읽기 시도").arg(cookiesBrowser), "info", "youtube");
+            log(QString("%1 쿠키: 브라우저 %2 에서 읽기 시도").arg(plabel, cookiesBrowser), "info", platform);
         }
-        // 차단되는 android_vr 대신 견고한 player_client 우선(쿠키 있으면 default=web 가 인증되어 동작).
-        //   ★ player_client + (댓글 옵션)을 하나의 youtube extractor-args 로 합쳐 1회만 전달한다.
-        //   yt-dlp 는 같은 extractor 를 여러 --extractor-args 로 주면 뒤엣것이 앞 dict 를 덮어쓸 수
-        //   있어, 댓글의 comment_sort 가 player_client 를 날릴 위험이 있음 → 합쳐서 회피.
-        QString ytExtractorArgs = "youtube:player_client=default,tv,web_safari";
-        if (config["comments"].toBool()) ytExtractorArgs += ";comment_sort=top;max_comments=300";
-        baseArgs << "--extractor-args" << ytExtractorArgs;
+        // ★ YouTube 전용 extractor-args — 차단되는 android_vr 대신 player_client + (댓글 정렬)을 단일
+        //   youtube extractor-args 로 통합(여러 --extractor-args 덮어쓰기 회피). 니코동(nicovideo)엔 해당 없음.
+        if (platform == "youtube") {
+            QString ytExtractorArgs = "youtube:player_client=default,tv,web_safari";
+            if (config["comments"].toBool()) ytExtractorArgs += ";comment_sort=top;max_comments=300";
+            baseArgs << "--extractor-args" << ytExtractorArgs;
+        }
     }
 
     // ★ 대량 다운로드 이어받기 — 봇 차단으로 일부가 실패해도 재실행 시 완료분은 건너뛰고
@@ -8454,7 +8508,8 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 
     // ★ 임시 script/status 는 로컬 temp 에 (NAS 는 POSIX 실행권한 보존 안 함 → .command 실행 실패).
     //   yt-dlp output 은 ytBaseDir (NAS 가능) 로 그대로.
-    QString tempDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_yt";
+    QString tempDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString())
+                      + "/abiwa_" + (platform == "youtube" ? QStringLiteral("yt") : platform);
     QDir().mkpath(tempDir);
 
     QString statusFile = tempDir + "/miyo_yt_status.txt";
@@ -8631,7 +8686,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     // Write script
     QFile scriptFile(scriptPath);
     if (!scriptFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        log("스크립트 생성 실패", "error", "youtube");
+        log("스크립트 생성 실패", "error", platform);
         return;
     }
     scriptFile.write(script.toUtf8());
@@ -8645,7 +8700,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 #endif
 
     // Launch terminal with script
-    log(QString("터미널에서 %1개 URL 다운로드 시작...").arg(urls.size()), "info", "youtube");
+    log(QString("터미널에서 %1개 URL 다운로드 시작...").arg(urls.size()), "info", platform);
 #ifdef Q_OS_WIN
     // ★ yt-dlp .bat 를 보이는 콘솔(CREATE_NEW_CONSOLE)로 실행 — 사용자가 다운로드 진행상황을 직접 본다.
     //   Qt 는 부모가 콘솔 없는 GUI 앱(カメラ)이면 자식에 CREATE_NO_WINDOW 를 자동으로 붙여 창을 숨긴다
@@ -8674,7 +8729,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 #endif
 
     // Monitor progress from status file
-    while (m_isRunning.value("youtube", false)) {
+    while (m_isRunning.value(platform, false)) {
         QThread::sleep(1);
 
         QFile sf(statusFile);
@@ -8686,10 +8741,11 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
             QStringList parts = status.split(":");
             int success = parts.value(1).toInt();
             int fail = parts.value(2).toInt();
-            runJs("setYoutubeProgress(100)");
-            log(QString("Complete! Success: %1, Failed: %2").arg(success).arg(fail), "success", "youtube");
-            log("Path: " + path, "info", "youtube");
-            updateStats(success, fail, "Done", "youtube");
+            if (platform == "youtube") runJs("if(window.setYoutubeProgress)setYoutubeProgress(100)");
+            else runJs("var _e=document.getElementById('niconico-progress-fill'); if(_e)_e.style.width='100%';");
+            log(QString("Complete! Success: %1, Failed: %2").arg(success).arg(fail), "success", platform);
+            log("Path: " + path, "info", platform);
+            updateStats(success, fail, "Done", platform);
 
             // ── Post-processing: _complete 미러 + Excel 생성 ──
             QDirIterator it(ytTypeDir, {"*.info.json"}, QDir::Files, QDirIterator::Subdirectories);
@@ -8750,7 +8806,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                             if (cf.open(QIODevice::WriteOnly | QIODevice::Text)) {
                                 cf.write(out.toUtf8());
                                 cf.close();
-                                log(QString("댓글 %1개 저장: %2").arg(comments.size()).arg(QFileInfo(commentsPath).fileName()), "success", "youtube");
+                                log(QString("댓글 %1개 저장: %2").arg(comments.size()).arg(QFileInfo(commentsPath).fileName()), "success", platform);
                             }
                         }
                     }
@@ -8834,9 +8890,9 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                 writer.save(excelPath);
             };
             if (!rows.isEmpty()) {
-                writeExcel(FileHelper::typeExcelPath(ytExcelDir, "youtube", type));
-                writeExcel(FileHelper::typeExcelPath(ytExcelDir, "youtube", "complete"));
-                log(QString("📊 Excel 저장: %1개 항목").arg(rows.size()), "success", "youtube");
+                writeExcel(FileHelper::typeExcelPath(ytExcelDir, platform, type));
+                writeExcel(FileHelper::typeExcelPath(ytExcelDir, platform, "complete"));
+                log(QString("📊 Excel 저장: %1개 항목").arg(rows.size()), "success", platform);
             }
             break;
         } else if (status.startsWith("PROGRESS:")) {
@@ -8844,8 +8900,9 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
             int current = parts.value(1).toInt();
             int total = parts.value(2).toInt();
             int pct = (current * 100) / qMax(total, 1);
-            runJs(QString("setYoutubeProgress(%1)").arg(pct));
-            updateStats(current, 0, "Downloading", "youtube");
+            if (platform == "youtube") runJs(QString("if(window.setYoutubeProgress)setYoutubeProgress(%1)").arg(pct));
+            else runJs(QString("var _e=document.getElementById('niconico-progress-fill'); if(_e)_e.style.width='%1%';").arg(pct));
+            updateStats(current, 0, "Downloading", platform);
         }
     }
 
