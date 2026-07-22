@@ -7,14 +7,17 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 # Qt6
+#   ★ GuiPrivate 명시 — QXlsx 가 Qt6::GuiPrivate 를 링크하므로 private 컴포넌트를 직접 요청해
+#     Qt6::GuiPrivate 타깃을 생성해야 한다(Gui 만으론, transitive 만으론 미생성).
 find_package(Qt6 REQUIRED COMPONENTS
-    Core Widgets WebEngineWidgets WebChannel Network WebSockets)
+    Core Gui GuiPrivate Widgets WebEngineWidgets WebChannel Network WebSockets)
 
 # QXlsx
 include(FetchContent)
 FetchContent_Declare(QXlsx
     GIT_REPOSITORY https://github.com/QtExcel/QXlsx.git
-    GIT_TAG master
+    GIT_TAG v1.5.0   # ★ master 고정 금지 — 릴리스 태그로 핀 (재현 가능 빌드). commit 0333829.
+    GIT_SHALLOW TRUE
     SOURCE_SUBDIR QXlsx)
 FetchContent_MakeAvailable(QXlsx)
 
@@ -22,6 +25,7 @@ FetchContent_MakeAvailable(QXlsx)
 set(CORE_SOURCES
     src/core/MainWindow.cpp
     src/core/MiyoBackend.cpp
+    src/core/PenBackend.cpp
     src/core/Common.cpp
     src/core/Config.cpp
 )
@@ -29,6 +33,7 @@ set(CORE_SOURCES
 set(CORE_HEADERS
     src/core/MainWindow.h
     src/core/MiyoBackend.h
+    src/core/PenBackend.h
     src/core/WorkerSignals.h
     src/core/Common.h
     src/core/Config.h
@@ -60,6 +65,7 @@ set(PLATFORM_SOURCES
     src/platforms/TwitterCollector.cpp
     src/platforms/SiteCrawler.cpp
     src/platforms/RealChromeCrawler.cpp
+    src/platforms/PenChromeCrawler.cpp
 )
 
 set(PLATFORM_HEADERS
@@ -70,6 +76,7 @@ set(PLATFORM_HEADERS
     src/platforms/TwitterCollector.h
     src/platforms/SiteCrawler.h
     src/platforms/RealChromeCrawler.h
+    src/platforms/PenChromeCrawler.h
 )
 
 # Resources
@@ -147,7 +154,7 @@ if(APPLE)
         set(APP_NAME "ABIWA")
     endif()
     if(NOT APP_ICON)
-        set(APP_ICON "abiwa.icns")
+        set(APP_ICON "chernobyl.icns")
     endif()
     if(NOT APP_ID)
         set(APP_ID "com.miyo.app")
@@ -288,7 +295,7 @@ if(APPLE)
 
     # Icon — APP_ICON_PATH can be overridden via -DAPP_ICON_PATH="..."
     if(NOT APP_ICON_PATH)
-        set(APP_ICON_PATH "${CMAKE_SOURCE_DIR}/resources/abiwa.icns")
+        set(APP_ICON_PATH "${CMAKE_SOURCE_DIR}/resources/chernobyl.icns")
     endif()
     if(EXISTS "${APP_ICON_PATH}")
         add_custom_command(TARGET Miyo POST_BUILD

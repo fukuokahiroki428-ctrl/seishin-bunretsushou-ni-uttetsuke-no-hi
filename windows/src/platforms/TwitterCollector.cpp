@@ -2145,6 +2145,121 @@ void TwitterCollector::captureTweet(const QJsonObject &tweet, const QString &cap
     FileHelper::generateTweetArchiveHtml(capturesDir, filename, meta);
 }
 
+// ── 전체 수집(all) 후속: 타임라인 트윗에 공유된 스페이스 링크 자동탐지 → yt-dlp 다운로드 ──
+//    저장된 _complete.xlsx 의 text(3)/urls(19)/quoted_tweet_url(25) 컬럼을 스캔한다.
+//    (트위터는 "유저의 과거 스페이스 목록" API 가 없어, 타임라인에 공유된 것 + 녹화본만 가능)
+void TwitterCollector::collectSpacesFromTimeline(const QJsonObject &config, const QString &target,
+                                                 const QString &userDir, bool &isRunning)
+{
+    Q_UNUSED(config);
+    if (!isRunning) return;
+    m_backend->log("🎙️ 스페이스 자동탐지: 게시물에서 스페이스 검색...", "info", "twitter");
+
+    QStringList targets;
+    QSet<QString> seen;
+    // 1) (주 신호) 수집 중 발견한 '스페이스 카드' 트윗의 status URL — 유저가 호스팅/공유한 스페이스.
+    //    yt-dlp 가 status URL 에서 스페이스를 추출한다(검증됨).
+    for (const QString &u : m_spaceCardTweetUrls) {
+        if (!u.isEmpty() && !seen.contains(u)) { seen.insert(u); targets << u; }
+    }
+    // 2) (보강) 저장된 _complete.xlsx 의 text/urls/quoted_tweet_url 에 박힌 i/spaces|broadcasts 링크
+    //    — 리트윗/인용/직접 링크된 스페이스.
+    const QString completePath = userDir + "/" + target + "_complete.xlsx";
+    if (QFile::exists(completePath)) {
+        QRegularExpression rx(R"((?:x\.com|twitter\.com)/i/(?:spaces|broadcasts)/([A-Za-z0-9]+))");
+        QXlsx::Document doc(completePath);
+        const int lastRow = doc.dimension().lastRow();
+        for (int r = 2; r <= lastRow; ++r) {
+            const QString blob = doc.read(r, 3).toString() + " "
+                               + doc.read(r, 19).toString() + " "
+                               + doc.read(r, 25).toString();
+            auto it = rx.globalMatch(blob);
+            while (it.hasNext()) {
+                const QString url = "https://x.com/i/spaces/" + it.next().captured(1);
+                if (!seen.contains(url)) { seen.insert(url); targets << url; }
+            }
+        }
+    }
+
+    if (targets.isEmpty()) {
+        m_backend->log("🎙️ 스페이스 자동탐지: 발견된 스페이스 없음.", "info", "twitter");
+        return;
+    }
+    m_backend->log(QString("🎙️ 스페이스 %1개 발견 — 다운로드 시작 (녹화본만 가능).").arg(targets.size()),
+                   "success", "twitter");
+
+    const QString outDir = userDir + "/spaces";
+    int ok = 0;
+    for (const QString &u : targets) {
+        if (!isRunning) break;
+        if (m_backend->downloadSpaceUrl(u, outDir, &isRunning)) ok++;
+    }
+    m_backend->log(QString("🎙️ 스페이스 자동탐지 완료: %1/%2 성공.").arg(ok).arg(targets.size()),
+                   ok > 0 ? "success" : "warning", "twitter");
+}
+
+// ── 전체 수집(all) 후속: 유저의 자기-답글 체인(스레드)을 자동탐지 → 기존 thread 재구성 재사용 ──
+//    _complete.xlsx 에서 author_username(7)==target 이고 in_reply_to(23)==target 인 행의
+//    conversation_id(22) 를 스레드 루트로 간주(트위터 conversation_id == 루트 트윗 id).
+void TwitterCollector::collectThreadsAuto(const QJsonObject &config, const QString &target,
+                                          const QString &userDir, bool &isRunning)
+{
+    if (!isRunning) return;
+    const QString completePath = userDir + "/" + target + "_complete.xlsx";
+    if (!QFile::exists(completePath)) return;
+    m_backend->log("🧵 스레드 자동탐지: 자기-답글 체인 검색...", "info", "twitter");
+
+    QSet<QString> threadConvs;
+    {
+        QXlsx::Document doc(completePath);
+        const int lastRow = doc.dimension().lastRow();
+        for (int r = 2; r <= lastRow; ++r) {
+            const QString author = doc.read(r, 7).toString().trimmed();
+            const QString inReplyTo = doc.read(r, 23).toString().trimmed();   // 답글 대상 screen name
+            const QString conv = doc.read(r, 22).toString().trimmed();
+            if (conv.isEmpty()) continue;
+            if (author.compare(target, Qt::CaseInsensitive) == 0 &&
+                inReplyTo.compare(target, Qt::CaseInsensitive) == 0) {
+                threadConvs.insert(conv);   // 자기 자신에게 답글 = 스레드
+            }
+        }
+    }
+    if (threadConvs.isEmpty()) {
+        m_backend->log("🧵 스레드 자동탐지: 발견된 스레드 없음.", "info", "twitter");
+        return;
+    }
+
+    QStringList convList = threadConvs.values();
+    const int MAX_THREADS = 30;    // 과도한 재구성(데몬 재시작 반복으로 먹통처럼 보임) 방지 상한
+    if (convList.size() > MAX_THREADS) {
+        m_backend->log(QString("🧵 스레드 %1개 발견 — 상한 %2개까지만 재구성.").arg(convList.size()).arg(MAX_THREADS),
+                       "warning", "twitter");
+        convList = convList.mid(0, MAX_THREADS);
+    } else {
+        m_backend->log(QString("🧵 스레드 %1개 발견 — 재구성 시작.").arg(convList.size()), "success", "twitter");
+    }
+
+    const QJsonArray accounts = config["accounts"].toArray();
+    int done = 0;
+    for (const QString &conv : convList) {
+        if (!isRunning) break;
+        const QString rootUrl = QString("https://x.com/%1/status/%2").arg(target, conv);
+        // 기존 thread 재구성 경로 재사용. 'all' 패턴대로 매 호출 전 daemon 재설정.
+        if (!accounts.isEmpty()) {
+            setupClient(accounts[0].toObject()["auth_token"].toString(),
+                        accounts[0].toObject()["ct0"].toString());
+            if (!startDaemon()) initTransactionIds();
+        }
+        QJsonObject tcfg = config;
+        tcfg["type"] = QString("thread");
+        tcfg["target"] = rootUrl;
+        tcfg["_subCall"] = true;
+        collect(tcfg, isRunning);
+        done++;
+    }
+    m_backend->log(QString("🧵 스레드 자동탐지 완료: %1개 재구성.").arg(done), "success", "twitter");
+}
+
 void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
 {
     // 중지 시 진행 중인 미디어 다운로드를 즉시 끊기 위해 HttpClient에 '진행 플래그' 연결
@@ -2291,6 +2406,7 @@ void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
     // ── ALL: 전체 수집 (트윗 + 답글 + 좋아요 + 리포스트 + 팔로워 + 팔로잉 + 프로필) ──
     if (type == "all") {
         m_backend->log("═══ 전체 수집 모드 ═══", "success", "twitter");
+        m_spaceCardTweetUrls.clear();   // 이번 전체수집에서 발견할 스페이스 카드 트윗 누적용 초기화
 
         // 1. Profile
         m_backend->log("[1/7] 프로필 수집...", "info", "twitter");
@@ -2487,6 +2603,12 @@ void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
         // 8. Following
         m_backend->log("[8/8] 팔로잉 수집...", "info", "twitter");
         collect(makeSubConfig("following"), isRunning);
+
+        // 9. 🎙️ 스페이스 자동탐지 (타임라인에 공유된 스페이스 링크 → yt-dlp)
+        collectSpacesFromTimeline(config, target, userDir, isRunning);
+
+        // 10. 🧵 스레드 자동탐지 (자기-답글 체인 루트 → thread 재구성)
+        collectThreadsAuto(config, target, userDir, isRunning);
 
         m_backend->log("═══ 전체 수집 완료! ═══", "success", "twitter");
         return;
@@ -3806,6 +3928,12 @@ void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
             QJsonObject cardObj = tweet["card"].toObject();
             QString cardName = cardObj["legacy"].toObject()["name"].toString();
             bool hasPoll = cardName.startsWith("poll");
+            // 🎙️ 스페이스 카드 트윗 — status URL 을 모아 전체수집 끝에 yt-dlp 로 추출/다운로드.
+            //   (호스팅/공유한 스페이스는 URL 엔티티가 아니라 카드라서, status URL 을 yt-dlp 에 넘겨 추출)
+            if (cardName.contains("audiospace", Qt::CaseInsensitive)
+                || cardName.contains("broadcast", Qt::CaseInsensitive)) {
+                if (!tweetUrl.isEmpty()) m_spaceCardTweetUrls.insert(tweetUrl);
+            }
             // 고정 트윗: 최상위에 pinned = true 마킹
             bool isPinned = tweet["pinned"].toBool(false);
             QString tweetType = "Tweet";

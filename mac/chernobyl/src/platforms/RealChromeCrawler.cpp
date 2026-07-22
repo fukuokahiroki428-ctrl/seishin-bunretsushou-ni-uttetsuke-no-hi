@@ -45,10 +45,16 @@ QString RealChromeCrawler::findChromeExecutable() const
     // 후보 경로 — 사용자가 어떤 Chromium 계열 브라우저든 깔려있을 가능성을 모두 검사
     QStringList candidates;
 #ifdef Q_OS_MACOS
-    // ★ 번들된 Chromium 최우선 — 앱 자체 동봉 (사용자 시스템 Chrome 의존성 제거)
-    QString bundledChromium = QCoreApplication::applicationDirPath()
-        + "/../Resources/chromium/Chromium.app/Contents/MacOS/Google Chrome for Testing";
-    candidates << bundledChromium;
+    // ★ 번들된 Chromium 최우선 — 앱 자체 동봉 (사용자 시스템 Chrome 의존성 제거).
+    //   유니버설 빌드: arch 슬라이스별로 자기 arch Chromium 을 고른다 (Chrome for Testing 은 유니버설 없음).
+    const QString resDir = QCoreApplication::applicationDirPath() + "/../Resources/";
+    const QString chromeExe = "/Contents/MacOS/Google Chrome for Testing";
+#if defined(__aarch64__)
+    candidates << resDir + "chromium_arm64/Chromium.app" + chromeExe;
+#else
+    candidates << resDir + "chromium_x86_64/Chromium.app" + chromeExe;
+#endif
+    candidates << resDir + "chromium/Chromium.app" + chromeExe;   // 호환 폴백 (단일 arch 번들)
     candidates
         << "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         << "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
@@ -176,6 +182,22 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
             if (pid > 0) {
                 ::kill(static_cast<pid_t>(pid), SIGTERM);
                 if (m_backend) m_backend->log(QString("이전 Chrome 좀비 종료 (PID %1)").arg(pid), "info", "crawl");
+            }
+        }
+        // ★ 포트뿐 아니라 '같은 캡쳐 프로필'을 쓰는 잔존 Chrome 도 정리.
+        //   (포트가 안 열린 좀비가 프로필을 쥐고 있으면, 새 Chrome 이 그 인스턴스로 핸드오프되며 즉시 종료 →
+        //    캡쳐 시 "로그인 사전 navigate 실패" 가 트윗마다 반복됨). 개인 Chrome 은 경로가 달라 안 건드림.
+        if (!m_userDataDir.isEmpty()) {
+            QProcess pg;
+            pg.start("pgrep", {"-f", m_userDataDir});
+            pg.waitForFinished(2000);
+            const QString pgo = QString::fromUtf8(pg.readAllStandardOutput()).trimmed();
+            for (const QString &pidStr : pgo.split('\n', Qt::SkipEmptyParts)) {
+                qint64 pid = pidStr.toLongLong();
+                if (pid > 0) {
+                    ::kill(static_cast<pid_t>(pid), SIGTERM);
+                    if (m_backend) m_backend->log(QString("이전 Chrome(프로필) 좀비 종료 (PID %1)").arg(pid), "info", "crawl");
+                }
             }
         }
 #endif

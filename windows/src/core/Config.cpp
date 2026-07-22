@@ -197,6 +197,7 @@ QJsonObject Config::toJson() const
     root["ytDlpAutoUpdate"] = m_ytDlpAutoUpdate;
     root["firstRunCompleted"] = m_firstRunCompleted;
     root["nasAutoReconnect"] = m_nasAutoReconnect;
+    root["maxConcurrent"] = m_maxConcurrent;
     return root;
 }
 
@@ -228,4 +229,5 @@ void Config::fromJson(const QJsonObject &obj)
     if (obj.contains("ytDlpAutoUpdate")) m_ytDlpAutoUpdate = obj["ytDlpAutoUpdate"].toBool();
     if (obj.contains("firstRunCompleted")) m_firstRunCompleted = obj["firstRunCompleted"].toBool();
     if (obj.contains("nasAutoReconnect")) m_nasAutoReconnect = obj["nasAutoReconnect"].toBool();
+    if (obj.contains("maxConcurrent")) m_maxConcurrent = obj["maxConcurrent"].toInt(0);
 }

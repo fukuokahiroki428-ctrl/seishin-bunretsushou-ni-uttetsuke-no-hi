@@ -11,6 +11,7 @@
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QMutex>
 #include <QRegularExpression>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -236,6 +237,7 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
     static QString exiftoolPath;
     static QString exiftoolPerl;  // 번들 exiftool용 Perl 인터프리터
     static QString exiftoolPerlLib;
+    static QString exiftoolPerlCoreLib;  // ★ 번들 Perl 의 코어 @INC (자체완결 perl 사용 시)
     if (exiftoolPath.isEmpty()) {
         // 번들된 exiftool (Resources/tools/exiftool/exiftool)
         QString bundledExiftool = bundledResourcesDir() + "/tools/exiftool/exiftool";
@@ -244,12 +246,18 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
         if (QFile::exists(bundledExiftool)) {
             exiftoolPath = bundledExiftool;
             exiftoolPerlLib = bundledResourcesDir() + "/tools/exiftool/lib/perl5";
-            // macOS/Linux 시스템 Perl 사용
-            QStringList perls = {"/usr/bin/perl", "/usr/bin/perl5.34", "/usr/bin/perl5.30"};
-            for (const QString &p : perls) {
-                if (QFile::exists(p)) { exiftoolPerl = p; break; }
+            // ★ 번들 Perl 우선 (자체완결 — 시스템 perl 없어도 동작). 없으면 시스템 perl 폴백.
+            QString bundledPerl = bundledResourcesDir() + "/tools/perl/bin/perl";
+            if (QFile::exists(bundledPerl)) {
+                exiftoolPerl = bundledPerl;
+                exiftoolPerlCoreLib = bundledResourcesDir() + "/tools/perl/lib";  // 번들 perl 코어 @INC
+            } else {
+                QStringList perls = {"/usr/bin/perl", "/usr/bin/perl5.34", "/usr/bin/perl5.30"};
+                for (const QString &p : perls) {
+                    if (QFile::exists(p)) { exiftoolPerl = p; break; }
+                }
+                if (exiftoolPerl.isEmpty()) exiftoolPerl = "perl";
             }
-            if (exiftoolPerl.isEmpty()) exiftoolPerl = "perl";
             qDebug() << "[Common] bundled exiftool:" << exiftoolPath
                      << "perl:" << exiftoolPerl << "lib:" << exiftoolPerlLib;
         } else {
@@ -274,6 +282,11 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
     if (!exiftoolPerl.isEmpty()) {
         // 번들 exiftool: perl -I<lib> exiftool <args>
         QStringList perlArgs;
+        // ★ 번들 perl 코어 @INC (arch lib + base) 먼저 — 시스템 /System/Library/Perl 없이도 동작.
+        if (!exiftoolPerlCoreLib.isEmpty()) {
+            perlArgs << "-I" + exiftoolPerlCoreLib + "/darwin-thread-multi-2level";
+            perlArgs << "-I" + exiftoolPerlCoreLib;
+        }
         if (!exiftoolPerlLib.isEmpty())
             perlArgs << "-I" + exiftoolPerlLib;
         perlArgs << exiftoolPath;
@@ -311,13 +324,78 @@ QString bundledResourcesDir()
 #endif
 }
 
+// ★ 유니버설 빌드: arch 슬라이스별로 #if 가 각각 컴파일되므로 런타임 arch 에 맞는 접미사가 박힌다.
+//   (arm64 슬라이스 → _arm64, x86_64 슬라이스 → _x86_64). Intel/Apple Silicon 둘 다 자체 python 사용.
+#if defined(Q_OS_MACOS) && defined(__aarch64__)
+#  define KAMERA_PY_ARCH "_arm64"
+#elif defined(Q_OS_MACOS)
+#  define KAMERA_PY_ARCH "_x86_64"
+#else
+#  define KAMERA_PY_ARCH ""
+#endif
+
+QString userPythonEnvDir()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+           + "/python_env" KAMERA_PY_ARCH;
+}
+
+#ifdef Q_OS_MACOS
+// 심볼릭 링크/실행권한 보존이 필요(standalone python 은 symlink 포함) → cp -a 로 복사.
+static bool copyTreePreserving(const QString &src, const QString &dst)
+{
+    QProcess cp;
+    cp.start("/bin/cp", {"-a", src, dst});
+    if (!cp.waitForStarted(5000)) return false;
+    if (!cp.waitForFinished(180000)) { cp.kill(); cp.waitForFinished(2000); return false; }
+    return cp.exitStatus() == QProcess::NormalExit && cp.exitCode() == 0;
+}
+#endif
+
+QString activePythonEnvDir()
+{
+#ifdef Q_OS_MACOS
+    // 번들은 codesign 으로 sealed → 외부 복사본을 쓴다. 없으면 번들에서 1회 시드.
+    static QMutex seedMutex;
+    const QString ext = userPythonEnvDir();
+    const QString extPy = ext + "/bin/python3";
+    if (QFile::exists(extPy)) return ext;
+
+    QMutexLocker lock(&seedMutex);
+    if (QFile::exists(extPy)) return ext;   // 락 대기 중 다른 스레드가 끝냈을 수 있음
+
+    QString bundled = bundledResourcesDir() + "/python_env" KAMERA_PY_ARCH;
+    // 호환: arch 별 디렉토리가 없으면 단일 python_env 로 폴백 (구 번들/단일 arch 빌드).
+    if (!QFile::exists(bundled + "/bin/python3"))
+        bundled = bundledResourcesDir() + "/python_env";
+    if (!QFile::exists(bundled + "/bin/python3"))
+        return ext;   // 번들에도 없음 → 외부 경로 반환(새 설치 대상이 됨)
+
+    QDir().mkpath(QFileInfo(ext).absolutePath());
+    const QString tmp = ext + ".seeding";
+    QDir(tmp).removeRecursively();
+    if (copyTreePreserving(bundled, tmp) && QFile::exists(tmp + "/bin/python3")) {
+        QDir(ext).removeRecursively();          // 깨진 기존 외부본이 있으면 교체
+        if (QDir().rename(tmp, ext) && QFile::exists(extPy)) {
+            qDebug() << "[Common] python_env seeded to writable location:" << ext;
+            return ext;
+        }
+    }
+    QDir(tmp).removeRecursively();
+    qWarning() << "[Common] python_env seed failed — using read-only bundle (upgrade disabled)";
+    return bundled;   // 복사 실패 → 읽기전용 번들 (upgrade/repair 가 거부함)
+#else
+    // Windows/Linux: 서명 seal 없음 → 설치 위치의 python_env 그대로.
+    return bundledResourcesDir() + "/python_env";
+#endif
+}
+
 QString bundledPythonPath()
 {
-    QString resDir = bundledResourcesDir();
 #ifdef Q_OS_WIN
-    return resDir + "/python_env/python.exe";
+    return activePythonEnvDir() + "/python.exe";
 #else
-    return resDir + "/python_env/bin/python3";
+    return activePythonEnvDir() + "/bin/python3";
 #endif
 }
 

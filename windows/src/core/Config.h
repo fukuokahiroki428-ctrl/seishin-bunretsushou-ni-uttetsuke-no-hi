@@ -101,6 +101,10 @@ public:
     bool nasAutoReconnect() const { return m_nasAutoReconnect; }
     void setNasAutoReconnect(bool b) { m_nasAutoReconnect = b; }
 
+    // ★ 동시 다운로드 개수 — 0 = 플랫폼별 기본값, 1~N = 모든 플랫폼 동시 작업 한도(전역 override)
+    int maxConcurrent() const { return m_maxConcurrent; }
+    void setMaxConcurrent(int n) { m_maxConcurrent = n; }
+
 private:
     QMap<QString, QJsonArray> m_accounts;
     QString m_configPath;
@@ -123,4 +127,5 @@ private:
     bool m_ytDlpAutoUpdate = false;  // 보안 위험 — 사용자 명시적 ON 필요
     bool m_firstRunCompleted = false;
     bool m_nasAutoReconnect = true;  // 기본 ON (대부분 원하는 동작)
+    int m_maxConcurrent = 0;         // 0 = 플랫폼별 기본값
 };

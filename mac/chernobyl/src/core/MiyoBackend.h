@@ -36,6 +36,12 @@ public:
     void runJs(const QString &js);
     void log(const QString &message, const QString &type = "info", const QString &platform = QString());
     void updateStats(int posts, int media, const QString &status, const QString &platform = QString());
+    // 수집 종료 시 UI 시작/정지 버튼 동기화 통지 (CollectionGuard 소멸자에서 호출)
+    void notifyCollectionEnded(const QString &platform);
+
+    // 단일 스페이스 URL 을 outDir 에 yt-dlp 로 다운로드(스페이스 자동탐지에서도 재사용). 성공 시 true.
+    //   running: 중지 판단용 실행 플래그(병렬 트랙 flag). nullptr 이면 platformRunning("twitter") 사용.
+    bool downloadSpaceUrl(const QString &url, const QString &outDir, const bool *running = nullptr);
 
 signals:
     void jsSignal(const QString &js);
@@ -75,6 +81,10 @@ public slots:
     void startYoutube(const QString &configJson);
     void stopYoutube();
     void analyzeYoutube(const QString &url);
+
+    // 니코니코동화(니코동) — yt-dlp 파이프라인 재사용
+    void startNiconico(const QString &configJson);
+    void stopNiconico();
 
     // Log
     void showLog(const QString &message);
@@ -330,6 +340,7 @@ public:
 
     // Collection runners (all inline in main app)
     void runTwitterCollection(const QJsonObject &config);
+    void runTwitterSpace(const QJsonObject &config);   // 트위터 스페이스(오디오) — yt-dlp 다운로드
     void runBlueskyCollection(const QJsonObject &config);
     void runDiscordCollection(const QJsonObject &config);
     void runInstagramCollection(const QJsonObject &config);
@@ -418,8 +429,9 @@ public:
     //   Twitter/Bluesky: API rate limit → 2
     //   Tumblr/Discord/SpinSpin/Asked/Crawl: 비교적 가벼움 → 3
     QMap<QString, QSemaphore*> m_platformSems;
+    QMap<QString, int> m_platformSemCap;   // 현재 논리적 capacity (설정 변경 시 라이브 조정용)
     QMutex m_platformSemsMutex;
-    QSemaphore* platformSem(const QString &platform);  // 동적 생성 / 조회
+    QSemaphore* platformSem(const QString &platform);  // 동적 생성 / 조회 (설정 maxConcurrent 반영)
 
     // ★ 로그인 대기 — platform별로 분리 (Instagram/Pixiv 동시 대기 가능)
     QMap<QString, QSemaphore*> m_loginPauseSems;
