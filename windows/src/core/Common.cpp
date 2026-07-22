@@ -420,6 +420,9 @@ static QString findBundledYtDlp()
     paths << QCoreApplication::applicationDirPath() + "/yt-dlp";  // Contents/MacOS/yt-dlp
     paths << bundledToolsDir() + "/yt-dlp";                        // Contents/Resources/tools/yt-dlp
 #else
+    // ★ Windows 배포 레이아웃은 yt-dlp.exe 를 exe 루트에 둔다 (CMake POST_BUILD / CI Deploy).
+    //   tools/ 만 보면 항상 빈손 → 자동 업데이트·번들 복원이 조용히 no-op 이 되던 버그.
+    paths << QCoreApplication::applicationDirPath() + "/yt-dlp.exe";
     paths << bundledToolsDir() + "/yt-dlp.exe";
     paths << bundledToolsDir() + "/yt-dlp";
 #endif

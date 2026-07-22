@@ -1236,6 +1236,7 @@ def main():
             save_profile(user_dir, profile, short_handle)
 
             # Download avatar & banner (with archive on change)
+            import urllib.request  # ★ 함수-로컬 import 누락 → NameError 로 아바타/배너 저장이 조용히 안 되던 버그
             avatar_url = getattr(profile, 'avatar', '')
             banner_url = getattr(profile, 'banner', '')
             from datetime import datetime as _dt_p

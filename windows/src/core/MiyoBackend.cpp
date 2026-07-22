@@ -12,6 +12,7 @@
 #include "utils/DiskJsonBuffer.h"
 #include "utils/FileHelper.h"
 #include "utils/SelfRepair.h"
+#include <QPointer>
 #include "core/Common.h"
 using FileHelper::sanitizeFilename;
 
@@ -3451,14 +3452,20 @@ void MiyoBackend::llmDiagnoseIfBroken(const QString &platformName, const QString
                        + tail.count(QStringLiteral("ERROR"), Qt::CaseInsensitive);
     if (errCount < 3) return;
 
-    QThread *t = QThread::create([this, platformName, trackKey, tail]() {
+    // ★ this 를 워커 스레드에서 직접 만지지 않는다 — 진단(최대 ~40초 블로킹) 중 앱/백엔드가
+    //   파괴되면 use-after-free. 결과 게시는 QPointer 확인 후 메인 스레드에서만 한다.
+    //   (log()의 writeTerminalLog 가 m_terminalLogPaths 를 읽으므로 메인 스레드 경유가 맵 동시접근 레이스도 제거)
+    QPointer<MiyoBackend> self(this);
+    QThread *t = QThread::create([self, platformName, trackKey, tail]() {
         const QString prompt = QString("플랫폼 '%1' (트랙 %2) 수집 로그 꼬리다. 오류 원인과 조치를 진단하라:\n%3")
                                    .arg(platformName, trackKey, tail);
         const QString diag = SelfRepair::llmDiagnose(prompt);
-        if (!diag.isEmpty())
-            log(QStringLiteral("🩺 로컬 LLM 진단:\n") + diag, "warning", platformName);
+        if (diag.isEmpty()) return;
+        QMetaObject::invokeMethod(qApp, [self, diag, platformName]() {
+            if (self) self->log(QStringLiteral("🩺 로컬 LLM 진단:\n") + diag, "warning", platformName);
+        }, Qt::QueuedConnection);
     });
-    connect(t, &QThread::finished, t, &QObject::deleteLater);
+    QObject::connect(t, &QThread::finished, t, &QObject::deleteLater);
     t->start(QThread::LowPriority);
 }
 
@@ -4087,9 +4094,19 @@ void MiyoBackend::startCollection(const QString &configJson)
             log(QString("이미 수집 중입니다! (%1)").arg(trackKey), "warning", platformName);
             return;
         }
-        // stale 정리: 끝난 스레드만 직접 deleteLater. (실행 중인데 플래그만 꺼진 경우엔
-        //   finished→deleteLater 연결에 맡기고 맵 참조만 제거 — 러닝 스레드 삭제/이중삭제 방지)
-        if (existing && existing->isFinished()) existing->deleteLater();
+        // ★ 이전 워커가 아직 살아있으면(중지 직후 마무리: Excel 저장/HTTP 대기 등) 끝날 때까지
+        //   기다렸다가 자동 재시작. 살아있는 이전 워커와 새 워커가 겹치면 sequential collector 의
+        //   delete/new 가 동시 use-after-free 를 일으키고, 이전 완료 콜백이 새 수집을 중단시킨다.
+        if (existing && !existing->isFinished()) {
+            log(QString("이전 수집 마무리 대기 후 자동 재시작 (%1)").arg(trackKey), "info", platformName);
+            const QString cfgCopy = configJson;
+            connect(existing, &QThread::finished, this, [this, cfgCopy]() {
+                startCollection(cfgCopy);
+            }, static_cast<Qt::ConnectionType>(Qt::QueuedConnection | Qt::SingleShotConnection));
+            return;
+        }
+        // stale 정리: 끝난 스레드 deleteLater 후 재시작 허용
+        if (existing) existing->deleteLater();
         m_collectionThreads.remove(trackKey);
         dbg("stale collection thread cleared — 재시작 허용", platformName);
     }
@@ -4153,7 +4170,11 @@ void MiyoBackend::startCollection(const QString &configJson)
         // 워커 스레드 종료 직전 trackKey 등록 해제
         if (isParallel) clearThreadTrackKey();
         // 완료 처리 (메인 스레드)
-        QMetaObject::invokeMethod(this, [this, platformName, trackKey, isParallel]() {
+        QThread *workerSelf = QThread::currentThread();
+        QMetaObject::invokeMethod(this, [this, platformName, trackKey, isParallel, workerSelf]() {
+            // ★ stale 완료 콜백 가드 — 이 trackKey 를 새 스레드가 이미 넘겨받았으면
+            //   (재시작 레이스) 새 수집의 플래그/터미널/맵을 건드리지 않는다.
+            if (m_collectionThreads.value(trackKey) != workerSelf) return;
             {
                 QMutexLocker lock(&m_runningMutex);
                 m_isRunning[trackKey] = false;
@@ -6789,9 +6810,11 @@ bool MiyoBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir, 
     QStringList args;
     args << "--no-mtime" << "--newline" << "--no-playlist";
     // ★ ffmpeg 위치 — 스페이스는 m3u8(HLS) 라 ffmpeg 필수. 번들→시스템 순으로 '실제 존재하는' 것만 지정.
-    //   (이전엔 ffmpeg 없는 번들 디렉토리를 무조건 가리켜 "ffmpeg could not be found" 로 실패했음)
-    for (const QString &ff : QStringList{ appDir + "/ffmpeg", appDir + "/ffmpeg.exe",
-                                          "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg" }) {
+    //   후보는 YouTube 경로(아래 .bat 생성부)와 동일한 Windows 레이아웃 —
+    //   exe 옆 / tools\ / C:\ffmpeg\bin (이전엔 mac 후보를 복사해 와 tools\ 설치를 놓쳤음)
+    for (const QString &ff : QStringList{ appDir + "/ffmpeg.exe", appDir + "/ffmpeg",
+                                          appDir + "/tools/ffmpeg.exe",
+                                          "C:/ffmpeg/bin/ffmpeg.exe" }) {
         if (QFile::exists(ff)) { args << "--ffmpeg-location" << ff; break; }
     }
     // 위 후보가 모두 없으면 --ffmpeg-location 생략 → PATH 에서 탐색.
@@ -8911,15 +8934,15 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
         script += "set RETRY=0\r\n";
         script += ":RETRY_LOOP_" + QString::number(i) + "\r\n";
         script += esc(ytdlpPath) + " -o " + esc(outTemplate) + " " + argsStr + esc(urls[i]) + "\r\n";
-        script += "if %errorlevel%==0 (\r\n  set /a SUCCESS+=1\r\n  echo >> 완료\r\n) else (\r\n";
+        script += "if %errorlevel%==0 (\r\n  set /a SUCCESS+=1\r\n  echo ^>^> 완료\r\n) else (\r\n";
         // ★ if/else 블록 안에서 %RETRY% 는 파싱 시점(=0) 으로 고정됨 → !RETRY! 사용
         script += "  set /a RETRY+=1\r\n";
         script += "  if !RETRY! LEQ 3 (\r\n";
         script += "    set /a WAIT_SEC=60*!RETRY!\r\n";
-        script += "    echo >> Rate limit / 실패 — !WAIT_SEC!초 대기 후 재시도 ^(!RETRY!/3^)\r\n";
+        script += "    echo ^>^> Rate limit / 실패 — !WAIT_SEC!초 대기 후 재시도 ^(!RETRY!/3^)\r\n";
         script += "    ping -n !WAIT_SEC! 127.0.0.1 >nul 2>&1\r\n";
         script += "    goto RETRY_LOOP_" + QString::number(i) + "\r\n";
-        script += "  ) else (\r\n    set /a FAIL+=1\r\n    echo >> 실패\r\n  )\r\n)\r\n";
+        script += "  ) else (\r\n    set /a FAIL+=1\r\n    echo ^>^> 실패\r\n  )\r\n)\r\n";
         script += "echo.\r\n";
     }
     script += "echo =========================================\r\n";
@@ -12675,11 +12698,9 @@ void MiyoBackend::upgradePython()
             log(QString("  현재 패키지 %1개 백업").arg(frozenPkgs.size()), "info", "settings");
         }
 
-        // 2. 기존 환경 삭제
-        log("  기존 Python 환경 삭제 중...", "info", "settings");
-        QDir(pythonDir).removeRecursively();
-
         // 3. 최신 standalone Python 다운로드 + 설치
+        //    (★ 기존 환경 삭제는 다운로드 성공 후에만 — 조회/다운로드 실패가
+        //     멀쩡한 환경을 파괴하고 repair↔upgrade 무한루프에 빠지는 것 방지)
         log("  최신 Python 다운로드 중... (시간이 걸릴 수 있습니다)", "info", "settings");
 
         // astral-sh에서 최신 릴리스 URL 조회
@@ -12735,10 +12756,11 @@ void MiyoBackend::upgradePython()
         }
 
         if (downloadUrl.isEmpty()) {
-            log("  ❌ 최신 Python 릴리스를 찾을 수 없습니다. 복구 모드로 전환...", "error", "settings");
+            // ★ repairPython 재큐 금지 — repair 가 python_missing 이면 다시 upgrade 를 부르므로
+            //   오프라인/레이트리밋에서 둘이 서로를 무한 재큐하는 루프가 됐었다. 종료가 정답.
+            log("  ❌ 최신 Python 릴리스를 찾을 수 없습니다. 네트워크 확인 후 다시 시도하세요. (기존 환경은 그대로 유지됩니다)", "error", "settings");
             m_pythonBusy = false;
             runJs("setPythonEnvBusy(false, '실패')");
-            QMetaObject::invokeMethod(this, "repairPython", Qt::QueuedConnection);
             return;
         }
 
@@ -12754,6 +12776,10 @@ void MiyoBackend::upgradePython()
             runJs("setPythonEnvBusy(false, '다운로드 실패')");
             return;
         }
+
+        // 기존 환경 삭제 → 새 버전으로 교체 (다운로드 성공이 확인된 뒤에만 수행)
+        log("  기존 Python 환경 삭제 중...", "info", "settings");
+        QDir(pythonDir).removeRecursively();
 
         // 4. 압축 해제
         log("  압축 해제 중...", "info", "settings");
