@@ -36,6 +36,8 @@ public:
     void runJs(const QString &js);
     void log(const QString &message, const QString &type = "info", const QString &platform = QString());
     void updateStats(int posts, int media, const QString &status, const QString &platform = QString());
+    // 수집 종료 후 로그 꼬리에서 오류 다발 감지 시 로컬 LLM 진단 (SelfRepair 연동)
+    void llmDiagnoseIfBroken(const QString &platformName, const QString &trackKey);
     // 수집 종료 시 UI 시작/정지 버튼 동기화 통지 (CollectionGuard 소멸자에서 호출)
     void notifyCollectionEnded(const QString &platform);
 

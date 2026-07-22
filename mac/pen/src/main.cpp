@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QStringList>
 #include "core/MainWindow.h"
+#include "utils/SelfRepair.h"   // ★ 자가진단·자가복구 + 로컬 LLM 진단
 
 #ifdef Q_OS_MACOS
 #include <objc/objc.h>
@@ -103,6 +104,10 @@ int main(int argc, char *argv[])
 
     MainWindow window;
     window.show();
+
+    // ★ 자가진단·자가복구 (백그라운드) — 번들 도구 검증→복구, stale lock 정리,
+    //   복구 실패 항목은 로컬 LLM(Ollama/LM Studio/llama.cpp/번들 llm/)이 원인 진단.
+    SelfRepair::runStartupMaintenanceAsync();
 
 #ifdef Q_OS_MACOS
     g_mainWindow = &window;
