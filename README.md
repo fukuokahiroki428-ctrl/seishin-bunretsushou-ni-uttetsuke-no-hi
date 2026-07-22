@@ -129,6 +129,30 @@ scripts/make_dist.sh /tmp/Pen_dist.app   # Qt 번들 + 경로 치환 + inside-ou
 
 ---
 
+## 🩺 자가수리(SelfRepair) + 로컬 LLM 진단
+
+세 앱 모두 시작 시 백그라운드로 자가진단·자가수리를 수행합니다 (`src/utils/SelfRepair.h`).
+
+1. **자가진단** — 번들 도구(yt-dlp/ffmpeg/python/exiftool/rclone)를 **앱 내부 경로 우선**으로
+   해석해 실행 검증. 시스템(homebrew 등) 경로는 최후 폴백.
+2. **자동 수리** — 손상된 사용자 복사본 삭제 → 번들본 재복사, 실행권한 복원,
+   캡쳐 Chrome stale lock 정리. (다운로더 고장의 최다 원인인 사이트 측 변경은
+   설정의 **yt-dlp 자동 업데이트**가 해결 — 켜두기를 권장.)
+3. **로컬 LLM 진단** — 복구 실패 항목이 남거나 수집 로그에 오류가 다발하면
+   로컬 LLM 에 로그를 보내 원인·조치를 앱 로그에 표시합니다.
+   - 자동 탐색: **Ollama**(11434) → **LM Studio**(1234) → **llama.cpp server**(8080)
+   - **앱 내부 탑재**: `Resources/llm/` 에 `llama-server` + `*.gguf` 가 있으면 자동 기동(8737).
+     패키징 시 `bash scripts/bundle_llm.sh <App.app 또는 배포폴더>` 1회 실행으로 배치
+     (기본 모델: Qwen2.5-1.5B-Instruct Q4_K_M ~1GB — git 에는 커밋하지 않음)
+   - env `CHERNOBYL_LLM_ENDPOINT` 로 엔드포인트 직접 지정 가능
+4. 보고서: `~/Library/Application Support/<앱>/selfrepair/last_report.txt`
+   (Windows: `%APPDATA%/<앱>/selfrepair/`)
+
+> **정직한 한계**: LLM 은 *진단·조치 안내*까지만 합니다. 컴파일된 C++ 앱을 런타임에
+> 스스로 재작성할 수는 없으며, 실제 "자동 수리"는 1~2의 결정론적 루틴이 수행합니다.
+
+---
+
 ## ⚖️ 라이선스 / 고지
 
 - 본 소스는 개인 사용 목적입니다. 번들 외부 도구는 각자의 라이선스를 따릅니다
