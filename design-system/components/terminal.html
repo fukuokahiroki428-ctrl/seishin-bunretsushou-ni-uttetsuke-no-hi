@@ -1,0 +1,23 @@
+<!-- @dsCard group="Components" -->
+<!doctype html><html><head><meta charset="utf-8"><title>Darkroom v2 — 로그 터미널</title>
+<style>
+*{box-sizing:border-box;margin:0}
+body{font-family:-apple-system,'SF Pro Text','Segoe UI',system-ui,sans-serif;background:#fff;padding:16px;display:flex;gap:14px;flex-wrap:wrap}
+.theme{--bg:#F7F7F8;--panel:#FFFFFF;--panel2:#F1F1F4;--text:#1B1B1F;--muted:#6E6E78;--faint:#A2A2AC;
+ --border:#E3E3E8;--border2:#EEEEF1;--accent:#6D5AE6;--accent-hover:#5B48D0;--accent-soft:rgba(109,90,230,.10);
+ --ok:#1F9D61;--warn:#B7791F;--err:#D93848;--r:12px;--r-sm:8px;--shadow:0 1px 2px rgba(24,24,32,.05);
+ flex:1 1 300px;min-width:300px;background:var(--bg);border:1px solid var(--border);border-radius:14px;padding:18px;color:var(--text)}
+.theme.dark{--bg:#0E0E11;--panel:#16161A;--panel2:#202027;--text:#ECECF1;--muted:#9C9CA8;--faint:#63636E;
+ --border:#2A2A33;--border2:#202026;--accent:#8B7CF7;--accent-hover:#A296FF;--accent-soft:rgba(139,124,247,.16);
+ --ok:#3DD68C;--warn:#F5B84C;--err:#F2705F;--shadow:0 1px 2px rgba(0,0,0,.45)}
+.tlabel{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);margin-bottom:12px}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--shadow)}
+.btn{height:38px;padding:0 16px;border-radius:var(--r-sm);font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;border:1px solid transparent;display:inline-flex;align-items:center;gap:6px}
+.btn.primary{background:var(--accent);color:#fff;box-shadow:0 1px 2px rgba(109,90,230,.28)}
+.btn.ghost{background:var(--panel);color:var(--text);border-color:var(--border)}
+.btn.ok{background:var(--ok);color:#fff}
+.btn.sm{height:32px;padding:0 12px;font-size:12px}
+.input{width:100%;height:38px;padding:0 12px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--panel);color:var(--text);font-size:13px;font-family:inherit;outline:none}
+.input.focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+</style>
+</head><body><div class="theme"><div class="tlabel">Light</div><div style="background:#0B0E14;color:#CBD5E1;border-radius:12px;padding:10px 13px;font-family:ui-monospace,Consolas,monospace;font-size:11.5px;line-height:1.65"><div><span style="color:#5B6678">[14:02:11]</span> <span style="color:#9FB0C7">수집 시작 (twitter#0)</span></div><div><span style="color:#5B6678">[14:02:37]</span> <span style="color:#4ADE80">미디어 128개 저장 완료</span></div><div><span style="color:#5B6678">[14:02:58]</span> <span style="color:#FBBF24">Rate limit — 60초 대기 후 재시도</span></div><div><span style="color:#5B6678">[14:03:59]</span> <span style="color:#F87171">1건 실패 — 재시도 예약</span></div></div></div><div class="theme dark"><div class="tlabel">Dark</div><div style="background:#0B0E14;color:#CBD5E1;border-radius:12px;padding:10px 13px;font-family:ui-monospace,Consolas,monospace;font-size:11.5px;line-height:1.65"><div><span style="color:#5B6678">[14:02:11]</span> <span style="color:#9FB0C7">수집 시작 (twitter#0)</span></div><div><span style="color:#5B6678">[14:02:37]</span> <span style="color:#4ADE80">미디어 128개 저장 완료</span></div><div><span style="color:#5B6678">[14:02:58]</span> <span style="color:#FBBF24">Rate limit — 60초 대기 후 재시도</span></div><div><span style="color:#5B6678">[14:03:59]</span> <span style="color:#F87171">1건 실패 — 재시도 예약</span></div></div></div></body></html>
