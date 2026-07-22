@@ -23,6 +23,7 @@
 // header-only (Q_OBJECT 없음) → CMakeLists 수정 불필요.
 // ═════════════════════════════════════════════════════════════════════════
 
+#include <QAtomicInt>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -250,15 +251,34 @@ inline QByteArray httpPostJson(const QString &url, const QByteArray &body, int t
 // 번들 LLM 서버 기동 — <Resources>/llm/llama-server + *.gguf 가 있으면 스폰
 inline bool spawnBundledLlm(int port)
 {
+    // ★ 앱 세션당 1회만 스폰 — 모델 로딩 중(503)을 죽은 것으로 오판해
+    //   서버를 중복 기동하는 사고 방지 (동시 진입 대비 atomic).
+    static QAtomicInt spawned{0};
+    if (!spawned.testAndSetOrdered(0, 1)) return false;
+
     const QString dir = resourcesDir() + "/llm";
     QString server = dir + "/llama-server" + exeSuffix();
-    if (!QFile::exists(server)) return false;
+    if (!QFile::exists(server)) { spawned.storeRelease(0); return false; }
     const QStringList ggufs = QDir(dir).entryList({"*.gguf"}, QDir::Files);
-    if (ggufs.isEmpty()) return false;
+    if (ggufs.isEmpty()) { spawned.storeRelease(0); return false; }
     makeExecutable(server);
-    return QProcess::startDetached(server,
+    qint64 pid = 0;
+    const bool ok = QProcess::startDetached(server,
         {"-m", dir + "/" + ggufs.first(), "--port", QString::number(port),
-         "--host", "127.0.0.1", "-c", "4096"});
+         "--host", "127.0.0.1", "-c", "4096"}, dir, &pid);
+    if (ok && pid > 0) {
+        // ★ 앱 종료 시 같이 종료 — 수 GB 모델을 든 고아 프로세스 잔존 방지.
+        //   (functor-only connect 는 emit 스레드(메인)에서 실행되어 워커에서 걸어도 안전)
+        QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, [pid]() {
+#ifdef Q_OS_WIN
+            QProcess::execute("taskkill", {"/F", "/PID", QString::number(pid)});
+#else
+            QProcess::execute("/bin/kill", {"-TERM", QString::number(pid)});
+#endif
+        });
+    }
+    if (!ok) spawned.storeRelease(0);
+    return ok;
 }
 
 // 살아있는 OpenAI 호환 엔드포인트 탐색. env CHERNOBYL_LLM_ENDPOINT 최우선.

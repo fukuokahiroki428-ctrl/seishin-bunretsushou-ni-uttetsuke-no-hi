@@ -12,6 +12,7 @@
 #include "utils/DiskJsonBuffer.h"
 #include "utils/FileHelper.h"
 #include "utils/SelfRepair.h"
+#include <QPointer>
 #include "core/Common.h"
 using FileHelper::sanitizeFilename;
 
@@ -3213,14 +3214,20 @@ void MiyoBackend::llmDiagnoseIfBroken(const QString &platformName, const QString
                        + tail.count(QStringLiteral("ERROR"), Qt::CaseInsensitive);
     if (errCount < 3) return;
 
-    QThread *t = QThread::create([this, platformName, trackKey, tail]() {
+    // ★ this 를 워커 스레드에서 직접 만지지 않는다 — 진단(최대 ~40초 블로킹) 중 앱/백엔드가
+    //   파괴되면 use-after-free. 결과 게시는 QPointer 확인 후 메인 스레드에서만 한다.
+    //   (log()의 writeTerminalLog 가 m_terminalLogPaths 를 읽으므로 메인 스레드 경유가 맵 동시접근 레이스도 제거)
+    QPointer<MiyoBackend> self(this);
+    QThread *t = QThread::create([self, platformName, trackKey, tail]() {
         const QString prompt = QString("플랫폼 '%1' (트랙 %2) 수집 로그 꼬리다. 오류 원인과 조치를 진단하라:\n%3")
                                    .arg(platformName, trackKey, tail);
         const QString diag = SelfRepair::llmDiagnose(prompt);
-        if (!diag.isEmpty())
-            log(QStringLiteral("🩺 로컬 LLM 진단:\n") + diag, "warning", platformName);
+        if (diag.isEmpty()) return;
+        QMetaObject::invokeMethod(qApp, [self, diag, platformName]() {
+            if (self) self->log(QStringLiteral("🩺 로컬 LLM 진단:\n") + diag, "warning", platformName);
+        }, Qt::QueuedConnection);
     });
-    connect(t, &QThread::finished, t, &QObject::deleteLater);
+    QObject::connect(t, &QThread::finished, t, &QObject::deleteLater);
     t->start(QThread::LowPriority);
 }
 
@@ -3793,9 +3800,19 @@ void MiyoBackend::startCollection(const QString &configJson)
             log(QString("이미 수집 중입니다! (%1)").arg(trackKey), "warning", platformName);
             return;
         }
-        // stale 정리: 끝난 스레드만 직접 deleteLater. (실행 중인데 플래그만 꺼진 경우엔
-        //   finished→deleteLater 연결에 맡기고 맵 참조만 제거 — 러닝 스레드 삭제/이중삭제 방지)
-        if (existing && existing->isFinished()) existing->deleteLater();
+        // ★ 이전 워커가 아직 살아있으면(중지 직후 마무리: Excel 저장/HTTP 대기 등) 끝날 때까지
+        //   기다렸다가 자동 재시작. 살아있는 이전 워커와 새 워커가 겹치면 sequential collector 의
+        //   delete/new 가 동시 use-after-free 를 일으키고, 이전 완료 콜백이 새 수집을 중단시킨다.
+        if (existing && !existing->isFinished()) {
+            log(QString("이전 수집 마무리 대기 후 자동 재시작 (%1)").arg(trackKey), "info", platformName);
+            const QString cfgCopy = configJson;
+            connect(existing, &QThread::finished, this, [this, cfgCopy]() {
+                startCollection(cfgCopy);
+            }, static_cast<Qt::ConnectionType>(Qt::QueuedConnection | Qt::SingleShotConnection));
+            return;
+        }
+        // stale 정리: 끝난 스레드 deleteLater 후 재시작 허용
+        if (existing) existing->deleteLater();
         m_collectionThreads.remove(trackKey);
         dbg("stale collection thread cleared — 재시작 허용", platformName);
     }
@@ -3872,7 +3889,11 @@ void MiyoBackend::startCollection(const QString &configJson)
         // 워커 스레드 종료 직전 trackKey 등록 해제
         if (isParallel) clearThreadTrackKey();
         // 완료 처리 (메인 스레드)
-        QMetaObject::invokeMethod(this, [this, platformName, trackKey, isParallel]() {
+        QThread *workerSelf = QThread::currentThread();
+        QMetaObject::invokeMethod(this, [this, platformName, trackKey, isParallel, workerSelf]() {
+            // ★ stale 완료 콜백 가드 — 이 trackKey 를 새 스레드가 이미 넘겨받았으면
+            //   (재시작 레이스) 새 수집의 플래그/터미널/맵을 건드리지 않는다.
+            if (m_collectionThreads.value(trackKey) != workerSelf) return;
             {
                 QMutexLocker lock(&m_runningMutex);
                 m_isRunning[trackKey] = false;
@@ -12321,11 +12342,9 @@ void MiyoBackend::upgradePython()
             log(QString("  현재 패키지 %1개 백업").arg(frozenPkgs.size()), "info", "settings");
         }
 
-        // 2. 기존 환경 삭제
-        log("  기존 Python 환경 삭제 중...", "info", "settings");
-        QDir(pythonDir).removeRecursively();
-
         // 3. 최신 standalone Python 다운로드 + 설치
+        //    (★ 기존 환경 삭제는 다운로드 성공 후에만 — 조회/다운로드 실패가
+        //     멀쩡한 환경을 파괴하지 않도록)
         log("  최신 Python 다운로드 중... (시간이 걸릴 수 있습니다)", "info", "settings");
 
         // astral-sh에서 최신 릴리스 URL 조회
@@ -12404,6 +12423,10 @@ void MiyoBackend::upgradePython()
             runJs("setPythonEnvBusy(false, '다운로드 실패')");
             return;
         }
+
+        // 기존 환경 삭제 → 새 버전으로 교체 (다운로드 성공이 확인된 뒤에만 수행)
+        log("  기존 Python 환경 삭제 중...", "info", "settings");
+        QDir(pythonDir).removeRecursively();
 
         // 4. 압축 해제
         log("  압축 해제 중...", "info", "settings");
