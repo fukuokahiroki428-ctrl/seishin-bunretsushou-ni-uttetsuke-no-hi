@@ -38,6 +38,8 @@ public:
     void runJs(const QString &js);
     void log(const QString &message, const QString &type = "info", const QString &platform = QString());
     void updateStats(int posts, int media, const QString &status, const QString &platform = QString());
+    // 수집 종료 후 로그 꼬리에서 오류 다발 감지 시 로컬 LLM 진단 (SelfRepair 연동)
+    void llmDiagnoseIfBroken(const QString &platformName, const QString &trackKey);
 
     // 단일 스페이스 URL 을 outDir 에 yt-dlp 로 다운로드(스페이스 자동탐지에서도 재사용). 성공 시 true.
     //   running: 중지 판단용 실행 플래그(병렬 트랙 flag). nullptr 이면 platformRunning("twitter") 사용.

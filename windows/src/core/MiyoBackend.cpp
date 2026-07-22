@@ -11,6 +11,7 @@
 #include "xlsxdocument.h"
 #include "utils/DiskJsonBuffer.h"
 #include "utils/FileHelper.h"
+#include "utils/SelfRepair.h"
 #include "core/Common.h"
 using FileHelper::sanitizeFilename;
 
@@ -3423,6 +3424,44 @@ void MiyoBackend::writeTerminalLog(const QString &message, const QString &platfo
     }
 }
 
+// ═════════════════════════════════════════════════════════════════════════
+// llmDiagnoseIfBroken — 수집 종료 후 터미널 로그 꼬리(4KB)에서 오류 다발을
+//   감지하면 SelfRepair 의 로컬 LLM(Ollama/LM Studio/llama.cpp/번들 llm/)으로
+//   원인·조치를 진단해 해당 플랫폼 로그에 표시한다. LLM 미가동이면 조용히 무시.
+//   (자동 "수리" 자체는 SelfRepair 의 결정론적 복구 루틴 + yt-dlp 자동 업데이트가
+//    수행하고, LLM 은 남은 고장의 원인 분석·조치 안내를 보탠다.)
+// ═════════════════════════════════════════════════════════════════════════
+void MiyoBackend::llmDiagnoseIfBroken(const QString &platformName, const QString &trackKey)
+{
+    QString logPath = m_terminalLogPaths.value(trackKey);
+    if (logPath.isEmpty()) logPath = m_terminalLogPaths.value(platformName);
+    if (logPath.isEmpty() || !QFile::exists(logPath)) return;
+
+    // 로그 꼬리 4KB
+    QFile f(logPath);
+    if (!f.open(QIODevice::ReadOnly)) return;
+    const qint64 sz = f.size();
+    if (sz > 4096) f.seek(sz - 4096);
+    const QString tail = QString::fromUtf8(f.readAll());
+    f.close();
+
+    // 오류 다발 휴리스틱 — 3회 미만이면 정상 소음으로 보고 LLM 호출 안 함
+    const int errCount = tail.count(QStringLiteral("❌"))
+                       + tail.count(QStringLiteral("실패"))
+                       + tail.count(QStringLiteral("ERROR"), Qt::CaseInsensitive);
+    if (errCount < 3) return;
+
+    QThread *t = QThread::create([this, platformName, trackKey, tail]() {
+        const QString prompt = QString("플랫폼 '%1' (트랙 %2) 수집 로그 꼬리다. 오류 원인과 조치를 진단하라:\n%3")
+                                   .arg(platformName, trackKey, tail);
+        const QString diag = SelfRepair::llmDiagnose(prompt);
+        if (!diag.isEmpty())
+            log(QStringLiteral("🩺 로컬 LLM 진단:\n") + diag, "warning", platformName);
+    });
+    connect(t, &QThread::finished, t, &QObject::deleteLater);
+    t->start(QThread::LowPriority);
+}
+
 void MiyoBackend::closeTerminalLog(const QString &platform)
 {
     QString path;
@@ -4139,6 +4178,8 @@ void MiyoBackend::startCollection(const QString &configJson)
             } else {
                 updateStats(0, 0, "Done", statsKey);
                 log(QString("Complete. (%1)").arg(trackKey), "success", platformName);
+                // ★ 자가수리 계층 — 오류 다발 시 로컬 LLM 원인 진단 (백그라운드, 미가동 시 무시)
+                llmDiagnoseIfBroken(platformName, trackKey);
             }
             // 병렬: platform 단위 setRunning(false)는 모든 trackKey가 끝났을 때만
             bool platformIdle = !m_isRunning.value(platformName, false);
