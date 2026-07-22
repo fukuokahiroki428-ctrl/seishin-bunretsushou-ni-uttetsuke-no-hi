@@ -19,21 +19,22 @@
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
+        /* ═══ Darkroom 디자인 시스템 v2 — 라이트 (레거시 변수명 매핑) ═══ */
         :root {
-            --bg: #FFFFFF;
-            --bg-secondary: #F5F5F7;
-            --bg-tertiary: #EBEBED;
-            --text: #1D1D1F;
-            --text-secondary: #6E6E73;
-            --text-tertiary: #AEAEB2;
-            --border: #D2D2D7;
-            --border-light: #E8E8ED;
-            --accent: #007AFF;
-            --accent-hover: #0066D6;
-            --accent-bg: rgba(0,122,255,0.08);
-            --red: #FF3B30;
-            --green: #34C759;
-            --orange: #FF9500;
+            --bg: #F7F7F8;
+            --bg-secondary: #F1F1F4;
+            --bg-tertiary: #E7E7EC;
+            --text: #1B1B1F;
+            --text-secondary: #6E6E78;
+            --text-tertiary: #A2A2AC;
+            --border: #E3E3E8;
+            --border-light: #EEEEF1;
+            --accent: #6D5AE6;
+            --accent-hover: #5B48D0;
+            --accent-bg: rgba(109,90,230,0.10);
+            --red: #D93848;
+            --green: #1F9D61;
+            --orange: #B7791F;
             --sidebar-w: 100px;
             --radius: 8px;
             --radius-lg: 12px;
@@ -819,22 +820,31 @@
     </style>
     <style id="nt-v2">
     /* ════════════════ Chernobyl v2 — clean workspace (from scratch) ════════════════ */
+    /* ═══ Darkroom 디자인 시스템 v2 ═══
+       사진 도구(카메라/암실) 무드 — 아이리스 바이올렛 액센트,
+       라이트=웜뉴트럴 캔버스 + 화이트 카드, 다크=트루다크 암실. */
     :root{
-        --bg:#FFFFFF; --panel:#FAFAFA; --panel2:#F4F4F5; --raise:#FFFFFF;
-        --text:#18181B; --muted:#71717A; --faint:#A1A1AA;
-        --border:#E4E4E7; --border2:#F0F0F1;
-        --accent:#2563EB; --accent-hover:#1D4ED8; --accent-soft:rgba(37,99,235,.08); --accent-ink:#FFFFFF;
-        --ok:#16A34A; --warn:#CA8A04; --err:#DC2626;
-        --r:10px; --r-sm:7px; --nav-ink:#52525B;
-        --shadow:0 1px 2px rgba(0,0,0,.04);
+        --bg:#F7F7F8; --panel:#FFFFFF; --panel2:#F1F1F4; --raise:#FFFFFF;
+        --text:#1B1B1F; --muted:#6E6E78; --faint:#A2A2AC;
+        --border:#E3E3E8; --border2:#EEEEF1;
+        --accent:#6D5AE6; --accent-hover:#5B48D0; --accent-soft:rgba(109,90,230,.10); --accent-ink:#FFFFFF;
+        --ok:#1F9D61; --warn:#B7791F; --err:#D93848;
+        --r:12px; --r-sm:8px; --nav-ink:#55555F;
+        --shadow:0 1px 2px rgba(24,24,32,.05);
     }
     html[data-theme="dark"]{
-        --bg:#0A0A0A; --panel:#121212; --panel2:#1C1C1F; --raise:#161618;
-        --text:#FAFAFA; --muted:#A1A1AA; --faint:#71717A;
-        --border:#27272A; --border2:#1F1F22;
-        --accent:#3B82F6; --accent-hover:#60A5FA; --accent-soft:rgba(59,130,246,.14); --accent-ink:#FFFFFF;
-        --ok:#4ADE80; --warn:#FACC15; --err:#F87171;
-        --nav-ink:#A1A1AA; --shadow:0 1px 2px rgba(0,0,0,.5); color-scheme:dark;
+        --bg:#0E0E11; --panel:#16161A; --panel2:#202027; --raise:#1B1B21;
+        --text:#ECECF1; --muted:#9C9CA8; --faint:#63636E;
+        --border:#2A2A33; --border2:#202026;
+        --accent:#8B7CF7; --accent-hover:#A296FF; --accent-soft:rgba(139,124,247,.16); --accent-ink:#FFFFFF;
+        --ok:#3DD68C; --warn:#F5B84C; --err:#F2705F;
+        --nav-ink:#9C9CA8; --shadow:0 1px 2px rgba(0,0,0,.5); color-scheme:dark;
+        /* 레거시 변수명(구형 탭 92곳)도 다크로 — 이전엔 다크에서 라이트 값이 새던 갭 */
+        --bg-secondary:#16161A; --bg-tertiary:#202027;
+        --text-secondary:#9C9CA8; --text-tertiary:#63636E;
+        --border-light:#202026;
+        --accent-bg:rgba(139,124,247,.16);
+        --red:#F2705F; --green:#3DD68C; --orange:#F5B84C;
     }
     *{ box-sizing:border-box; }
     body{ font-family:'Segoe UI Variable Text','Segoe UI','Malgun Gothic',system-ui,sans-serif !important;
@@ -986,9 +996,9 @@
     <style id="modern-polish">
     /* ════════ Modern desktop polish (Claude/Docker 풍) — 토큰·컴포넌트 정제 ════════ */
     /* 토큰: 라운드 ↑, 다크 패널 elevation·보더 또렷 */
-    :root{ --r:12px; --r-sm:8px; --shadow-lg:0 10px 30px rgba(0,0,0,.12); }
+    /* 토큰 단일화: 팔레트는 위 Darkroom v2 블록이 유일한 소스 — 여기선 elevation 만 보강 */
+    :root{ --shadow-lg:0 10px 30px rgba(24,24,32,.10); }
     html[data-theme="dark"]{
-        --panel:#141416; --panel2:#1E1E22; --raise:#1A1A1C; --border:#2A2A2F; --border2:#202024;
         --shadow:0 1px 2px rgba(0,0,0,.45); --shadow-lg:0 14px 40px rgba(0,0,0,.55);
     }
     /* 1) select — 네이티브 화살표 제거 + custom chevron (select 전용 명시도로 .input 의 background 이김) */
@@ -1012,8 +1022,8 @@
     .nt-btn{ height:38px !important; transition:background .13s,box-shadow .13s,transform .06s !important; }
     .scroll-area .btn{ height:38px !important; }
     .nt-btn.sm, .scroll-area .btn-sm{ height:32px !important; }
-    .nt-btn.primary, .scroll-area .btn-primary{ box-shadow:0 1px 2px rgba(37,99,235,.28) !important; }
-    .nt-btn.primary:hover, .scroll-area .btn-primary:hover{ box-shadow:0 3px 8px rgba(37,99,235,.34) !important; }
+    .nt-btn.primary, .scroll-area .btn-primary{ box-shadow:0 1px 2px rgba(109,90,230,.28) !important; }
+    .nt-btn.primary:hover, .scroll-area .btn-primary:hover{ box-shadow:0 3px 8px rgba(109,90,230,.34) !important; }
     .nt-btn.ghost:hover, .scroll-area .btn-secondary:hover{ border-color:var(--faint) !important; }
     .nt-btn:active, .scroll-area .btn:active{ transform:translateY(.5px); }
     .nt-btn:focus-visible, .scroll-area .btn:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
@@ -2898,7 +2908,7 @@
                             <div class="nt-hint">
                                 로그인된 쿠키/토큰을 자동 추출합니다. Bluesky는 앱 비밀번호 필요 → 수동 입력만 가능.
                             </div>
-                            <div class="nt-hint" style="line-height:1.5;background:rgba(59,130,246,0.08);padding:8px;border-radius:6px;border-left:3px solid #3B82F6;">
+                            <div class="nt-hint" style="line-height:1.5;background:var(--accent-soft);padding:8px;border-radius:6px;border-left:3px solid var(--accent);">
                                 🍎 <strong>macOS 사용자</strong>: Chrome / Firefox / LibreWolf / Edge / Brave / Arc / Vivaldi 모두 시도합니다.<br>
                                 ★ <strong>Chrome 키체인 prompt</strong> 뜨면 <strong>"항상 허용"</strong> 누르세요 — 다음부터는 자동.<br>
                                 ★ 거부했으면 다시 ⌘ 스페이스 → <code>키체인 접근</code> → <code>login</code> → <code>Chrome Safe Storage</code> 항목 권한 변경.
@@ -2988,7 +2998,7 @@
                             <div class="nt-hint">
                                 다운로드/캡쳐 완료된 파일을 백그라운드로 NAS 마운트 폴더에 자동 cp.
                             </div>
-                            <div class="nt-hint" style="line-height:1.5;background:rgba(59,130,246,0.08);padding:8px;border-radius:6px;border-left:3px solid #3B82F6;">
+                            <div class="nt-hint" style="line-height:1.5;background:var(--accent-soft);padding:8px;border-radius:6px;border-left:3px solid var(--accent);">
                                 🚀 <strong>속도 자동 최적화</strong>:<br>
                                 • Apple WebDAV mount + WebDAV 자격증명 → <strong>rclone</strong> 자동 사용 (5-50배 빠름)<br>
                                 • Mountain Duck mount → 8 워커 + cache 활용 (background sync)<br>
@@ -3006,7 +3016,7 @@
                                         <span id="backup-progress-pct">0%</span>
                                     </div>
                                     <div style="background:#2a2a30;height:8px;border-radius:4px;overflow:hidden;">
-                                        <div id="backup-progress-bar" style="height:100%;background:linear-gradient(90deg,#3B82F6,#2563EB);width:0%;transition:width 0.3s;"></div>
+                                        <div id="backup-progress-bar" style="height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-hover));width:0%;transition:width 0.3s;"></div>
                                     </div>
                                 </div>
                             </div></div>
@@ -4734,7 +4744,7 @@
                 if (isNas || isExt) {
                     const icon = isNas ? '🌐 NAS' : '💾 외장';
                     info.innerHTML = `<strong>${icon} 모드 활성 (전체 일괄)</strong> — 모든 플랫폼이 <code>${root}/Chernobyl/&lt;Platform&gt;</code>. 각 탭에서 따로 변경하면 그 플랫폼만 다른 경로.`;
-                    info.style.color = '#3B82F6';
+                    info.style.color = 'var(--accent)';
                 } else {
                     info.innerHTML = '둘 다 OFF → 각 플랫폼 탭에서 따로 NAS/외장 선택. 또는 입력란에 직접 경로.';
                     info.style.color = '';
@@ -6689,13 +6699,13 @@
         color:#e7e7ea;
     }
     #resumeModeModal label.opt:hover { background:#2a2a30; }
-    #resumeModeModal label.opt.selected { border-color:#3B82F6; background:rgba(59,130,246,.15); }
+    #resumeModeModal label.opt.selected { border-color:var(--accent); background:var(--accent-soft); }
     #resumeModeModal .opt-title { font-size:12.5px; font-weight:600; color:#ffffff; }
     #resumeModeModal .opt-desc { font-size:11px; color:#a8a8b0; margin-top:2px; line-height:1.4; }
     #resumeModeModal .modal-buttons {
         display:flex; gap:8px; margin-top:14px; justify-content:flex-end;
     }
-    #resumeModeModal input[type="radio"] { accent-color:#3B82F6; margin-top:2px; }
+    #resumeModeModal input[type="radio"] { accent-color:var(--accent); margin-top:2px; }
     </style>
     <div id="resumeModeModal">
         <div class="modal-card">

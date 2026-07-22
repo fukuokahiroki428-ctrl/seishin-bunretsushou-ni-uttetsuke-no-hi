@@ -19,21 +19,22 @@
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
+        /* ═══ Darkroom 디자인 시스템 v2 — 라이트 ═══ */
         :root {
-            --bg: #FFFFFF;
-            --bg-secondary: #F5F5F7;
-            --bg-tertiary: #EBEBED;
-            --text: #1D1D1F;
-            --text-secondary: #6E6E73;
-            --text-tertiary: #AEAEB2;
-            --border: #D2D2D7;
-            --border-light: #E8E8ED;
-            --accent: #007AFF;
-            --accent-hover: #0066D6;
-            --accent-bg: rgba(0,122,255,0.08);
-            --red: #FF3B30;
-            --green: #34C759;
-            --orange: #FF9500;
+            --bg: #F7F7F8;
+            --bg-secondary: #F1F1F4;
+            --bg-tertiary: #E7E7EC;
+            --text: #1B1B1F;
+            --text-secondary: #6E6E78;
+            --text-tertiary: #A2A2AC;
+            --border: #E3E3E8;
+            --border-light: #EEEEF1;
+            --accent: #6D5AE6;
+            --accent-hover: #5B48D0;
+            --accent-bg: rgba(109,90,230,0.10);
+            --red: #D93848;
+            --green: #1F9D61;
+            --orange: #B7791F;
             --sidebar-w: 100px;
             --radius: 8px;
             --radius-lg: 12px;
@@ -820,12 +821,18 @@
         .metric-chip.ok { background: rgba(52,199,89,0.12); color: #1e7b3a; }
         .metric-chip.err { background: rgba(255,59,48,0.12); color: var(--red); }
     </style>
+<script>
+/* Darkroom v2 — 테마 부트 (렌더 전 적용, 깜빡임 방지) */
+(function(){ try{ var t=localStorage.getItem('ntTheme')||'auto'; var r=t;
+  if(t==='auto') r=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';
+  document.documentElement.setAttribute('data-theme',r);}catch(e){} })();
+</script>
 </head>
 <body>
     <!-- ★ 캡쳐 옵션 modal — 진짜 페이지 캡쳐 버튼 클릭 시 표시 -->
     <div id="captureOptModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
         <div style="background:#1a1a1d;color:#e7e7ea;padding:24px 28px;border-radius:12px;min-width:380px;max-width:480px;border:1px solid #333;box-shadow:0 12px 40px rgba(0,0,0,0.5);">
-            <h3 style="margin:0 0 6px;font-size:16px;color:#7c5cff;">📸 진짜 페이지 캡쳐 설정</h3>
+            <h3 style="margin:0 0 6px;font-size:16px;color:var(--accent);">📸 진짜 페이지 캡쳐 설정</h3>
             <div id="captureOptPlatform" style="font-size:13px;color:#888;margin-bottom:18px;">—</div>
             <label class="cap-opt"><input type="radio" name="captureMode" value="off"> <span><strong>캡쳐 안 함</strong><br><small style="color:#888">미디어만 받음. 페이지 HTML 저장 X. 가장 빠름.</small></span></label>
             <label class="cap-opt"><input type="radio" name="captureMode" value="media"> <span><strong>미디어 있는 글만 캡쳐</strong><br><small style="color:#888">이미지/영상 첨부된 포스트만 HTML 저장. 텍스트만 RT/리플 skip.</small></span></label>
@@ -2151,7 +2158,7 @@
                     </div>
 
                     <!-- ★ 이메일 알림 감시 — 새 메일 도착 시 즉시 内閣会 트리거 -->
-                    <div class="section" style="margin-top:16px; padding:12px; background:rgba(124,92,255,0.08); border:1px solid #7c5cff44; border-radius:8px;">
+                    <div class="section" style="margin-top:16px; padding:12px; background:var(--accent-bg); border:1px solid var(--accent); border-radius:8px;">
                         <div class="section-label">📧 이메일 알림 감시 (즉시 다운로드 트리거)</div>
                         <p style="font-size:12px; color:var(--text-secondary); margin-bottom:8px;">
                             30초 간격 IMAP 폴링. 필터 매치된 새 메일 도착하면 위 감시 목록을 즉시 실행.
@@ -2202,6 +2209,15 @@
 
                 <!-- ━━ Settings ━━ -->
                 <div class="tab-content" id="tab-settings">
+                    <div class="section">
+                        <div class="section-label">🎨 테마 (외관)</div>
+                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">라이트 · 다크 · 자동(시스템 설정 따름) 중 선택.</p>
+                        <div class="theme-seg" id="themeSeg">
+                            <button type="button" class="theme-seg-btn" data-theme-mode="auto">🌗 자동</button>
+                            <button type="button" class="theme-seg-btn" data-theme-mode="light">☀ 라이트</button>
+                            <button type="button" class="theme-seg-btn" data-theme-mode="dark">🌙 다크</button>
+                        </div>
+                    </div>
                     <!-- ★ 사용자 정보 내보내기 / 불러오기 — 계정 + 경로 + 폼 + 토큰 통째 백업/복원 -->
                     <div class="section">
                         <div class="section-label">💾 사용자 정보 백업 / 복원</div>
@@ -2268,7 +2284,7 @@
                         <p style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">
                             로그인된 쿠키/토큰을 자동 추출합니다. Bluesky는 앱 비밀번호 필요 → 수동 입력만 가능.
                         </p>
-                        <p style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px;line-height:1.5;background:rgba(124,92,255,0.08);padding:8px;border-radius:6px;border-left:3px solid #7c5cff;">
+                        <p style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px;line-height:1.5;background:var(--accent-bg);padding:8px;border-radius:6px;border-left:3px solid var(--accent);">
                             🍎 <strong>macOS 사용자</strong>: Chrome / Firefox / LibreWolf / Edge / Brave / Arc / Vivaldi 모두 시도합니다.<br>
                             ★ <strong>Chrome 키체인 prompt</strong> 뜨면 <strong>"항상 허용"</strong> 누르세요 — 다음부터는 자동.<br>
                             ★ 거부했으면 다시 ⌘ 스페이스 → <code>키체인 접근</code> → <code>login</code> → <code>Chrome Safe Storage</code> 항목 권한 변경.
@@ -2339,7 +2355,7 @@
                         <p style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">
                             다운로드/캡쳐 완료된 파일을 백그라운드로 NAS 마운트 폴더에 자동 cp.
                         </p>
-                        <p style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px;line-height:1.5;background:rgba(124,92,255,0.08);padding:8px;border-radius:6px;border-left:3px solid #7c5cff;">
+                        <p style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px;line-height:1.5;background:var(--accent-bg);padding:8px;border-radius:6px;border-left:3px solid var(--accent);">
                             🚀 <strong>속도 자동 최적화</strong>:<br>
                             • Apple WebDAV mount + WebDAV 자격증명 → <strong>rclone</strong> 자동 사용 (5-50배 빠름)<br>
                             • Mountain Duck mount → 8 워커 + cache 활용 (background sync)<br>
@@ -2360,8 +2376,8 @@
                                 <span id="backup-progress-text">대기 중</span>
                                 <span id="backup-progress-pct">0%</span>
                             </div>
-                            <div style="background:#2a2a30;height:8px;border-radius:4px;overflow:hidden;">
-                                <div id="backup-progress-bar" style="height:100%;background:linear-gradient(90deg,#7c5cff,#5b3ce0);width:0%;transition:width 0.3s;"></div>
+                            <div style="background:var(--bg-tertiary);height:8px;border-radius:4px;overflow:hidden;">
+                                <div id="backup-progress-bar" style="height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-hover));width:0%;transition:width 0.3s;"></div>
                             </div>
                         </div>
                         <div class="input-row" style="margin-bottom:6px;">
@@ -6043,6 +6059,79 @@
                 backend.confirmLoginDone(p);
             }
         };
+    })();
+    </script>
+
+    <style id="darkroom-v2">
+    /* ═══ Darkroom 디자인 시스템 v2 — 다크 토큰 + 컴포넌트 레이어 (윈도우와 통일) ═══ */
+    :root{ --card:#FFFFFF; --accent-soft:rgba(109,90,230,.10);
+           --shadow:0 1px 2px rgba(24,24,32,.05); --shadow-lg:0 10px 30px rgba(24,24,32,.10); }
+    html[data-theme="dark"]{
+        --bg:#0E0E11; --bg-secondary:#16161A; --bg-tertiary:#202027;
+        --text:#ECECF1; --text-secondary:#9C9CA8; --text-tertiary:#63636E;
+        --border:#2A2A33; --border-light:#202026;
+        --accent:#8B7CF7; --accent-hover:#A296FF; --accent-bg:rgba(139,124,247,.16); --accent-soft:rgba(139,124,247,.16);
+        --red:#F2705F; --green:#3DD68C; --orange:#F5B84C;
+        --card:#16161A; --shadow:0 1px 2px rgba(0,0,0,.45); --shadow-lg:0 14px 40px rgba(0,0,0,.55);
+        color-scheme:dark;
+    }
+    /* 캔버스/카드 분리 — 섹션이 카드로 떠 보이게 */
+    .tab-content > .section{ background:var(--card); border:1px solid var(--border-light);
+        border-radius:12px; padding:18px 20px; box-shadow:var(--shadow); }
+    .section-label{ letter-spacing:.06em; margin-bottom:12px; }
+    /* 입력 */
+    .input{ height:38px; border-radius:8px; background:var(--card); }
+    .input:hover:not(:focus){ border-color:var(--text-tertiary); }
+    .input:focus{ box-shadow:0 0 0 3px var(--accent-soft); }
+    textarea.input{ height:auto; min-height:80px; }
+    /* 버튼 */
+    .btn{ height:38px; border-radius:8px; font-weight:600; }
+    .btn-sm{ height:32px; }
+    .btn-primary{ box-shadow:0 1px 2px rgba(109,90,230,.28); }
+    .btn-primary:hover{ box-shadow:0 3px 8px rgba(109,90,230,.34); }
+    .btn:focus-visible, .input:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+    /* 사이드바 — 모노크롬 칩 + 액센트 활성 */
+    .nav-icon{ background:var(--bg-tertiary) !important; color:var(--text-secondary) !important; box-shadow:none !important; }
+    .nav-item.active .nav-icon{ background:var(--accent) !important; color:#fff !important; }
+    .nav-item.active{ background:var(--accent-bg); color:var(--accent); font-weight:600; position:relative; }
+    .nav-item.active::before{ content:""; position:absolute; left:-2px; top:6px; bottom:6px; width:3px; border-radius:2px; background:var(--accent); }
+    /* 로그 — 항상 어두운 터미널 + 고정 팔레트 (라이트 테마에서도 가독) */
+    .log-box{ background:#0B0E14 !important; color:#CBD5E1 !important; border-color:var(--border) !important; border-radius:12px !important; }
+    html[data-theme="dark"] .log-box{ background:#070A0F !important; }
+    .log-box .log-time{ color:#5B6678 !important; }  .log-box .log-info{ color:#9FB0C7 !important; }
+    .log-box .log-success{ color:#4ADE80 !important; } .log-box .log-error{ color:#F87171 !important; }
+    .log-box .log-warning{ color:#FBBF24 !important; }
+    /* 네이티브 컨트롤/선택/스크롤바 */
+    input[type=checkbox], input[type=radio]{ accent-color:var(--accent); }
+    ::selection{ background:var(--accent-soft); }
+    ::-webkit-scrollbar{ width:10px; height:10px; }
+    ::-webkit-scrollbar-thumb{ background:var(--border); border-radius:5px; border:2px solid transparent; background-clip:content-box; }
+    ::-webkit-scrollbar-thumb:hover{ background:var(--text-tertiary); background-clip:content-box; }
+    /* 테마 세그먼트 */
+    .theme-seg{ display:flex; gap:6px; background:var(--bg-tertiary); padding:4px; border-radius:12px; max-width:340px; }
+    .theme-seg-btn{ flex:1; padding:9px 8px; border:none; background:transparent; color:var(--text-secondary);
+        border-radius:9px; font-size:13px; font-weight:500; cursor:pointer; font-family:inherit; transition:background .2s,color .2s; }
+    .theme-seg-btn:hover{ color:var(--text); background:var(--card); }
+    .theme-seg-btn.active{ background:var(--accent); color:#fff; }
+    @media (prefers-reduced-motion: reduce){ *{ transition:none !important; animation:none !important; } }
+    </style>
+    <script>
+    /* Darkroom v2 — 테마 토글 (윈도우판과 동일 동작·동일 저장 키) */
+    (function(){
+        function cur(){ try{ return localStorage.getItem('ntTheme')||'auto'; }catch(e){ return 'auto'; } }
+        function applyTheme(mode){
+            try{ localStorage.setItem('ntTheme', mode); }catch(e){}
+            var r=mode;
+            if(mode==='auto') r=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';
+            document.documentElement.setAttribute('data-theme',r);
+            var seg=document.getElementById('themeSeg');
+            if(seg){ seg.querySelectorAll('.theme-seg-btn').forEach(function(x){ x.classList.toggle('active', x.getAttribute('data-theme-mode')===mode); }); }
+        }
+        var seg=document.getElementById('themeSeg');
+        if(seg){ seg.querySelectorAll('.theme-seg-btn').forEach(function(b){
+            b.addEventListener('click',function(){ applyTheme(b.getAttribute('data-theme-mode')); }); }); }
+        applyTheme(cur());
+        if(window.matchMedia){ try{ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(){ if(cur()==='auto') applyTheme('auto'); }); }catch(e){} }
     })();
     </script>
 </body>
