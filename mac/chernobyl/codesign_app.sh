@@ -1,7 +1,8 @@
 #!/bin/bash
-# Comprehensive codesign script for チェルノブイリ.app
-# Signs all components from innermost to outermost
-# ★ set -e 제거: companion app (AINU.app 등) sign 실패해도 main exe는 sign 완료해야 함
+# Comprehensive codesign script for Chernobyl.app
+# 컴포넌트를 inside-out 으로 서명한 뒤 --deep --strict 로 검증한다.
+# ★ set -e 안 씀: 일부 nested(companion) 서명 실패는 허용하되,
+#   메인 번들 서명/검증은 반드시 성공해야 하며 실패 시 즉시 비정상 종료(exit 1)한다.
 
 APP="$1"
 if [ -z "$APP" ] || [ ! -d "$APP" ]; then
@@ -9,108 +10,130 @@ if [ -z "$APP" ] || [ ! -d "$APP" ]; then
     exit 1
 fi
 
-# ★ 서명 ID 자동 감지 — Apple Development 인증서가 있으면 그걸로, 없으면 ad-hoc
-#   ad-hoc(-)는 매 빌드마다 해시 바뀌어서 macOS가 매번 새 앱으로 취급 → 권한 매번 재설정.
-#   본인 Apple Development 인증서로 서명하면 ID 안정 → 권한 영구 유지.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENTITLEMENTS="${ENTITLEMENTS:-$SCRIPT_DIR/chernobyl.entitlements}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 서명 ID 선택 (우선순위)
+#   1) Developer ID Application — 배포+공증 가능(Gatekeeper 통과). 하드닝 런타임+entitlements 적용.
+#   2) Apple Development (사용자 개발자 ID) — 로컬 안정 식별자 → TCC 권한 영구 유지.
+#        이전 버전 Chernobyl 이 이걸로 서명됨. 평범 서명(하드닝 런타임 X) — 이전과 동일 동작.
+#   3) ad-hoc(-) — 인증서가 하나도 없을 때. 매 빌드 해시가 바뀌어 권한이 재설정됨.
+#   SIGN_ID 환경변수로 강제 지정 가능.
+# ─────────────────────────────────────────────────────────────────────────────
 if [ -z "$SIGN_ID" ]; then
-    # 환경변수 미지정 시 자동 탐지
     SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep -oE '"Developer ID Application:[^"]+"' | head -1 | tr -d '"')
+    [ -z "$SIGN_ID" ] && SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
         | grep -oE '"Apple Development:[^"]+"' | head -1 | tr -d '"')
-    if [ -z "$SIGN_ID" ]; then
-        SIGN_ID="-"  # fallback to ad-hoc
-        echo "[codesign] No Apple Development cert found, using ad-hoc (-)"
-    else
-        echo "[codesign] Using identity: $SIGN_ID"
-    fi
+    [ -z "$SIGN_ID" ] && SIGN_ID="-"
 fi
+case "$SIGN_ID" in
+    "Developer ID Application:"*) IS_DEVID=1; echo "[codesign] Using Developer ID: $SIGN_ID" ;;
+    "-")  IS_DEVID=0; echo "[codesign] 서명 인증서 없음 → ad-hoc(-)." ;;
+    *)    IS_DEVID=0; echo "[codesign] Using identity: $SIGN_ID (개발자 ID — 로컬 안정 식별자)" ;;
+esac
+
+# 하드닝 런타임+타임스탬프+entitlements 는 Developer ID(공증 경로)에서만.
+#   Apple Development/ad-hoc 은 이전 버전처럼 평범하게 서명(하드닝 런타임 켜면 entitlements 없이 막힐 위험).
+SIGN_FLAGS=(--force --sign "$SIGN_ID")
+RUNTIME_FLAGS=()
+if [ "$IS_DEVID" = "1" ]; then
+    RUNTIME_FLAGS=(--options runtime --timestamp)
+    [ -f "$ENTITLEMENTS" ] && RUNTIME_FLAGS+=(--entitlements "$ENTITLEMENTS")
+fi
+
+# 실행 코드/번들용(하드닝 런타임 포함). nested 라이브러리에도 적용해도 무해.
+sign_rt() { codesign "${SIGN_FLAGS[@]}" "${RUNTIME_FLAGS[@]}" "$@"; }
 
 echo "[codesign] Signing $APP ..."
 
-# 0. Remove all existing _CodeSignature
+# 0. 기존 _CodeSignature 제거
 find "$APP" -name "_CodeSignature" -type d -exec rm -rf {} + 2>/dev/null || true
 
-# 1. Fix Python.framework structure in companion apps (must be proper symlinks)
-find "$APP/Contents/Resources" -maxdepth 1 -name "*.app" -type d | while IFS= read -r capp; do
+# 1. companion app 안의 Python.framework 구조 정상화(있을 때만 — 현재 빌드엔 미포함)
+find "$APP/Contents/Resources" -maxdepth 1 -name "*.app" -type d 2>/dev/null | while IFS= read -r capp; do
     for loc in "Contents/Resources" "Contents/Frameworks"; do
         fw="$capp/$loc/Python.framework"
         if [ -d "$fw/Versions/3.14" ]; then
-            # Current → symlink to 3.14
             if [ -d "$fw/Versions/Current" ] && [ ! -L "$fw/Versions/Current" ]; then
-                rm -rf "$fw/Versions/Current"
-                ln -sf 3.14 "$fw/Versions/Current"
+                rm -rf "$fw/Versions/Current"; ln -sf 3.14 "$fw/Versions/Current"
             fi
-            # Top-level Python → symlink
             if [ -f "$fw/Python" ] && [ ! -L "$fw/Python" ]; then
-                rm -f "$fw/Python"
-                ln -sf Versions/Current/Python "$fw/Python"
+                rm -f "$fw/Python"; ln -sf Versions/Current/Python "$fw/Python"
             fi
-            # Top-level Resources → symlink
             if [ -d "$fw/Resources" ] && [ ! -L "$fw/Resources" ]; then
-                rm -rf "$fw/Resources"
-                ln -sf Versions/Current/Resources "$fw/Resources"
+                rm -rf "$fw/Resources"; ln -sf Versions/Current/Resources "$fw/Resources"
             fi
         fi
     done
-    # Remove problematic items that break codesign
     find "$capp" -name "*.dist-info" -type d -exec rm -rf {} + 2>/dev/null || true
     find "$capp" -name "*.egg-info" -type d -exec rm -rf {} + 2>/dev/null || true
 done
 
-# 2. Sign ALL Mach-O binaries individually
+# 2. 모든 Mach-O 바이너리를 개별 서명(가장 안쪽 먼저)
 find "$APP" -type f -print0 2>/dev/null | while IFS= read -r -d $'\0' f; do
     if file "$f" 2>/dev/null | grep -q "Mach-O"; then
-        codesign --force --sign "$SIGN_ID" "$f" 2>/dev/null || true
+        sign_rt "$f" 2>/dev/null || true
     fi
 done
 echo "[codesign] All Mach-O binaries signed"
 
-# 3. Sign Qt frameworks
-find "$APP/Contents/Frameworks" -maxdepth 1 -name "*.framework" -type d | while IFS= read -r fw; do
-    codesign --force --sign "$SIGN_ID" "$fw" 2>/dev/null || true
+# 3. Qt 프레임워크
+find "$APP/Contents/Frameworks" -maxdepth 1 -name "*.framework" -type d 2>/dev/null | while IFS= read -r fw; do
+    sign_rt "$fw" 2>/dev/null || true
 done
 echo "[codesign] Qt frameworks signed"
 
-# 4. Sign WebEngine helper
-find "$APP" -name "QtWebEngineProcess.app" -type d | while IFS= read -r helper; do
-    codesign --force --sign "$SIGN_ID" "$helper" 2>/dev/null || true
+# 4. WebEngine 헬퍼(.app)
+find "$APP" -name "QtWebEngineProcess.app" -type d 2>/dev/null | while IFS= read -r helper; do
+    sign_rt "$helper" 2>/dev/null || true
 done
 echo "[codesign] WebEngine helper signed"
 
-# 5. Sign Python frameworks
-find "$APP" -path "*/Python.framework" -not -path "*/Versions/*" -type d | while IFS= read -r pfw; do
-    codesign --force --sign "$SIGN_ID" "$pfw" 2>/dev/null || true
+# 5. Python 프레임워크
+find "$APP" -path "*/Python.framework" -not -path "*/Versions/*" -type d 2>/dev/null | while IFS= read -r pfw; do
+    sign_rt "$pfw" 2>/dev/null || true
 done
 
-# 6. Sign companion apps (PyInstaller apps — may fail, that's OK)
-find "$APP/Contents/Resources" -maxdepth 1 -name "*.app" -type d | while IFS= read -r capp; do
-    codesign --force --sign "$SIGN_ID" "$capp" 2>/dev/null || true
+# 6. companion app(있을 때만 — 실패해도 진행)
+find "$APP/Contents/Resources" -maxdepth 1 -name "*.app" -type d 2>/dev/null | while IFS= read -r capp; do
+    sign_rt "$capp" 2>/dev/null || true
     echo "[codesign] Signed companion: $(basename "$capp") (may have warnings)"
 done
 
-# 7. Sign main executables
-find "$APP/Contents/MacOS" -type f -print0 | xargs -0 -I {} codesign --force --sign "$SIGN_ID" {} 2>/dev/null || true
+# 7. Contents/MacOS 의 실행 파일(yt-dlp/ffmpeg/ffprobe/main exe 등)
+find "$APP/Contents/MacOS" -type f -print0 2>/dev/null | while IFS= read -r -d $'\0' f; do
+    file "$f" 2>/dev/null | grep -q "Mach-O" && { sign_rt "$f" 2>/dev/null || true; }
+done
 echo "[codesign] Main executables signed"
 
-# 8. Main bundle codesign — companion apps 제거됐으니 깨끗 sign 가능.
-#    ★ 일본어 앱 이름 "チェルノブイリ" NFC/NFD 충돌 회피: cd로 부모 dir 이동 후 상대 경로 사용
+# 8. ★ 메인 번들 — 반드시 성공해야 함(실패 시 즉시 중단).
+#    일본어/유니코드 앱 이름의 NFC/NFD 충돌 회피: 부모 dir 로 cd 후 상대 경로 사용.
 rm -rf "$APP/Contents/_CodeSignature" 2>/dev/null || true
 APP_NAME=$(basename "$APP")
 APP_PARENT=$(dirname "$APP")
-(cd "$APP_PARENT" && codesign --force --sign "$SIGN_ID" "$APP_NAME") 2>&1 \
-    || echo "[codesign] Main bundle sign warning (main exe signed — launch OK)"
+if ! ( cd "$APP_PARENT" && codesign "${SIGN_FLAGS[@]}" "${RUNTIME_FLAGS[@]}" "$APP_NAME" ); then
+    echo "[codesign] ❌ 메인 번들 서명 실패 — 중단."
+    exit 1
+fi
+echo "[codesign] Main bundle signed"
 
-# Main exe 한 번 더 sign — deterministic last-write
-APP_BASENAME=$(basename "$APP" .app)
-(cd "$APP/Contents/MacOS" && [ -f "$APP_BASENAME" ] && codesign --force --sign "$SIGN_ID" "./$APP_BASENAME") 2>/dev/null || true
-echo "[codesign] App bundle + main exe signed"
-
-# 9. Remove quarantine attribute (critical for launch)
+# 9. quarantine 제거(로컬 실행 편의 — 다운로드본엔 영향 없음)
 xattr -cr "$APP" 2>/dev/null || true
 echo "[codesign] Quarantine removed"
 
-# 10. Verify (may still show warnings for PyInstaller companions — OK)
-if codesign --verify --verbose=1 "$APP" 2>&1; then
-    echo "[codesign] VERIFIED OK"
-else
-    echo "[codesign] WARNING: Verification has issues (will still run — quarantine removed)"
+# 10. ★ 엄격 검증 — nested 까지(--deep --strict). 실패 시 비정상 종료(거짓 'OK' 방지).
+echo "[codesign] Verifying (--deep --strict) ..."
+if ! codesign --verify --deep --strict --verbose=2 "$APP"; then
+    echo "[codesign] ❌ VERIFY FAILED — 서명이 깨졌습니다(이대로면 실행 시 SIGKILL 위험)."
+    exit 1
+fi
+echo "[codesign] ✅ VERIFIED OK"
+
+# Developer ID 서명일 때만 Gatekeeper 평가 미리보기(공증 전이면 reject 가 정상 — 정보용).
+if [ "$SIGN_ID" != "-" ]; then
+    echo "[codesign] Gatekeeper 평가(spctl):"
+    spctl -a -vv --type execute "$APP" 2>&1 || true
+    echo "[codesign] 배포하려면: notarytool submit + stapler staple (README 참고)."
 fi

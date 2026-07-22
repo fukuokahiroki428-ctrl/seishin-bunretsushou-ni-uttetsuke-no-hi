@@ -56,6 +56,9 @@ private:
     QPair<QJsonArray, QString> searchTweets(const QString &query, const QString &cursor = QString());
     QPair<QJsonArray, QString> getUserTweets(const QString &userId, const QString &cursor = QString());
     QPair<QJsonArray, QString> getTweetDetail(const QString &tweetId, const QString &cursor = QString());
+    // 전체 수집(all) 후속 자동탐지 — 저장된 _complete.xlsx 를 스캔
+    void collectSpacesFromTimeline(const QJsonObject &config, const QString &target, const QString &userDir, bool &isRunning);
+    void collectThreadsAuto(const QJsonObject &config, const QString &target, const QString &userDir, bool &isRunning);
     QPair<QJsonArray, QString> getLikes(const QString &userId, const QString &cursor = QString());
     QPair<QJsonArray, QString> getBookmarks(const QString &cursor = QString());
     QPair<QJsonArray, QString> getHighlights(const QString &userId, const QString &cursor = QString());
@@ -111,6 +114,8 @@ private:
     QString m_authToken;
     QString m_ct0;
     QString m_csrfToken;
+    // 수집 중 발견한 스페이스 카드 트윗의 status URL (전체수집 끝에 yt-dlp 로 일괄 다운로드)
+    QSet<QString> m_spaceCardTweetUrls;
 
     // Transaction IDs cache (legacy)
     QMap<QString, QString> m_transactionIds;

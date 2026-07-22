@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chernobyl</title>
+    <title>カメラ</title>
     <style>
         @font-face {
             font-family: 'NanumGothic';
@@ -37,7 +37,7 @@
             --sidebar-w: 100px;
             --radius: 8px;
             --radius-lg: 12px;
-            --transition: 0.15s ease;
+            --transition: 0.18s cubic-bezier(.4,0,.2,1);
         }
 
         body {
@@ -75,11 +75,12 @@
             display: flex; align-items: center; gap: 6px;
             padding: 7px 8px; border-radius: 6px; cursor: pointer;
             font-size: 10px; font-weight: 400; color: var(--text-secondary);
-            transition: background var(--transition), color var(--transition);
+            transition: background var(--transition), color var(--transition), transform var(--transition);
             margin-bottom: 1px;
             overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
         }
         .nav-item:hover { background: rgba(0,0,0,0.04); color: var(--text); }
+        .nav-item:active { transform: scale(.975); }
         .nav-item.active { background: rgba(0,0,0,0.06); color: var(--text); font-weight: 500; }
         .nav-icon {
             width: 16px; height: 16px; border-radius: 4px;
@@ -89,6 +90,7 @@
         .nav-icon.twitter { background: #1D9BF0; }
         .nav-icon.bluesky { background: #0085FF; }
         .nav-icon.youtube { background: #FF0000; }
+        .nav-icon.niconico { background: #252525; }
         .nav-icon.discord { background: #5865F2; }
         .nav-icon.instagram { background: #E4405F; }
         .nav-icon.trad { background: #333333; }
@@ -424,6 +426,7 @@
             font-size: 13px; font-weight: 500; font-family: inherit; cursor: pointer;
             transition: all var(--transition); white-space: nowrap; flex-shrink: 0;
         }
+        .btn:active:not(:disabled) { transform: scale(.975); }
         .btn-primary { background: var(--accent); color: white; }
         .btn-primary:hover { background: var(--accent-hover); }
         .btn-primary:active { transform: scale(0.98); }
@@ -472,7 +475,8 @@
 
         /* ── Tab ── */
         .tab-content { display: none; }
-        .tab-content.active { display: block; }
+        .tab-content.active { display: block; animation: tabFade 0.22s cubic-bezier(.4,0,.2,1); }
+        @keyframes tabFade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
         /* ── 와이드 레이아웃 (≥1100px): 폼은 왼쪽, 로그는 오른쪽 sticky ──
             (위쪽 @media 정의가 같은 specificity를 가진 .tab-content.active { display: block }에
@@ -842,7 +846,7 @@
         <!-- Sidebar -->
         <div class="sidebar">
             <div class="sidebar-header">
-                <div class="sidebar-title">Chernobyl</div>
+                <div class="sidebar-title">カメラ</div>
             </div>
             <div class="sidebar-nav">
                 <div class="nav-item active" onclick="switchTab('twitter')">
@@ -853,6 +857,9 @@
                 </div>
                 <div class="nav-item" onclick="switchTab('youtube')">
                     <div class="nav-icon youtube">Y</div> YouTube
+                </div>
+                <div class="nav-item" onclick="switchTab('niconico')">
+                    <div class="nav-icon niconico">ニ</div> ニコニコ
                 </div>
                 <div class="nav-item" onclick="switchTab('discord')">
                     <div class="nav-icon discord">D</div> Discord
@@ -935,6 +942,7 @@
                                     <option value="reposts">4. 리포스트</option>
                                     <option value="thread_comments">5. 게시물 댓글 (다른 사람 답글)</option>
                                     <option value="thread">🧵 스레드 (트윗 URL)</option>
+                                    <option value="space">🎙️ 스페이스 (스페이스 URL · yt-dlp)</option>
                                     <option value="highlights">✨ 하이라이트</option>
                                     <option value="favoriters">❤️ 좋아요한 유저 (트윗 URL)</option>
                                     <option value="retweeters">🔁 리트윗한 유저 (트윗 URL)</option>
@@ -943,6 +951,7 @@
                                     <option value="likes">좋아요한 트윗</option>
                                     <option value="bookmarks">북마크</option>
                                     <option value="media">미디어만</option>
+                                    <option value="narrow">🔎 포스트 좁히기 (키워드/기간)</option>
                                     <option value="followers">팔로워</option>
                                     <option value="following">팔로잉</option>
                                     <option value="profile">프로필</option>
@@ -958,10 +967,26 @@
                                 </select>
                             </div>
                         </div>
+                        <!-- 🧵🎙️ URL 입력 — 스레드/좋아요·리트윗 유저/리스트/커뮤니티/스페이스 선택 시 표시 -->
+                        <div class="field" id="twitter-url-field" style="display:none; margin-bottom:12px;">
+                            <label class="field-label" id="twitter-url-label">트윗 URL</label>
+                            <div style="display:flex; gap:6px;">
+                                <input type="text" class="input" id="twitter-url" placeholder="https://x.com/유저/status/1234567890">
+                                <button class="btn btn-secondary btn-sm" onclick="pasteToField('twitter-url')">붙여넣기</button>
+                            </div>
+                        </div>
                         <div id="twitter-period-section" style="display: none;">
                             <div class="input-row">
                                 <div class="field"><label class="field-label">시작</label><input type="date" class="input" id="twitter-since" value="2006-03-21"></div>
                                 <div class="field"><label class="field-label">종료</label><input type="date" class="input" id="twitter-until"></div>
+                            </div>
+                        </div>
+                        <!-- 🔎 포스트 좁히기 키워드 — '포스트 좁히기' 유형 + 전체(all) 자동 좁히기용 -->
+                        <div class="field" id="twitter-narrow-field" style="display:none; margin-bottom:12px;">
+                            <label class="field-label" id="twitter-narrow-label">🔎 좁히기 키워드/문구 (비우면 기간만으로 좁힘 · X 고급검색식 가능)</label>
+                            <div style="display:flex; gap:6px;">
+                                <input type="text" class="input" id="twitter-narrow-query" placeholder='예: 신곡  또는  "정확한 문구"  filter:images  min_faves:50'>
+                                <button class="btn btn-secondary btn-sm" onclick="pasteToField('twitter-narrow-query')">붙여넣기</button>
                             </div>
                         </div>
                     </div>
@@ -1216,6 +1241,7 @@
                             <label class="option-item"><input type="checkbox" id="youtube-metadata" checked> 메타데이터</label>
                             <label class="option-item"><input type="checkbox" id="youtube-playlist"> 재생목록</label>
                             <label class="option-item"><input type="checkbox" id="youtube-sponsor"> SponsorBlock</label>
+                            <label class="option-item"><input type="checkbox" id="youtube-comments"> 댓글 (상위 300)</label>
                         </div>
                     </div>
                     <div class="section">
@@ -1233,6 +1259,61 @@
                     <div class="section" style="margin-top:16px;">
                         <div class="section-label">로그</div>
                         <div class="log-box" id="youtube-log"></div>
+                    </div>
+                </div>
+
+                <!-- ━━ 니코니코동화 (니코동) ━━ -->
+                <div class="tab-content" id="tab-niconico">
+                    <div class="section">
+                        <div class="section-label">URL</div>
+                        <textarea class="input" id="niconico-url" placeholder="ニコニコ動画 URL (예: https://www.nicovideo.jp/watch/sm12345678) — 줄당 하나" rows="4"></textarea>
+                        <div class="btn-row" style="margin-top:8px;">
+                            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('niconico-url').value='';">지우기</button>
+                        </div>
+                    </div>
+                    <div class="section">
+                        <div class="section-label">설정</div>
+                        <div class="input-row" style="margin-bottom:12px;">
+                            <div class="field">
+                                <label class="field-label">화질</label>
+                                <select class="input" id="niconico-quality">
+                                    <option value="1080p" selected>최고화질</option>
+                                    <option value="720p">720p</option>
+                                    <option value="480p">480p</option>
+                                    <option value="360p">360p</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label class="field-label">유형</label>
+                                <select class="input" id="niconico-type">
+                                    <option value="video">동영상</option>
+                                    <option value="audio">오디오만</option>
+                                    <option value="thumbnail">썸네일만</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="option-row">
+                            <label class="option-item"><input type="checkbox" id="niconico-metadata" checked> 메타데이터</label>
+                            <label class="option-item"><input type="checkbox" id="niconico-thumb"> 썸네일</label>
+                            <label class="option-item"><input type="checkbox" id="niconico-comments"> 댓글</label>
+                            <label class="option-item"><input type="checkbox" id="niconico-cookies"> 🍪 Chrome 쿠키 (로그인 필요 영상)</label>
+                        </div>
+                    </div>
+                    <div class="section">
+                        <div class="section-label">저장 경로</div>
+                        <div class="input-row">
+                            <div class="field"><div style="display:flex;gap:14px;margin-bottom:6px;font-size:12px;"><label style="display:inline-flex;gap:5px;align-items:center;cursor:pointer;"><input type="checkbox" id="niconico-nas-toggle" onchange="onPlatformStorage(this,'niconico','nas')"> 🌐 NAS</label><label style="display:inline-flex;gap:5px;align-items:center;cursor:pointer;"><input type="checkbox" id="niconico-external-toggle" onchange="onPlatformStorage(this,'niconico','external')"> 💾 외장 디스크</label></div><input type="text" class="input" id="niconico-path" value="~/Downloads/Niconico"></div>
+                            <button class="btn btn-secondary btn-sm" onclick="browseFolder('niconico')">찾아보기</button>
+                        </div>
+                    </div>
+                    <div class="btn-row">
+                        <button class="btn btn-primary" id="niconico-start-btn" onclick="startNiconico()">다운로드</button>
+                        <button class="btn btn-secondary" id="niconico-stop-btn" onclick="stopNiconico()" disabled>중지</button>
+                    </div>
+                    <div class="progress-bar" id="niconico-progress-bar"><div class="progress-fill" id="niconico-progress-fill"></div></div>
+                    <div class="section" style="margin-top:16px;">
+                        <div class="section-label">로그</div>
+                        <div class="log-box" id="niconico-log"></div>
                     </div>
                 </div>
 
@@ -2163,6 +2244,26 @@
                     </div>
 
                     <div class="section">
+                        <div class="section-label">동시 다운로드 개수</div>
+                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                            한 번에 동시에 받는 작업(여러 유저/대상) 수. '자동'은 플랫폼별 기본값(1~3).
+                            숫자가 클수록 빠르지만 메모리·대역폭·속도제한(rate limit) 부담이 커집니다. 다음 수집부터 적용.
+                        </p>
+                        <div class="field" style="max-width:240px;">
+                            <select class="input" id="settings-max-concurrent" onchange="onMaxConcurrentChange(this.value)">
+                                <option value="0">자동 (플랫폼 기본)</option>
+                                <option value="1">1개</option>
+                                <option value="2">2개</option>
+                                <option value="3">3개</option>
+                                <option value="4">4개</option>
+                                <option value="5">5개</option>
+                                <option value="6">6개</option>
+                                <option value="8">8개</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="section">
                         <div class="section-label">계정 토큰 자동 추출</div>
                         <p style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">
                             로그인된 쿠키/토큰을 자동 추출합니다. Bluesky는 앱 비밀번호 필요 → 수동 입력만 가능.
@@ -2566,6 +2667,28 @@
                     list.innerHTML = '';
                     const accs = _platAccountList(plat);
                     const schema = TARGET_OPTIONS_SCHEMA[plat] || [];
+
+                    // ★ 전체 선택/해제 헤더 — 대상이 많을 때 일괄 토글 (개별 체크 번거로움 해소)
+                    {
+                        const enCnt = arr.filter(function(e){ return e.enabled !== false; }).length;
+                        const hdr = document.createElement('div');
+                        hdr.className = 'bti-head';
+                        hdr.style.cssText = 'display:flex;align-items:center;gap:7px;padding:5px 6px;margin-bottom:4px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-secondary);';
+                        const allCb = document.createElement('input');
+                        allCb.type = 'checkbox';
+                        allCb.className = 'bti-enable-cb';
+                        allCb.checked = enCnt === arr.length;
+                        allCb.indeterminate = enCnt > 0 && enCnt < arr.length;
+                        allCb.title = '전체 선택/해제';
+                        allCb.onchange = function(){ toggleAllPlatformTargets(plat, this.checked); };
+                        hdr.appendChild(allCb);
+                        const hl = document.createElement('span');
+                        hl.textContent = '전체 선택  (' + enCnt + ' / ' + arr.length + ')';
+                        hl.style.cssText = 'cursor:pointer;flex:1;';
+                        hl.onclick = function(){ toggleAllPlatformTargets(plat, !(enCnt === arr.length)); };
+                        hdr.appendChild(hl);
+                        list.appendChild(hdr);
+                    }
                     arr.forEach(function(entry, i) {
                         if (!entry.options) entry.options = {};
                         const hasOverrides = Object.keys(entry.options).length > 0;
@@ -2589,7 +2712,7 @@
                         enableCb.className = 'bti-enable-cb';
                         enableCb.checked = !!entry.enabled;
                         enableCb.title = '수집 대상 포함';
-                        enableCb.onchange = function(){ togglePlatformTargetEnabled(plat, i, this.checked); };
+                        enableCb.onchange = function(){ togglePlatformTargetEnabled(plat, i, this.checked, this); };
                         main.appendChild(enableCb);
 
                         // 번호
@@ -2746,14 +2869,44 @@
             appendLog('대상 수정: #'+(idx+1)+' → '+clean, 'info', plat==='bluesky'?'bsky':plat);
         }
         // ★ 항목 활성/비활성 토글 — 비활성 항목은 다중 큐에서 스킵
-        function togglePlatformTargetEnabled(plat, idx, enabled) {
+        function togglePlatformTargetEnabled(plat, idx, enabled, cbEl) {
             if (!platformTargets[plat] || !platformTargets[plat][idx]) return;
             platformTargets[plat][idx].enabled = !!enabled;
             saveConfig();
-            renderPlatformTargetList(plat);
+            updateStartButtonLabels();
+            // ★ 전체 재렌더(innerHTML='') 안 함 → 스크롤 위치 유지.
+            //   기존엔 체크할 때마다 목록이 맨 위로 튀어 아래쪽 대상 다중 체크가 사실상 불가능했음.
+            //   해당 행 disabled 표시 + 헤더 카운트만 부분 갱신.
+            if (cbEl) { const row = cbEl.closest('.batch-target-item'); if (row) row.classList.toggle('disabled', !enabled); }
+            refreshTargetHeader(plat);
             const t = platformTargets[plat][idx].target;
             appendLog((enabled ? '활성화: ' : '비활성화: ') + '#' + (idx+1) + ' ' + t,
                 enabled ? 'info' : 'warning', plat==='bluesky'?'bsky':plat);
+        }
+        // 전체선택 헤더(카운트 + 마스터 체크박스)만 부분 갱신 — 재렌더 없이
+        function refreshTargetHeader(plat) {
+            const dk = _TARGET_DOM_KEY[plat] || plat;
+            const list = document.getElementById(dk + '-target-list');
+            if (!list) return;
+            const hd = list.querySelector('.bti-head');
+            if (!hd) return;
+            const arr = platformTargets[plat] || [];
+            const enCnt = arr.filter(function(e){ return e.enabled !== false; }).length;
+            const cb = hd.querySelector('input[type=checkbox]');
+            const lab = hd.querySelector('span');
+            if (cb) { cb.checked = enCnt === arr.length; cb.indeterminate = enCnt > 0 && enCnt < arr.length; }
+            if (lab) lab.textContent = '전체 선택  (' + enCnt + ' / ' + arr.length + ')';
+        }
+        // ★ 전체 선택/해제 — 헤더 체크박스에서 호출
+        function toggleAllPlatformTargets(plat, checked) {
+            const arr = platformTargets[plat] || [];
+            if (!arr.length) return;
+            arr.forEach(function(e){ e.enabled = !!checked; });
+            saveConfig();
+            renderPlatformTargetList(plat);
+            updateStartButtonLabels();
+            appendLog((checked ? '전체 선택' : '전체 해제') + ' (' + arr.length + '개)',
+                checked ? 'info' : 'warning', plat==='bluesky'?'bsky':plat);
         }
         // 목록 항목 수정 — 계정 지정
         function updatePlatformTargetAccount(plat, idx, accIdx) {
@@ -3213,7 +3366,7 @@
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             const tabEl = document.getElementById('tab-' + tab);
             if (tabEl) tabEl.classList.add('active');
-            const names = {twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',naikakukai:'内閣会',crawl:'経済産業省',settings:'설정'};
+            const names = {twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',niconico:'ニコニコ',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',naikakukai:'内閣会',crawl:'経済産業省',settings:'설정'};
             document.getElementById('toolbar-title').textContent = names[tab] || tab;
             // Load system info when switching to settings
             if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); }
@@ -3241,6 +3394,18 @@
                 checkNewBtn.style.opacity = running ? '1' : '0.5';
             }
         }
+
+        // ── 수집 종료 통지 (백엔드 CollectionGuard 소멸자) — 시작/정지 버튼 동기화 보장 ──
+        //   어떤 경로로 끝나든(정상/오류/조기 return/세션실패) 호출됨. 멀티 진행 중이면 유지.
+        window.onCollectionEnded = function(platform) {
+            let basePlat = platform || currentPlatform;
+            const hashIdx = basePlat.indexOf('#');
+            if (hashIdx > 0) basePlat = basePlat.substring(0, hashIdx);
+            if (basePlat === 'bsky') basePlat = 'bluesky';
+            const m = _multis[basePlat];
+            const stillRunning = m && Object.values(m.states).some(s => s === 'running' || s === 'pending');
+            if (!stillRunning) setRunning(basePlat, false);
+        };
 
         // ── Stats (플랫폼별 개별 저장) ──
         function updateStats(posts, media, status, platform) {
@@ -3377,6 +3542,11 @@
                     const sp = document.getElementById('settings-secondary-path');
                     if (sp) sp.value = config.secondaryPath;
                     if (typeof updateSecondaryInfo === 'function') updateSecondaryInfo();
+                }
+                // 동시 다운로드 개수 복원
+                {
+                    const mc = document.getElementById('settings-max-concurrent');
+                    if (mc && typeof config.maxConcurrent === 'number') mc.value = String(config.maxConcurrent);
                 }
                 // 계정 드롭다운에 이름 반영 + 목록 재렌더
                 refreshTargetAccountPickers();
@@ -3523,6 +3693,7 @@
             {id:'twitter-path', name:'Twitter'},
             {id:'bsky-path', name:'Bluesky'},
             {id:'youtube-path', name:'YouTube'},
+            {id:'niconico-path', name:'ニコニコ'},
             {id:'discord-path', name:'Discord'},
             {id:'instagram-path', name:'Instagram'},
             {id:'pixiv-path', name:'Pixiv'},
@@ -3668,6 +3839,11 @@
                 backend.saveConfig(JSON.stringify({nasAutoReconnect: cb.checked}));
             }
         }
+        function onMaxConcurrentChange(val) {
+            const n = parseInt(val) || 0;
+            if (backend && backend.saveConfig) backend.saveConfig(JSON.stringify({maxConcurrent: n}));
+            appendLog('동시 다운로드 개수: ' + (n === 0 ? '자동(플랫폼 기본)' : n + '개') + ' — 다음 수집부터 적용', 'info', 'settings');
+        }
         window.onNasReconnected = function() {
             appendLog('✅ NAS 다시 마운트됨 — 자동 재연결 성공', 'success', 'settings');
         };
@@ -3797,9 +3973,36 @@
         function browseFolder(p) { if (backend) backend.browsePath(p); }
 
         // ── Twitter ──
+        // URL 입력이 필요한 유형 → 라벨/placeholder 매핑
+        const TWITTER_URL_TYPES = {
+            thread:     { label:'트윗 URL',      ph:'https://x.com/유저/status/1234567890' },
+            favoriters: { label:'트윗 URL',      ph:'https://x.com/유저/status/1234567890' },
+            retweeters: { label:'트윗 URL',      ph:'https://x.com/유저/status/1234567890' },
+            list:       { label:'리스트 URL',    ph:'https://x.com/i/lists/1234567890' },
+            community:  { label:'커뮤니티 URL',  ph:'https://x.com/i/communities/1234567890' },
+            space:      { label:'스페이스 URL',  ph:'https://x.com/i/spaces/1ABCDxyz... (또는 broadcasts URL)' }
+        };
         function toggleTwitterOptions() {
             const t = document.getElementById('twitter-type').value;
             document.getElementById('twitter-mode-field').style.display = (t==='tweets'||t==='media'||t==='replies'||t==='reposts'||t==='bookmarks'||t==='thread_comments') ? 'block' : 'none';
+            // 트윗/리스트/커뮤니티/스페이스 URL 입력란 — 해당 유형일 때만 표시
+            const urlInfo = TWITTER_URL_TYPES[t];
+            const urlField = document.getElementById('twitter-url-field');
+            if (urlInfo) {
+                urlField.style.display = 'block';
+                document.getElementById('twitter-url-label').textContent = urlInfo.label;
+                document.getElementById('twitter-url').placeholder = urlInfo.ph;
+            } else {
+                urlField.style.display = 'none';
+            }
+            // 🔎 포스트 좁히기: 'narrow' 유형이면 키워드+기간 노출, 'all' 이면 (자동 좁히기용) 키워드만 노출
+            const narrowField = document.getElementById('twitter-narrow-field');
+            narrowField.style.display = (t==='narrow' || t==='all') ? 'block' : 'none';
+            document.getElementById('twitter-narrow-label').textContent = (t==='all')
+                ? '🔎 전체 시 좁히기 키워드 (입력 시 전체수집 후 자동으로 좁혀 별도 수집 · 비우면 건너뜀)'
+                : '🔎 좁히기 키워드/문구 (비우면 기간만으로 좁힘 · X 고급검색식 가능)';
+            // narrow 는 기간 좁히기도 쓰므로 날짜 섹션도 노출
+            if (t==='narrow') document.getElementById('twitter-period-section').style.display = 'block';
         }
         function toggleTwitterPeriod() {
             document.getElementById('twitter-period-section').style.display = document.getElementById('twitter-mode').value==='period'?'block':'none';
@@ -3819,11 +4022,21 @@
         }
         function startTwitter() {
             if (!backend) return;
-            if (platformTargets.twitter && platformTargets.twitter.length) { startPlatformMulti('twitter'); return; }
-            let target=document.getElementById('twitter-target').value.trim().replace(/^@/,'').split(/[\s\n\r]/)[0].trim();
-            document.getElementById('twitter-target').value = target;
-            if (!target) { appendLog('대상 유저이름을 입력하세요','error','twitter'); return; }
-            if (!accounts.twitter||accounts.twitter.length===0) { appendLog('계정을 먼저 추가하세요','error','twitter'); return; }
+            const type = document.getElementById('twitter-type').value;
+            const urlInfo = TWITTER_URL_TYPES[type];
+            let target;
+            if (urlInfo) {
+                // 스레드/좋아요·리트윗 유저/리스트/커뮤니티/스페이스 — URL 입력란 사용
+                target = document.getElementById('twitter-url').value.trim();
+                if (!target) { appendLog(urlInfo.label + '을(를) 입력하세요','error','twitter'); return; }
+            } else {
+                if (platformTargets.twitter && platformTargets.twitter.length) { startPlatformMulti('twitter'); return; }
+                target = document.getElementById('twitter-target').value.trim().replace(/^@/,'').split(/[\s\n\r]/)[0].trim();
+                document.getElementById('twitter-target').value = target;
+                if (!target) { appendLog('대상 유저이름을 입력하세요','error','twitter'); return; }
+            }
+            // 스페이스(yt-dlp)는 계정 불필요. 그 외 유형은 twikit 인증 계정 필요.
+            if (type !== 'space' && (!accounts.twitter || accounts.twitter.length===0)) { appendLog('계정을 먼저 추가하세요','error','twitter'); return; }
             const config = {
                 platform:'twitter', target:target,
                 path:document.getElementById('twitter-path').value,
@@ -3831,6 +4044,7 @@
                 mode:document.getElementById('twitter-mode').value,
                 since:document.getElementById('twitter-since').value,
                 until:document.getElementById('twitter-until').value,
+                narrowQuery:document.getElementById('twitter-narrow-query').value.trim(),
                 count:parseInt(document.getElementById('twitter-count').value)||0,
                 delay:0,
                 mediaQuality:document.getElementById('twitter-media-quality').value,
@@ -3902,7 +4116,8 @@
                 thumb:document.getElementById('youtube-thumb').checked,
                 metadata:document.getElementById('youtube-metadata').checked,
                 playlist:document.getElementById('youtube-playlist').checked,
-                sponsor:document.getElementById('youtube-sponsor').checked
+                sponsor:document.getElementById('youtube-sponsor').checked,
+                comments:document.getElementById('youtube-comments').checked
             };
             setRunning('youtube', true);
             clearLog('youtube'); setYoutubeProgress(0);
@@ -3911,6 +4126,30 @@
             backend.startYoutube(JSON.stringify(config));
         }
         function stopYoutube() { if(backend){ backend.stopYoutube(); appendLog('중지 중...','warning','youtube'); } }
+
+        // ── 니코니코동화 (니코동) — yt-dlp 파이프라인 재사용 ──
+        function startNiconico() {
+            if (!backend) return;
+            const url=document.getElementById('niconico-url').value;
+            if (!url) { appendLog('URL을 입력하세요','error','niconico'); return; }
+            const config = {
+                platform:'niconico',
+                url:url, path:document.getElementById('niconico-path').value,
+                type:document.getElementById('niconico-type').value,
+                quality:document.getElementById('niconico-quality').value,
+                metadata:document.getElementById('niconico-metadata').checked,
+                thumb:document.getElementById('niconico-thumb').checked,
+                comments:document.getElementById('niconico-comments').checked,
+                browserCookies:document.getElementById('niconico-cookies').checked
+            };
+            setRunning('niconico', true);
+            clearLog('niconico');
+            var _e=document.getElementById('niconico-progress-fill'); if(_e)_e.style.width='0%';
+            appendLog('다운로드 시작...','info','niconico');
+            updateStats(0,0,'다운로드 중','niconico');
+            backend.startNiconico(JSON.stringify(config));
+        }
+        function stopNiconico() { if(backend){ backend.stopNiconico(); appendLog('중지 중...','warning','niconico'); } }
 
         // ── Discord ──
         function addDiscordAccount() {
@@ -4021,13 +4260,15 @@
         }
         function startInstagram() {
             if (!backend) return;
-            // 목록에 "계정 지정" 정보가 있으면 다중 큐 사용, 없으면 기존 로직
-            const hasAccountPick = (platformTargets.instagram||[]).some(function(e){ return e.accountIdx !== 'all' && e.accountIdx !== undefined; });
-            if (hasAccountPick) { startPlatformMulti('instagram'); return; }
-            // Use targets list or fallback to single input
-            let targets = (platformTargets.instagram||[]).map(function(e){return e.target;});
+            // ★ 목록에 대상이 있으면 '항상' 다중 큐로 → 체크박스(enabled) + 계정지정을 그대로 반영.
+            //   (기존 버그: 계정지정이 있을 때만 멀티로 가고, 전부 '전체 계정'이면 단일 경로로 빠져
+            //    enabled 를 무시한 채 targets[0](목록 첫 번째)만 받아 → 체크한 대상이 아니라
+            //    다른 타겟이 다운로드되던 문제. Twitter 처럼 목록 있으면 무조건 멀티로 통일.)
+            if ((platformTargets.instagram||[]).length) { startPlatformMulti('instagram'); return; }
+            // 목록이 비어 있으면 단일 입력 필드 사용
             const singleUser = ((document.getElementById('instagram-target')||{value:''}).value||'').trim().replace(/^@/,'');
-            if (targets.length===0 && singleUser) targets.push(singleUser);
+            let targets = [];
+            if (singleUser) targets.push(singleUser);
             if (targets.length===0) { appendLog('대상 유저를 추가하세요','error','instagram'); return; }
             if (!accounts.instagram||accounts.instagram.length===0) { appendLog('계정을 먼저 추가하세요','error','instagram'); return; }
             const igType = document.getElementById('instagram-type').value;
@@ -4902,13 +5143,13 @@
 
         // ── Form Persistence (config 파일 저장) ──
         var _formFieldIds = [
-            'twitter-target','twitter-path','twitter-type','twitter-mode','twitter-since','twitter-until',
+            'twitter-target','twitter-path','twitter-type','twitter-mode','twitter-since','twitter-until','twitter-narrow-query',
             'twitter-media-quality','twitter-media','twitter-excel','twitter-count','twitter-thread-comments','twitter-real-capture',
             'twitter-method','twitter-progress','twitter-resume-mode','twitter-cookie',
             'bsky-target','bsky-path','bsky-type','bsky-mode','bsky-since','bsky-until',
             'bsky-query','bsky-count','bsky-media','bsky-excel','bsky-replies','bsky-reposts','bsky-comments','bsky-real-capture',
             'bsky-method','bsky-ratelimit-mins','bsky-ratelimit-wait','bsky-cookie',
-            'youtube-path','youtube-quality','youtube-type','youtube-subs','youtube-thumb','youtube-metadata','youtube-playlist','youtube-sponsor',
+            'youtube-path','youtube-quality','youtube-type','youtube-subs','youtube-thumb','youtube-metadata','youtube-playlist','youtube-sponsor','youtube-comments',
             'discord-server','discord-channel','discord-type','discord-count','discord-delay','discord-media','discord-excel','discord-profiles','discord-path',
             'discord-method',
             'instagram-target','instagram-count','instagram-delay',
@@ -4928,7 +5169,13 @@
             'settings-disk-path'
         ];
         var _formSaveTimer = null;
+        // ★★ 설정 wipe 방지 가드 — 앱 재시작 중 창이 포커스를 잃으면(blur/beforeunload)
+        //   restoreFormData(폼 복원) 전에 _doSaveForm 이 호출돼 '빈 폼'을 저장 → 저장된
+        //   쿠키/세션을 통째로 wipe 하던 버그. restoreFormData 가 한 번 돌기 전엔 저장 금지.
+        var _formLoaded = false;
+        setTimeout(function(){ _formLoaded = true; }, 8000);  // 폴백: 복원 콜백이 영영 안 와도 8초 뒤 저장 허용
         function _doSaveForm() {
+            if (!_formLoaded) return;   // 폼 로드 전엔 저장 금지 (빈 폼 wipe 방지)
             var data = {};
             _formFieldIds.forEach(function(id) {
                 var el = document.getElementById(id);
@@ -4952,6 +5199,7 @@
         });
         // C++ 에서 호출 — config 파일에서 폼 복원
         function restoreFormData(jsonStr) {
+            _formLoaded = true;   // ★ 복원 1회 완료 → 이후부터 저장 허용 (wipe 가드 해제)
             try {
                 var data = JSON.parse(jsonStr);
                 _formFieldIds.forEach(function(id) {
@@ -5293,6 +5541,7 @@
                         config.mode = document.getElementById('twitter-mode').value;
                         config.since = document.getElementById('twitter-since').value;
                         config.until = document.getElementById('twitter-until').value;
+                        config.narrowQuery = document.getElementById('twitter-narrow-query').value.trim();
                         config.count = _mk('count', parseInt(document.getElementById('twitter-count').value) || 0);
                         config.delay = 0;
                         config.mediaQuality = document.getElementById('twitter-media-quality').value;
@@ -5497,7 +5746,8 @@
         var _origUpdateStats = window.updateStats;
         window.updateStats = function(posts, media, status, platform) {
             _origUpdateStats(posts, media, status, platform);
-            var isDone = (status === '완료' || status === 'Done' || status === 'Ready' || status === '대기');
+            // ★ '대기'(idle/대기중)는 완료가 아님 — done 목록에서 제외 (게이지 거짓 100% 원인).
+            var isDone = (status === '완료' || status === 'Done' || status === 'Ready');
             var isError = (status === '오류' || status === 'Error');
             var isStopped = (status === '중단됨' || status === 'Stopped');
 
@@ -5538,6 +5788,12 @@
                         updateMultiProgress(lookupPlat);
                         checkMultiAllDone(lookupPlat);
                     } else {
+                        // ★ 비종료 상태(수집 중 / RL待機 / 대기 등)가 오면 트랙은 아직 진행 중이다.
+                        //   이전에 잘못 'done'(또는 'pending')으로 잡혀 게이지가 거짓 100% 가 됐으면
+                        //   'running'으로 보정 → "RL待機 인데 100% 완료" 모순 해소.
+                        if (m.states[parallelKey] === 'done' || m.states[parallelKey] === 'pending') {
+                            m.states[parallelKey] = 'running';
+                        }
                         updateMultiProgress(lookupPlat);
                     }
                     return;

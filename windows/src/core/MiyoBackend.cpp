@@ -67,24 +67,45 @@ struct CollectionGuard {
 QSemaphore* MiyoBackend::platformSem(const QString &platform)
 {
     QMutexLocker lock(&m_platformSemsMutex);
-    if (m_platformSems.contains(platform)) return m_platformSems[platform];
-    int cap = 2;  // default
-    // platform 별 capacity (동시 작업 한도)
-    if (platform == "youtube") cap = 1;        // yt-dlp/ffmpeg 무거움, NAS write 부담
-    else if (platform == "instagram") cap = 1; // login pause / rate limit
-    else if (platform == "pixiv") cap = 2;     // API + 이미지
-    else if (platform == "fanbox") cap = 2;    // 멤버십 컨텐츠
-    else if (platform == "twitter") cap = 2;   // API rate limit
-    else if (platform == "bluesky") cap = 2;   // API rate limit
-    else if (platform == "tumblr") cap = 3;
-    else if (platform == "spinspin") cap = 3;
-    else if (platform == "asked") cap = 3;
-    else if (platform == "discord") cap = 3;
-    else if (platform == "crawl") cap = 3;
-    else if (platform == "naikakukai") cap = 2;
-    else if (platform == "trad") cap = 1;      // 압축 + ZIP 무거움
-    QSemaphore *sem = new QSemaphore(cap);
-    m_platformSems[platform] = sem;
+    // platform 별 기본 capacity (동시 작업 한도)
+    int def = 2;
+    if (platform == "youtube") def = 1;        // yt-dlp/ffmpeg 무거움, NAS write 부담
+    else if (platform == "instagram") def = 1; // login pause / rate limit
+    else if (platform == "pixiv") def = 2;     // API + 이미지
+    else if (platform == "fanbox") def = 2;    // 멤버십 컨텐츠
+    else if (platform == "twitter") def = 2;   // API rate limit
+    else if (platform == "bluesky") def = 2;   // API rate limit
+    else if (platform == "tumblr") def = 3;
+    else if (platform == "spinspin") def = 3;
+    else if (platform == "asked") def = 3;
+    else if (platform == "discord") def = 3;
+    else if (platform == "crawl") def = 3;
+    else if (platform == "naikakukai") def = 2;
+    else if (platform == "trad") def = 1;      // 압축 + ZIP 무거움
+
+    // ★ 사용자 설정 override — maxConcurrent>0 이면 모든 플랫폼에 그 값을 동시 한도로 적용.
+    int desired = def;
+    if (m_config) {
+        int mc = m_config->maxConcurrent();
+        if (mc > 0) desired = mc;
+    }
+    if (desired < 1) desired = 1;
+
+    if (!m_platformSems.contains(platform)) {
+        m_platformSems[platform] = new QSemaphore(desired);
+        m_platformSemCap[platform] = desired;
+        return m_platformSems[platform];
+    }
+    // 이미 있으면 라이브 조정 — 늘리기는 즉시(release), 줄이기는 유휴(미사용 permit 있을 때)만.
+    QSemaphore *sem = m_platformSems[platform];
+    int cur = m_platformSemCap.value(platform, def);
+    if (desired > cur) {
+        sem->release(desired - cur);
+        m_platformSemCap[platform] = desired;
+    } else if (desired < cur) {
+        if (sem->tryAcquire(cur - desired))   // 사용 중이면 실패 → 다음 호출 때 반영
+            m_platformSemCap[platform] = desired;
+    }
     return sem;
 }
 #include <QTimer>
@@ -4015,17 +4036,23 @@ void MiyoBackend::startCollection(const QString &configJson)
     // Prevent system sleep during collection
     if (m_window) m_window->holdAwake();
 
-    // 중복 방지 — sequential 모드만 체크 (병렬은 trackKey가 unique이므로 자연스럽게 격리)
+    // 중복 방지 — '진짜 실행 중'일 때만 막는다.
+    //   끝났거나(완료 정리 레이스) 중지된(stale) 스레드 엔트리는 정리하고 새로 시작
+    //   → "이미 수집 중" 거짓양성 방지. (실행 플래그가 꺼졌으면 더 이상 수집 중이 아님)
     if (m_collectionThreads.contains(trackKey)) {
         QThread *existing = m_collectionThreads[trackKey];
-        if (existing && !existing->isFinished()) {
+        const bool reallyRunning = existing && !existing->isFinished()
+                                   && (platformRunning(trackKey) || platformRunning(platformName));
+        if (reallyRunning) {
             dbg("EARLY RETURN: 이미 수집 중", platformName);
             log(QString("이미 수집 중입니다! (%1)").arg(trackKey), "warning", platformName);
             return;
         }
-        // 끝난 스레드 정리
-        existing->deleteLater();
+        // stale 정리: 끝난 스레드만 직접 deleteLater. (실행 중인데 플래그만 꺼진 경우엔
+        //   finished→deleteLater 연결에 맡기고 맵 참조만 제거 — 러닝 스레드 삭제/이중삭제 방지)
+        if (existing && existing->isFinished()) existing->deleteLater();
         m_collectionThreads.remove(trackKey);
+        dbg("stale collection thread cleared — 재시작 허용", platformName);
     }
     dbg("collection thread check OK", platformName);
 
@@ -6703,9 +6730,101 @@ void MiyoBackend::runRealChromeCollection(const QJsonObject &config)
 
 // ===== Collection Runners =====
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 트위터 스페이스(오디오 라이브) 다운로드 — yt-dlp 사용.
+//   twikit 텍스트/미디어 수집과 무관. config["target"] 에 스페이스 URL 이 온다.
+//   트위터 탭의 로그/중지 버튼/실행상태와 일관되게 platform="twitter" 로 동작.
+// ═══════════════════════════════════════════════════════════════════════════
+// 단일 스페이스 URL → yt-dlp 다운로드. 스페이스 자동탐지(전체 수집)에서도 재사용.
+bool MiyoBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir, const bool *running)
+{
+    const QString url = urlIn.trimmed();
+    if (url.isEmpty()) return false;
+    QDir().mkpath(outDir);
+
+    const QString ytdlp = Common::ytDlpExecutable();
+    const QString appDir = QCoreApplication::applicationDirPath();
+
+    QStringList args;
+    args << "--no-mtime" << "--newline" << "--no-playlist";
+    // ★ ffmpeg 위치 — 스페이스는 m3u8(HLS) 라 ffmpeg 필수. 번들→시스템 순으로 '실제 존재하는' 것만 지정.
+    //   (이전엔 ffmpeg 없는 번들 디렉토리를 무조건 가리켜 "ffmpeg could not be found" 로 실패했음)
+    for (const QString &ff : QStringList{ appDir + "/ffmpeg", appDir + "/ffmpeg.exe",
+                                          "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg" }) {
+        if (QFile::exists(ff)) { args << "--ffmpeg-location" << ff; break; }
+    }
+    // 위 후보가 모두 없으면 --ffmpeg-location 생략 → PATH 에서 탐색.
+    args << "--embed-metadata"
+         << "-o" << (outDir + "/%(title).180s [%(id)s].%(ext)s")
+         << url;
+
+    log(QString("🎙️ 스페이스 다운로드: %1").arg(url), "info", "twitter");
+
+    QProcess proc;
+    proc.setProcessEnvironment(Common::bundledProcessEnv());
+    proc.setProcessChannelMode(QProcess::MergedChannels);
+    proc.start(ytdlp, args);
+    if (!proc.waitForStarted(10000)) {
+        log("yt-dlp 실행 실패 — 번들/설치 상태를 확인하세요.", "error", "twitter");
+        return false;
+    }
+    // ★ 정체 워치독 — 출력이 STALL_MS 동안 없으면 멈춘 것으로 보고 종료(전체수집 무한 대기 방지).
+    QElapsedTimer stall; stall.start();
+    const qint64 STALL_MS = 120000;   // 120초
+    while (proc.state() != QProcess::NotRunning) {
+        // 중지 판단 — running 이 주어지면(병렬 트랙) 그 플래그로, 아니면 플랫폼 플래그로.
+        //   (병렬 수집에서 platformRunning("twitter") 만 보면 트랙은 살아있는데 오판해 즉시 중단되던 버그)
+        if (running ? !(*running) : !platformRunning("twitter")) {
+            proc.terminate();
+            if (!proc.waitForFinished(3000)) proc.kill();
+            log("⏹ 스페이스 다운로드를 중단했습니다.", "warning", "twitter");
+            return false;
+        }
+        if (proc.waitForReadyRead(400)) {
+            const QStringList lines = QString::fromUtf8(proc.readAll()).split('\n', Qt::SkipEmptyParts);
+            for (const QString &ln : lines) {
+                const QString t = ln.trimmed();
+                if (!t.isEmpty()) log(t, "info", "twitter");
+            }
+            stall.restart();   // 출력 있음 → 정체 타이머 리셋
+        } else if (stall.elapsed() > STALL_MS) {
+            log("⚠️ 스페이스 다운로드 응답 없음(정체) — 건너뜁니다.", "warning", "twitter");
+            proc.terminate();
+            if (!proc.waitForFinished(3000)) proc.kill();
+            return false;
+        }
+    }
+    const QString tail = QString::fromUtf8(proc.readAll()).trimmed();
+    if (!tail.isEmpty()) log(tail, "info", "twitter");
+
+    const bool ok = (proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0);
+    log(ok ? "✅ 스페이스 다운로드 완료."
+           : QString("❌ 스페이스 다운로드 실패 (종료코드 %1). 종료/만료됐거나 비공개일 수 있습니다.").arg(proc.exitCode()),
+        ok ? "success" : "error", "twitter");
+    return ok;
+}
+
+void MiyoBackend::runTwitterSpace(const QJsonObject &config)
+{
+    const QString url = config["target"].toString().trimmed();
+    if (url.isEmpty()) {
+        log("스페이스 URL을 입력하세요. (예: https://x.com/i/spaces/...)", "error", "twitter");
+        return;
+    }
+    QString savePath = config["path"].toString();
+    savePath.replace("~", QDir::homePath());
+    if (savePath.isEmpty()) { log("저장 경로가 없습니다.", "error", "twitter"); return; }
+    downloadSpaceUrl(url, savePath + "/twitter/spaces");
+}
+
 void MiyoBackend::runTwitterCollection(const QJsonObject &config)
 {
     CollectionGuard _cg(platformSem("twitter"), this, "twitter");
+    // ★ 스페이스(오디오 라이브) — twikit 경로가 아니라 yt-dlp 로 직접 다운로드
+    if (config["type"].toString() == "space") {
+        runTwitterSpace(config);
+        return;
+    }
     setIntegrityActiveForPlatform("twitter", config["integrityCheck"].toBool(false));
     // 실제 Chrome (CDP) 모드 — 사이트 봇 차단 회피
     if (config["method"].toString() == "chrome") {
@@ -8567,7 +8686,15 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 
     QStringList baseArgs;
     baseArgs << "--no-mtime";
-    baseArgs << "--ffmpeg-location" << appDir;
+    baseArgs << "--no-restrict-filenames";   // ★ 유니코드(한/일 등) 제목 그대로 보존
+    // ★ ffmpeg 위치 — 번들→시스템 순으로 '실제 존재하는' 것만 지정(오디오 mp3 추출/영상 병합에 필수).
+    //   이전엔 ffmpeg 없는 디렉토리를 무조건 가리켜 "ffmpeg could not be found" 로 실패했음(윈도우 오디오 오류 원인).
+    for (const QString &ff : QStringList{ appDir + "/ffmpeg.exe", appDir + "/ffmpeg",
+                                          appDir + "/tools/ffmpeg.exe",
+                                          "C:/ffmpeg/bin/ffmpeg.exe" }) {
+        if (QFile::exists(ff)) { baseArgs << "--ffmpeg-location" << ff; break; }
+    }
+    // (위 후보가 없으면 --ffmpeg-location 생략 → PATH 에서 탐색)
     // Rate limit 방지: 영상 간 딜레이
     baseArgs << "--sleep-interval" << "3" << "--max-sleep-interval" << "8";
     baseArgs << "--sleep-requests" << "1";
@@ -8705,6 +8832,8 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     QString script;
     // ★ enabledelayedexpansion — if/else 블록 안에서 !VAR! 로 런타임 값 읽기 필요
     script += "@echo off\r\nsetlocal enabledelayedexpansion\r\nchcp 65001 >nul\r\n";
+    // ★ 한글/유니코드 채널·제목 파일명 — Python(yt-dlp) UTF-8 강제 (윈도우 ANSI 코드페이지 폴백 → UnicodeError 방지)
+    script += "set PYTHONUTF8=1\r\nset PYTHONIOENCODING=UTF-8\r\n";
     script += "title ABIWA - YouTube\r\n";
     // ★ exe 디렉토리를 PATH 앞에 추가 — yt-dlp 가 번들된 deno(JS 런타임)/ffmpeg 를 자동 탐지.
     //   yt-dlp 2025+ 는 YouTube 추출에 JS 런타임(deno) 필요 — 없으면 포맷 누락/실패 경고.
@@ -8778,6 +8907,9 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     QString script;
     script += "#!/bin/bash\n";
     script += "export PATH=" + esc(appDir) + ":/opt/homebrew/bin:/usr/local/bin:\"$PATH\"\n";
+    // ★ 한글/유니코드 파일명 — Python(yt-dlp) UTF-8 강제
+    script += "export PYTHONUTF8=1\nexport PYTHONIOENCODING=UTF-8\n";
+    script += "export LANG=\"${LANG:-en_US.UTF-8}\"\nexport LC_ALL=\"${LC_ALL:-en_US.UTF-8}\"\n";
     script += "STATUS=" + esc(statusFile) + "\n";
     script += "STOP_MARKER=" + esc(stopMarker) + "\n";
     script += "echo 'STARTED' > \"$STATUS\"\n\n";
@@ -8985,6 +9117,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                     QString ytUrl = info["webpage_url"].toString();
                     QString uploader = info["uploader"].toString();
                     QString title = info["title"].toString().left(200);
+                    QString descr = info["description"].toString();   // ★ 영상에 달린 설명
                     // _complete 미러 경로 (채널별 서브폴더 유지)
                     QString channelName = info["channel"].toString();
                     if (channelName.isEmpty()) channelName = info["uploader"].toString();
@@ -8996,18 +9129,23 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                     //   571개 같은 대형 채널에서 매 세션 전체를 재처리하면 사실상 끝나지 않아
                     //   _complete 가 일부만 채워지던 문제 → 새 파일만 처리하므로 항상 완주.
                     if (!QFile::exists(mirrorPath)) {
-                        // 원본에 메타데이터 (EXIF → comment → mtime)
+                        // 원본에 메타데이터 (EXIF → comment → mtime) — 설명(description) 있으면 임베드
                         Common::addExifMetadata(mediaPath,
                             uploader.isEmpty() ? "" : "@" + uploader,
-                            title, "YouTube @" + uploader, ytUrl,
+                            descr.isEmpty() ? title : descr,
+                            "YouTube @" + uploader, ytUrl,
                             dt.isValid() ? dt.toString("yyyy:MM:dd HH:mm:ss") : "");
-                        FileHelper::setFinderComment(mediaPath, ytUrl);
+                        // 코멘트 = URL + 제목 + 설명(앞부분). 전체 설명은 .description 사이드카에도 저장됨.
+                        QString ytComment = ytUrl;
+                        if (!title.isEmpty()) ytComment += "\n" + title;
+                        if (!descr.isEmpty()) ytComment += "\n\n" + descr.left(1800);
+                        FileHelper::setFinderComment(mediaPath, ytComment);
                         FileHelper::applyPostMetadata(mediaPath, dt, ytUrl);
                         // _complete 로 복사 + 메타데이터
                         QDir().mkpath(mirrorChannelDir);
                         QFile::copy(mediaPath, mirrorPath);
                         if (QFile::exists(mirrorPath)) {
-                            FileHelper::setFinderComment(mirrorPath, ytUrl);
+                            FileHelper::setFinderComment(mirrorPath, ytComment);
                             FileHelper::applyPostMetadata(mirrorPath, dt, ytUrl);
                         }
                         // ※ 영상별 페이지 캡처(capturePageHtml) 제거 — YouTube 는 JS shell 이라
@@ -12628,7 +12766,8 @@ void MiyoBackend::upgradePython()
 
         // 7. 정리 — 불필요한 디렉토리/캐시 제거 (Qt 네이티브 — bash/find/rm 의존 없음 → 크로스플랫폼)
         log("  정리 중...", "info", "settings");
-        {
+        // ★ 안전 가드 — pythonDir 이 예상 밖 경로면 정리 스킵 (빈 경로로 최상위를 지우는 사고 방지)
+        if (pythonDir.endsWith("/python_env")) {
             QDir(pythonDir + "/share").removeRecursively();
             QDir(pythonDir + "/include").removeRecursively();
             // 모든 __pycache__ / test / tests 디렉토리 수집 후 제거 (이터레이터 무효화 방지)
@@ -12683,8 +12822,8 @@ void MiyoBackend::repairPython()
 
     QThread *thread = QThread::create([this]() {
         QString python = Common::bundledPythonPath();
-        QString resDir = Common::bundledResourcesDir();
-        QString pythonDir = resDir + "/python_env";
+        // ★ 쓰기가능 외부 python_env (번들 codesign seal 보호 — 번들엔 절대 쓰지 않음).
+        QString pythonDir = Common::activePythonEnvDir();
 
         // 1. 진단
         log("  환경 진단 중...", "info", "settings");
@@ -12733,7 +12872,7 @@ void MiyoBackend::repairPython()
             log(QString::fromUtf8(proc.readAllStandardOutput()), "info", "settings");
 
             if (!QFile::exists(python)) {
-                log("  ❌ 재설치 실패. Python 업그레이드를 시도하세요.", "error", "settings");
+                log("  ❌ 재설치 실패. 'Python 업그레이드'로 새로 받으세요.", "error", "settings");
                 m_pythonBusy = false;
                 runJs("setPythonEnvBusy(false, '복구 실패')");
                 return;

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  하드닝 런타임 + 공증(notarization) 배포용 entitlements.
+  ad-hoc 서명에는 사용되지 않으며, Developer ID Application 인증서로 서명할 때만 적용된다.
+  Qt WebEngine(Chromium V8 JIT) + 번들 python/yt-dlp/ffmpeg/rclone 동작에 필요한 최소 예외.
+-->
+<plist version="1.0">
+<dict>
+    <!-- Chromium V8 JIT — WebEngine 페이지/CDP 캡쳐에 필요 -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- 번들 python/yt-dlp/ffmpeg/rclone 등 (개별 서명/미서명) 라이브러리 로드 허용 -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- 자식 프로세스(python, yt-dlp 등)가 환경변수(DYLD_*, PYTHONPATH)를 상속받도록 -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+
+    <!-- Terminal/Finder 제어(osascript) — 수집 로그 터미널, Finder 코멘트 -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+</dict>
+</plist>

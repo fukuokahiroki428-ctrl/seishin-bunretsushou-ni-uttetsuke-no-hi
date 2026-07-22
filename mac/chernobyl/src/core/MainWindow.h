@@ -13,6 +13,7 @@
 #endif
 
 class MiyoBackend;
+class PenBackend;
 
 class MainWindow : public QMainWindow
 {
@@ -51,6 +52,7 @@ private:
     QMainWindow *m_browserWindow = nullptr;
     QWebChannel *m_channel = nullptr;
     MiyoBackend *m_backend = nullptr;
+    PenBackend *m_penBackend = nullptr;
     QMenu *m_dockMenu = nullptr;
 
 #ifdef Q_OS_MACOS

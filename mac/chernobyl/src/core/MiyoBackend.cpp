@@ -58,7 +58,13 @@ struct CollectionGuard {
             if (backend) backend->log(QString("▶ [%1] 수집 시작 (큐 해제)").arg(platform), "info", platform);
         }
     }
-    ~CollectionGuard() { sem->release(1); }
+    ~CollectionGuard() {
+        sem->release(1);
+        // ★ 수집이 어떤 경로로 끝나든(정상/오류/조기 return/세션실패) UI 버튼을 동기화.
+        //   최종 updateStats("완료"/"Done") 를 못 부르고 return 하면 시작/정지 버튼이 멈춰
+        //   있던 문제 → 종료 시 항상 onCollectionEnded 통지(멀티 진행 중이면 JS 가 유지 판단).
+        if (backend) backend->notifyCollectionEnded(platform);
+    }
 };
 }
 
@@ -66,24 +72,45 @@ struct CollectionGuard {
 QSemaphore* MiyoBackend::platformSem(const QString &platform)
 {
     QMutexLocker lock(&m_platformSemsMutex);
-    if (m_platformSems.contains(platform)) return m_platformSems[platform];
-    int cap = 2;  // default
-    // platform 별 capacity (동시 작업 한도)
-    if (platform == "youtube") cap = 1;        // yt-dlp/ffmpeg 무거움, NAS write 부담
-    else if (platform == "instagram") cap = 1; // login pause / rate limit
-    else if (platform == "pixiv") cap = 2;     // API + 이미지
-    else if (platform == "fanbox") cap = 2;    // 멤버십 컨텐츠
-    else if (platform == "twitter") cap = 2;   // API rate limit
-    else if (platform == "bluesky") cap = 2;   // API rate limit
-    else if (platform == "tumblr") cap = 3;
-    else if (platform == "spinspin") cap = 3;
-    else if (platform == "asked") cap = 3;
-    else if (platform == "discord") cap = 3;
-    else if (platform == "crawl") cap = 3;
-    else if (platform == "naikakukai") cap = 2;
-    else if (platform == "trad") cap = 1;      // 압축 + ZIP 무거움
-    QSemaphore *sem = new QSemaphore(cap);
-    m_platformSems[platform] = sem;
+    // platform 별 기본 capacity (동시 작업 한도)
+    int def = 2;
+    if (platform == "youtube") def = 1;        // yt-dlp/ffmpeg 무거움, NAS write 부담
+    else if (platform == "instagram") def = 1; // login pause / rate limit
+    else if (platform == "pixiv") def = 2;     // API + 이미지
+    else if (platform == "fanbox") def = 2;    // 멤버십 컨텐츠
+    else if (platform == "twitter") def = 2;   // API rate limit
+    else if (platform == "bluesky") def = 2;   // API rate limit
+    else if (platform == "tumblr") def = 3;
+    else if (platform == "spinspin") def = 3;
+    else if (platform == "asked") def = 3;
+    else if (platform == "discord") def = 3;
+    else if (platform == "crawl") def = 3;
+    else if (platform == "naikakukai") def = 2;
+    else if (platform == "trad") def = 1;      // 압축 + ZIP 무거움
+
+    // ★ 사용자 설정 override — maxConcurrent>0 이면 모든 플랫폼에 그 값을 동시 한도로 적용.
+    int desired = def;
+    if (m_config) {
+        int mc = m_config->maxConcurrent();
+        if (mc > 0) desired = mc;
+    }
+    if (desired < 1) desired = 1;
+
+    if (!m_platformSems.contains(platform)) {
+        m_platformSems[platform] = new QSemaphore(desired);
+        m_platformSemCap[platform] = desired;
+        return m_platformSems[platform];
+    }
+    // 이미 있으면 라이브 조정 — 늘리기는 즉시(release), 줄이기는 유휴(미사용 permit 있을 때)만.
+    QSemaphore *sem = m_platformSems[platform];
+    int cur = m_platformSemCap.value(platform, def);
+    if (desired > cur) {
+        sem->release(desired - cur);
+        m_platformSemCap[platform] = desired;
+    } else if (desired < cur) {
+        if (sem->tryAcquire(cur - desired))   // 사용 중이면 실패 → 다음 호출 때 반영
+            m_platformSemCap[platform] = desired;
+    }
     return sem;
 }
 #include <QTimer>
@@ -2611,8 +2638,8 @@ void MiyoBackend::emailWatchTick()
         return;
     }
 
-    // Python 인터프리터 — 번들 또는 시스템
-    QString python = QCoreApplication::applicationDirPath() + "/../Resources/python_env/bin/python3";
+    // Python 인터프리터 — 쓰기가능 복사본(번들 seal 보호) 또는 시스템
+    QString python = Common::bundledPythonPath();
     if (!QFileInfo::exists(python)) python = "/usr/bin/python3";
 
     QString server = m_emailServer;
@@ -3218,6 +3245,16 @@ void MiyoBackend::updateStats(int posts, int media, const QString &status, const
     runJs(QString("updateStats(%1, %2, '%3', '%4')").arg(posts).arg(media).arg(status, p));
 }
 
+void MiyoBackend::notifyCollectionEnded(const QString &platform)
+{
+    // 수집 스레드 종료 시 호출 — JS 가 멀티 진행 여부를 보고 시작/정지 버튼을 안전하게 리셋.
+    //   (단일 수집: 즉시 리셋. 병렬: 마지막 트랙 종료 시 리셋.)
+    QString p = platform;
+    if (p.isEmpty()) { QString tk = currentThreadTrackKey(); p = tk.isEmpty() ? m_currentPlatform : tk; }
+    runJs(QString("if(window.onCollectionEnded)window.onCollectionEnded(%1);")
+              .arg(Common::jsStringLiteral(p)));
+}
+
 void MiyoBackend::showLog(const QString &message)
 {
     log(message, "warning");
@@ -3705,17 +3742,23 @@ void MiyoBackend::startCollection(const QString &configJson)
     // Prevent system sleep during collection
     if (m_window) m_window->holdAwake();
 
-    // 중복 방지 — sequential 모드만 체크 (병렬은 trackKey가 unique이므로 자연스럽게 격리)
+    // 중복 방지 — '진짜 실행 중'일 때만 막는다.
+    //   끝났거나(완료 정리 레이스) 중지된(stale) 스레드 엔트리는 정리하고 새로 시작
+    //   → "이미 수집 중" 거짓양성 방지. (실행 플래그가 꺼졌으면 더 이상 수집 중이 아님)
     if (m_collectionThreads.contains(trackKey)) {
         QThread *existing = m_collectionThreads[trackKey];
-        if (existing && !existing->isFinished()) {
+        const bool reallyRunning = existing && !existing->isFinished()
+                                   && (platformRunning(trackKey) || platformRunning(platformName));
+        if (reallyRunning) {
             dbg("EARLY RETURN: 이미 수집 중", platformName);
             log(QString("이미 수집 중입니다! (%1)").arg(trackKey), "warning", platformName);
             return;
         }
-        // 끝난 스레드 정리
-        existing->deleteLater();
+        // stale 정리: 끝난 스레드만 직접 deleteLater. (실행 중인데 플래그만 꺼진 경우엔
+        //   finished→deleteLater 연결에 맡기고 맵 참조만 제거 — 러닝 스레드 삭제/이중삭제 방지)
+        if (existing && existing->isFinished()) existing->deleteLater();
         m_collectionThreads.remove(trackKey);
+        dbg("stale collection thread cleared — 재시작 허용", platformName);
     }
     dbg("collection thread check OK", platformName);
 
@@ -3768,11 +3811,24 @@ void MiyoBackend::startCollection(const QString &configJson)
             runFanboxCollection(config);
         }
         // ★ 수집 끝 — manifest 생성 (무결성 검증 + 통계 파일)
-        //   path 가 root, 그 안의 모든 파일 walk 해서 __CHERNOBYL_MANIFEST__.json + .txt
+        //   ★ 저장 루트 전체(모든 플랫폼·유저, 수십 GB)를 매번 walk 하면 느리고,
+        //     작은 증분 수집 후에도 "80GB/17만 파일" 같은 혼란스러운 숫자가 나온다.
+        //     → 이번 수집의 대상 폴더(플랫폼/유저)로 한정. 못 찾으면 플랫폼 폴더, 그것도
+        //       없으면 루트로 폴백.
         QString plPath = config["path"].toString();
         plPath.replace("~", QDir::homePath());
         if (!plPath.isEmpty() && QDir(plPath).exists()) {
-            writeDownloadManifest(plPath, platformName);
+            QString manifestDir = plPath;
+            if (!platformName.isEmpty()) {
+                const QString platDir = plPath + "/" + platformName;
+                QString tgt = config["target"].toString();
+                if (tgt.isEmpty()) tgt = config["username"].toString();
+                tgt = tgt.trimmed(); tgt.remove('@');
+                const QString tgtDir = platDir + "/" + tgt;
+                if (!tgt.isEmpty() && QDir(tgtDir).exists())      manifestDir = tgtDir;
+                else if (QDir(platDir).exists())                  manifestDir = platDir;
+            }
+            writeDownloadManifest(manifestDir, platformName);
         }
         // 워커 스레드 종료 직전 trackKey 등록 해제
         if (isParallel) clearThreadTrackKey();
@@ -3811,9 +3867,28 @@ void MiyoBackend::startCollection(const QString &configJson)
             m_stopRequested[trackKey] = false;
             closeTerminalLog(trackKey);
             m_collectionThreads.remove(trackKey);
-            // 모든 수집이 끝났으면 절전 해제
+            // ★ 이 트랙의 캡쳐용 Chrome 창 자동 닫기 — 수집/다운로드 끝났으니 더 안 씀.
+            {
+                QMutexLocker mapLock(&m_capChromeMapMutex);
+                if (m_captureChromesPerThread.contains(trackKey)) {
+                    RealChromeCrawler *cc = m_captureChromesPerThread.take(trackKey);
+                    if (cc) { cc->stop(); cc->deleteLater(); }
+                }
+            }
+            // 모든 수집이 끝났으면 절전 해제 + 남은 캡쳐 Chrome(단일/잔여) 전부 닫기
             if (m_collectionThreads.isEmpty()) {
                 if (m_window) m_window->releaseAwake();
+                if (m_captureChrome) {
+                    m_captureChrome->stop();
+                    m_captureChrome->deleteLater();
+                    m_captureChrome = nullptr;
+                    m_captureChromeStarted = false;
+                }
+                QMutexLocker mapLock(&m_capChromeMapMutex);
+                for (auto it = m_captureChromesPerThread.begin(); it != m_captureChromesPerThread.end(); ++it) {
+                    if (it.value()) { it.value()->stop(); it.value()->deleteLater(); }
+                }
+                m_captureChromesPerThread.clear();
             }
         });
     });
@@ -4462,6 +4537,42 @@ void MiyoBackend::stopYoutube()
     log("YouTube 다운로드 중지됨", "warning", "youtube");
     updateStats(0, 0, "중지됨", "youtube");
     runJs("setYoutubeProgress(0)");
+}
+
+// ───────── 니코니코동화(니코동) — yt-dlp 파이프라인 재사용 (platform="niconico") ─────────
+void MiyoBackend::startNiconico(const QString &configJson)
+{
+    QJsonDocument doc = QJsonDocument::fromJson(configJson.toUtf8());
+    if (doc.isNull()) return;
+    QJsonObject config = doc.object();
+    config["platform"] = "niconico";          // runYoutubeDownload 가 <path>/niconico 로 저장 + 로그/게이지 키
+    m_lastConfig["niconico"] = config;
+    m_isRunning["niconico"] = true;
+    if (m_window) m_window->holdAwake();
+
+    QThread *thread = QThread::create([this, config]() {
+        runYoutubeDownload(config);
+        QMetaObject::invokeMethod(this, [this]() {
+            m_isRunning["niconico"] = false;
+            if (!isAnyRunning() && m_window) m_window->releaseAwake();
+        });
+    });
+    connect(thread, &QThread::finished, thread, &QThread::deleteLater);
+    thread->start();
+}
+
+void MiyoBackend::stopNiconico()
+{
+    m_isRunning["niconico"] = false;   // 모니터 루프 즉시 탈출
+    // 터미널 스크립트에 stop 신호 (스크립트가 STOP_MARKER 폴링하며 자기 yt-dlp 만 kill — 동시 youtube 보호)
+    QString tempDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_niconico";
+    QFile stopFile(tempDir + "/miyo_yt_status.txt.stop");
+    if (stopFile.open(QIODevice::WriteOnly)) { stopFile.write("STOP"); stopFile.close(); }
+    QFile sf(tempDir + "/miyo_yt_status.txt");
+    if (sf.open(QIODevice::WriteOnly)) { sf.write("DONE:0:0"); sf.close(); }
+    log("ニコニコ 다운로드 중지됨", "warning", "niconico");
+    updateStats(0, 0, "중지됨", "niconico");
+    runJs("var _e=document.getElementById('niconico-progress-fill'); if(_e)_e.style.width='0%';");
 }
 
 void MiyoBackend::analyzeYoutube(const QString &url)
@@ -5334,6 +5445,13 @@ bool MiyoBackend::captureRealPageCDPLoginAware(const QString &url,
             });
         };
 
+        // ★ 죽은(연결 끊긴) 캡쳐 Chrome 인스턴스 재사용 방지 — m_ready=false 면 정리 후 재생성.
+        //   이게 없으면 첫 캡쳐 뒤 Chrome 이 한 번 끊기면 *chromePP 가 non-null 인 채 남아
+        //   start() 를 건너뛰고 → 이후 모든 트윗이 "로그인 사전 navigate 실패" 로 무한 실패.
+        if (*chromePP && !(*chromePP)->isReady()) {
+            (*chromePP)->deleteLater();
+            *chromePP = nullptr;
+        }
         if (!*chromePP) {
             *chromePP = new RealChromeCrawler(this, this);
             (*chromePP)->setUseUserProfile(false);
@@ -6322,9 +6440,101 @@ void MiyoBackend::runRealChromeCollection(const QJsonObject &config)
 
 // ===== Collection Runners =====
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 트위터 스페이스(오디오 라이브) 다운로드 — yt-dlp 사용.
+//   twikit 텍스트/미디어 수집과 무관. config["target"] 에 스페이스 URL 이 온다.
+//   트위터 탭의 로그/중지 버튼/실행상태와 일관되게 platform="twitter" 로 동작.
+// ═══════════════════════════════════════════════════════════════════════════
+// 단일 스페이스 URL → yt-dlp 다운로드. 스페이스 자동탐지(전체 수집)에서도 재사용.
+bool MiyoBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir, const bool *running)
+{
+    const QString url = urlIn.trimmed();
+    if (url.isEmpty()) return false;
+    QDir().mkpath(outDir);
+
+    const QString ytdlp = Common::ytDlpExecutable();
+    const QString appDir = QCoreApplication::applicationDirPath();
+
+    QStringList args;
+    args << "--no-mtime" << "--newline" << "--no-playlist";
+    // ★ ffmpeg 위치 — 스페이스는 m3u8(HLS) 라 ffmpeg 필수. 번들→시스템 순으로 '실제 존재하는' 것만 지정.
+    //   (이전엔 ffmpeg 없는 번들 MacOS/ 를 무조건 가리켜 "ffmpeg could not be found" 로 실패했음)
+    for (const QString &ff : QStringList{ appDir + "/ffmpeg",
+                                          "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg" }) {
+        if (QFile::exists(ff)) { args << "--ffmpeg-location" << ff; break; }
+    }
+    // 위 후보가 모두 없으면 --ffmpeg-location 생략 → PATH(bundledProcessEnv 에 homebrew 포함) 에서 탐색.
+    args << "--embed-metadata"
+         << "-o" << (outDir + "/%(title).180s [%(id)s].%(ext)s")
+         << url;
+
+    log(QString("🎙️ 스페이스 다운로드: %1").arg(url), "info", "twitter");
+
+    QProcess proc;
+    proc.setProcessEnvironment(Common::bundledProcessEnv());
+    proc.setProcessChannelMode(QProcess::MergedChannels);
+    proc.start(ytdlp, args);
+    if (!proc.waitForStarted(10000)) {
+        log("yt-dlp 실행 실패 — 번들/설치 상태를 확인하세요.", "error", "twitter");
+        return false;
+    }
+    // ★ 정체 워치독 — 출력이 STALL_MS 동안 없으면 멈춘 것으로 보고 종료(전체수집 무한 대기 방지).
+    QElapsedTimer stall; stall.start();
+    const qint64 STALL_MS = 120000;   // 120초
+    while (proc.state() != QProcess::NotRunning) {
+        // 중지 판단 — running 이 주어지면(병렬 트랙) 그 플래그로, 아니면 플랫폼 플래그로.
+        //   (병렬 수집에서 platformRunning("twitter") 만 보면 트랙은 살아있는데 오판해 즉시 중단되던 버그)
+        if (running ? !(*running) : !platformRunning("twitter")) {
+            proc.terminate();
+            if (!proc.waitForFinished(3000)) proc.kill();
+            log("⏹ 스페이스 다운로드를 중단했습니다.", "warning", "twitter");
+            return false;
+        }
+        if (proc.waitForReadyRead(400)) {
+            const QStringList lines = QString::fromUtf8(proc.readAll()).split('\n', Qt::SkipEmptyParts);
+            for (const QString &ln : lines) {
+                const QString t = ln.trimmed();
+                if (!t.isEmpty()) log(t, "info", "twitter");
+            }
+            stall.restart();   // 출력 있음 → 정체 타이머 리셋
+        } else if (stall.elapsed() > STALL_MS) {
+            log("⚠️ 스페이스 다운로드 응답 없음(정체) — 건너뜁니다.", "warning", "twitter");
+            proc.terminate();
+            if (!proc.waitForFinished(3000)) proc.kill();
+            return false;
+        }
+    }
+    const QString tail = QString::fromUtf8(proc.readAll()).trimmed();
+    if (!tail.isEmpty()) log(tail, "info", "twitter");
+
+    const bool ok = (proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0);
+    log(ok ? "✅ 스페이스 다운로드 완료."
+           : QString("❌ 스페이스 다운로드 실패 (종료코드 %1). 종료/만료됐거나 비공개일 수 있습니다.").arg(proc.exitCode()),
+        ok ? "success" : "error", "twitter");
+    return ok;
+}
+
+void MiyoBackend::runTwitterSpace(const QJsonObject &config)
+{
+    const QString url = config["target"].toString().trimmed();
+    if (url.isEmpty()) {
+        log("스페이스 URL을 입력하세요. (예: https://x.com/i/spaces/...)", "error", "twitter");
+        return;
+    }
+    QString savePath = config["path"].toString();
+    savePath.replace("~", QDir::homePath());
+    if (savePath.isEmpty()) { log("저장 경로가 없습니다.", "error", "twitter"); return; }
+    downloadSpaceUrl(url, savePath + "/twitter/spaces");
+}
+
 void MiyoBackend::runTwitterCollection(const QJsonObject &config)
 {
     CollectionGuard _cg(platformSem("twitter"), this, "twitter");
+    // ★ 스페이스(오디오 라이브) — twikit 경로가 아니라 yt-dlp 로 직접 다운로드
+    if (config["type"].toString() == "space") {
+        runTwitterSpace(config);
+        return;
+    }
     setIntegrityActiveForPlatform("twitter", config["integrityCheck"].toBool(false));
     // 실제 Chrome (CDP) 모드 — 사이트 봇 차단 회피
     if (config["method"].toString() == "chrome") {
@@ -7295,39 +7505,56 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     HttpClient http;
     http.setRunFlag(&m_isRunning["instagram"]);  // 중지 시 즉시 abort
     QMap<QString, QString> baseHeaders;
-    baseHeaders["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+    // ★ 완전한 브라우저 UA — 잘린 UA("…AppleWebKit/537.36")는 product 토큰이 없어 봇 핑거프린트로
+    //   Instagram 이 401 대신 '빈 200'(소프트 차단)을 줘서 게시물 0개가 됨.
+    baseHeaders["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
     baseHeaders["Cookie"] = "sessionid=" + sessionId;
     baseHeaders["X-IG-App-ID"] = "936619743392459";
+    // ★ www.instagram.com 웹 API 가 요구하는 XHR 헤더. 특히 X-ASBD-ID 누락 시 '빈 200' 소프트 차단.
+    baseHeaders["X-Requested-With"] = "XMLHttpRequest";
+    baseHeaders["X-ASBD-ID"] = "129477";
+    baseHeaders["X-IG-WWW-Claim"] = "0";
+    baseHeaders["Accept"] = "*/*";
+    baseHeaders["Referer"] = "https://www.instagram.com/";
+    baseHeaders["Origin"] = "https://www.instagram.com";
 
-    // ★ Cookie 우선순위:
-    //   1) config["captureCookie"] — 사용자가 [Instagram] 버튼으로 추출한 전체 cookie (UI 표시됨)
-    //      또는 직접 입력한 raw cookie
-    //   2) extractInstagramSessionSync() — 위 둘 다 없으면 즉시 Chrome 에서 자동 추출
-    //   3) UI 의 sessionid input — fallback (이게 부족하면 401)
+    // ★ Cookie — www.instagram.com 웹 API 는 sessionid 만으론 302(미인증 리다이렉트).
+    //   csrftoken + ds_user_id 가 반드시 함께 있어야 200. 따라서 '완전한' 쿠키를 우선한다.
+    //   우선순위: ① csrftoken 포함 완전한 captureCookie  ② Chrome 전체 쿠키(자동추출)
+    //            ③ 불완전 captureCookie(경고)  — sessionid 만 있으면 www 가 거부.
+    //   ★ Chrome 실시간 전체 쿠키를 '우선' — captureCookie 는 sessionid/csrftoken/ds_user_id 가
+    //     서로 다른 시점 값이라(stale) 섞이면 401 을 유발한다. Chrome 추출본은 항상 일관됨(검증).
+    //     Chrome 추출이 실패할 때만 captureCookie 로 폴백.
+    auto cookieHas = [](const QString &c, const char *k){ return c.contains(QString(k) + "="); };
     QString userCaptureCookie = config["captureCookie"].toString();
-    if (!userCaptureCookie.isEmpty() && userCaptureCookie.contains("sessionid=")) {
-        baseHeaders["Cookie"] = userCaptureCookie;
-        log(QString("🍪 사용자 입력 cookie 사용 (%1개)").arg(userCaptureCookie.count(';') + 1),
-            "info", "instagram");
-        for (const QString &part : userCaptureCookie.split(';', Qt::SkipEmptyParts)) {
-            QString p = part.trimmed();
-            if (p.startsWith("sessionid=")) { sessionId = p.mid(10); break; }
-        }
-    } else {
-        QString preFullCookie = extractInstagramSessionSync();
-        if (!preFullCookie.isEmpty()) {
-            baseHeaders["Cookie"] = preFullCookie;
-            log(QString("🍪 Chrome 에서 인스타 쿠키 자동 추출 (%1개)").arg(preFullCookie.count(';') + 1),
+    QString chosenCookie;
+    {
+        QString full = extractInstagramSessionSync();
+        if (!full.isEmpty() && cookieHas(full, "csrftoken") && cookieHas(full, "ds_user_id")) {
+            chosenCookie = full;
+            log(QString("🍪 Chrome 전체 쿠키 사용 (%1개, 값 일관)").arg(full.count(';') + 1), "info", "instagram");
+        } else if (!userCaptureCookie.isEmpty() && cookieHas(userCaptureCookie, "sessionid")) {
+            chosenCookie = userCaptureCookie;
+            log(cookieHas(userCaptureCookie, "csrftoken")
+                    ? "🍪 사용자 입력 cookie 사용 (Chrome 추출 실패 폴백)"
+                    : "⚠️ cookie 에 csrftoken/ds_user_id 누락 — www API 가 거부할 수 있음 (Chrome 에서 instagram 로그인 권장)",
                 "info", "instagram");
-            for (const QString &part : preFullCookie.split(';', Qt::SkipEmptyParts)) {
-                QString p = part.trimmed();
-                if (p.startsWith("sessionid=")) { sessionId = p.mid(10); break; }
-            }
+        }
+    }
+    if (!chosenCookie.isEmpty()) {
+        baseHeaders["Cookie"] = chosenCookie;
+        for (const QString &part : chosenCookie.split(';', Qt::SkipEmptyParts)) {
+            QString p = part.trimmed();
+            if (p.startsWith("sessionid=")) sessionId = p.mid(10);
+            // ★ csrftoken → X-CSRFToken 헤더 (POST 계열 clips/user 등에 필요)
+            else if (p.startsWith("csrftoken=")) baseHeaders["X-CSRFToken"] = p.mid(10);
         }
     }
 
     // Get user info
-    QString userInfoUrl = QString("https://i.instagram.com/api/v1/users/web_profile_info/?username=%1").arg(username);
+    // ★ i.instagram.com 은 이제 web_profile_info 에 401 → www.instagram.com 으로 호출(검증: 200).
+    QString userInfoUrl = QString("https://www.instagram.com/api/v1/users/web_profile_info/?username=%1").arg(username);
     HttpResponse resp = http.get(userInfoUrl, baseHeaders);
 
     // ★ 401 시 한 번 더 자동 갱신 + 재시도
@@ -7472,7 +7699,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
 
     // Use API v1 feed endpoint (more reliable than GraphQL query_hash)
     while (hasMore && m_isRunning.value("instagram", false)) {
-        QString feedUrl = QString("https://i.instagram.com/api/v1/feed/user/%1/?count=12").arg(userId);
+        QString feedUrl = QString("https://www.instagram.com/api/v1/feed/user/%1/?count=12").arg(userId);
         if (!nextMaxId.isEmpty()) feedUrl += "&max_id=" + nextMaxId;
 
         HttpResponse mediaResp = http.get(feedUrl, baseHeaders);
@@ -7502,11 +7729,22 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
                         QString p = part.trimmed();
                         if (p.startsWith("sessionid=")) { sid = p.mid(10); break; }
                     }
-                    // 두 번째 시도면서 같은 sessionid 라면 정말 실패
-                    if (sid.isEmpty() || sid == sessionId) {
-                        log("세션 자동 갱신 실패 — Chrome 에서 instagram.com 로그인 상태 확인. 또는 csrftoken 등 부족.",
-                            "error", "instagram");
+                    // 두 번째 시도면서 같은 sessionid 라면 정말 실패 — 케이스별로 정확히 안내.
+                    if (sid.isEmpty()) {
+                        log("세션 자동 갱신 실패 — Chrome 에 instagram.com 로그인이 없습니다. "
+                            "Chrome 에서 Instagram 에 로그인한 뒤 다시 시도하세요.", "error", "instagram");
                         log("  대안: 인스타 탭 → 'sessionid + 추가 cookie' 직접 입력 (capture cookie 필드)",
+                            "info", "instagram");
+                        break;
+                    }
+                    if (sid == sessionId) {
+                        // Chrome 쿠키 == 앱이 쓰던 그 세션 → 같은 세션이 서버에서 만료(401)된 것.
+                        //   쿠키 만료(browser expiry)가 아니라 IG 서버측 무효화라 '갱신'으로는 못 살림.
+                        log("세션 자동 갱신 실패 — Chrome 의 세션이 앱과 동일하고 Instagram 서버에서 만료(401)되었습니다.",
+                            "error", "instagram");
+                        log("  해결: Instagram 에서 한 번 로그아웃 → 다시 로그인해 '새 sessionid' 를 발급받은 뒤 재시도하세요.",
+                            "info", "instagram");
+                        log("  또는: 인스타 탭 → 'sessionid + 추가 cookie' 필드에 새 세션을 직접 붙여넣기.",
                             "info", "instagram");
                         break;
                     }
@@ -7846,15 +8084,18 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     // ── Reels 수집 ──
     if (effectiveConfig["reels"].toBool(false) && m_isRunning.value("instagram", false)) {
         log("릴스 수집 중...", "info", "instagram");
-        QString reelsUrl = QString("https://i.instagram.com/api/v1/clips/user/?target_user_id=%1&page_size=12").arg(userId);
+        // ★ clips/user 는 웹에서 POST(form) 방식 — i.instagram.com GET 은 실패(릴스 0)했음.
+        const QString reelsUrl = "https://www.instagram.com/api/v1/clips/user/";
+        QMap<QString, QString> reelsHeaders = baseHeaders;
+        reelsHeaders["Content-Type"] = "application/x-www-form-urlencoded";
         int reelsCount = 0;
         QString reelsMaxId;
 
         while (m_isRunning.value("instagram", false)) {
-            QString reqUrl = reelsUrl;
-            if (!reelsMaxId.isEmpty()) reqUrl += "&max_id=" + reelsMaxId;
+            QString reelsBody = QString("target_user_id=%1&page_size=12").arg(userId);
+            if (!reelsMaxId.isEmpty()) reelsBody += "&max_id=" + reelsMaxId;
 
-            HttpResponse reelsResp = http.get(reqUrl, baseHeaders);
+            HttpResponse reelsResp = http.post(reelsUrl, reelsBody.toUtf8(), reelsHeaders);
             if (!reelsResp.isOk()) break;
 
             QJsonObject reelsData = reelsResp.json();
@@ -7909,7 +8150,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     // ── Stories 수집 ──
     if (effectiveConfig["stories"].toBool(false) && m_isRunning.value("instagram", false)) {
         log("스토리 수집 중...", "info", "instagram");
-        QString storiesUrl = QString("https://i.instagram.com/api/v1/feed/reels_media/?reel_ids=%1").arg(userId);
+        QString storiesUrl = QString("https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=%1").arg(userId);
         HttpResponse storiesResp = http.get(storiesUrl, baseHeaders);
         if (storiesResp.isOk()) {
             QJsonArray reels = storiesResp.json()["reels_media"].toArray();
@@ -7964,7 +8205,9 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
         log("하이라이트 수집 중...", "info", "instagram");
 
         // Step 1: Get highlight tray (list of highlight reels)
-        QString highlightsTrayUrl = QString("https://i.instagram.com/api/v1/highlights/%1/highlights_tray/").arg(userId);
+        //   ★ highlights_tray 는 i.instagram.com 에서 404 → www.instagram.com 으로 호출해야 함.
+        //     (feed/user·web_profile_info 는 i. 에서 동작하지만 highlights_tray 는 www 전용)
+        QString highlightsTrayUrl = QString("https://www.instagram.com/api/v1/highlights/%1/highlights_tray/").arg(userId);
         HttpResponse hlResp = http.get(highlightsTrayUrl, baseHeaders);
         int highlightsMediaCount = 0;
 
@@ -7981,7 +8224,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
                 log(QString("  [%1/%2] %3").arg(hi + 1).arg(tray.size()).arg(highlightTitle), "info", "instagram");
 
                 // Step 2: Get items for each highlight reel
-                QString hlItemsUrl = QString("https://i.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight:%1").arg(highlightId.contains(":") ? highlightId.split(":").last() : highlightId);
+                QString hlItemsUrl = QString("https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight:%1").arg(highlightId.contains(":") ? highlightId.split(":").last() : highlightId);
                 HttpResponse hlItemsResp = http.get(hlItemsUrl, baseHeaders);
 
                 if (hlItemsResp.isOk()) {
@@ -8135,6 +8378,11 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
 
 void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 {
+    // ★ platform: "youtube"(기본) 또는 "niconico" — yt-dlp 파이프라인 공용 (니코동도 yt-dlp 가 처리).
+    const QString platform = config.value("platform").toString().isEmpty()
+                             ? QStringLiteral("youtube") : config["platform"].toString();
+    const QString plabel = (platform == "niconico") ? QStringLiteral("ニコニコ") : QStringLiteral("YouTube");
+
     QString url = config["url"].toString();
     QString path = config["path"].toString();
     path.replace("~", QDir::homePath());
@@ -8142,8 +8390,8 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     QString quality = config["quality"].toString("1080p");
     QString type = config["type"].toString("video");
 
-    // 공통 저장 정책: youtube/{video|audio|thumbnail}/ + youtube/_complete/
-    QString ytBaseDir = path + "/youtube";
+    // 공통 저장 정책: <platform>/{video|audio|thumbnail}/ + <platform>/_complete/
+    QString ytBaseDir = path + "/" + platform;
     QDir().mkpath(ytBaseDir);
     QString ytTypeDir = FileHelper::typeFolder(ytBaseDir, type);
     QString ytCompleteDir = FileHelper::typeFolder(ytBaseDir, "complete");
@@ -8157,7 +8405,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     }
 
     if (urls.isEmpty()) {
-        log("No valid URLs", "error", "youtube");
+        log("No valid URLs", "error", platform);
         return;
     }
 
@@ -8167,7 +8415,14 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 
     QStringList baseArgs;
     baseArgs << "--no-mtime";
-    baseArgs << "--ffmpeg-location" << appDir;
+    baseArgs << "--no-restrict-filenames";   // ★ 유니코드(한/일 등) 제목 그대로 보존
+    // ★ ffmpeg 위치 — 번들→시스템 순으로 '실제 존재하는' 것만 지정(오디오 mp3 추출/영상 병합에 필수).
+    //   이전엔 ffmpeg 없는 디렉토리를 무조건 가리켜 "ffmpeg could not be found" 로 실패했음(윈도우 오디오 오류 원인).
+    for (const QString &ff : QStringList{ appDir + "/ffmpeg", appDir + "/ffmpeg.exe",
+                                          "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg" }) {
+        if (QFile::exists(ff)) { baseArgs << "--ffmpeg-location" << ff; break; }
+    }
+    // (위 후보가 없으면 --ffmpeg-location 생략 → PATH 에서 탐색)
     // Rate limit 방지: 영상 간 딜레이
     baseArgs << "--sleep-interval" << "3" << "--max-sleep-interval" << "8";
     baseArgs << "--sleep-requests" << "1";
@@ -8198,11 +8453,36 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     // 썸네일을 동영상에 임베드 + 설명 저장 + info JSON (Excel 생성용)
     baseArgs << "--embed-thumbnail";
     baseArgs << "--write-description";
+    baseArgs << "--embed-chapters";     // ★ 유튜브 챕터를 mp4 챕터 마커로 임베드 (챕터 없으면 자동 무시 · ffmpeg 이미 사용)
     baseArgs << "--write-info-json";
+    // ★ 댓글 수집(설정 토글) — info.json 에 comments[] 가 담기고, 후처리에서 .comments.txt 로 변환.
+    if (config["comments"].toBool()) baseArgs << "--write-comments";
+
+    // ★ 핸드오프 G: YouTube 봇차단 대응 — player_client 로 android_vr 차단 회피.
+    //   yt-dlp 는 같은 extractor 에 --extractor-args 를 여러 번 주면 덮어쓰므로,
+    //   player_client 와 댓글 정렬(comment_sort/max_comments)을 '단일' youtube extractor-args 로 통합한다.
+    if (platform == "youtube") {
+        QString ea = "youtube:player_client=default,tv,web_safari";
+        if (config["comments"].toBool()) ea += ";comment_sort=top;max_comments=300";
+        baseArgs << "--extractor-args" << ea;
+        // 앱 폴더 youtube_cookies.txt(Netscape) 있으면 자동 사용 (--cookies-from-browser 는 Chrome v127+ 앱바운드 암호화로 불가)
+        QString ck = QCoreApplication::applicationDirPath() + "/youtube_cookies.txt";
+        if (QFile::exists(ck)) { baseArgs << "--cookies" << ck; log("youtube_cookies.txt 사용", "info", platform); }
+    }
+    // 니코동 로그인 필요 영상 — 사용자 Chrome 쿠키 사용(옵션)
+    if (config["browserCookies"].toBool())
+        baseArgs << "--cookies-from-browser" << "chrome";
+
+    // ★ 핸드오프 F/G: 이어받기 + 봇차단 수렴 (전 플랫폼) — 완료 ID 기록/스킵, .part 이어받기, 간헐 오류 무시.
+    baseArgs << "--download-archive" << (ytBaseDir + "/.yt_archive.txt");
+    baseArgs << "--ignore-errors";
+    baseArgs << "--no-overwrites" << "--continue";
 
     // ★ 임시 script/status 는 로컬 temp 에 (NAS 는 POSIX 실행권한 보존 안 함 → .command 실행 실패).
     //   yt-dlp output 은 ytBaseDir (NAS 가능) 로 그대로.
-    QString tempDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_yt";
+    // youtube 는 기존 abiwa_yt 유지(stopYoutube 호환), 그 외 플랫폼은 abiwa_<platform>
+    QString tempDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString())
+                      + "/abiwa_" + (platform == "youtube" ? QStringLiteral("yt") : platform);
     QDir().mkpath(tempDir);
 
     QString statusFile = tempDir + "/miyo_yt_status.txt";
@@ -8225,6 +8505,8 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 
     QString script;
     script += "@echo off\r\nchcp 65001 >nul\r\n";
+    // ★ 한글/유니코드 채널·제목 파일명 — Python(yt-dlp) UTF-8 강제 (윈도우 ANSI 코드페이지 폴백 → UnicodeError 방지)
+    script += "set PYTHONUTF8=1\r\nset PYTHONIOENCODING=UTF-8\r\n";
     script += "title ABIWA - YouTube\r\n";
     script += "set \"STATUS=" + QDir::toNativeSeparators(statusFile) + "\"\r\n";
     script += "set \"STOP_MARKER=" + QDir::toNativeSeparators(stopMarker) + "\"\r\n";
@@ -8281,12 +8563,15 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     QString script;
     script += "#!/bin/bash\n";
     script += "export PATH=" + esc(appDir) + ":/opt/homebrew/bin:/usr/local/bin:\"$PATH\"\n";
+    // ★ 한글/유니코드 채널·제목 파일명 — Python(yt-dlp) UTF-8 강제 (로케일 미설정 시 ASCII 폴백 → UnicodeError 방지)
+    script += "export PYTHONUTF8=1\nexport PYTHONIOENCODING=UTF-8\n";
+    script += "export LANG=\"${LANG:-en_US.UTF-8}\"\nexport LC_ALL=\"${LC_ALL:-en_US.UTF-8}\"\n";
     script += "STATUS=" + esc(statusFile) + "\n";
     script += "STOP_MARKER=" + esc(stopMarker) + "\n";
     script += "echo 'STARTED' > \"$STATUS\"\n\n";
     script += "clear\n";
     script += "echo '========================================='\n";
-    script += "echo '  ABIWA - YouTube ダウンロード'\n";
+    script += "echo '  ABIWA - " + plabel + " ダウンロード'\n";
     script += QString("echo '  총 %1개 URL'\n").arg(urls.size());
     script += "echo '========================================='\n";
     script += "echo ''\n\n";
@@ -8361,7 +8646,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     // Write script
     QFile scriptFile(scriptPath);
     if (!scriptFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        log("스크립트 생성 실패", "error", "youtube");
+        log("스크립트 생성 실패", "error", platform);
         return;
     }
     scriptFile.write(script.toUtf8());
@@ -8375,7 +8660,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 #endif
 
     // Launch terminal with script
-    log(QString("터미널에서 %1개 URL 다운로드 시작...").arg(urls.size()), "info", "youtube");
+    log(QString("터미널에서 %1개 URL 다운로드 시작...").arg(urls.size()), "info", platform);
 #ifdef Q_OS_WIN
     QProcess::startDetached("cmd.exe", {"/c", "start", "ABIWA-YouTube", QDir::toNativeSeparators(scriptPath)});
 #else
@@ -8383,7 +8668,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 #endif
 
     // Monitor progress from status file
-    while (m_isRunning.value("youtube", false)) {
+    while (m_isRunning.value(platform, false)) {
         QThread::sleep(1);
 
         QFile sf(statusFile);
@@ -8395,10 +8680,11 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
             QStringList parts = status.split(":");
             int success = parts.value(1).toInt();
             int fail = parts.value(2).toInt();
-            runJs("setYoutubeProgress(100)");
-            log(QString("Complete! Success: %1, Failed: %2").arg(success).arg(fail), "success", "youtube");
-            log("Path: " + path, "info", "youtube");
-            updateStats(success, fail, "Done", "youtube");
+            runJs(QString("var _e=document.getElementById('%1-progress-fill'); if(_e)_e.style.width='100%';").arg(platform));
+            if (platform == "youtube") runJs("if(window.setYoutubeProgress)setYoutubeProgress(100)");
+            log(QString("Complete! Success: %1, Failed: %2").arg(success).arg(fail), "success", platform);
+            log("Path: " + path, "info", platform);
+            updateStats(success, fail, "Done", platform);
 
             // ── Post-processing: _complete 미러 + Excel 생성 ──
             QDirIterator it(ytTypeDir, {"*.info.json"}, QDir::Files, QDirIterator::Subdirectories);
@@ -8435,12 +8721,19 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                     QString ytUrl = info["webpage_url"].toString();
                     QString uploader = info["uploader"].toString();
                     QString title = info["title"].toString().left(200);
-                    // EXIF → Finder comment → xattr → mtime 순서
+                    QString descr = info["description"].toString();   // ★ 영상에 달린 설명
+                    // EXIF: description 필드에 '영상 설명' 적용 (없으면 제목으로 폴백)
                     Common::addExifMetadata(mediaPath,
                         uploader.isEmpty() ? "" : "@" + uploader,
-                        title, "YouTube @" + uploader, ytUrl,
+                        descr.isEmpty() ? title : descr,
+                        plabel + " @" + uploader, ytUrl,
                         dt.isValid() ? dt.toString("yyyy:MM:dd HH:mm:ss") : "");
-                    FileHelper::setFinderComment(mediaPath, ytUrl);
+                    // Finder/Spotlight 코멘트 = URL + 제목 + 설명(앞부분) → Get Info/검색에서 보임.
+                    //   (전체 설명은 yt-dlp --write-description 의 .description 사이드카에도 저장됨)
+                    QString ytComment = ytUrl;
+                    if (!title.isEmpty()) ytComment += "\n" + title;
+                    if (!descr.isEmpty()) ytComment += "\n\n" + descr.left(1800);
+                    FileHelper::setFinderComment(mediaPath, ytComment);
                     FileHelper::applyPostMetadata(mediaPath, dt, ytUrl);
                     // _complete 미러 (채널별 서브폴더 유지)
                     QString channelName = info["channel"].toString();
@@ -8453,13 +8746,50 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                     QString mirrorPath = mirrorChannelDir + "/" + QFileInfo(mediaPath).fileName();
                     if (!QFile::exists(mirrorPath)) QFile::copy(mediaPath, mirrorPath);
                     if (QFile::exists(mirrorPath)) {
-                        FileHelper::setFinderComment(mirrorPath, ytUrl);
+                        FileHelper::setFinderComment(mirrorPath, ytComment);
                         FileHelper::applyPostMetadata(mirrorPath, dt, ytUrl);
                     }
                     // 経済産業省 연계: 페이지 캡처
                     QString ytCapturesDir = ytBaseDir + "/captures";
                     FileHelper::capturePageHtml(ytCapturesDir, ytUrl,
                         FileHelper::uploadOrderPrefix(dt) + info["id"].toString());
+                }
+
+                // ★ 댓글 → 읽기 좋은 <base>.comments.txt (info.json 의 comments[] 변환)
+                //   필드: author / author_url / author_thumbnail / text / like_count / author_is_uploader
+                {
+                    const QJsonArray comments = info["comments"].toArray();
+                    if (!comments.isEmpty()) {
+                        QString txt;
+                        txt += QString("# %1\n# %2\n# 댓글 %3개 (yt-dlp 수집)\n\n")
+                                   .arg(info["title"].toString(),
+                                        info["webpage_url"].toString())
+                                   .arg(comments.size());
+                        for (const auto &cv : comments) {
+                            const QJsonObject c = cv.toObject();
+                            const QString author = c["author"].toString();
+                            const QString text   = c["text"].toString();
+                            const qint64 likes   = c["like_count"].toVariant().toLongLong();
+                            const bool isUploader = c["author_is_uploader"].toBool();
+                            txt += author;
+                            if (isUploader) txt += " [작성자]";
+                            const QString aurl = c["author_url"].toString();
+                            if (!aurl.isEmpty()) txt += "  " + aurl;
+                            txt += "\n";
+                            txt += text + "\n";
+                            if (likes > 0) txt += QString("👍 %1\n").arg(likes);
+                            txt += "\n";
+                        }
+                        QFile cf(base + ".comments.txt");
+                        if (cf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                            cf.write(txt.toUtf8());
+                            cf.close();
+                            log(QString("💬 댓글 %1개 저장: %2")
+                                    .arg(comments.size())
+                                    .arg(QFileInfo(base + ".comments.txt").fileName()),
+                                "success", platform);
+                        }
+                    }
                 }
 
                 // Excel row
@@ -8508,9 +8838,9 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                 writer.save(excelPath);
             };
             if (!rows.isEmpty()) {
-                writeExcel(FileHelper::typeExcelPath(ytExcelDir, "youtube", type));
-                writeExcel(FileHelper::typeExcelPath(ytExcelDir, "youtube", "complete"));
-                log(QString("📊 Excel 저장: %1개 항목").arg(rows.size()), "success", "youtube");
+                writeExcel(FileHelper::typeExcelPath(ytExcelDir, platform, type));
+                writeExcel(FileHelper::typeExcelPath(ytExcelDir, platform, "complete"));
+                log(QString("📊 Excel 저장: %1개 항목").arg(rows.size()), "success", platform);
             }
             break;
         } else if (status.startsWith("PROGRESS:")) {
@@ -8518,8 +8848,9 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
             int current = parts.value(1).toInt();
             int total = parts.value(2).toInt();
             int pct = (current * 100) / qMax(total, 1);
-            runJs(QString("setYoutubeProgress(%1)").arg(pct));
-            updateStats(current, 0, "Downloading", "youtube");
+            runJs(QString("var _e=document.getElementById('%1-progress-fill'); if(_e)_e.style.width='%2%';").arg(platform).arg(pct));
+            if (platform == "youtube") runJs(QString("if(window.setYoutubeProgress)setYoutubeProgress(%1)").arg(pct));
+            updateStats(current, 0, "Downloading", platform);
         }
     }
 
@@ -11924,10 +12255,18 @@ void MiyoBackend::upgradePython()
     runJs("setPythonEnvBusy(true, '업그레이드 중...')");
 
     QThread *thread = QThread::create([this]() {
-        QString appDir = QCoreApplication::applicationDirPath();
-        QString resDir = appDir + "/../Resources";
-        QString pythonDir = resDir + "/python_env";
-        QString scriptDir = appDir + "/../../scripts";
+        // ★ 번들 내부가 아니라 쓰기가능 외부 python_env 에 설치 (번들 codesign seal 보호).
+        QString pythonDir = Common::activePythonEnvDir();
+
+#ifdef Q_OS_MACOS
+        // 외부 복사본을 만들 수 없어 번들을 가리키면 중단 — 번들에 쓰면 seal 깨져 SIGKILL.
+        if (pythonDir != Common::userPythonEnvDir()) {
+            log("⚠️ python_env 쓰기가능 복사본을 만들 수 없어 업그레이드를 중단합니다 (번들 서명 보호). 디스크 공간을 확인하세요.", "error", "settings");
+            m_pythonBusy = false;
+            runJs("setPythonEnvBusy(false, '중단')");
+            return;
+        }
+#endif
 
         // 1. 현재 패키지 목록 저장 (복원용)
         QString python = pythonDir + "/bin/python3";
@@ -11960,11 +12299,17 @@ void MiyoBackend::upgradePython()
         }
 
         // GitHub API로 최신 릴리스 찾기
-        QString arch = "aarch64-apple-darwin";
-#ifdef Q_OS_WIN
-        arch = "x86_64-pc-windows-msvc-shared";
+        // ★ 유니버설 빌드: 슬라이스별 arch 에 맞는 standalone python 을 받는다.
+        //   인텔 Mac(x86_64 슬라이스)이 aarch64 python 을 받으면 실행 불가 → 자동 보수가 깨진다.
+        //   유니버설 바이너리는 슬라이스마다 __x86_64__ / __aarch64__ 가 따로 컴파일됨.
+#if defined(Q_OS_WIN)
+        QString arch = "x86_64-pc-windows-msvc-shared";
 #elif defined(Q_OS_LINUX)
-        arch = "x86_64-unknown-linux-gnu";
+        QString arch = "x86_64-unknown-linux-gnu";
+#elif defined(__x86_64__)
+        QString arch = "x86_64-apple-darwin";   // 인텔 Mac
+#else
+        QString arch = "aarch64-apple-darwin";  // Apple Silicon
 #endif
 
         // curl로 최신 릴리스 검색
@@ -12071,15 +12416,19 @@ void MiyoBackend::upgradePython()
 
         // 7. 정리
         log("  정리 중...", "info", "settings");
-        // test dirs
-        QProcess cleanProc;
-        cleanProc.start("bash", {"-c", QString(
-            "find '%1' -name tests -type d -exec rm -rf {} + 2>/dev/null;"
-            "find '%1' -name test -type d -exec rm -rf {} + 2>/dev/null;"
-            "rm -rf '%1/share' '%1/include' 2>/dev/null;"
-            "find '%1' -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null"
-        ).arg(pythonDir)});
-        cleanProc.waitForFinished(30000);
+        // ★ rm -rf 안전 가드 — pythonDir 이 비었거나 예상 밖 경로면 정리 스킵.
+        //   (pythonDir 이 빈 문자열이면 rm -rf '/share' 같은 사고가 날 수 있음)
+        // ★ arch 접미사(python_env_arm64/_x86_64)까지 매칭 — 마지막 경로 요소가 python_env* 인지로 가드.
+        if (QFileInfo(pythonDir).fileName().startsWith("python_env") && QDir(pythonDir + "/bin").exists()) {
+            QProcess cleanProc;
+            cleanProc.start("bash", {"-c", QString(
+                "find '%1' -name tests -type d -exec rm -rf {} + 2>/dev/null;"
+                "find '%1' -name test -type d -exec rm -rf {} + 2>/dev/null;"
+                "rm -rf '%1/share' '%1/include' 2>/dev/null;"
+                "find '%1' -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null"
+            ).arg(pythonDir)});
+            cleanProc.waitForFinished(30000);
+        }
 
         // marker
         QFile marker(pythonDir + "/.bundled_ok");
@@ -12119,8 +12468,8 @@ void MiyoBackend::repairPython()
 
     QThread *thread = QThread::create([this]() {
         QString python = Common::bundledPythonPath();
-        QString resDir = Common::bundledResourcesDir();
-        QString pythonDir = resDir + "/python_env";
+        // ★ 쓰기가능 외부 python_env (번들 codesign seal 보호 — 번들엔 절대 쓰지 않음).
+        QString pythonDir = Common::activePythonEnvDir();
 
         // 1. 진단
         log("  환경 진단 중...", "info", "settings");
@@ -12138,32 +12487,17 @@ void MiyoBackend::repairPython()
             log(QString("    • %1").arg(p), "warning", "settings");
         }
 
-        // 2. Python 자체가 없으면 → 번들 스크립트로 전체 재설치
+        // 2. Python 자체가 없으면 → 번들에서 외부로 재시드 (번들엔 절대 쓰지 않음 — seal 보호)
         if (problems.contains("python_missing")) {
-            log("  Python 바이너리가 없습니다. 전체 재설치...", "warning", "settings");
+            log("  Python 바이너리가 없습니다. 번들에서 재설치 시도...", "warning", "settings");
 
-            // bundle_python.sh 실행
-            QString appBundle = QCoreApplication::applicationDirPath() + "/../..";
-            QString scriptPath = appBundle + "/../../scripts/bundle_python.sh";
-
-            // 스크립트가 없으면 직접 수행
-            if (!QFile::exists(scriptPath)) {
-                log("  번들 스크립트를 찾을 수 없습니다. 업그레이드 기능을 사용하세요.", "error", "settings");
-                m_pythonBusy = false;
-                runJs("setPythonEnvBusy(false, '복구 실패')");
-                return;
-            }
-
-            QProcess proc;
-            proc.setProcessEnvironment(Common::bundledProcessEnv());
-            // marker 삭제하여 강제 재빌드
+            // 깨진 외부본 표식 제거 후, activePythonEnvDir() 가 번들→외부 재복사(시드)를 수행하도록 유도.
             QFile::remove(pythonDir + "/.bundled_ok");
-            proc.start("bash", {scriptPath, appBundle});
-            proc.waitForFinished(600000);
-            log(QString::fromUtf8(proc.readAllStandardOutput()), "info", "settings");
+            Common::activePythonEnvDir();
+            python = Common::bundledPythonPath();
 
             if (!QFile::exists(python)) {
-                log("  ❌ 재설치 실패. Python 업그레이드를 시도하세요.", "error", "settings");
+                log("  ❌ 재설치 실패. 'Python 업그레이드'로 새로 받으세요.", "error", "settings");
                 m_pythonBusy = false;
                 runJs("setPythonEnvBusy(false, '복구 실패')");
                 return;
@@ -12724,7 +13058,8 @@ void MiyoBackend::runFanboxCollection(const QJsonObject &config)
     HttpClient http;
     http.setRunFlag(&m_isRunning["fanbox"]);
     QMap<QString, QString> headers;
-    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
     headers["Cookie"] = cookie;
     headers["Origin"] = "https://www.fanbox.cc";
     headers["Referer"] = "https://www.fanbox.cc/";
@@ -14329,7 +14664,8 @@ void MiyoBackend::runAskedCollection(const QJsonObject &config)
     http.setRunFlag(&m_isRunning["asked"]);  // 중지 시 즉시 abort
 
     QMap<QString, QString> headers;
-    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
     headers["Accept"] = "application/json, text/html";
     if (!cookie.isEmpty()) headers["Cookie"] = cookie;
 
