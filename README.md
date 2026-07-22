@@ -1,19 +1,22 @@
 # 精神分裂症を患うにはうってつけの日
 
-> **Chernobyl** (Windows · macOS) + **팬을 잘 쓰고 싶다 / Pen** (macOS)
-> 소셜 미디어 다운로더 · 사이트 통째 크롤러 통합 프로젝트
+> **Chernobyl / カメラ** (Windows · macOS)
+> 소셜 미디어 다운로더 · 사이트 통째 크롤러 통합 앱
+> (구 별도 앱 "팬을 잘 쓰고 싶다 / Pen"은 Chernobyl 에 **통합**되었습니다 — PenBackend)
 
 ---
 
 ## 📦 구성 (Overview)
 
-이 저장소는 세 개의 앱을 하나로 묶은 모노레포입니다.
+이 저장소는 Chernobyl(카메라) 앱의 Windows / macOS 포트를 담은 모노레포입니다.
 
 | 앱 | 플랫폼 | 설명 |
 |----|--------|------|
 | **Chernobyl** | Windows | Twitter/Bluesky/Instagram/Pixiv/Fanbox/Tumblr/Discord/YouTube 등 다운로더 |
 | **Chernobyl** | macOS | 위와 동일 (원본). rclone 기반 NAS 백업 + CDP 캡쳐 포함 |
-| **팬을 잘 쓰고 싶다 (Pen)** | macOS | 인터랙티브 사이트 통째 미러 — 소스/자산 분리 보존 (wget -mkp 현대식) |
+
+> 구 **팬을 잘 쓰고 싶다 (Pen)** 독립 앱은 폐기되고 기능(사이트 통째 미러)이
+> Chernobyl 내부(`PenBackend`)로 통합되었습니다.
 
 > **다운로드(설치파일/DMG)는 [Releases](../../releases) 에 있습니다.** 소스 코드는 이 저장소에 있습니다.
 
@@ -27,9 +30,8 @@
 |------|--------|------|------|
 | `Chernobyl_Setup.exe` | Windows 10/11 (x64) | ~261 MB | 더블클릭 → 설치 (관리자 권한 불필요, %LOCALAPPDATA% 에 설치) |
 | `Chernobyl.dmg` | macOS (Apple Silicon) | ~721 MB | 마운트 → Applications 로 드래그 |
-| `Pen.dmg` (팬을 잘 쓰고 싶다) | macOS (Apple Silicon) | ~652 MB | 마운트 → Applications 로 드래그 |
 
-> 📌 `Pen.dmg` 가 **팬을 잘 쓰고 싶다** 앱입니다. (GitHub 릴리스 자산 파일명은 ASCII 만 허용되어 영문명으로 올립니다. 다운로드 페이지의 라벨에는 한글명이 표시됩니다.)
+> 📌 구 릴리스의 `Pen.dmg` 는 폐기된 독립 앱입니다 — 해당 기능은 이제 Chernobyl 안에 있습니다.
 
 > ⚠️ **서명 안내**: 두 macOS DMG 와 Windows 설치파일은 정식 배포 서명(Apple Developer ID / Microsoft 인증서)이 아닙니다.
 > - **macOS**: 첫 실행 시 우클릭 → "열기", 또는 `시스템 설정 → 개인정보 보호 및 보안 → 확인 없이 열기`
@@ -44,9 +46,9 @@
 ```
 .
 ├── mac/
-│   ├── chernobyl/      # macOS Chernobyl 소스 (Qt6 C++)
-│   └── pen/            # macOS 팬을 잘 쓰고 싶다 소스 (Qt6 C++)
+│   └── chernobyl/      # macOS Chernobyl 소스 (Qt6 C++)
 ├── windows/            # Windows Chernobyl 소스 (Qt6 C++) + GitHub Actions 빌드
+├── design-system/      # Darkroom v2 디자인 시스템 카드 (claude.ai/design 동기화)
 └── README.md
 ```
 
@@ -75,24 +77,19 @@ cd mac/chernobyl
 cmake -B build -DAPP_NAME=Chernobyl -DAPP_ID=com.chernobyl.app
 cmake --build build -j
 
-# 팬을 잘 쓰고 싶다 (Pen)
-cd mac/pen
-cmake -B build
-cmake --build build -j
 ```
 
 #### 배포용 DMG 만들기 (Qt 프레임워크 번들 — 깨끗한 맥에서도 실행)
 개발 빌드는 시스템 Homebrew Qt 에 의존합니다. 배포본은 `macdeployqt` 로 Qt 를 .app 안에 넣어야 합니다.
 
 ```bash
-cd mac/pen
-scripts/make_dist.sh /tmp/Pen_dist.app   # Qt 번들 + 경로 치환 + inside-out 코드사인
+cd mac/chernobyl
+./build.sh   # macdeployqt 로 Qt 번들 + fix_webengine_helper.sh + 코드사인 (packaging/ 참고)
 ```
-이 스크립트가 하는 일:
-1. `macdeployqt` 로 Qt 프레임워크 54개 번들
-2. 남은 Homebrew 절대경로를 `@rpath` / `@executable_path` 로 전부 치환
-3. WebEngine 헬퍼(QtWebEngineProcess) 경로 수정
-4. inside-out 코드사인 + `--deep --strict` 검증
+배포 파이프라인이 하는 일:
+1. `macdeployqt` 로 Qt 프레임워크 번들
+2. WebEngine 헬퍼(QtWebEngineProcess) 경로 수정 (`fix_webengine_helper.sh` — 백지창 방지)
+3. 코드사인 (`codesign_app.sh` / `packaging/` 의 개발자 인증 스크립트)
 
 > **중요(macOS 플러그인 충돌)**: `main.cpp` 는 `_NSGetExecutablePath` 로 번들 PlugIns 를 우선 사용합니다.
 > 이 처리가 없으면 번들 Qt 와 Homebrew Qt 가 동시에 로드되어("two sets of Qt") SIGABRT 로 죽습니다.
@@ -119,7 +116,7 @@ scripts/make_dist.sh /tmp/Pen_dist.app   # Qt 번들 + 경로 치환 + inside-ou
 - 캡쳐 시 계정 쿠키 자동 주입(로그인 상태 캡쳐)
 - 설정 내보내기/불러오기
 
-### 팬을 잘 쓰고 싶다 (Pen)
+### 사이트 통째 미러 (구 Pen — Chernobyl 에 통합)
 - 인터랙티브 CDP 크롤러 — 사용자가 직접 로그인/캡챠 풀면서 캡쳐
 - **사이트 통째 미러**: 깊이/페이지 수 지정, 같은 도메인 제한
   - *SingleFile inline*: 한 페이지 = 한 HTML(자산 base64 내장)
@@ -131,7 +128,7 @@ scripts/make_dist.sh /tmp/Pen_dist.app   # Qt 번들 + 경로 치환 + inside-ou
 
 ## 🩺 자가수리(SelfRepair) + 로컬 LLM 진단
 
-세 앱 모두 시작 시 백그라운드로 자가진단·자가수리를 수행합니다 (`src/utils/SelfRepair.h`).
+두 포트(Windows·macOS) 모두 시작 시 백그라운드로 자가진단·자가수리를 수행합니다 (`src/utils/SelfRepair.h`).
 
 1. **자가진단** — 번들 도구(yt-dlp/ffmpeg/python/exiftool/rclone)를 **앱 내부 경로 우선**으로
    해석해 실행 검증. 시스템(homebrew 등) 경로는 최후 폴백.
