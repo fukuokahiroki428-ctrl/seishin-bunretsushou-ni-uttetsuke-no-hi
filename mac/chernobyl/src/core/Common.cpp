@@ -350,6 +350,20 @@ static bool copyTreePreserving(const QString &src, const QString &dst)
     if (!cp.waitForFinished(180000)) { cp.kill(); cp.waitForFinished(2000); return false; }
     return cp.exitStatus() == QProcess::NormalExit && cp.exitCode() == 0;
 }
+
+// 외부 python_env 가 '완전한지' 검증 — bin/python3 는 있는데 핵심 패키지(twikit)가 빠진
+// 깨진/구 복사본(예: 옛 설치의 다른 파이썬 버전 · 패키지 0개)이면 번들에서 재시드해야 한다.
+// python 실행 없이 site-packages/twikit 디렉토리 존재로 판단(빠름).
+static bool pythonEnvHasCorePackages(const QString &envDir)
+{
+    QDir libDir(envDir + "/lib");
+    const QStringList pyDirs = libDir.entryList(QStringList() << "python3*", QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QString &pd : pyDirs) {
+        if (QFileInfo::exists(envDir + "/lib/" + pd + "/site-packages/twikit"))
+            return true;
+    }
+    return false;
+}
 #endif
 
 QString activePythonEnvDir()
@@ -359,17 +373,25 @@ QString activePythonEnvDir()
     static QMutex seedMutex;
     const QString ext = userPythonEnvDir();
     const QString extPy = ext + "/bin/python3";
-    if (QFile::exists(extPy)) return ext;
-
-    QMutexLocker lock(&seedMutex);
-    if (QFile::exists(extPy)) return ext;   // 락 대기 중 다른 스레드가 끝냈을 수 있음
 
     QString bundled = bundledResourcesDir() + "/python_env" KAMERA_PY_ARCH;
     // 호환: arch 별 디렉토리가 없으면 단일 python_env 로 폴백 (구 번들/단일 arch 빌드).
     if (!QFile::exists(bundled + "/bin/python3"))
         bundled = bundledResourcesDir() + "/python_env";
-    if (!QFile::exists(bundled + "/bin/python3"))
-        return ext;   // 번들에도 없음 → 외부 경로 반환(새 설치 대상이 됨)
+    const bool bundleReady = QFile::exists(bundled + "/bin/python3") && pythonEnvHasCorePackages(bundled);
+
+    // ★ 외부본이 존재하되 핵심 패키지(twikit)까지 있어야 그대로 사용한다.
+    //   bin/python3 만 있고 패키지가 빠진 깨진 복사본(옛 설치의 3.15b·패키지 0개 등)은
+    //   재시드 대상 — 이게 'twikit not installed' 로 트위터 수집이 죽던 근본 원인이었다.
+    //   (번들에 완전한 env 가 없으면 재시드해도 소용없으니 그때는 외부본을 그대로 둔다.)
+    if (QFile::exists(extPy) && (pythonEnvHasCorePackages(ext) || !bundleReady))
+        return ext;
+
+    QMutexLocker lock(&seedMutex);
+    if (QFile::exists(extPy) && (pythonEnvHasCorePackages(ext) || !bundleReady))
+        return ext;   // 락 대기 중 다른 스레드가 끝냈을 수 있음
+    if (!bundleReady)
+        return ext;   // 번들에도 완전한 env 없음 → 외부 경로 반환(새 설치/복구 대상)
 
     QDir().mkpath(QFileInfo(ext).absolutePath());
     const QString tmp = ext + ".seeding";

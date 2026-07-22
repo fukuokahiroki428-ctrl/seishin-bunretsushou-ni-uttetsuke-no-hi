@@ -351,6 +351,19 @@ static bool copyTreePreserving(const QString &src, const QString &dst)
     if (!cp.waitForFinished(180000)) { cp.kill(); cp.waitForFinished(2000); return false; }
     return cp.exitStatus() == QProcess::NormalExit && cp.exitCode() == 0;
 }
+
+// 외부 python_env 가 '완전한지' 검증 — bin/python3 는 있는데 핵심 패키지(twikit)가 빠진
+// 깨진/구 복사본이면 번들에서 재시드해야 한다. (python 실행 없이 site-packages/twikit 존재로 판단)
+static bool pythonEnvHasCorePackages(const QString &envDir)
+{
+    QDir libDir(envDir + "/lib");
+    const QStringList pyDirs = libDir.entryList(QStringList() << "python3*", QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QString &pd : pyDirs) {
+        if (QFileInfo::exists(envDir + "/lib/" + pd + "/site-packages/twikit"))
+            return true;
+    }
+    return false;
+}
 #endif
 
 QString activePythonEnvDir()
@@ -360,14 +373,20 @@ QString activePythonEnvDir()
     static QMutex seedMutex;
     const QString ext = userPythonEnvDir();
     const QString extPy = ext + "/bin/python3";
-    if (QFile::exists(extPy)) return ext;
-
-    QMutexLocker lock(&seedMutex);
-    if (QFile::exists(extPy)) return ext;   // 락 대기 중 다른 스레드가 끝냈을 수 있음
 
     const QString bundled = bundledResourcesDir() + "/python_env";
-    if (!QFile::exists(bundled + "/bin/python3"))
-        return ext;   // 번들에도 없음 → 외부 경로 반환(새 설치 대상이 됨)
+    const bool bundleReady = QFile::exists(bundled + "/bin/python3") && pythonEnvHasCorePackages(bundled);
+
+    // ★ 외부본이 존재하되 핵심 패키지(twikit)까지 있어야 그대로 사용 — 패키지 빠진 깨진 복사본은
+    //   재시드 대상('twikit not installed' 로 트위터 수집이 죽던 근본 원인).
+    if (QFile::exists(extPy) && (pythonEnvHasCorePackages(ext) || !bundleReady))
+        return ext;
+
+    QMutexLocker lock(&seedMutex);
+    if (QFile::exists(extPy) && (pythonEnvHasCorePackages(ext) || !bundleReady))
+        return ext;   // 락 대기 중 다른 스레드가 끝냈을 수 있음
+    if (!bundleReady)
+        return ext;   // 번들에도 완전한 env 없음 → 외부 경로 반환(새 설치/복구 대상)
 
     QDir().mkpath(QFileInfo(ext).absolutePath());
     const QString tmp = ext + ".seeding";
