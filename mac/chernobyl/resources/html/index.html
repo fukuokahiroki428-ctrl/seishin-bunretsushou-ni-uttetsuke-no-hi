@@ -2334,18 +2334,17 @@
 
                     <!-- ★ yt-dlp 자동 업데이트 — 보안 위험 경고 -->
                     <div class="section" style="padding:12px; background:rgba(255,180,0,0.06); border:1px solid #ffaa0055; border-radius:8px;">
-                        <div class="section-label">🛠 yt-dlp 자동 업데이트 (⚠ 보안 위험)</div>
+                        <div class="section-label">🛠 yt-dlp 자동 업데이트 (장기지원 · 기본 ON)</div>
                         <p style="font-size:12px; color:var(--text-secondary); margin-bottom:8px;">
-                            <strong style="color:#ffaa00">⚠ 켜기 전 읽어주세요:</strong>
-                            yt-dlp 가 GitHub 에서 새 버전을 받습니다. GitHub 저장소가 변조될 경우 (드물지만)
-                            악성 binary 가 다운로드될 위험. yt-dlp 자체 SHA256 검증과 우리 sanity check
-                            (<code>--version</code> 정상 출력) 가 있지만 100% 안전 보장은 아님.<br>
-                            <strong>꺼져 있으면</strong> 앱과 함께 출하된 검증된 yt-dlp 만 사용 (안전, 단 Twitter/Instagram 포맷 변경 시
-                            깨질 수 있음 → 그때 새 DMG 받기).
+                            <strong>YouTube/Twitter 등은 포맷·서명을 수시로 바꿉니다.</strong> 이 옵션이 켜져 있으면
+                            앱 시작 시 yt-dlp 를 stable 최신으로 자동 갱신해 <strong>다운로드가 계속 동작</strong>합니다
+                            (yt-dlp 자체 SHA256 검증 + 갱신 후 <code>--version</code> sanity check + 실패 시 번들본 자동 복원).<br>
+                            <span style="color:var(--text-tertiary)">끄면 앱과 함께 출하된 yt-dlp 만 사용 — 최대 보안이지만
+                            사이트 포맷이 바뀌면 다운로드가 깨지고 새 빌드를 받아야 합니다.</span>
                         </p>
                         <label class="option-item">
-                            <input type="checkbox" id="ytdlp-auto-update" onchange="onYtDlpToggle(this)">
-                            <span><strong>yt-dlp 자동 업데이트 활성화</strong> — 위험 감수 시</span>
+                            <input type="checkbox" id="ytdlp-auto-update" checked onchange="onYtDlpToggle(this)">
+                            <span><strong>yt-dlp 자동 업데이트</strong> — 장기 사용 권장 (끄면 최대 보안)</span>
                         </label>
                     </div>
 
@@ -3550,7 +3549,7 @@
                 // yt-dlp 자동 업데이트 토글 복원
                 {
                     const yt = document.getElementById('ytdlp-auto-update');
-                    if (yt && typeof config.ytDlpAutoUpdate === 'boolean') yt.checked = config.ytDlpAutoUpdate;
+                    if (yt) yt.checked = (typeof config.ytDlpAutoUpdate === 'boolean') ? config.ytDlpAutoUpdate : true;  // 기본 ON
                 }
                 // 보조 저장 경로 복원
                 if (typeof config.secondaryPath === 'string') {
@@ -3687,13 +3686,13 @@
 
         // ★ yt-dlp 자동 업데이트 토글
         function onYtDlpToggle(cb) {
-            if (cb.checked) {
-                if (!confirm('⚠ yt-dlp 자동 업데이트 켜기\n\nGitHub에서 새 yt-dlp 를 받습니다.\nyt-dlp 자체 SHA256 검증 + 우리 sanity check 가 있지만 100% 안전 보장은 아닙니다.\n\n확실히 켜시겠습니까?')) {
-                    cb.checked = false;
+            // 기본 ON(장기지원). 끌 때만 한 번 확인 — 사이트 포맷 변경 시 다운로드가 깨질 수 있음을 안내.
+            if (!cb.checked) {
+                if (!confirm('yt-dlp 자동 업데이트 끄기\n\n끄면 사이트(YouTube/Twitter 등)가 포맷을 바꿀 때 다운로드가 깨지고\n새 빌드를 받아야 할 수 있습니다. 그래도 끄시겠습니까? (최대 보안)')) {
+                    cb.checked = true;
                     return;
                 }
             }
-            // backend 에 toggle 보내기 — Config 통해 저장. saveConfig 로.
             saveCurrentConfig();
         }
         // config 의 현재 상태를 backend 에 일괄 저장 (변경된 ytDlpAutoUpdate 포함)
