@@ -114,8 +114,8 @@ inline QString resolveTool(const QString &name)
 {
     const QStringList cands = toolCandidates(name);
     for (const QString &p : cands)
-        if (QFile::exists(p)) return p;
-    return QString();
+        if (QFileInfo(p).isFile()) return p;   // ★ 디렉토리 제외 — exiftool 후보 'tools/exiftool'(폴더)가
+    return QString();                          //   매칭돼 perl 이 폴더를 스크립트로 열려다 실패하던 문제
 }
 
 // ── 자가진단 ─────────────────────────────────────────────────────────────
