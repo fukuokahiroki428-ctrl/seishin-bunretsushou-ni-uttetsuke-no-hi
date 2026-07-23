@@ -61,6 +61,7 @@ public slots:
     void startLocalLlm(const QString &modelHint);  // 번들 모델 기동 (modelHint=파일 부분일치)
     void stopLocalLlm();                            // 우리가 띄운 서버 종료
     void getLlmStatus();                            // JS onLlmStatus(json) 로 상태·모델목록 통지
+    void llmChat(const QString &historyJson);       // 로컬 AI 와 대화(수리 도우미) — JS onLlmReply(text)
 
     // Check if any collection is running
     bool isAnyRunning() const;

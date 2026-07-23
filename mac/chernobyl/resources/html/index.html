@@ -2318,6 +2318,22 @@
                         <p style="font-size:11px;color:var(--text-tertiary);margin-top:7px;">
                             엔드포인트 127.0.0.1:8737 · 첫 기동은 모델 로딩에 수 초 걸립니다. 터미널 수동 기동도 가능(README).
                         </p>
+
+                        <!-- ★ AI 와 대화하며 수리 -->
+                        <div style="margin-top:14px;font-size:12px;font-weight:600;color:var(--text-secondary);">💬 AI 와 대화하며 수리</div>
+                        <div id="ai-chat" style="margin-top:7px;border:1px solid var(--border-light);border-radius:10px;overflow:hidden;">
+                            <div id="ai-chat-log" style="height:230px;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:9px;background:var(--bg-secondary);"></div>
+                            <div style="display:flex;gap:6px;flex-wrap:wrap;padding:8px 10px;border-top:1px solid var(--border-light);">
+                                <span style="font-size:11px;color:var(--text-tertiary);align-self:center;">빠른 수리:</span>
+                                <button class="btn btn-secondary btn-sm" onclick="aiRepair('repairPython','환경 복구')">환경 복구</button>
+                                <button class="btn btn-secondary btn-sm" onclick="aiRepair('updateModules','모듈 업데이트')">모듈 업데이트</button>
+                                <button class="btn btn-secondary btn-sm" onclick="aiRepair('refreshAllTokens','토큰 추출')">토큰 추출</button>
+                            </div>
+                            <div style="display:flex;gap:8px;padding:10px;border-top:1px solid var(--border-light);">
+                                <input type="text" class="input" id="ai-chat-input" placeholder="문제를 물어보세요 — 예: 트위터 수집이 안 돼" onkeydown="if(event.key==='Enter')sendAiChat()" style="flex:1;">
+                                <button class="btn btn-primary btn-sm" id="ai-chat-send" onclick="sendAiChat()">보내기</button>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="section">
@@ -5078,6 +5094,38 @@
                 pill.textContent = '꺼짐'; pill.style.background = 'var(--bg-tertiary)'; pill.style.color = 'var(--text-secondary)';
                 if (startB) { startB.style.display = 'inline-flex'; startB.disabled = false; } if (stopB) stopB.style.display = 'none';
             }
+        }
+        // ── AI 와 대화하며 수리 ──
+        var _aiHistory = [];
+        function _aiBubble(role, text) {
+            var log = document.getElementById('ai-chat-log'); if (!log) return null;
+            var d = document.createElement('div'); var me = role === 'user';
+            d.style.cssText = 'max-width:82%;padding:9px 12px;border-radius:12px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word;' +
+                (me ? 'align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:4px;'
+                    : 'align-self:flex-start;background:var(--bg);border:1px solid var(--border-light);border-bottom-left-radius:4px;');
+            d.textContent = text; log.appendChild(d); log.scrollTop = log.scrollHeight; return d;
+        }
+        function sendAiChat() {
+            var inp = document.getElementById('ai-chat-input'); if (!inp || !backend) return;
+            var msg = inp.value.trim(); if (!msg) return; inp.value = '';
+            _aiBubble('user', msg); _aiHistory.push({ role: 'user', content: msg });
+            var b = document.getElementById('ai-chat-send'); if (b) { b.disabled = true; b.textContent = '생각 중…'; }
+            var think = _aiBubble('assistant', '…'); if (think) think.dataset.think = '1';
+            backend.llmChat(JSON.stringify(_aiHistory));
+        }
+        function onLlmReply(a) {
+            var text = Array.isArray(a) ? a[0] : a;
+            var log = document.getElementById('ai-chat-log');
+            if (log) { var th = log.querySelector('[data-think]'); if (th) th.remove(); }
+            _aiBubble('assistant', text); _aiHistory.push({ role: 'assistant', content: text });
+            if (_aiHistory.length > 12) _aiHistory = _aiHistory.slice(-12);
+            var b = document.getElementById('ai-chat-send'); if (b) { b.disabled = false; b.textContent = '보내기'; }
+        }
+        function aiRepair(fn, label) {
+            if (!backend) return;
+            _aiBubble('user', '[' + label + '] 실행');
+            if (typeof backend[fn] === 'function') backend[fn]();
+            _aiBubble('assistant', '▶ ' + label + '을(를) 실행했습니다. 아래 로그와 상태를 확인하세요. 결과가 궁금하면 물어보세요.');
         }
         function updateModules() {
             if (backend) backend.updateModules();
