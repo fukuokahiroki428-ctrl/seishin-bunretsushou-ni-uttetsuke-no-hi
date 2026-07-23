@@ -74,7 +74,7 @@ PenBackend::PenBackend(MainWindow *window, QObject *parent)
     {
         QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
         QDir parentDir(QFileInfo(appData).absolutePath());
-        QStringList legacy = {"팬을 잘 쓰고 싶다", "ABIWA"};
+        QStringList legacy = {"팬을 잘 쓰고 싶다", "カメラ"};
         qint64 freed = 0;
         for (const QString &name : legacy) {
             QString p = parentDir.absoluteFilePath(name);

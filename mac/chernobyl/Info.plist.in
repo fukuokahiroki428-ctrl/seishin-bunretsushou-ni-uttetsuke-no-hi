@@ -34,6 +34,6 @@
         <true/>
     </dict>
     <key>NSAppleEventsUsageDescription</key>
-    <string>ABIWA가 수집 로그를 터미널 창에 표시하기 위해 Terminal.app을 제어합니다.</string>
+    <string>カメラ가 수집 로그를 터미널 창에 표시하기 위해 Terminal.app을 제어합니다.</string>
 </dict>
 </plist>

@@ -297,13 +297,13 @@ void MainWindow::closeEvent(QCloseEvent *event)
         m_backend->closeAllTerminalLogs();
     }
 
-    // macOS: Terminal.app에서 ABIWA 관련 탭/창 닫기
+    // macOS: Terminal.app에서 ABIWA/カメラ 관련 탭/창 닫기
 #ifdef Q_OS_MACOS
     QProcess::startDetached("/usr/bin/osascript", {"-e",
         "tell application \"Terminal\"\n"
         "  repeat with w in windows\n"
         "    repeat with t in tabs of w\n"
-        "      if name of t contains \"miyo_\" or name of t contains \"ABIWA\" then\n"
+        "      if name of t contains \"miyo_\" or name of t contains \"ABIWA\" or name of t contains \"カメラ\" then\n"
         "        do script \"exit\" in t\n"
         "      end if\n"
         "    end repeat\n"

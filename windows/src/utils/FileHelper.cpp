@@ -300,7 +300,7 @@ QString capturePageHtml(const QString &saveDir,
 
     // 메타데이터 주입: 원본 URL + 캡처 시각
     QString metaTag = QString(
-        "\n<!-- SingleFile capture by ABIWA -->\n"
+        "\n<!-- SingleFile capture by カメラ -->\n"
         "<!-- source: %1 -->\n"
         "<!-- captured: %2 -->\n")
         .arg(url.toHtmlEscaped(), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
@@ -420,7 +420,7 @@ QString capturePageHtmlFromContent(const QString &saveDir,
 
     // 메타데이터 주입
     QString metaTag = QString(
-        "\n<!-- ABIWA browser capture (rendered DOM) -->\n"
+        "\n<!-- カメラ browser capture (rendered DOM) -->\n"
         "<!-- source: %1 -->\n"
         "<!-- captured: %2 -->\n")
         .arg(url.toHtmlEscaped(), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));

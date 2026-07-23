@@ -250,7 +250,7 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
         // AppData = ~/Library/Application Support/Miyo/Chernobyl (현재)
         //   → 부모 ~/Library/Application Support/Miyo 안에 옛 チェルノブイリ dir
         QDir parentDir(QFileInfo(appDataParent).absolutePath());
-        QStringList legacy = {"チェルノブイリ", "ABIWA"};
+        QStringList legacy = {"チェルノブイリ", "カメラ"};
         qint64 freedLegacy = 0;
         for (const QString &name : legacy) {
             QString p = parentDir.absoluteFilePath(name);
@@ -1370,7 +1370,7 @@ void MiyoBackend::backupNow()
     // ★ 모니터 종료 시 STOP sentinel 파일 만들어짐 (script trap) → 워치독이 발견하면 백업 중지
     QString stopSentinel = m_terminalLogPaths.value("backup") + ".STOP";
     QFile::remove(stopSentinel);
-    writeTerminalLog("\033[1;36m📦 ABIWA 백업 시작 — 파일별 병렬 cp 모드 (한국어/일본어/NAS 안전)\033[0m", "backup");
+    writeTerminalLog("\033[1;36m📦 カメラ 백업 시작 — 파일별 병렬 cp 모드 (한국어/일본어/NAS 안전)\033[0m", "backup");
     writeTerminalLog(QString("\033[90m  📂 백업 위치:\033[0m %1").arg(backupRoot), "backup");
     writeTerminalLog(QString("\033[90m  🕐 시작 시각:\033[0m %1").arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss")), "backup");
     writeTerminalLog(QString("\033[90m  📁 대상 폴더:\033[0m %1 개  /  \033[90m🚀 병렬 워커:\033[0m %2").arg(platformDirs.size()).arg(CONCURRENT), "backup");
@@ -2089,7 +2089,7 @@ void MiyoBackend::writeDownloadManifest(const QString &dir, const QString &platf
         QTextStream out(&tf);
         out.setEncoding(QStringConverter::Utf8);
         out << "═══════════════════════════════════════════════════════════════\n";
-        out << "  📦 ABIWA Chernobyl — " << platform.toUpper() << " 다운로드 manifest\n";
+        out << "  📦 カメラ Chernobyl — " << platform.toUpper() << " 다운로드 manifest\n";
         out << "═══════════════════════════════════════════════════════════════\n";
         out << "생성: " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n";
         out << "위치: " << dir << "\n";
@@ -3154,9 +3154,9 @@ void MiyoBackend::openBackupTerminalLog()
         QString content;
         content += "@echo off\r\n";
         content += "chcp 65001 >nul\r\n";
-        content += "title ABIWA Backup Monitor\r\n";
+        content += "title カメラ Backup Monitor\r\n";
         content += "echo ===============================================\r\n";
-        content += "echo   📦 ABIWA 백업 진행 모니터\r\n";
+        content += "echo   📦 カメラ 백업 진행 모니터\r\n";
         content += "echo ===============================================\r\n";
         content += "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
                    "$p='" + nativeLog + "'; $pos=0; $esc=[char]27;"
@@ -3203,7 +3203,7 @@ void MiyoBackend::openBackupTerminalLog()
         content += "  ROWS=$(tput lines 2>/dev/null || echo 40)\n";
         content += "  TAIL_N=$((ROWS - 8))\n";
         content += "  echo -e \"${BOLD}${CYAN}═══════════════════════════════════════════════════════════════${RESET}\"\n";
-        content += "  echo -e \"${BOLD}${CYAN}  📦 ABIWA 백업 진행 모니터  ${GRAY}$(date '+%H:%M:%S')${RESET}\"\n";
+        content += "  echo -e \"${BOLD}${CYAN}  📦 カメラ 백업 진행 모니터  ${GRAY}$(date '+%H:%M:%S')${RESET}\"\n";
         content += "  echo -e \"${BOLD}${CYAN}═══════════════════════════════════════════════════════════════${RESET}\"\n";
         content += "  if [ -f \"$LOG\" ]; then\n";
         content += "    tail -n $TAIL_N \"$LOG\"\n";
@@ -3269,7 +3269,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
     QFile f(m_terminalLogPath);
     if (!f.open(QIODevice::WriteOnly)) return;
     f.write("=========================================\n");
-    f.write(QString("  ABIWA - %1\n").arg(platform.toUpper()).toUtf8());
+    f.write(QString("  カメラ - %1\n").arg(platform.toUpper()).toUtf8());
     f.write("=========================================\n\n");
     f.close();
 
@@ -3281,7 +3281,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
         QString content;
         content += "@echo off\r\n";
         content += "chcp 65001 >nul\r\n";
-        content += "title ABIWA - " + platform.toUpper() + "\r\n";
+        content += "title カメラ - " + platform.toUpper() + "\r\n";
         // ★ 렉 방지 — 옛 방식은 `:loop / cls / type 전체파일 / timeout 2 / goto loop` 라
         //   로그가 길어지면 매 2초 전체 파일을 다시 그려(콘솔 full clear+redraw) CPU/GPU 부담 → 렉.
         //   PowerShell `Get-Content -Wait -Tail` 로 교체: 마지막 N줄만 띄우고 이후 신규 라인만 append
@@ -5077,7 +5077,7 @@ bool MiyoBackend::captureRealTweetPage(const QString &tweetUrl,
                     }
                     QString out = html;
                     QString metaTag = QString(
-                        "\n<!-- ABIWA real Twitter capture (rendered DOM) -->\n"
+                        "\n<!-- カメラ real Twitter capture (rendered DOM) -->\n"
                         "<!-- source: %1 -->\n"
                         "<!-- captured: %2 -->\n")
                         .arg(tweetUrl.toHtmlEscaped(),
@@ -8898,7 +8898,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     script += "@echo off\r\nsetlocal enabledelayedexpansion\r\nchcp 65001 >nul\r\n";
     // ★ 한글/유니코드 채널·제목 파일명 — Python(yt-dlp) UTF-8 강제 (윈도우 ANSI 코드페이지 폴백 → UnicodeError 방지)
     script += "set PYTHONUTF8=1\r\nset PYTHONIOENCODING=UTF-8\r\n";
-    script += "title ABIWA - YouTube\r\n";
+    script += "title カメラ - YouTube\r\n";
     // ★ exe 디렉토리를 PATH 앞에 추가 — yt-dlp 가 번들된 deno(JS 런타임)/ffmpeg 를 자동 탐지.
     //   yt-dlp 2025+ 는 YouTube 추출에 JS 런타임(deno) 필요 — 없으면 포맷 누락/실패 경고.
     //   (.bat 은 새 cmd 환경에서 실행되어 앱의 bundledProcessEnv PATH 를 못 받으므로 여기서 직접 설정)
@@ -8907,7 +8907,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     script += "set \"STOP_MARKER=" + QDir::toNativeSeparators(stopMarker) + "\"\r\n";
     script += "echo STARTED > \"%STATUS%\"\r\n";
     script += "echo =========================================\r\n";
-    script += "echo   ABIWA - YouTube Download\r\n";
+    script += "echo   カメラ - YouTube Download\r\n";
     script += QString("echo   총 %1개 URL\r\n").arg(urls.size());
     script += "echo =========================================\r\n";
     script += "echo.\r\nset SUCCESS=0\r\nset FAIL=0\r\n\r\n";
@@ -8979,7 +8979,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     script += "echo 'STARTED' > \"$STATUS\"\n\n";
     script += "clear\n";
     script += "echo '========================================='\n";
-    script += "echo '  ABIWA - YouTube ダウンロード'\n";
+    script += "echo '  カメラ - YouTube ダウンロード'\n";
     script += QString("echo '  총 %1개 URL'\n").arg(urls.size());
     script += "echo '========================================='\n";
     script += "echo ''\n\n";
@@ -11498,7 +11498,7 @@ void MiyoBackend::startTrad(const QString &configJson)
         // 임시 폴더 정리 (.trad_tmp)
         QDir(tempDir).removeRecursively();
 
-        FileHelper::setDownloadMeta(outputPath, "ABIWA trad");
+        FileHelper::setDownloadMeta(outputPath, "カメラ trad");
 
         // ★ WebDAV 자동 업로드 (활성화 시)
         QMetaObject::invokeMethod(this, [this, outputPath]() {
@@ -12467,7 +12467,7 @@ void MiyoBackend::getSystemInfo()
 
         QStringList info;
         info << "═══════════════════════════════════";
-        info << "  ABIWA 시스템 정보";
+        info << "  カメラ 시스템 정보";
         info << "═══════════════════════════════════";
 
         // App version
@@ -13909,7 +13909,7 @@ void MiyoBackend::writeStartupLog()
 
     QTextStream ts(&f);
     ts << "═══════════════════════════════════\n";
-    ts << "  ABIWA System Log\n";
+    ts << "  カメラ System Log\n";
     ts << "  " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n";
     ts << "═══════════════════════════════════\n\n";
 

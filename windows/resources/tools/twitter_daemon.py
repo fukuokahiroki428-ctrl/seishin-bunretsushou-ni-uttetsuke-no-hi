@@ -33,7 +33,7 @@ ENDPOINT_NAMES = [
 ]
 
 _hash_cache_path = os.path.join(
-    os.path.expanduser("~"), "Library", "Application Support", "ABIWA", "graphql_hashes.json"
+    os.path.expanduser("~"), "Library", "Application Support", "カメラ", "graphql_hashes.json"
 )
 
 
