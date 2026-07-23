@@ -175,11 +175,16 @@ if(APPLE)
     set(FFPROBE_PATH "${CMAKE_SOURCE_DIR}/resources/tools/ffprobe")
 
     if(EXISTS "${YTDLP_PATH}")
+        # ★ yt-dlp 는 셸 래퍼(python -m yt_dlp) → Resources/tools/ 에 둔다.
+        #   Contents/MacOS/ 는 Mach-O 전용이라 스크립트를 두면 codesign --deep 이 실패한다.
+        #   앱의 findBundledYtDlp 가 MacOS/ 다음 Resources/tools/ 를 확인하므로 정상 발견.
         add_custom_command(TARGET Miyo POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_BUNDLE_DIR:Miyo>/Contents/MacOS/yt-dlp"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${YTDLP_PATH}" "$<TARGET_BUNDLE_DIR:Miyo>/Contents/MacOS/yt-dlp"
-            COMMAND chmod +x "$<TARGET_BUNDLE_DIR:Miyo>/Contents/MacOS/yt-dlp"
-            COMMENT "Bundling yt-dlp"
+                "${YTDLP_PATH}" "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/yt-dlp"
+            COMMAND chmod +x "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/yt-dlp"
+            COMMENT "Bundling yt-dlp wrapper (Resources/tools)"
         )
     endif()
 
