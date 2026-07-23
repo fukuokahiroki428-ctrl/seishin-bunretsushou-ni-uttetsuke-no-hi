@@ -2304,9 +2304,26 @@
                     </div>
 
                     <div class="section">
+                        <div class="section-label">🩺 로컬 AI (자가진단)</div>
+                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                            앱에 내장된 로컬 LLM(오프라인). 켜두면 도구 복구 실패·수집 오류 시 원인·조치를 한국어로 진단합니다.
+                            외부 서버(Ollama/LM Studio) 없이 앱 안에서 실행됩니다.
+                        </p>
+                        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                            <span id="llm-status-pill" style="font-size:11.5px;font-weight:700;padding:4px 11px;border-radius:20px;background:var(--bg-tertiary);color:var(--text-secondary);">확인 중…</span>
+                            <select class="input" id="llm-model" style="max-width:210px;height:34px;"></select>
+                            <button class="btn btn-primary btn-sm" id="llm-start-btn" onclick="startLocalLlm()">AI 켜기</button>
+                            <button class="btn btn-secondary btn-sm" id="llm-stop-btn" onclick="stopLocalLlm()" style="display:none;">끄기</button>
+                        </div>
+                        <p style="font-size:11px;color:var(--text-tertiary);margin-top:7px;">
+                            엔드포인트 127.0.0.1:8737 · 첫 기동은 모델 로딩에 수 초 걸립니다. 터미널 수동 기동도 가능(README).
+                        </p>
+                    </div>
+
+                    <div class="section">
                         <div class="section-label">모듈 / 라이브러리 업데이트</div>
                         <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
-                            번들 Python 패키지를 최신 버전으로 업데이트합니다 (twikit, httpx, atproto 등).
+                            번들 Python 패키지를 최신 버전으로 업데이트합니다 (twikit, httpx, atproto, yt-dlp 등).
                         </p>
                         <button class="btn btn-primary btn-sm" id="module-update-btn" onclick="updateModules()">모듈 업데이트</button>
                         <span id="module-update-status" style="font-size:11px;color:var(--text-tertiary);margin-left:8px;"></span>
@@ -3384,7 +3401,7 @@
             const names = {twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',niconico:'ニコニコ',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',naikakukai:'内閣会',crawl:'経済産業省',settings:'설정'};
             document.getElementById('toolbar-title').textContent = names[tab] || tab;
             // Load system info when switching to settings
-            if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); }
+            if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); if (backend && backend.getLlmStatus) backend.getLlmStatus(); }
             // 해당 플랫폼의 저장된 stats 복원
             const s = platformStats[tab] || {posts:0, media:0, status:'대기'};
             document.getElementById('stat-posts').textContent = s.posts;
@@ -5030,6 +5047,37 @@
         function showSystemInfo(text) {
             const el = document.getElementById('system-info-box');
             if (el) el.textContent = text.replace(/\\n/g, '\n');
+        }
+        // ── 로컬 AI (자가진단 LLM) 제어 ──
+        function startLocalLlm() {
+            if (!backend) return;
+            var m = document.getElementById('llm-model');
+            backend.startLocalLlm(m ? m.value : '');
+            var p = document.getElementById('llm-status-pill');
+            if (p) { p.textContent = '기동 중…'; p.style.background = 'var(--accent-bg)'; p.style.color = 'var(--accent)'; }
+        }
+        function stopLocalLlm() { if (backend) backend.stopLocalLlm(); }
+        function onLlmStatus(s) {
+            var pill = document.getElementById('llm-status-pill'), sel = document.getElementById('llm-model'),
+                startB = document.getElementById('llm-start-btn'), stopB = document.getElementById('llm-stop-btn');
+            if (!pill) return;
+            if (sel && s.models && sel.options.length !== s.models.length) {
+                var cur = sel.value; sel.innerHTML = '';
+                s.models.forEach(function (m) {
+                    var o = document.createElement('option'); o.value = m;
+                    o.textContent = m.replace('qwen2.5-', 'Qwen2.5 ').replace('-instruct-q4_k_m.gguf', '').replace(/-00001-of-\d+/, '').toUpperCase();
+                    sel.appendChild(o);
+                });
+                if (cur) sel.value = cur;
+            }
+            if (!s.hasServer) { pill.textContent = '미탑재'; pill.style.background = 'var(--bg-tertiary)'; pill.style.color = 'var(--text-tertiary)'; if (startB) startB.disabled = true; return; }
+            if (s.running) {
+                pill.textContent = '● 실행 중'; pill.style.background = 'rgba(31,157,97,.14)'; pill.style.color = 'var(--green)';
+                if (startB) startB.style.display = 'none'; if (stopB) stopB.style.display = 'inline-flex';
+            } else {
+                pill.textContent = '꺼짐'; pill.style.background = 'var(--bg-tertiary)'; pill.style.color = 'var(--text-secondary)';
+                if (startB) { startB.style.display = 'inline-flex'; startB.disabled = false; } if (stopB) stopB.style.display = 'none';
+            }
         }
         function updateModules() {
             if (backend) backend.updateModules();
