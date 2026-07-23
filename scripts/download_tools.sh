@@ -33,6 +33,7 @@ cat > yt-dlp <<'WRAP'
 DIR="$(cd "$(dirname "$0")" && pwd)"
 for P in \
   "$DIR/../Resources/python_env/bin/python3" \
+  "$DIR/../python_env/bin/python3" \
   "$DIR/../Resources/python_env_arm64/bin/python3" \
   "$HOME/Library/Application Support/Miyo/Chernobyl/python_env_arm64/bin/python3" \
   "$HOME/Library/Application Support/Miyo/Chernobyl/python_env/bin/python3"; do
