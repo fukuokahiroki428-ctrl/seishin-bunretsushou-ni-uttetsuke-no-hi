@@ -12698,6 +12698,17 @@ void MiyoBackend::upgradePython()
             log(QString("  현재 패키지 %1개 백업").arg(frozenPkgs.size()), "info", "settings");
         }
 
+        // ★ 현재 설치된 python 버전 (다운그레이드 방지 비교용)
+        int curMajor = 0, curMinor = 0, curPatch = 0;
+        if (QFile::exists(python)) {
+            QProcess vp;
+            vp.setProcessEnvironment(Common::bundledProcessEnv());
+            vp.start(python, {"-c", "import sys;print('%d.%d.%d'%sys.version_info[:3])"});
+            vp.waitForFinished(10000);
+            const QStringList cp = QString::fromUtf8(vp.readAllStandardOutput()).trimmed().split('.');
+            if (cp.size() == 3) { curMajor = cp[0].toInt(); curMinor = cp[1].toInt(); curPatch = cp[2].toInt(); }
+        }
+
         // 3. 최신 standalone Python 다운로드 + 설치
         //    (★ 기존 환경 삭제는 다운로드 성공 후에만 — 조회/다운로드 실패가
         //     멀쩡한 환경을 파괴하고 repair↔upgrade 무한루프에 빠지는 것 방지)
@@ -12734,7 +12745,8 @@ void MiyoBackend::upgradePython()
         QString newVersion;
         // install_only 타입의 URL 전부 수집 → 안정 버전 중 최신 선택
         QRegularExpression urlRe(
-            QString("\"browser_download_url\"\\s*:\\s*\"(https://[^\"]*cpython-(\\d+\\.\\d+\\.\\d+)[^\"]*%1-install_only\\.tar\\.gz)\"")
+            // ★ 버전 뒤 '\+' 강제 — 안정판(cpython-3.14.3+날짜)만. 베타/rc(3.15.0b4+)는 뒤가 'b'라 제외.
+            QString("\"browser_download_url\"\\s*:\\s*\"(https://[^\"]*cpython-(\\d+\\.\\d+\\.\\d+)\\+[^\"]*%1-install_only\\.tar\\.gz)\"")
                 .arg(QRegularExpression::escape(arch)));
         auto it = urlRe.globalMatch(releaseJson);
         int bestMajor = 0, bestMinor = 0, bestPatch = 0;
@@ -12762,6 +12774,20 @@ void MiyoBackend::upgradePython()
             m_pythonBusy = false;
             runJs("setPythonEnvBusy(false, '실패')");
             return;
+        }
+
+        // ★ 다운그레이드 방지 — 고른 버전이 현재 설치본보다 '엄격히 최신'일 때만 교체.
+        {
+            const bool strictlyNewer = (bestMajor > curMajor)
+                || (bestMajor == curMajor && bestMinor > curMinor)
+                || (bestMajor == curMajor && bestMinor == curMinor && bestPatch > curPatch);
+            if ((curMajor || curMinor || curPatch) && !strictlyNewer) {
+                log(QString("  ✅ 이미 최신입니다 (현재 %1.%2.%3 ≥ 릴리스 %4) — 업그레이드 불필요, 기존 환경 유지")
+                    .arg(curMajor).arg(curMinor).arg(curPatch).arg(newVersion), "success", "settings");
+                m_pythonBusy = false;
+                runJs("setPythonEnvBusy(false, '최신')");
+                return;
+            }
         }
 
         log(QString("  다운로드: Python %1").arg(newVersion), "info", "settings");

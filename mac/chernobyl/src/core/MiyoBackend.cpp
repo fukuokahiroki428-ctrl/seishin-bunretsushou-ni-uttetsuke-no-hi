@@ -12342,6 +12342,17 @@ void MiyoBackend::upgradePython()
             log(QString("  현재 패키지 %1개 백업").arg(frozenPkgs.size()), "info", "settings");
         }
 
+        // ★ 현재 설치된 python 버전 (다운그레이드 방지 비교용)
+        int curMajor = 0, curMinor = 0, curPatch = 0;
+        if (QFile::exists(python)) {
+            QProcess vp;
+            vp.setProcessEnvironment(Common::bundledProcessEnv());
+            vp.start(python, {"-c", "import sys;print('%d.%d.%d'%sys.version_info[:3])"});
+            vp.waitForFinished(10000);
+            const QStringList cp = QString::fromUtf8(vp.readAllStandardOutput()).trimmed().split('.');
+            if (cp.size() == 3) { curMajor = cp[0].toInt(); curMinor = cp[1].toInt(); curPatch = cp[2].toInt(); }
+        }
+
         // 3. 최신 standalone Python 다운로드 + 설치
         //    (★ 기존 환경 삭제는 다운로드 성공 후에만 — 조회/다운로드 실패가
         //     멀쩡한 환경을 파괴하지 않도록)
@@ -12380,9 +12391,12 @@ void MiyoBackend::upgradePython()
 
         QString downloadUrl;
         QString newVersion;
-        // install_only 타입의 URL 전부 수집 → 안정 버전 중 최신 선택
+        // install_only 타입의 URL 전부 수집 → 안정 버전 중 최신 선택.
+        // ★ 버전 뒤 '\+' 강제 — python-build-standalone 안정판은 'cpython-3.14.3+20250612-...' 형식이라
+        //   버전 바로 뒤가 '+'. 베타/rc(예: 'cpython-3.15.0b4+...')는 뒤가 'b4'라 제외됨.
+        //   (이전 정규식은 '3.15.0b4' 에서 '3.15.0' 을 뽑아 베타를 안정판으로 오인·설치 → env 손상 원인)
         QRegularExpression urlRe(
-            QString("\"browser_download_url\"\\s*:\\s*\"(https://[^\"]*cpython-(\\d+\\.\\d+\\.\\d+)[^\"]*%1-install_only\\.tar\\.gz)\"")
+            QString("\"browser_download_url\"\\s*:\\s*\"(https://[^\"]*cpython-(\\d+\\.\\d+\\.\\d+)\\+[^\"]*%1-install_only\\.tar\\.gz)\"")
                 .arg(QRegularExpression::escape(arch)));
         auto it = urlRe.globalMatch(releaseJson);
         int bestMajor = 0, bestMinor = 0, bestPatch = 0;
@@ -12404,11 +12418,27 @@ void MiyoBackend::upgradePython()
         }
 
         if (downloadUrl.isEmpty()) {
-            log("  ❌ 최신 Python 릴리스를 찾을 수 없습니다. 복구 모드로 전환...", "error", "settings");
+            // ★ repairPython 재큐 금지 — repair 가 python_missing 이면 다시 upgrade 를 불러
+            //   오프라인/레이트리밋에서 둘이 무한 재큐하던 루프. 종료가 정답(기존 env 유지).
+            log("  ❌ 안정판 Python 릴리스를 찾을 수 없습니다. 네트워크 확인 후 다시 시도하세요. (기존 환경은 그대로 유지)", "error", "settings");
             m_pythonBusy = false;
             runJs("setPythonEnvBusy(false, '실패')");
-            QMetaObject::invokeMethod(this, "repairPython", Qt::QueuedConnection);
             return;
+        }
+
+        // ★ 다운그레이드 방지 — 고른 버전이 현재 설치본보다 '엄격히 최신'일 때만 교체.
+        //   releases/latest 가 현재보다 낮은/같은 버전만 제공하면 무조건 설치 시 과거 버전으로 다운그레이드됐음.
+        {
+            const bool strictlyNewer = (bestMajor > curMajor)
+                || (bestMajor == curMajor && bestMinor > curMinor)
+                || (bestMajor == curMajor && bestMinor == curMinor && bestPatch > curPatch);
+            if ((curMajor || curMinor || curPatch) && !strictlyNewer) {
+                log(QString("  ✅ 이미 최신입니다 (현재 %1.%2.%3 ≥ 릴리스 %4) — 업그레이드 불필요, 기존 환경 유지")
+                    .arg(curMajor).arg(curMinor).arg(curPatch).arg(newVersion), "success", "settings");
+                m_pythonBusy = false;
+                runJs("setPythonEnvBusy(false, '최신')");
+                return;
+            }
         }
 
         log(QString("  다운로드: Python %1").arg(newVersion), "info", "settings");
