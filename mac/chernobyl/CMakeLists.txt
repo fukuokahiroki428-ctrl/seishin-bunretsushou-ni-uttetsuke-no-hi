@@ -201,6 +201,18 @@ if(APPLE)
         )
     endif()
 
+    # ★ deno — yt-dlp 2025+ 가 YouTube nsig/서명 해독에 쓰는 JS 런타임.
+    #   없으면 시스템 deno 로 폴백(없으면 yt-dlp 내장 JS, 덜 안정). MacOS/ 에 두면 yt-dlp 가 PATH 로 찾음.
+    set(DENO_PATH "${CMAKE_SOURCE_DIR}/resources/tools/deno")
+    if(EXISTS "${DENO_PATH}")
+        add_custom_command(TARGET Miyo POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${DENO_PATH}" "$<TARGET_BUNDLE_DIR:Miyo>/Contents/MacOS/deno"
+            COMMAND chmod +x "$<TARGET_BUNDLE_DIR:Miyo>/Contents/MacOS/deno"
+            COMMENT "Bundling deno (yt-dlp JS runtime)"
+        )
+    endif()
+
     # ★ rclone — WebDAV/SFTP/S3/Mountain Duck 호환 (50+ protocol, MIT 라이센스)
     set(RCLONE_PATH "${CMAKE_SOURCE_DIR}/resources/tools/rclone")
     if(EXISTS "${RCLONE_PATH}")

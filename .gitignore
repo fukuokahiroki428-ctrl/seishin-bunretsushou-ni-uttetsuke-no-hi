@@ -9,6 +9,7 @@ dist/
 **/resources/tools/yt-dlp*
 **/resources/tools/ffmpeg*
 **/resources/tools/ffprobe*
+**/resources/tools/deno*
 **/resources/tools/rclone*
 **/resources/tools/exiftool/
 **/resources/tools/exiftool.exe
