@@ -259,12 +259,32 @@ inline bool spawnBundledLlm(int port)
     const QString dir = resourcesDir() + "/llm";
     QString server = dir + "/llama-server" + exeSuffix();
     if (!QFile::exists(server)) { spawned.storeRelease(0); return false; }
-    const QStringList ggufs = QDir(dir).entryList({"*.gguf"}, QDir::Files);
-    if (ggufs.isEmpty()) { spawned.storeRelease(0); return false; }
+    // ★ 여러 모델 지원 — llm/ 의 *.gguf 중 '모델 헤드'만 나열(분할 파일은 00001-of 만 진입점).
+    const QStringList allGgufs = QDir(dir).entryList({"*.gguf"}, QDir::Files, QDir::Name);
+    QStringList heads;
+    for (const QString &g : allGgufs) {
+        const int ofIdx = g.indexOf("-of-");
+        if (ofIdx >= 5) {
+            const QString part = g.mid(ofIdx - 5, 5);
+            bool digits = (part.size() == 5);
+            for (const QChar &c : part) if (!c.isDigit()) digits = false;
+            if (digits && part != QLatin1String("00001")) continue;  // 분할 continuation 파트 제외
+        }
+        heads << g;
+    }
+    if (heads.isEmpty()) { spawned.storeRelease(0); return false; }
+    // 선택: env CHERNOBYL_LLM_MODEL(부분일치) > 첫 헤드(알파벳순=가장 작은=빠른 기본).
+    QString chosen = heads.first();
+    const QString wantModel = qEnvironmentVariable("CHERNOBYL_LLM_MODEL");
+    if (!wantModel.isEmpty())
+        for (const QString &h : heads)
+            if (h.contains(wantModel, Qt::CaseInsensitive)) { chosen = h; break; }
+    qInfo().noquote() << "[SelfRepair] 번들 LLM" << heads.size() << "개 모델 중 선택:" << chosen
+                      << "(env CHERNOBYL_LLM_MODEL 로 전환 가능)";
     makeExecutable(server);
     qint64 pid = 0;
     const bool ok = QProcess::startDetached(server,
-        {"-m", dir + "/" + ggufs.first(), "--port", QString::number(port),
+        {"-m", dir + "/" + chosen, "--port", QString::number(port),
          "--host", "127.0.0.1", "-c", "4096"}, dir, &pid);
     if (ok && pid > 0) {
         // ★ 앱 종료 시 같이 종료 — 수 GB 모델을 든 고아 프로세스 잔존 방지.
