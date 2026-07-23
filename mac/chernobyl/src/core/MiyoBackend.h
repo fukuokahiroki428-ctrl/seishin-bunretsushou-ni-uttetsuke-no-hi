@@ -20,6 +20,7 @@ class SiteCrawler;
 class RealChromeCrawler;
 class HttpClient;
 class QTimer;
+class QProcess;
 class WebDavUploader;
 
 class MiyoBackend : public QObject
@@ -55,6 +56,11 @@ public slots:
     void saveConfig(const QString &configJson);
     void saveFormData(const QString &formJson);
     void loadFormData();
+
+    // 로컬 AI (자가진단 LLM) — 번들 llama-server 수동 제어 (설정 탭 토글)
+    void startLocalLlm(const QString &modelHint);  // 번들 모델 기동 (modelHint=파일 부분일치)
+    void stopLocalLlm();                            // 우리가 띄운 서버 종료
+    void getLlmStatus();                            // JS onLlmStatus(json) 로 상태·모델목록 통지
 
     // Check if any collection is running
     bool isAnyRunning() const;
@@ -233,6 +239,7 @@ public:
 private:
     std::atomic<bool> m_tradCancelled{false};
     std::atomic<bool> m_pythonBusy{false};    // Python 환경 작업 중 (업그레이드/복구/업데이트 동시 방지)
+    QProcess *m_llmProc = nullptr;            // 설정에서 켠 번들 로컬 LLM(llama-server) 프로세스
 
     // 쓰레드 안전 m_isRunning 접근
     bool platformRunning(const QString &p) const {

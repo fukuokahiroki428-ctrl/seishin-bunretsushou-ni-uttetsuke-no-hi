@@ -306,6 +306,12 @@ MiyoBackend::~MiyoBackend()
     m_naikakukaiRunning = false;
     if (m_naikakukaiTimer) { m_naikakukaiTimer->stop(); }
 
+    // 로컬 AI(llama-server) 종료 — 수 GB 모델 든 고아 프로세스 방지
+    if (m_llmProc && m_llmProc->state() != QProcess::NotRunning) {
+        m_llmProc->terminate();
+        if (!m_llmProc->waitForFinished(2000)) m_llmProc->kill();
+    }
+
     // 명시 정리 — 각 collector 소멸자가 자기 QProcess 데몬을 kill
     delete m_twitterCollector;  m_twitterCollector = nullptr;
     delete m_blueskyCollector;  m_blueskyCollector = nullptr;
@@ -12305,6 +12311,108 @@ static QStringList diagnosePythonEnv(const QString &python)
         if (check.exitCode() != 0) problems << ("missing:" + mod);
     }
     return problems;
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 로컬 AI (자가진단 LLM) — 번들 llama-server 수동 제어 (설정 탭 토글)
+//   켜지면 127.0.0.1:8737 로 뜨고, SelfRepair 진단이 이 엔드포인트를 사용한다.
+// ═════════════════════════════════════════════════════════════════════════
+static QStringList bundledLlmModelHeads()
+{
+    QDir dir(Common::bundledResourcesDir() + "/llm");
+    const QStringList all = dir.entryList(QStringList() << "*.gguf", QDir::Files, QDir::Name);
+    QStringList heads;
+    for (const QString &g : all) {
+        const int ofIdx = g.indexOf("-of-");
+        if (ofIdx >= 5) {
+            const QString part = g.mid(ofIdx - 5, 5);
+            bool digits = (part.size() == 5);
+            for (const QChar &c : part) if (!c.isDigit()) digits = false;
+            if (digits && part != QLatin1String("00001")) continue;  // 분할 continuation 제외
+        }
+        heads << g;
+    }
+    return heads;
+}
+
+void MiyoBackend::getLlmStatus()
+{
+    const QString dir = Common::bundledResourcesDir() + "/llm";
+    QJsonObject o;
+    o["hasServer"] = QFile::exists(dir + "/llama-server");
+    o["running"] = (m_llmProc && m_llmProc->state() != QProcess::NotRunning);
+    QJsonArray ms;
+    for (const QString &m : bundledLlmModelHeads()) ms.append(m);
+    o["models"] = ms;
+    runJs(QString("onLlmStatus(%1)").arg(
+        QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))));
+}
+
+void MiyoBackend::startLocalLlm(const QString &modelHint)
+{
+    if (m_llmProc && m_llmProc->state() != QProcess::NotRunning) {
+        log("로컬 AI 가 이미 실행 중입니다.", "info", "settings");
+        getLlmStatus();
+        return;
+    }
+    const QString dir = Common::bundledResourcesDir() + "/llm";
+    const QString server = dir + "/llama-server";
+    if (!QFile::exists(server)) {
+        log("❌ 번들 llama-server 가 없습니다. (배포 패키징 시 scripts/bundle_llm.sh 로 탑재)", "error", "settings");
+        getLlmStatus();
+        return;
+    }
+    const QStringList heads = bundledLlmModelHeads();
+    if (heads.isEmpty()) { log("❌ 번들 모델(*.gguf)이 없습니다.", "error", "settings"); getLlmStatus(); return; }
+    QString model = heads.first();
+    if (!modelHint.isEmpty())
+        for (const QString &h : heads) if (h.contains(modelHint, Qt::CaseInsensitive)) { model = h; break; }
+
+    log(QString("🩺 로컬 AI 기동 중 (%1)...").arg(model), "info", "settings");
+    QFile::setPermissions(server,
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner |
+        QFileDevice::ReadGroup | QFileDevice::ExeGroup | QFileDevice::ReadOther | QFileDevice::ExeOther);
+    m_llmProc = new QProcess(this);
+    m_llmProc->setProgram(server);
+    m_llmProc->setArguments({"-m", dir + "/" + model, "--port", "8737",
+                             "--host", "127.0.0.1", "-c", "4096"});
+    m_llmProc->setWorkingDirectory(dir);
+    connect(m_llmProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this](int, QProcess::ExitStatus) { getLlmStatus(); });
+    m_llmProc->start();
+
+    // 준비될 때까지(모델 로딩) 백그라운드 폴링 후 상태 통지
+    QThread *t = QThread::create([this]() {
+        for (int i = 0; i < 40; ++i) {
+            QThread::msleep(500);
+            HttpClient h;
+            if (h.get("http://127.0.0.1:8737/v1/models").isOk()) {
+                QMetaObject::invokeMethod(this, [this]() {
+                    log("✅ 로컬 AI 준비 완료 (127.0.0.1:8737) — 자가진단이 이 AI 를 사용합니다.", "success", "settings");
+                    getLlmStatus();
+                }, Qt::QueuedConnection);
+                return;
+            }
+        }
+        QMetaObject::invokeMethod(this, [this]() {
+            log("⚠️ 로컬 AI 기동 확인 실패 (모델 로딩이 느리거나 실패). 잠시 후 상태를 다시 확인하세요.", "warning", "settings");
+            getLlmStatus();
+        }, Qt::QueuedConnection);
+    });
+    connect(t, &QThread::finished, t, &QObject::deleteLater);
+    t->start(QThread::LowPriority);
+}
+
+void MiyoBackend::stopLocalLlm()
+{
+    if (m_llmProc && m_llmProc->state() != QProcess::NotRunning) {
+        m_llmProc->terminate();
+        if (!m_llmProc->waitForFinished(3000)) m_llmProc->kill();
+        log("로컬 AI 를 종료했습니다.", "info", "settings");
+    } else {
+        log("로컬 AI 는 실행 중이 아닙니다.", "info", "settings");
+    }
+    getLlmStatus();
 }
 
 void MiyoBackend::upgradePython()
