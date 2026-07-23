@@ -23,7 +23,7 @@ DOWNLOAD_URL="https://github.com/astral-sh/python-build-standalone/releases/down
 # Check if already bundled and working
 if [ -f "$MARKER" ]; then
     BUNDLED_PY="$PYTHON_DIR/bin/python3"
-    if "$BUNDLED_PY" -c "import twikit; import httpx; import atproto; import browser_cookie3" 2>/dev/null; then
+    if "$BUNDLED_PY" -c "import twikit; import httpx; import atproto; import browser_cookie3; import yt_dlp" 2>/dev/null; then
         echo "[bundle_python] Already bundled and OK, skipping"
         exit 0
     fi
@@ -57,7 +57,7 @@ echo "[bundle_python] Python: $("$BUNDLED_PY" --version)"
 
 # Install packages
 echo "[bundle_python] Installing twikit, httpx, atproto, browser_cookie3..."
-"$BUNDLED_PY" -m pip install --quiet --no-cache-dir twikit httpx atproto openpyxl Pillow piexif browser_cookie3 2>&1 | tail -5
+"$BUNDLED_PY" -m pip install --quiet --no-cache-dir twikit httpx atproto openpyxl Pillow piexif browser_cookie3 yt-dlp 2>&1 | tail -5
 
 # Verify
 echo "[bundle_python] Verifying..."

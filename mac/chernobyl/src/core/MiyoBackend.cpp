@@ -12240,7 +12240,7 @@ void MiyoBackend::updateModules()
         }
 
         QStringList packages = {"twikit", "httpx", "atproto", "openpyxl", "Pillow", "piexif",
-                                "beautifulsoup4", "websockets", "lxml", "m3u8"};
+                                "beautifulsoup4", "websockets", "lxml", "m3u8", "yt-dlp"};
 
         int updated = 0;
         int failed = 0;
@@ -12490,7 +12490,7 @@ void MiyoBackend::upgradePython()
 
         // 6. 패키지 재설치
         QStringList packages = {"twikit", "httpx", "atproto", "openpyxl", "Pillow", "piexif",
-                                "beautifulsoup4", "websockets", "lxml", "m3u8"};
+                                "beautifulsoup4", "websockets", "lxml", "m3u8", "yt-dlp"};
 
         log(QString("  패키지 %1개 설치 중...").arg(packages.size()), "info", "settings");
         int installed = 0, failed = 0;
