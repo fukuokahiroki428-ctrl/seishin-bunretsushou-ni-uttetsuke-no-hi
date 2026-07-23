@@ -136,9 +136,17 @@ inline ToolStatus checkTool(const QString &name)
     st.found = true;
 
     QProcess p;
+#ifndef Q_OS_WIN
+    if (name == "exiftool") {
+        // exiftool 은 perl 스크립트 — 앱도 perl 로 실행한다. 스크립트를 직접 execve 하면
+        // 서명 직후 첫 실행에서 Gatekeeper 평가로 'execve: Permission denied' 위양성이 나
+        // 매 실행마다 LLM 진단을 불필요하게 스폰했다. perl 경유로 실제 사용과 일치시킨다.
+        p.start("/usr/bin/perl", QStringList() << st.path << versionArgs(name));
+    } else
+#endif
     p.start(st.path, versionArgs(name));
     if (!p.waitForStarted(4000)) { st.error = "failed to start: " + p.errorString(); return st; }
-    if (!p.waitForFinished(8000)) { p.kill(); st.error = "version check timeout"; return st; }
+    if (!p.waitForFinished(20000)) { p.kill(); st.error = "version check timeout"; return st; }
     const QString out = QString::fromUtf8(p.readAllStandardOutput()
                                           + p.readAllStandardError()).trimmed();
     st.runs = (p.exitStatus() == QProcess::NormalExit && !out.isEmpty());
