@@ -53,11 +53,18 @@ SRV="$LLM_DIR/llama-server"; [ "$PLAT" = "win" ] && SRV="$SRV.exe"
 if [ ! -f "$SRV" ]; then
     echo "▶ 다운로드: $LLAMA_ZIP_URL"
     TMP=$(mktemp -d)
-    curl -fL --retry 3 -o "$TMP/llama.zip" "$LLAMA_ZIP_URL"
-    unzip -oq "$TMP/llama.zip" -d "$TMP/llama"
-    # zip 구조가 릴리스마다 다름 — llama-server 실행파일과 동반 dylib/dll 을 찾아 복사
+    ARCHIVE="$TMP/llama_archive"
+    curl -fL --retry 3 -o "$ARCHIVE" "$LLAMA_ZIP_URL"
+    mkdir -p "$TMP/llama"
+    # ★ 릴리스 자산: mac/linux=.tar.gz, windows=.zip → 확장자로 분기 (unzip 이 tar.gz 못 풀던 버그 수정)
+    case "$LLAMA_ZIP_URL" in
+        *.tar.gz|*.tgz) tar -xzf "$ARCHIVE" -C "$TMP/llama" ;;
+        *.zip)          unzip -oq "$ARCHIVE" -d "$TMP/llama" ;;
+        *)              tar -xzf "$ARCHIVE" -C "$TMP/llama" 2>/dev/null || unzip -oq "$ARCHIVE" -d "$TMP/llama" ;;
+    esac
+    # 구조가 릴리스마다 다름 — llama-server 실행파일과 동반 dylib/dll 을 찾아 복사
     FOUND=$(find "$TMP/llama" -name "llama-server*" -type f | head -1)
-    [ -n "$FOUND" ] || { echo "❌ zip 안에 llama-server 없음"; exit 1; }
+    [ -n "$FOUND" ] || { echo "❌ 아카이브 안에 llama-server 없음"; exit 1; }
     cp "$FOUND" "$SRV"
     find "$(dirname "$FOUND")" -maxdepth 1 \( -name "*.dylib" -o -name "*.dll" -o -name "*.metal" \) \
         -exec cp {} "$LLM_DIR/" \; 2>/dev/null || true
