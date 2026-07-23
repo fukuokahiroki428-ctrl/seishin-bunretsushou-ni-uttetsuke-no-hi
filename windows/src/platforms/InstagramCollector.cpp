@@ -817,6 +817,6 @@ void InstagramCollector::saveToExcel(const QJsonArray &mediaData, const QString 
 
     QString filepath = saveDir + "/" + username + "_media.xlsx";
     writer.save(filepath);
-    FileHelper::setDownloadMeta(filepath, "ABIWA Instagram");
+    FileHelper::setDownloadMeta(filepath, "カメラ Instagram");
     emit m_signals->log(QString("  저장: %1").arg(filepath));
 }

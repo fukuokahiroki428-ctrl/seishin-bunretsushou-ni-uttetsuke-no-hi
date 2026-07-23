@@ -118,7 +118,7 @@ int main(int argc, char *argv[])
                 {"-e", QStringLiteral("tell application id \"%1\" to activate").arg(bundleId)});
         }
 #elif defined(Q_OS_WIN)
-        HWND hwnd = FindWindowW(nullptr, L"ABIWA");
+        HWND hwnd = FindWindowW(nullptr, L"カメラ");
         if (hwnd) {
             SetForegroundWindow(hwnd);
             if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);

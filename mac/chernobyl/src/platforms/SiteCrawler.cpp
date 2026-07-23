@@ -1413,7 +1413,7 @@ void SiteCrawler::generateMainIndex()
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<title>%1 — ABIWA Offline</title>
+<title>%1 — カメラ Offline</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; display:flex; height:100vh; background:#1a1a1a; color:#ccc; }
@@ -1684,7 +1684,7 @@ void SiteCrawler::savePageListExcel(const QString &saveDir)
     QProcess::execute("xattr", {"-w", "com.apple.metadata:kMDItemDownloadedDate",
         QString("(\"%1\")").arg(QDateTime::currentDateTimeUtc().toString(Qt::ISODate)), excelPath});
     QProcess::execute("xattr", {"-w", "com.apple.metadata:kMDItemWhereFroms",
-        "(\"ABIWA crawl\")", excelPath});
+        "(\"カメラ crawl\")", excelPath});
 #endif
 
     m_backend->log("Excel 저장: crawl_pages.xlsx", "success", "crawl");

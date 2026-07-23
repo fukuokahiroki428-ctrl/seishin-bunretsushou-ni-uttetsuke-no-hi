@@ -1644,7 +1644,7 @@ void TwitterCollector::saveExcel(const QString &saveDir, const QString &target, 
 
     QString filepath = saveDir + "/"+ target + "_"+ suffix + ".xlsx";
     writer.save(filepath);
-    FileHelper::setDownloadMeta(filepath, "ABIWA Twitter");
+    FileHelper::setDownloadMeta(filepath, "カメラ Twitter");
     m_backend->log("저장: "+ filepath, "success", "twitter");
 }
 
@@ -1823,7 +1823,7 @@ void TwitterCollector::saveExcelStreaming(const QString &saveDir, const QString 
 
     writer.save(filepath);
 
-    FileHelper::setDownloadMeta(filepath, "(\"https://x.com\", \"ABIWA\")");
+    FileHelper::setDownloadMeta(filepath, "(\"https://x.com\", \"カメラ\")");
 
     // 기존 행 메모리 즉시 해제
     existingRows.clear();
@@ -1889,7 +1889,7 @@ void TwitterCollector::saveProfileExcel(const QString &saveDir, const QString &t
     QString filepath = profileDateDir + "/"+ target + "_profile.xlsx";
     writer.save(filepath);
 
-    FileHelper::setDownloadMeta(filepath, "(\"https://x.com\", \"ABIWA\")");
+    FileHelper::setDownloadMeta(filepath, "(\"https://x.com\", \"カメラ\")");
 
     m_backend->log(QString("프로필 Excel 저장: %1명 → %2").arg(m_profileBuffer->count()).arg(filepath), "success", "twitter");
 
@@ -2466,7 +2466,7 @@ void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
 
             QString pProfilePath = targetProfileDir + "/"+ target + "_profile.xlsx";
             writer.save(pProfilePath);
-            FileHelper::setDownloadMeta(pProfilePath, "ABIWA Twitter");
+            FileHelper::setDownloadMeta(pProfilePath, "カメラ Twitter");
             QString profileImgUrl = userLegacy["profile_image_url_https"].toString().replace("_normal", "_400x400");
             if (!profileImgUrl.isEmpty()) {
                 QString pp = targetProfileDir + "/profile_"+ dateTag + ".jpg";
@@ -2809,7 +2809,7 @@ void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
             writer.setColumnWidth(14, 50);  // Banner URL
             QString ffPath = userDir + "/"+ target + "_"+ type + ".xlsx";
             writer.save(ffPath);
-            FileHelper::setDownloadMeta(ffPath, "ABIWA Twitter");
+            FileHelper::setDownloadMeta(ffPath, "カメラ Twitter");
             m_backend->log("Excel 저장 완료", "success", "twitter");
         }
 
@@ -2872,7 +2872,7 @@ void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
             QDir().mkpath(pDateDir);
             QString pPath2 = pDateDir + "/"+ target + "_profile.xlsx";
             writer.save(pPath2);
-            FileHelper::setDownloadMeta(pPath2, "ABIWA Twitter");
+            FileHelper::setDownloadMeta(pPath2, "カメラ Twitter");
             // 프로필 Excel은 profiles/ 폴더 안에만 저장
         }
         m_backend->log("프로필 저장 완료", "success", "twitter");
