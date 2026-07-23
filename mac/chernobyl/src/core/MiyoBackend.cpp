@@ -12415,6 +12415,53 @@ void MiyoBackend::stopLocalLlm()
     getLlmStatus();
 }
 
+// 로컬 AI 와 대화 — 수리 도우미. historyJson = [{role,content}...]. 응답은 onLlmReply(text).
+void MiyoBackend::llmChat(const QString &historyJson)
+{
+    const QJsonArray history = QJsonDocument::fromJson(historyJson.toUtf8()).array();
+    QThread *t = QThread::create([this, history]() {
+        // AI 미가동이면 자동 기동 후 로딩 대기
+        HttpClient probe;
+        if (!probe.get("http://127.0.0.1:8737/v1/models").isOk()) {
+            QMetaObject::invokeMethod(this, [this]() { log("AI 가 꺼져 있어 기동합니다...", "info", "settings"); startLocalLlm(QString()); }, Qt::QueuedConnection);
+            for (int i = 0; i < 50; ++i) { QThread::msleep(500); HttpClient h; if (h.get("http://127.0.0.1:8737/v1/models").isOk()) break; }
+        }
+        // 자가진단 보고서를 컨텍스트로
+        QString report;
+        {
+            QFile f(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/selfrepair/last_report.txt");
+            if (f.open(QIODevice::ReadOnly)) { report = QString::fromUtf8(f.readAll()).left(2000); f.close(); }
+        }
+        const QString sys = QString(
+            "당신은 카메라(Chernobyl) 데스크톱 다운로더 앱에 내장된 '수리 도우미' AI다. "
+            "사용자의 문제를 듣고 원인과 구체적 조치를 한국어로 간결히(6줄 이내) 안내하라. "
+            "앱의 자가수리 기능: ①설정→환경 복구(python_env 재시드) ②모듈 업데이트(pip) "
+            "③계정 토큰 자동 추출 ④yt-dlp 자동 갱신 ⑤자가진단(도구 검증). "
+            "권할 조치가 있으면 어떤 버튼을 누르라고 명확히 말하라.\n\n현재 자가진단 상태:\n%1")
+            .arg(report.isEmpty() ? QStringLiteral("(보고서 없음)") : report);
+
+        QJsonArray messages;
+        messages.append(QJsonObject{{"role", "system"}, {"content", sys}});
+        for (const QJsonValue &v : history) messages.append(v);
+        QJsonObject body{{"model", "default"}, {"messages", messages}, {"temperature", 0.3}, {"max_tokens", 400}};
+
+        HttpClient http;
+        HttpResponse r = http.postJson("http://127.0.0.1:8737/v1/chat/completions", body);
+        QString reply;
+        if (r.isOk())
+            reply = r.json().value("choices").toArray().first().toObject()
+                        .value("message").toObject().value("content").toString().trimmed();
+        if (reply.isEmpty())
+            reply = "⚠️ AI 응답을 받지 못했습니다. 설정 → 로컬 AI 에서 AI 가 켜져 있는지 확인하세요.";
+        QMetaObject::invokeMethod(this, [this, reply]() {
+            runJs(QString("onLlmReply(%1)").arg(
+                QString::fromUtf8(QJsonDocument(QJsonArray{reply}).toJson(QJsonDocument::Compact))));
+        }, Qt::QueuedConnection);
+    });
+    connect(t, &QThread::finished, t, &QObject::deleteLater);
+    t->start(QThread::LowPriority);
+}
+
 void MiyoBackend::upgradePython()
 {
     if (m_pythonBusy.exchange(true)) {
