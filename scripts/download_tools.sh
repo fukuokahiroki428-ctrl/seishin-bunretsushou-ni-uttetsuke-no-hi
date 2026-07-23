@@ -24,12 +24,23 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 dl() { curl -fL --retry 3 -s -o "$1" "$2"; }
 
-# ── yt-dlp (자체완결 PyInstaller 바이너리 — python 불필요) ──────────────────
-if [ ! -x yt-dlp ]; then
-    echo "▶ yt-dlp..."
-    dl yt-dlp "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
-    chmod +x yt-dlp
-fi
+# ── yt-dlp (번들 python 모듈 래퍼 — PyInstaller onefile 은 매 실행 ~18s 라 안 씀) ──
+#   실제 yt_dlp 모듈은 bundle_python.sh 가 python_env 에 pip install 한다.
+#   이 래퍼는 그 모듈을 호출(~0.5s). 위치 무관하게 python_env 후보를 순회.
+echo "▶ yt-dlp (python 모듈 래퍼)..."
+cat > yt-dlp <<'WRAP'
+#!/bin/sh
+DIR="$(cd "$(dirname "$0")" && pwd)"
+for P in \
+  "$DIR/../Resources/python_env/bin/python3" \
+  "$DIR/../Resources/python_env_arm64/bin/python3" \
+  "$HOME/Library/Application Support/Miyo/Chernobyl/python_env_arm64/bin/python3" \
+  "$HOME/Library/Application Support/Miyo/Chernobyl/python_env/bin/python3"; do
+  [ -x "$P" ] && exec "$P" -m yt_dlp "$@"
+done
+exec python3 -m yt_dlp "$@"
+WRAP
+chmod +x yt-dlp
 
 # ── ffmpeg (static — dylib 의존 없음) ──────────────────────────────────────
 if [ ! -x ffmpeg ]; then
