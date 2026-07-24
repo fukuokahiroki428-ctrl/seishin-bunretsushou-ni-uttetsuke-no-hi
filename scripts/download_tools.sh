@@ -30,13 +30,15 @@ dl() { curl -fL --retry 3 -s -o "$1" "$2"; }
 echo "▶ yt-dlp (python 모듈 래퍼)..."
 cat > yt-dlp <<'WRAP'
 #!/bin/sh
+# ★ .pyc 를 서명된 앱 번들 안에 쓰면 codesign 봉인이 깨져 macOS 가 앱을 죽인다.
+#   → 쓰기가능 python_env 를 '먼저' 쓰고, 어떤 경우에도 bytecode 를 남기지 않는다.
+export PYTHONDONTWRITEBYTECODE=1
 DIR="$(cd "$(dirname "$0")" && pwd)"
 for P in \
-  "$DIR/../Resources/python_env/bin/python3" \
-  "$DIR/../python_env/bin/python3" \
-  "$DIR/../Resources/python_env_arm64/bin/python3" \
   "$HOME/Library/Application Support/Miyo/Chernobyl/python_env_arm64/bin/python3" \
-  "$HOME/Library/Application Support/Miyo/Chernobyl/python_env/bin/python3"; do
+  "$HOME/Library/Application Support/Miyo/Chernobyl/python_env/bin/python3" \
+  "$DIR/../Resources/python_env/bin/python3" \
+  "$DIR/../python_env/bin/python3"; do
   [ -x "$P" ] && exec "$P" -m yt_dlp "$@"
 done
 exec python3 -m yt_dlp "$@"
