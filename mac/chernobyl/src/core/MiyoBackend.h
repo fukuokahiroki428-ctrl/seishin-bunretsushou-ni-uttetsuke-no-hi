@@ -62,6 +62,7 @@ public slots:
     void stopLocalLlm();                            // 우리가 띄운 서버 종료
     void getLlmStatus();                            // JS onLlmStatus(json) 로 상태·모델목록 통지
     void llmChat(const QString &historyJson);       // 로컬 AI 와 대화(수리 도우미) — JS onLlmReply(text)
+    void openLlmTerminal();                          // 오픈클로를 Terminal.app 대화형 REPL 로 띄움
 
     // Check if any collection is running
     bool isAnyRunning() const;

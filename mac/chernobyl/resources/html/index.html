@@ -2323,6 +2323,7 @@
                             <select class="input" id="llm-model" style="max-width:210px;height:34px;"></select>
                             <button class="btn btn-primary btn-sm" id="llm-start-btn" onclick="startLocalLlm()">AI 켜기</button>
                             <button class="btn btn-secondary btn-sm" id="llm-stop-btn" onclick="stopLocalLlm()" style="display:none;">끄기</button>
+                            <button class="btn btn-secondary btn-sm" id="llm-term-btn" onclick="openLlmTerminal()" title="오픈클로를 터미널 창에서 대화형으로 엽니다">🖥 터미널로 열기</button>
                         </div>
                         <p style="font-size:11px;color:var(--text-tertiary);margin-top:7px;">
                             엔드포인트 127.0.0.1:8737 · 첫 기동은 모델 로딩에 수 초 걸립니다. 터미널 수동 기동도 가능(README).
@@ -5082,6 +5083,13 @@
             if (p) { p.textContent = '기동 중…'; p.style.background = 'var(--accent-bg)'; p.style.color = 'var(--accent)'; }
         }
         function stopLocalLlm() { if (backend) backend.stopLocalLlm(); }
+        // 오픈클로를 별도 터미널 창에서 대화형으로 — 서버가 꺼져 있으면 백엔드가 먼저 기동
+        function openLlmTerminal() {
+            if (!backend) return;
+            backend.openLlmTerminal();
+            var p = document.getElementById('llm-status-pill');
+            if (p && /확인|꺼짐|중지|없음/.test(p.textContent)) { p.textContent = '기동 중…'; p.style.background = 'var(--accent-bg)'; p.style.color = 'var(--accent)'; }
+        }
         function onLlmStatus(s) {
             var pill = document.getElementById('llm-status-pill'), sel = document.getElementById('llm-model'),
                 startB = document.getElementById('llm-start-btn'), stopB = document.getElementById('llm-stop-btn');
