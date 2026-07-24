@@ -12462,6 +12462,200 @@ void MiyoBackend::llmChat(const QString &historyJson)
     t->start(QThread::LowPriority);
 }
 
+// ═════════════════════════════════════════════════════════════════════════
+// openLlmTerminal — 오픈클로(로컬 LLM)를 Terminal.app 대화형 REPL 로 띄운다.
+//   기존 openTerminalLog 는 로그를 tail 하는 '단방향' 뷰어였다. 이건 사용자가
+//   직접 타이핑해 로컬 AI 와 대화하는 '양방향' 셸 (127.0.0.1:8737 /v1/chat).
+//   REPL 은 stdlib(json/urllib/sys/os) 만 쓰는 python 클라이언트 → 번들/시스템
+//   python 아무거나 실행 가능. 서버가 꺼져 있으면 먼저 기동하고 REPL 이 폴링 대기.
+// ═════════════════════════════════════════════════════════════════════════
+void MiyoBackend::openLlmTerminal()
+{
+    // 1) 서버가 꺼져 있으면 먼저 기동 (REPL 이 준비될 때까지 폴링하므로 논블로킹)
+    if (!(m_llmProc && m_llmProc->state() != QProcess::NotRunning)) {
+        log("🖥 오픈클로 터미널 — AI 서버를 기동합니다 (모델 로딩에 수 초 소요)...", "info", "settings");
+        startLocalLlm(QString());
+    } else {
+        log("🖥 오픈클로 터미널을 엽니다...", "info", "settings");
+    }
+
+    const QString base = Common::resolveTempBase(m_config ? m_config->tempDir() : QString());
+    const QString dir  = base + "/abiwa_openclaude";
+    QDir().mkpath(dir);
+
+    const QString replPath   = dir + "/openclaude_repl.py";
+    const QString reportPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                               + "/selfrepair/last_report.txt";
+
+    // ── 대화형 REPL 클라이언트 (stdlib only) — SSE 스트리밍으로 토큰 실시간 출력 ──
+    static const char *REPL_PY = R"PYEOF(#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# 오픈클로 대화형 터미널 — 카메라(Chernobyl) 내장 로컬 LLM 클라이언트.
+# 127.0.0.1:8737 (llama-server, OpenAI 호환) 와 SSE 스트리밍으로 대화한다.
+import json, os, sys, time, urllib.request
+try:
+    import readline  # 화살표/히스토리 줄편집 (없는 플랫폼은 무시)
+except Exception:
+    pass
+
+BASE   = "http://127.0.0.1:8737"
+REPORT = os.environ.get("OPENCLAUDE_REPORT", "")
+C = {"reset":"\033[0m","dim":"\033[90m","user":"\033[1;35m","ai":"\033[1;36m",
+     "ok":"\033[1;32m","warn":"\033[1;33m","err":"\033[1;31m","brand":"\033[1;35m"}
+
+def ready(timeout=180):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        try:
+            urllib.request.urlopen(BASE + "/v1/models", timeout=2).read()
+            return True
+        except Exception:
+            sys.stdout.write("."); sys.stdout.flush(); time.sleep(1)
+    return False
+
+def report_text():
+    if REPORT and os.path.exists(REPORT):
+        try:
+            with open(REPORT, encoding="utf-8", errors="replace") as f:
+                return f.read()[:2000]
+        except Exception:
+            pass
+    return "(보고서 없음)"
+
+SYS = ("당신은 카메라(Chernobyl) 데스크톱 다운로더 앱에 내장된 로컬 수리 도우미 AI '오픈클로'다. "
+       "사용자의 문제를 듣고 원인과 구체적 조치를 한국어로 간결히 안내하라. "
+       "앱의 자가수리 기능: (1)설정→환경 복구(python_env 재시드) (2)모듈 업데이트(pip) "
+       "(3)계정 토큰 자동 추출 (4)yt-dlp 자동 갱신 (5)자가진단(도구 검증). "
+       "권할 조치가 있으면 어떤 버튼을 누르라고 명확히 말하라.\n\n현재 자가진단 상태:\n" + report_text())
+
+def stream(messages):
+    body = json.dumps({"model":"default","messages":messages,"temperature":0.3,
+                       "max_tokens":700,"stream":True}).encode("utf-8")
+    req = urllib.request.Request(BASE + "/v1/chat/completions", body,
+                                 {"Content-Type":"application/json"})
+    full = ""
+    try:
+        with urllib.request.urlopen(req, timeout=600) as r:
+            for raw in r:
+                line = raw.decode("utf-8","replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    delta = json.loads(data)["choices"][0]["delta"].get("content","")
+                except Exception:
+                    continue
+                if delta:
+                    sys.stdout.write(delta); sys.stdout.flush(); full += delta
+    except Exception as e:
+        sys.stdout.write(C["err"] + "\n[연결 오류] " + str(e) + C["reset"])
+    return full
+
+def main():
+    os.system("clear")
+    print(C["brand"] + "  +-----------------------------------------------+")
+    print("  |   오픈클로 - 카메라 내장 로컬 AI (오프라인)      |")
+    print("  +-----------------------------------------------+" + C["reset"])
+    print(C["dim"] + "  엔드포인트 127.0.0.1:8737 · 종료: exit / quit / 종료 / Ctrl-D" + C["reset"])
+    sys.stdout.write(C["dim"] + "  AI 준비 대기 중" + C["reset"]); sys.stdout.flush()
+    if not ready():
+        print(C["err"] + "\n  AI 서버(127.0.0.1:8737)에 연결할 수 없습니다.\n"
+              "  앱의 설정 → 로컬 AI 에서 'AI 켜기' 를 먼저 눌러주세요." + C["reset"])
+        try: input("\n  엔터를 누르면 닫힙니다...")
+        except Exception: pass
+        return
+    print(C["ok"] + " 준비 완료!" + C["reset"])
+
+    messages = [{"role":"system","content":SYS}]
+    while True:
+        try:
+            user = input("\n" + C["user"] + "너 > " + C["reset"])
+        except (EOFError, KeyboardInterrupt):
+            print(); break
+        u = user.strip()
+        if not u:
+            continue
+        if u.lower() in ("exit","quit") or u in ("종료","끝"):
+            break
+        messages.append({"role":"user","content":user})
+        sys.stdout.write(C["ai"] + "오픈클로 > " + C["reset"]); sys.stdout.flush()
+        reply = stream(messages)
+        print()
+        messages.append({"role":"assistant","content":reply})
+    print(C["dim"] + "\n  오픈클로를 종료합니다. 터미널을 닫아도 됩니다." + C["reset"])
+
+if __name__ == "__main__":
+    main()
+)PYEOF";
+    {
+        QFile f(replPath);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Text)) { f.write(REPL_PY); f.close(); }
+        else { log("❌ 오픈클로 REPL 파일 생성 실패", "error", "settings"); return; }
+    }
+
+#ifdef Q_OS_WIN
+    const QString bundlePyW   = Common::bundledResourcesDir() + "/python_env/python.exe";
+    QString scriptPath = dir + "/openclaude.bat";
+    QFile script(scriptPath);
+    if (script.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QString c;
+        c += "@echo off\r\n";
+        c += "chcp 65001 >nul\r\n";
+        c += "title 오픈클로 - 카메라 로컬 AI\r\n";
+        c += "set PYTHONDONTWRITEBYTECODE=1\r\n";
+        c += "set OPENCLAUDE_REPORT=" + QDir::toNativeSeparators(reportPath) + "\r\n";
+        c += "set REPL=" + QDir::toNativeSeparators(replPath) + "\r\n";
+        c += "for %%P in (\"" + QDir::toNativeSeparators(bundlePyW) + "\") do if exist \"%%~P\" (\"%%~P\" \"%REPL%\" & goto :done)\r\n";
+        c += "python \"%REPL%\"\r\n";
+        c += ":done\r\n";
+        c += "echo.\r\n";
+        c += "pause >nul\r\n";
+        script.write(c.toUtf8());
+        script.close();
+    }
+    QProcess::startDetached("cmd.exe", {"/c", "start", "오픈클로", QDir::toNativeSeparators(scriptPath)});
+#else
+    // python 후보: 쓰기가능 env → 번들(arch) → 번들 → 시스템 (전부 앱 내부 우선)
+    const QString userPy    = Common::userPythonEnvDir() + "/bin/python3";
+    const QString bundlePyA = Common::bundledResourcesDir() + "/python_env_arm64/bin/python3";
+    const QString bundlePy  = Common::bundledResourcesDir() + "/python_env/bin/python3";
+    QString scriptPath = dir + "/openclaude.command";
+    QFile script(scriptPath);
+    if (script.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QString c;
+        c += "#!/bin/bash\n";
+        c += "export PYTHONDONTWRITEBYTECODE=1\n";       // 번들 python 이면 __pycache__ 로 서명 봉인 깨짐 방지
+        c += "export OPENCLAUDE_REPORT='" + reportPath + "'\n";
+        c += "REPL='" + replPath + "'\n";
+        c += "for P in '" + userPy + "' '" + bundlePyA + "' '" + bundlePy + "' /usr/bin/python3; do\n";
+        c += "  if [ -x \"$P\" ]; then exec \"$P\" \"$REPL\"; fi\n";
+        c += "done\n";
+        c += "if command -v python3 >/dev/null 2>&1; then exec python3 \"$REPL\"; fi\n";
+        c += "echo '❌ python3 을 찾지 못했습니다. 터미널을 닫아주세요.'; read -n 1\n";
+        script.write(c.toUtf8());
+        script.close();
+        script.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner |
+                              QFileDevice::ReadGroup | QFileDevice::ExeGroup |
+                              QFileDevice::ReadOther | QFileDevice::ExeOther);
+        QProcess::execute("/bin/chmod", {"+x", scriptPath});
+    }
+    // Terminal.app 실행 — quarantine/provenance/sandbox 회피 (openTerminalLog 와 동일 전략)
+    QProcess::execute("xattr", {"-c", scriptPath});
+    bool opened = QProcess::startDetached("/usr/bin/open", {"-a", "Terminal.app", scriptPath});
+    if (!opened) opened = QProcess::startDetached("/usr/bin/open", {scriptPath});
+    if (!opened) {
+        QString esc = QString(scriptPath).replace("\\", "\\\\").replace("\"", "\\\"");
+        QString appleScript = QString(
+            "tell application \"Terminal\"\n  activate\n  do script \"clear; '%1'; exit\"\nend tell").arg(esc);
+        opened = QProcess::startDetached("/usr/bin/osascript", {"-e", appleScript});
+    }
+    if (!opened)
+        log("❌ Terminal.app 실행에 실패했습니다.", "error", "settings");
+#endif
+}
+
 void MiyoBackend::upgradePython()
 {
     if (m_pythonBusy.exchange(true)) {
