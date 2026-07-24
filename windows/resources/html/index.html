@@ -4092,6 +4092,7 @@
             backend = channel.objects.backend;
             // ★ 별도 IIFE (예: 로그인 대기 배너)에서 접근 가능하게 window 글로벌로도 노출
             window.backend = backend;
+            try{ if (backend && backend.setWindowChrome) backend.setWindowChrome(!!window._chromeDark); }catch(e){}
             // ★ PEN(팬을 잘 쓰고 싶다) 통합 — 사이트 미러 백엔드. 로그/콜백은 같은 webView 로 자동 전달.
             window.penBackend = channel.objects.penBackend;
             if (backend) backend.loadConfig();
@@ -7033,6 +7034,7 @@
             var el=document.documentElement, r=mode;
             if(mode==='auto') r=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';
             el.setAttribute('data-theme',r);
+            try{ window._chromeDark = (r==='dark'); if(window.backend && backend.setWindowChrome) backend.setWindowChrome(window._chromeDark); }catch(e){}
             try{localStorage.setItem('ntTheme',mode);}catch(e){}
             var seg=document.getElementById('themeSeg');
             if(seg){ seg.querySelectorAll('.theme-seg-btn').forEach(function(x){ x.classList.toggle('active', x.getAttribute('data-theme-mode')===mode); }); }

@@ -12662,6 +12662,12 @@ if __name__ == "__main__":
 #endif
 }
 
+// 웹의 테마 토글(라이트/다크)에서 호출 — 네이티브 창 크롬을 앱 상단색과 맞춰 흰 띠 숨김.
+void MiyoBackend::setWindowChrome(bool dark)
+{
+    if (m_window) m_window->setChromeTheme(dark);
+}
+
 // 드롭다운에서 모델을 바꾸면 호출 — 이후 자동기동(터미널/채팅/자동수리)이 이 모델을 쓴다.
 void MiyoBackend::setLlmModel(const QString &hint)
 {

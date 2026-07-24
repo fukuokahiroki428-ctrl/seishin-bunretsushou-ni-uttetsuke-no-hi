@@ -42,6 +42,10 @@ protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
 
+public:
+    // 웹(테마 토글)에서 호출 — 네이티브 창 배경/외관을 앱 상단색과 맞춰 타이틀바 띠를 숨김
+    void setChromeTheme(bool dark);
+
 private:
     void setupMenu();
     void applyDarkTitlebar();
