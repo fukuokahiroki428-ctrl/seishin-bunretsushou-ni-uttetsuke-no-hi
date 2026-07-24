@@ -149,8 +149,10 @@ MainWindow::MainWindow(QWidget *parent)
     // Menu bar
     setupMenu();
 
-    // Apply dark titlebar after show
+    // Apply titlebar styling after show. 0ms 는 너무 일러 Qt 가 styleMask 를 되돌릴 수
+    // 있어(FullSizeContentView 풀림 → 흰 띠) 창이 완전히 realize 된 뒤 한 번 더 적용.
     QTimer::singleShot(0, this, &MainWindow::applyDarkTitlebar);
+    QTimer::singleShot(500, this, &MainWindow::applyDarkTitlebar);
 
     // Dock 메뉴 생성 (macOS Dock 우클릭 시 표시)
     m_dockMenu = createDockMenu();
@@ -460,6 +462,27 @@ void MainWindow::applyDarkTitlebar()
 
     SEL setAppearanceSel = sel_registerName("setAppearance:");
     reinterpret_cast<void (*)(id, SEL, id)>(objc_msgSend)(app, setAppearanceSel, lightAppearance);
+
+    // ★ 통합(일체형) 타이틀바 — Claude 데스크톱처럼 흰 타이틀바 띠를 없애고 콘텐츠가
+    //   창 최상단까지 올라오게 한다. 신호등(빨/노/초) 버튼은 콘텐츠 위에 떠 있고,
+    //   그 자리는 .sidebar-header 의 padding-top:52px 가 이미 비워 두었다.
+    //     titlebarAppearsTransparent=YES + titleVisibility=Hidden + FullSizeContentView
+    {
+        id nsView = reinterpret_cast<id>(winId());
+        if (nsView) {
+            id win = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(nsView, sel_registerName("window"));
+            if (win) {
+                reinterpret_cast<void (*)(id, SEL, BOOL)>(objc_msgSend)(
+                    win, sel_registerName("setTitlebarAppearsTransparent:"), YES);
+                reinterpret_cast<void (*)(id, SEL, long)>(objc_msgSend)(
+                    win, sel_registerName("setTitleVisibility:"), 1 /* NSWindowTitleHidden */);
+                unsigned long mask = reinterpret_cast<unsigned long (*)(id, SEL)>(objc_msgSend)(
+                    win, sel_registerName("styleMask"));
+                reinterpret_cast<void (*)(id, SEL, unsigned long)>(objc_msgSend)(
+                    win, sel_registerName("setStyleMask:"), mask | (1UL << 15) /* FullSizeContentView */);
+            }
+        }
+    }
 #elif defined(Q_OS_WIN)
     // Windows 10/11: light titlebar
     HWND hwnd = reinterpret_cast<HWND>(winId());
