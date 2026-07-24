@@ -192,6 +192,21 @@
             box-shadow: 0 0 0 2px rgba(0,122,255,0.15);
             font-weight: 400;
         }
+        /* 별명(별칭) — 아이디를 알아보기 쉽게. 아이디칸보다 작고 부차적으로. */
+        .batch-target-nick {
+            flex: 0 1 104px; min-width: 68px;
+            height: 26px; padding: 0 8px;
+            font-size: 12px; font-weight: 500;
+            border: 1px solid var(--border-light);
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            border-radius: 4px;
+            transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+        }
+        .batch-target-nick::placeholder { color: var(--text-tertiary); font-weight: 400; }
+        .batch-target-nick:hover { border-color: var(--border); }
+        .batch-target-nick:focus { background: var(--bg); border-color: var(--accent); color: var(--text); }
+        .batch-target-item.disabled .bti-main .batch-target-nick { opacity: 0.5; }
         .batch-account-sel {
             /* ★ 예전엔 flex-shrink:0 이라 이 드롭다운이 폭을 다 먹고 유저명이 22px 로
                찌그러졌다. 좁아지면 '이름'이 아니라 '이쪽'이 줄어야 한다. */
@@ -2793,6 +2808,20 @@
                         };
                         main.appendChild(inp);
 
+                        // 별명 — 알아보기 쉬운 이름(선택). 수집 로직엔 영향 없고 표시/식별용.
+                        const nick = document.createElement('input');
+                        nick.type = 'text';
+                        nick.className = 'input batch-target-nick';
+                        nick.placeholder = '별명';
+                        nick.value = entry.nickname || '';
+                        nick.title = '별명 — 이 대상을 알아보기 쉽게 (선택)';
+                        nick.onchange = function(){ updatePlatformTargetNickname(plat, i, this.value); };
+                        nick.onkeydown = function(ev){
+                            if (ev.key === 'Enter') { ev.preventDefault(); this.blur(); }
+                            else if (ev.key === 'Escape') { this.value = entry.nickname || ''; this.blur(); }
+                        };
+                        main.appendChild(nick);
+
                         // 계정 선택 — 편집 가능한 select
                         const sel = document.createElement('select');
                         sel.className = 'input batch-account-sel';
@@ -2926,6 +2955,15 @@
             platformTargets[plat][idx].target = clean;
             saveConfig();
             appendLog('대상 수정: #'+(idx+1)+' → '+clean, 'info', plat==='bluesky'?'bsky':plat);
+        }
+        // 별명 설정 — 표시/식별용(수집 로직엔 영향 없음). platformTargets 에 저장되어 자동 영속.
+        function updatePlatformTargetNickname(plat, idx, value) {
+            if (!platformTargets[plat] || !platformTargets[plat][idx]) return;
+            const nn = String(value||'').trim();
+            platformTargets[plat][idx].nickname = nn;
+            saveConfig();
+            const t = platformTargets[plat][idx].target;
+            appendLog(nn ? ('별명 지정: '+t+' → “'+nn+'”') : ('별명 해제: '+t), 'info', plat==='bluesky'?'bsky':plat);
         }
         // ★ 항목 활성/비활성 토글 — 비활성 항목은 다중 큐에서 스킵
         function togglePlatformTargetEnabled(plat, idx, enabled, cbEl) {
