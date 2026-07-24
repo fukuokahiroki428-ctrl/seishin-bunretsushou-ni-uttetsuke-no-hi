@@ -60,6 +60,7 @@ public slots:
     void startLocalLlm(const QString &modelHint);
     void stopLocalLlm();
     void getLlmStatus();
+    void llmChat(const QString &historyJson);       // 로컬 AI 와 대화(수리 도우미) — JS onLlmReply(text)
 
     // Check if any collection is running
     bool isAnyRunning() const;
