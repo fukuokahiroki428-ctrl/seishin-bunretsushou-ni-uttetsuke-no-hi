@@ -5081,10 +5081,13 @@
                 var cur = sel.value; sel.innerHTML = '';
                 s.models.forEach(function (m) {
                     var o = document.createElement('option'); o.value = m;
-                    o.textContent = m.replace('qwen2.5-', 'Qwen2.5 ').replace('-instruct-q4_k_m.gguf', '').replace(/-00001-of-\d+/, '').toUpperCase();
+                    o.textContent = m.replace(/\.gguf$/, '').replace(/-\d{5}-of-\d{5}$/, '')
+                        .replace(/-instruct-q4_k_m$/, '').replace('qwen2.5-', 'Qwen2.5 ').toUpperCase();
                     sel.appendChild(o);
                 });
-                if (cur) sel.value = cur;
+                // 기본 선택 = 코드 특화 중 가장 큰 모델(수리 품질), 없으면 첫 번째
+                var best = s.models.filter(function (m) { return /coder/i.test(m); }).sort().pop();
+                sel.value = cur || best || s.models[0];
             }
             if (!s.hasServer) { pill.textContent = '미탑재'; pill.style.background = 'var(--bg-tertiary)'; pill.style.color = 'var(--text-tertiary)'; if (startB) startB.disabled = true; return; }
             if (s.running) {
