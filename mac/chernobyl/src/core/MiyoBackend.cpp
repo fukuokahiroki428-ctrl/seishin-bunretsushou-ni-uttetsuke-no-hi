@@ -12364,9 +12364,15 @@ void MiyoBackend::startLocalLlm(const QString &modelHint)
     }
     const QStringList heads = bundledLlmModelHeads();
     if (heads.isEmpty()) { log("❌ 번들 모델(*.gguf)이 없습니다.", "error", "settings"); getLlmStatus(); return; }
-    QString model = heads.first();
-    if (!modelHint.isEmpty())
-        for (const QString &h : heads) if (h.contains(modelHint, Qt::CaseInsensitive)) { model = h; break; }
+    // 선택 모델 기억 — 이후 자동기동(터미널/채팅/자동수리)이 같은 모델을 쓴다.
+    if (!modelHint.isEmpty()) m_llmModelHint = modelHint;
+    const QString effHint = m_llmModelHint;
+    // 기본값: 힌트 없으면 '코드 특화 중 가장 큰' 모델(수리 품질↑). 없으면 첫 번째.
+    QString model;
+    { QStringList coders; for (const QString &h : heads) if (h.contains("coder", Qt::CaseInsensitive)) coders << h;
+      coders.sort(); model = coders.isEmpty() ? heads.first() : coders.last(); }
+    if (!effHint.isEmpty())
+        for (const QString &h : heads) if (h.contains(effHint, Qt::CaseInsensitive)) { model = h; break; }
 
     log(QString("🩺 로컬 AI 기동 중 (%1)...").arg(model), "info", "settings");
     QFile::setPermissions(server,
@@ -12423,7 +12429,7 @@ void MiyoBackend::llmChat(const QString &historyJson)
         // AI 미가동이면 자동 기동 후 로딩 대기
         HttpClient probe;
         if (!probe.get("http://127.0.0.1:8737/v1/models").isOk()) {
-            QMetaObject::invokeMethod(this, [this]() { log("AI 가 꺼져 있어 기동합니다...", "info", "settings"); startLocalLlm(QString()); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(this, [this]() { log("AI 가 꺼져 있어 기동합니다...", "info", "settings"); startLocalLlm(m_llmModelHint); }, Qt::QueuedConnection);
             for (int i = 0; i < 50; ++i) { QThread::msleep(500); HttpClient h; if (h.get("http://127.0.0.1:8737/v1/models").isOk()) break; }
         }
         // 자가진단 보고서를 컨텍스트로
@@ -12474,7 +12480,7 @@ void MiyoBackend::openLlmTerminal()
     // 1) 서버가 꺼져 있으면 먼저 기동 (REPL 이 준비될 때까지 폴링하므로 논블로킹)
     if (!(m_llmProc && m_llmProc->state() != QProcess::NotRunning)) {
         log("🖥 오픈클로 터미널 — AI 서버를 기동합니다 (모델 로딩에 수 초 소요)...", "info", "settings");
-        startLocalLlm(QString());
+        startLocalLlm(m_llmModelHint);   // 드롭다운에서 고른 모델로 기동
     } else {
         log("🖥 오픈클로 터미널을 엽니다...", "info", "settings");
     }
@@ -12654,6 +12660,152 @@ if __name__ == "__main__":
     if (!opened)
         log("❌ Terminal.app 실행에 실패했습니다.", "error", "settings");
 #endif
+}
+
+// 드롭다운에서 모델을 바꾸면 호출 — 이후 자동기동(터미널/채팅/자동수리)이 이 모델을 쓴다.
+void MiyoBackend::setLlmModel(const QString &hint)
+{
+    m_llmModelHint = hint;
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// autoRepair — AI(선택된 coder 모델)가 자가진단 보고서를 읽고, 실행할 '안전한'
+//   수리 동작을 스스로 골라 자동 실행한다. AI 는 결정만 하고, 실제 동작은 이미
+//   검증된 결정론적 수리 슬롯(repairPython/updateModules/upgradePython/
+//   refreshAllTokens)만 부른다 — 임의 코드 실행/파일 편집은 하지 않는다(안전).
+//   ※ python 계열 3동작은 m_pythonBusy 를 공유(배타) → 최대 1개만, 토큰갱신은 병행.
+// ═════════════════════════════════════════════════════════════════════════
+void MiyoBackend::autoRepair()
+{
+    if (m_autoRepairBusy.exchange(true)) {
+        log("AI 자동 수리가 이미 진행 중입니다.", "warning", "settings");
+        return;
+    }
+    const QString base = "http://127.0.0.1:8737";
+
+    QThread *t = QThread::create([this, base]() {
+        auto say = [this](const QString &phase, const QString &msg) {
+            QMetaObject::invokeMethod(this, [this, phase, msg]() {
+                runJs(QString("onAutoRepair(%1)").arg(QString::fromUtf8(
+                    QJsonDocument(QJsonArray{phase, msg}).toJson(QJsonDocument::Compact))));
+            }, Qt::QueuedConnection);
+        };
+        say("start", "");
+
+        // 1) 서버 준비 (드롭다운에서 고른 수리 모델). 꺼져 있으면 기동 후 대기.
+        HttpClient probe;
+        if (!probe.get(base + "/v1/models").isOk()) {
+            QMetaObject::invokeMethod(this, [this]() { startLocalLlm(m_llmModelHint); }, Qt::QueuedConnection);
+            say("info", "AI(수리 모델)를 기동하는 중입니다. 모델 로딩에 수 초~수십 초 걸립니다…");
+            bool up = false;
+            for (int i = 0; i < 240; ++i) { QThread::msleep(500); HttpClient h; if (h.get(base + "/v1/models").isOk()) { up = true; break; } }
+            if (!up) { say("error", "AI 서버 기동에 실패했습니다. 설정 → 로컬 AI 에서 'AI 켜기'를 먼저 눌러보세요."); m_autoRepairBusy = false; say("done", ""); return; }
+        }
+
+        // 2) 자가진단 보고서 확보
+        QString report;
+        { QFile f(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/selfrepair/last_report.txt");
+          if (f.open(QIODevice::ReadOnly)) { report = QString::fromUtf8(f.readAll()).left(3000); f.close(); } }
+        if (report.trimmed().isEmpty())
+            report = "(자가진단 보고서가 아직 없습니다. 도구/파이썬 환경/토큰의 일반적 상태를 점검하라.)";
+        say("info", "현재 상태를 AI 가 분석하고 수리 계획을 세우는 중입니다…");
+
+        // 3) AI 에게 '어떤 수리를 돌릴지' JSON 으로만 결정하게 한다.
+        const QString sys = QString::fromUtf8(
+            "너는 카메라(Chernobyl) 앱의 자동 수리 결정 엔진이다. 아래 '자가진단'을 읽고 실행할 수리 동작을 고른다.\n"
+            "선택 가능한 동작(정확히 이 영어 이름만 사용):\n"
+            "- repairPython : 파이썬 실행환경이 깨졌을 때(모듈 import 실패, twikit/atproto 없음, site-packages 손상)\n"
+            "- updateModules : 모듈이 오래되어 수집이 실패할 때 pip 업그레이드(twikit, yt-dlp, atproto 등)\n"
+            "- upgradePython : 파이썬 인터프리터 자체가 문제일 때 최신으로 재설치\n"
+            "- refreshAllTokens : 로그인/토큰/쿠키 만료로 수집이 실패할 때 브라우저에서 토큰 재추출\n"
+            "규칙: 파이썬 계열(repairPython/updateModules/upgradePython)은 최대 1개만 고른다. "
+            "진단에 ❌·실패·Traceback·No module·not installed 같은 '명백한 오류 신호'가 없으면 "
+            "반드시 actions 를 빈 배열로 하라 — 모두 [OK] 이면 정상이므로 아무것도 고치지 마라(정상인데 고치면 해롭다). "
+            "확실하지 않으면 넣지 마라.\n"
+            "반드시 아래 JSON 만 출력하라. 다른 말·설명·코드블록 금지.\n"
+            "{\"actions\":[\"...\"],\"reason\":\"한국어 한두 문장\"}\n\n자가진단:\n%1").arg(report);
+
+        QJsonArray messages;
+        messages.append(QJsonObject{{"role", "system"}, {"content", sys}});
+        messages.append(QJsonObject{{"role", "user"}, {"content", "위 자가진단에 맞는 수리 동작을 JSON 으로 결정하라."}});
+        QJsonObject body{{"model", "default"}, {"messages", messages}, {"temperature", 0.1}, {"max_tokens", 300}};
+
+        HttpClient http;
+        HttpResponse r = http.postJson(base + "/v1/chat/completions", body);
+        QString content;
+        if (r.isOk())
+            content = r.json().value("choices").toArray().first().toObject()
+                          .value("message").toObject().value("content").toString();
+
+        // 4) 응답에서 첫 {...} 블록만 JSON 파싱
+        QStringList actions; QString reason;
+        {
+            const int a = content.indexOf('{'), b = content.lastIndexOf('}');
+            if (a >= 0 && b > a) {
+                QJsonParseError pe;
+                const QJsonDocument doc = QJsonDocument::fromJson(content.mid(a, b - a + 1).toUtf8(), &pe);
+                if (pe.error == QJsonParseError::NoError) {
+                    const QJsonObject o = doc.object();
+                    reason = o.value("reason").toString();
+                    // 작은 모델이 프롬프트 예시문("한국어 한두 문장")을 그대로 베끼면 제거
+                    if (reason.contains(QStringLiteral("한국어 한두")) || reason.contains(QStringLiteral("한두 문장"))) reason.clear();
+                    for (const QJsonValue &v : o.value("actions").toArray()) actions << v.toString().trimmed();
+                }
+            }
+        }
+        if (content.isEmpty()) { say("error", "AI 응답을 받지 못했습니다. AI 가 켜져 있는지 확인하세요."); m_autoRepairBusy = false; say("done", ""); return; }
+
+        // 5) 화이트리스트 검증 — python 계열은 첫 1개만, 토큰갱신은 병행 허용
+        const QStringList pyOps{"repairPython", "updateModules", "upgradePython"};
+        QString pyAction; bool doTokens = false;
+        for (const QString &act : actions) {
+            if (act == "refreshAllTokens") doTokens = true;
+            else if (pyOps.contains(act) && pyAction.isEmpty()) pyAction = act;
+        }
+        QStringList plan;
+        if (!pyAction.isEmpty()) plan << pyAction;
+        if (doTokens) plan << "refreshAllTokens";
+
+        // ★ 결정론적 안전 가드: 진단에 '명백한 실패 신호'가 없으면 모델이 무엇을 골랐든 수리하지 않는다.
+        //   (작은 모델이 정상([OK]) 상태에서도 updateModules 를 고르는 오탐을 원천 차단.)
+        if (!plan.isEmpty()) {
+            static const QStringList failMarks{
+                QStringLiteral("❌"), QStringLiteral("실패"), QStringLiteral("Traceback"),
+                QStringLiteral("No module"), QStringLiteral("ModuleNotFound"),
+                QStringLiteral("not installed"), QStringLiteral("[FAIL"),
+                QStringLiteral("손상"), QStringLiteral("깨졌"), QStringLiteral("깨진")};
+            bool hasFail = false;
+            for (const QString &m : failMarks) if (report.contains(m, Qt::CaseInsensitive)) { hasFail = true; break; }
+            if (!hasFail) {
+                say("ok", "진단 결과 명백한 오류 신호가 없어 자동 수리를 건너뜁니다(정상). 실제 수집이 안 되면 위 대화창에서 증상을 알려주세요.");
+                m_autoRepairBusy = false; say("done", ""); return;
+            }
+        }
+
+        if (plan.isEmpty()) {
+            say("ok", reason.isEmpty()
+                ? "AI 판단: 자동으로 고칠 항목을 찾지 못했습니다. 증상이 있으면 위 대화창에서 구체적으로 물어보세요."
+                : ("AI 판단: 자동 수리 불필요 — " + reason));
+            m_autoRepairBusy = false; say("done", ""); return;
+        }
+
+        // 6) 계획 통지 후 실제 수리 슬롯 호출 (각 슬롯은 자체 스레드/busy-guard 로 안전)
+        say("plan", "AI 판단: [" + plan.join(", ") + "] 실행" + (reason.isEmpty() ? "" : ("\n이유: " + reason)));
+        for (const QString &act : plan) {
+            say("run", "▶ " + act);
+            QMetaObject::invokeMethod(this, [this, act]() {
+                if (act == "repairPython") repairPython();
+                else if (act == "updateModules") updateModules();
+                else if (act == "upgradePython") upgradePython();
+                else if (act == "refreshAllTokens") refreshAllTokens();
+            }, Qt::QueuedConnection);
+            QThread::msleep(400);
+        }
+        say("ok", "AI 자동 수리를 시작했습니다. 각 작업의 진행·결과는 아래 로그와 상태에 표시됩니다. 완료 후에도 안 되면 대화창에서 증상을 알려주세요.");
+        m_autoRepairBusy = false; say("done", "");
+    });
+    connect(t, &QThread::finished, t, &QObject::deleteLater);
+    t->start(QThread::LowPriority);
 }
 
 void MiyoBackend::upgradePython()
