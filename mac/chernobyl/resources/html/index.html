@@ -6306,5 +6306,32 @@
         if(window.matchMedia){ try{ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(){ if(cur()==='auto') applyTheme('auto'); }); }catch(e){} }
     })();
     </script>
+
+    <!-- ═══ Darkroom Console 리스킨 (노란색) — 기존 로직 무수정, 토큰/크롬만 override ═══ -->
+    <style id="darkroom-graft">
+    :root{
+      --bg:#EDE9E1 !important; --bg-secondary:#E4DFD5 !important; --bg-tertiary:#D8D1C4 !important;
+      --text:#23262B !important; --text-secondary:#5C616B !important; --text-tertiary:#8B909A !important;
+      --border:#DAD3C6 !important; --border-light:#E6E0D4 !important;
+      --accent:#CE8A11 !important; --accent-hover:#B5760B !important;
+      --accent-bg:rgba(206,138,17,.13) !important; --accent-soft:rgba(206,138,17,.13) !important;
+      --accent-ink:#2a2005; --card:#FBF9F4 !important;
+    }
+    html[data-theme="dark"]{
+      --bg:#0F1115 !important; --bg-secondary:#181B21 !important; --bg-tertiary:#21252C !important;
+      --text:#ECEAE3 !important; --text-secondary:#A0A6B0 !important; --text-tertiary:#6A707A !important;
+      --border:#2A2F38 !important; --border-light:#22262E !important;
+      --accent:#EFC03B !important; --accent-hover:#F2CB57 !important;
+      --accent-bg:rgba(239,192,59,.15) !important; --accent-soft:rgba(239,192,59,.15) !important;
+      --accent-ink:#2a2005; --card:#181B21 !important;
+    }
+    /* 노란 강조 위에는 어두운 글씨 (버튼/활성 배지·아이콘/셀렉트) */
+    .btn-primary, .btn-primary:hover, .nav-item.active .nav-icon, .nav-item.active .nav-badge,
+    .nav-icon, .nav-badge, .select-option:hover, .select-option.selected:hover { color: var(--accent-ink) !important; }
+    /* macOS frosted 크롬 — 하드코딩 밝은색 → 테마 반응 */
+    body.platform-mac .sidebar{ background: color-mix(in srgb, var(--bg-secondary) 86%, transparent) !important; border-right-color: var(--border-light) !important; }
+    body.platform-mac .toolbar{ background: color-mix(in srgb, var(--bg) 84%, transparent) !important; border-bottom-color: var(--border-light) !important; }
+    body.platform-mac .nav-item.active{ background: var(--accent-bg) !important; box-shadow:none !important; }
+    </style>
 </body>
 </html>
