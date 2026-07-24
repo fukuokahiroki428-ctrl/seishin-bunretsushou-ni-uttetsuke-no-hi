@@ -7075,8 +7075,9 @@
     .btn-primary, .btn-primary:hover, .nav-item.active .nav-icon, .nav-item.active .nav-badge,
     .nav-icon, .nav-badge, .select-option:hover, .select-option.selected:hover { color: var(--accent-ink) !important; }
     /* macOS frosted 크롬 — 하드코딩 밝은색 → 테마 반응 */
-    body.platform-mac .sidebar{ background: color-mix(in srgb, var(--bg-secondary) 86%, transparent) !important; border-right-color: var(--border-light) !important; }
-    body.platform-mac .toolbar{ background: color-mix(in srgb, var(--bg) 84%, transparent) !important; border-bottom-color: var(--border-light) !important; }
+    /* 사이드바·툴바·타이틀바를 같은 --bg 로 통일(이음선 제거) — 상단이 하나로 이어져 보이게 */
+    body.platform-mac .sidebar{ background: color-mix(in srgb, var(--bg) 90%, transparent) !important; border-right-color: transparent !important; }
+    body.platform-mac .toolbar{ background: color-mix(in srgb, var(--bg) 90%, transparent) !important; border-bottom-color: var(--border-light) !important; }
     body.platform-mac .nav-item.active{ background: var(--accent-bg) !important; box-shadow:none !important; }
     /* 테마 전환(라이트/다크/자동) — 활성 버튼: 노란 배경 위 흰 글씨가 안 읽혀 어둡게+굵게 */
     .theme-seg-btn.active{ color: var(--accent-ink) !important; font-weight:600 !important; }

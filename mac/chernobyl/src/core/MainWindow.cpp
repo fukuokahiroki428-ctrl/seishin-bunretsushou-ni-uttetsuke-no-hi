@@ -480,6 +480,12 @@ void MainWindow::applyDarkTitlebar()
                     win, sel_registerName("styleMask"));
                 reinterpret_cast<void (*)(id, SEL, unsigned long)>(objc_msgSend)(
                     win, sel_registerName("setStyleMask:"), mask | (1UL << 15) /* FullSizeContentView */);
+                // ★ FullSizeContentView 만으론 Qt 가 중앙 위젯을 '전체' 컨텐츠 영역으로 재배치하지
+                //   않아 상단에 타이틀바 높이(~28px)만큼 빈 띠가 남는다(웹 innerHeight < 창높이).
+                //   1px resize nudge 로 Qt 의 레이아웃을 강제 갱신 → 콘텐츠가 최상단까지 올라옴.
+                const QSize sz = size();
+                resize(sz.width(), sz.height() + 1);
+                resize(sz);
             }
         }
     }
