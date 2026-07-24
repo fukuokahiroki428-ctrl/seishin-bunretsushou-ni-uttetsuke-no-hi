@@ -3433,6 +3433,8 @@
             backend = channel.objects.backend;
             // ★ 별도 IIFE (예: 로그인 대기 배너)에서 접근 가능하게 window 글로벌로도 노출
             window.backend = backend;
+            // 백엔드 연결 시점에 네이티브 창 크롬을 현재 테마와 동기화(로드 초기 흰 띠 방지)
+            try{ if (backend && backend.setWindowChrome) backend.setWindowChrome(!!window._chromeDark); }catch(e){}
             if (backend) backend.loadConfig();
             // NAS/외장 버튼 자동 삽입
             const _tryAttachNas = () => {
@@ -6296,6 +6298,8 @@
             var r=mode;
             if(mode==='auto') r=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';
             document.documentElement.setAttribute('data-theme',r);
+            // 네이티브 창 크롬(타이틀바 색)을 앱 테마와 맞춰 흰 띠 숨김
+            try{ window._chromeDark = (r==='dark'); if(window.backend && backend.setWindowChrome) backend.setWindowChrome(window._chromeDark); }catch(e){}
             var seg=document.getElementById('themeSeg');
             if(seg){ seg.querySelectorAll('.theme-seg-btn').forEach(function(x){ x.classList.toggle('active', x.getAttribute('data-theme-mode')===mode); }); }
         }

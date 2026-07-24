@@ -60,7 +60,7 @@ MainWindow::MainWindow(QWidget *parent)
     //   이전: #0A0A0A (검은색) → 창 가장자리/타이틀바 주변에 검은 띠가 보임 → 사용자 불만
     setStyleSheet(R"(
         QMainWindow {
-            background-color: #ffffff;
+            background-color: #EDE9E1;
         }
         QDockWidget {
             background-color: #1A1A1A;
@@ -490,5 +490,38 @@ void MainWindow::applyDarkTitlebar()
     if (FAILED(DwmSetWindowAttribute(hwnd, 20, &useDarkMode, sizeof(useDarkMode)))) {
         DwmSetWindowAttribute(hwnd, 19, &useDarkMode, sizeof(useDarkMode));
     }
+#endif
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// setChromeTheme — 웹의 테마 토글(라이트/다크)에서 호출된다.
+//   투명 타이틀바 + '네이티브 창 배경색 = 앱 상단색' 으로 맞춰, 콘텐츠 위 흰 띠가
+//   앱 색과 동화되어 사라진 것처럼 보이게 한다(신호등 버튼은 그 위에 뜬다).
+//   FullSizeContentView 가 Qt 에서 콘텐츠를 끝까지 안 올려도 이 방식은 확실히 동작.
+// ─────────────────────────────────────────────────────────────────────
+void MainWindow::setChromeTheme(bool dark)
+{
+    const QString bg = dark ? QStringLiteral("#0F1115") : QStringLiteral("#EDE9E1");
+    setStyleSheet(QStringLiteral("QMainWindow { background-color: %1; }").arg(bg));
+#ifdef Q_OS_MACOS
+    id nsView = reinterpret_cast<id>(winId());
+    if (!nsView) return;
+    id win = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(nsView, sel_registerName("window"));
+    if (!win) return;
+    // 창 외관(신호등·타이틀바 material·네이티브 스크롤바) 을 테마에 맞춤
+    id nm = reinterpret_cast<id (*)(id, SEL, const char*)>(objc_msgSend)(
+        reinterpret_cast<id>(objc_getClass("NSString")), sel_registerName("stringWithUTF8String:"),
+        dark ? "NSAppearanceNameDarkAqua" : "NSAppearanceNameAqua");
+    id appr = reinterpret_cast<id (*)(id, SEL, id)>(objc_msgSend)(
+        reinterpret_cast<id>(objc_getClass("NSAppearance")), sel_registerName("appearanceNamed:"), nm);
+    reinterpret_cast<void (*)(id, SEL, id)>(objc_msgSend)(win, sel_registerName("setAppearance:"), appr);
+    // 창 배경색 = 앱 상단색 → 투명 타이틀바 영역이 앱과 같은 색
+    const double r = (dark ? 0x0F : 0xED) / 255.0;
+    const double g = (dark ? 0x11 : 0xE9) / 255.0;
+    const double b = (dark ? 0x15 : 0xE1) / 255.0;
+    id color = reinterpret_cast<id (*)(id, SEL, double, double, double, double)>(objc_msgSend)(
+        reinterpret_cast<id>(objc_getClass("NSColor")),
+        sel_registerName("colorWithSRGBRed:green:blue:alpha:"), r, g, b, 1.0);
+    reinterpret_cast<void (*)(id, SEL, id)>(objc_msgSend)(win, sel_registerName("setBackgroundColor:"), color);
 #endif
 }
