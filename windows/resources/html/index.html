@@ -152,25 +152,32 @@
         }
         .batch-target-item:last-child { border-bottom: none; }
         /* ★ 비활성 항목: 흐리게 + 취소선 */
-        .batch-target-item.disabled .bti-main .batch-target-input,
         .batch-target-item.disabled .bti-main .batch-account-sel,
         .batch-target-item.disabled .bti-main .batch-target-num {
             opacity: 0.45;
             text-decoration: line-through;
         }
+        /* ★ 유저명에는 취소선을 긋지 않는다 — 제외 상태여도 '누구인지'는 읽혀야 한다. */
+        .batch-target-item.disabled .bti-main .batch-target-input { opacity: 0.5; }
         .batch-target-item .bti-enable-cb {
             margin-right: 4px; cursor: pointer;
             accent-color: var(--accent);
         }
         .batch-target-item .bti-main {
-            display: flex; align-items: center; gap: 8px;
-            padding: 6px 12px;
+            display: flex; align-items: center;
+            /* 좁은 창(≈420px)에선 한 줄에 다 못 들어간다(필요 296px > 가용 222px).
+               → 줄바꿈을 허용하되 간격을 좁혀 2줄이어도 행 높이를 낮게 유지. */
+            column-gap: 6px; row-gap: 3px;
+            padding: 5px 10px;
+            flex-wrap: wrap;
         }
-        .batch-target-num { color: var(--text-tertiary); font-size: 11px; width: 24px; flex-shrink: 0; }
+        .batch-target-num { color: var(--text-tertiary); font-size: 11px; width: 20px; flex-shrink: 0; text-align: right; }
         .batch-target-name { flex: 1; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
         /* 인라인 편집 가능한 대상 입력 */
         .batch-target-input {
-            flex: 1; min-width: 0;
+            /* ★ min-width:0 이면 계정 드롭다운(flex-shrink:0)에 밀려 22px 까지 찌그러져
+               유저명이 안 보였다. 최소 너비 확보 + 좁으면 아래 줄로 wrap. */
+            flex: 1 1 110px; min-width: 110px;
             height: 26px; padding: 0 8px;
             font-size: 12px; font-weight: 500;
             border: 1px solid transparent;
@@ -185,7 +192,9 @@
             font-weight: 400;
         }
         .batch-account-sel {
-            flex-shrink: 0;
+            /* ★ 예전엔 flex-shrink:0 이라 이 드롭다운이 폭을 다 먹고 유저명이 22px 로
+               찌그러졌다. 좁아지면 '이름'이 아니라 '이쪽'이 줄어야 한다. */
+            flex-shrink: 1; min-width: 72px;
             height: 26px !important;
             padding: 0 22px 0 8px !important;
             font-size: 11px !important;
