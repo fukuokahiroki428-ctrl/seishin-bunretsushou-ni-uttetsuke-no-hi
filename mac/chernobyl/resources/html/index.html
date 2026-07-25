@@ -3514,6 +3514,7 @@
             platformStats[p].posts = posts;
             platformStats[p].media = media;
             platformStats[p].status = status;
+            if (window.setNavLed) setNavLed(p, status);   // 스테이션 레일 LED 동기화
             // 현재 보고 있는 탭이면 UI 업데이트
             if (p === currentPlatform) {
                 document.getElementById('stat-posts').textContent = posts;
@@ -6339,6 +6340,41 @@
     body.platform-mac .nav-item.active{ background: var(--accent-bg) !important; box-shadow:none !important; }
     /* 테마 전환(라이트/다크/자동) — 활성 버튼: 노란 배경 위 흰 글씨가 안 읽혀 어둡게+굵게 */
     .theme-seg-btn.active{ color: var(--accent-ink) !important; font-weight:600 !important; }
+    /* ═══ 스테이션 레일 (콘솔 스테이지 1) — 모노 배지 + LED 상태등 ═══ */
+    .sidebar-nav .nav-item{ position:relative !important; gap:9px !important; padding:7px 9px !important; border-radius:9px !important; margin-bottom:2px !important; }
+    .sidebar-nav .nav-icon{ width:24px !important; height:24px !important; border-radius:7px !important; box-shadow:none !important;
+      font-family:ui-monospace,'SF Mono',Menlo,monospace !important; font-size:11.5px !important; font-weight:600 !important;
+      background:var(--bg-tertiary) !important; color:var(--text-secondary) !important; border:1px solid var(--border-light) !important; }
+    .sidebar-nav .nav-item.active .nav-icon{ background:transparent !important; color:var(--accent-txt,var(--accent)) !important;
+      border-color:color-mix(in srgb,var(--accent) 45%,transparent) !important; }
+    .sidebar-nav .nav-badge{ font-family:ui-monospace,'SF Mono',Menlo,monospace !important; font-size:10.5px !important;
+      font-variant-numeric:tabular-nums !important; }
+    /* LED 상태등 — 아이콘 배지 우상단 점 (수집중=초록 점멸·오류=빨강). 대기는 점 없이 깔끔. */
+    .sidebar-nav .nav-icon{ position:relative !important; overflow:visible !important; }
+    .sidebar-nav .nav-item[data-led="live"] .nav-icon::after,
+    .sidebar-nav .nav-item[data-led="err"] .nav-icon::after{ content:'' !important; position:absolute !important; top:-3px !important; right:-3px !important;
+      width:9px !important; height:9px !important; border-radius:50% !important; border:2px solid var(--bg) !important; box-sizing:border-box !important; }
+    .sidebar-nav .nav-item[data-led="live"] .nav-icon::after{ background:var(--green) !important; animation:navled 1.6s ease-in-out infinite !important; }
+    .sidebar-nav .nav-item[data-led="err"] .nav-icon::after{ background:var(--red) !important; }
+    @keyframes navled{ 0%,100%{ box-shadow:0 0 5px 0 var(--green);} 50%{ box-shadow:0 0 1px 0 transparent;} }
     </style>
+    <script>
+    /* 스테이션 레일 LED — 수집 상태를 nav-item[data-led] 로 반영 (updateStats 가 setNavLed 호출) */
+    (function(){
+      function tag(){
+        document.querySelectorAll('.sidebar-nav .nav-item').forEach(function(it){
+          var m=(it.getAttribute('onclick')||'').match(/switchTab\('([^']+)'\)/);
+          if(m) it.setAttribute('data-plat', m[1]);
+        });
+      }
+      window.setNavLed=function(plat,status){
+        var it=document.querySelector('.sidebar-nav .nav-item[data-plat="'+plat+'"]'); if(!it) return;
+        var s=String(status||'');
+        var v=/오류|error|fail/i.test(s)?'err':((/수집|다운로드|진행|중/.test(s)&&!/완료|대기/.test(s))?'live':'idle');
+        it.setAttribute('data-led', v);
+      };
+      if(document.readyState!=='loading') tag(); else document.addEventListener('DOMContentLoaded', tag);
+    })();
+    </script>
 </body>
 </html>
