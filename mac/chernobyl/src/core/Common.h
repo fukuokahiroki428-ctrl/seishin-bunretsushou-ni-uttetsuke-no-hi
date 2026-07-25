@@ -40,6 +40,8 @@ QString activePythonEnvDir();
 // macOS: Contents/Resources/tools/
 // Windows: <exe_dir>/tools/
 QString bundledToolsDir();
+QString scriptOverrideDir();                       // AI 가 고친 스크립트 저장 위치(쓰기가능)
+QString activeToolScriptPath(const QString &name); // override 있으면 그것, 없으면 번들 원본
 
 // ★ 사용자 도구 폴더 (~/Library/Application Support/Chernobyl/tools/)
 //   yt-dlp 자동 업데이트 시 여기에 저장. 우선순위 더 높음.
