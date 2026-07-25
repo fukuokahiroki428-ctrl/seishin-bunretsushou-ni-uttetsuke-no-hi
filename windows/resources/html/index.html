@@ -1195,6 +1195,8 @@
                 <div class="toolbar-title" id="toolbar-title">대시보드</div>
                 <div class="toolbar-spacer"></div>
                 <div class="toolbar-stats" id="toolbar-stats">
+                    <div class="toolbar-stat tb-global" id="tb-global" data-on="0" title="지금 수집 중인 채널 수">
+                        <span class="tb-led"></span>활성 <span class="toolbar-stat-value" id="global-active">0</span></div>
                     <div class="toolbar-stat">포스트 <span class="toolbar-stat-value" id="stat-posts">0</span></div>
                     <div class="toolbar-stat">미디어 <span class="toolbar-stat-value" id="stat-media">0</span></div>
                     <div class="toolbar-stat"><span class="badge badge-ready" id="stat-status">대기</span></div>
@@ -4258,6 +4260,10 @@
             platformStats[p].media = media;
             platformStats[p].status = status;
             if (window.setNavLed) setNavLed(p, status);   // 스테이션 레일 LED 동기화
+            try { var _act=0; for (var _k in platformStats){ var _s=String((platformStats[_k]||{}).status||'');
+                if(!/오류|error|fail/i.test(_s) && /수집|다운로드|진행|중/.test(_s) && !/완료|대기/.test(_s)) _act++; }
+                var _ga=document.getElementById('global-active'); if(_ga)_ga.textContent=_act;
+                var _tg=document.getElementById('tb-global'); if(_tg)_tg.setAttribute('data-on', _act>0?'1':'0'); } catch(e){}   // 상단바 전역 활성 게이지
             // 현재 보고 있는 탭이면 UI 업데이트
             if (p === currentPlatform) {
                 document.getElementById('stat-posts').textContent = posts;
@@ -7099,6 +7105,19 @@
     .sidebar-nav .nav-item[data-led="live"] .nav-icon::after{ background:var(--green) !important; animation:navled 1.6s ease-in-out infinite !important; }
     .sidebar-nav .nav-item[data-led="err"] .nav-icon::after{ background:var(--red) !important; }
     @keyframes navled{ 0%,100%{ box-shadow:0 0 5px 0 var(--green);} 50%{ box-shadow:0 0 1px 0 transparent;} }
+    /* ═══ 콘솔 스테이지 2: 상단 상태바 (계기판) + 전역 활성 게이지 ═══ */
+    .toolbar-title{ letter-spacing:-.2px !important; }
+    .toolbar-stats{ gap:15px !important; }
+    .toolbar-stat{ font-family:ui-monospace,'SF Mono',Menlo,monospace !important; font-size:9.5px !important;
+      letter-spacing:.4px !important; text-transform:uppercase !important; color:var(--text-tertiary) !important; gap:5px !important; }
+    .toolbar-stat-value{ font-family:ui-monospace,'SF Mono',Menlo,monospace !important; font-size:14px !important;
+      font-weight:600 !important; font-variant-numeric:tabular-nums !important; color:var(--text) !important; letter-spacing:0 !important; }
+    .tb-global .tb-led{ width:6px !important; height:6px !important; border-radius:50% !important; display:inline-block !important;
+      background:var(--text-tertiary) !important; opacity:.4 !important; }
+    .tb-global[data-on="1"] .tb-led{ background:var(--green) !important; opacity:1 !important; animation:navled 1.6s ease-in-out infinite !important; }
+    .tb-global[data-on="1"] .toolbar-stat-value{ color:var(--green) !important; }
+    .toolbar #stat-status.badge{ font-family:ui-monospace,Menlo,monospace !important; font-size:9.5px !important; letter-spacing:.5px !important;
+      text-transform:uppercase !important; padding:3px 10px !important; border-radius:999px !important; }
     </style>
     <script>
     /* 스테이션 레일 LED — 수집 상태를 nav-item[data-led] 로 반영 (updateStats 가 setNavLed 호출) */
