@@ -7118,6 +7118,17 @@
     .tb-global[data-on="1"] .toolbar-stat-value{ color:var(--green) !important; }
     .toolbar #stat-status.badge{ font-family:ui-monospace,Menlo,monospace !important; font-size:9.5px !important; letter-spacing:.5px !important;
       text-transform:uppercase !important; padding:3px 10px !important; border-radius:999px !important; }
+    /* ═══ 콘솔 스테이지 3: 섹션 이브로우 + 라이브 로그 터미널 모니터 ═══ */
+    .section-label{ font-family:ui-monospace,'SF Mono',Menlo,monospace !important; font-size:10px !important;
+      letter-spacing:1.4px !important; text-transform:uppercase !important; color:var(--text-secondary) !important;
+      display:flex !important; align-items:center !important; gap:7px !important; }
+    .section-label::before{ content:'' !important; width:5px !important; height:5px !important; border-radius:1px !important;
+      background:var(--accent) !important; display:inline-block !important; flex:none !important; }
+    .log-box{ position:relative !important; padding-top:0 !important; }
+    .log-box::before{ content:'라이브 로그' !important; position:sticky !important; top:0 !important; z-index:3 !important; display:block !important;
+      margin:0 -10px 8px !important; padding:7px 12px !important; font-family:ui-monospace,Menlo,monospace !important;
+      font-size:9px !important; letter-spacing:2px !important; text-transform:uppercase !important;
+      color:#5f6b7a !important; background:#080A0E !important; border-bottom:1px solid rgba(255,255,255,.06) !important; }
     </style>
     <script>
     /* 스테이션 레일 LED — 수집 상태를 nav-item[data-led] 로 반영 (updateStats 가 setNavLed 호출) */
