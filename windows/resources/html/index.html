@@ -1091,7 +1091,7 @@
     <!-- ★ 캡쳐 옵션 modal — 진짜 페이지 캡쳐 버튼 클릭 시 표시 -->
     <div id="captureOptModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
         <div style="background:#1a1a1d;color:#e7e7ea;padding:24px 28px;border-radius:12px;min-width:380px;max-width:480px;border:1px solid #333;box-shadow:0 12px 40px rgba(0,0,0,0.5);">
-            <h3 style="margin:0 0 6px;font-size:16px;color:var(--accent);">📸 진짜 페이지 캡쳐 설정</h3>
+            <h3 style="margin:0 0 6px;font-size:16px;color:var(--accent);">진짜 페이지 캡쳐 설정</h3>
             <div id="captureOptPlatform" style="font-size:13px;color:#888;margin-bottom:18px;">—</div>
             <label class="cap-opt"><input type="radio" name="captureMode" value="off"> <span><strong>캡쳐 안 함</strong><br><small style="color:#888">미디어만 받음. 페이지 HTML 저장 X. 가장 빠름.</small></span></label>
             <label class="cap-opt"><input type="radio" name="captureMode" value="media"> <span><strong>미디어 있는 글만 캡쳐</strong><br><small style="color:#888">이미지/영상 첨부된 포스트만 HTML 저장. 텍스트만 RT/리플 skip.</small></span></label>
@@ -1266,23 +1266,23 @@
                                     <option value="replies">3. 답글</option>
                                     <option value="reposts">4. 리포스트</option>
                                     <option value="thread_comments">5. 게시물 댓글 (다른 사람 답글)</option>
-                                    <option value="thread">🧵 스레드 (트윗 URL)</option>
-                                    <option value="space">🎙️ 스페이스 (스페이스 URL · yt-dlp)</option>
-                                    <option value="highlights">✨ 하이라이트</option>
-                                    <option value="favoriters">❤️ 좋아요한 유저 (트윗 URL)</option>
-                                    <option value="retweeters">🔁 리트윗한 유저 (트윗 URL)</option>
-                                    <option value="list">📋 리스트 트윗 (리스트 URL)</option>
-                                    <option value="community">👥 커뮤니티 트윗 (커뮤니티 URL)</option>
+                                    <option value="thread">스레드 (트윗 URL)</option>
+                                    <option value="space">스페이스 (스페이스 URL · yt-dlp)</option>
+                                    <option value="highlights">하이라이트</option>
+                                    <option value="favoriters">좋아요한 유저 (트윗 URL)</option>
+                                    <option value="retweeters">리트윗한 유저 (트윗 URL)</option>
+                                    <option value="list">리스트 트윗 (리스트 URL)</option>
+                                    <option value="community">커뮤니티 트윗 (커뮤니티 URL)</option>
                                     <option value="likes">좋아요한 트윗</option>
                                     <option value="bookmarks">북마크</option>
                                     <option value="media">미디어만</option>
                                     <option value="followers">팔로워</option>
                                     <option value="following">팔로잉</option>
                                     <option value="profile">프로필</option>
-                                    <option value="all">⭐ 전체 (1~5 + 좋아요+팔로워+팔로잉+프로필)</option>
+                                    <option value="all">전체 (1~5 + 좋아요+팔로워+팔로잉+프로필)</option>
                                 </select></div>
                             </div>
-                            <!-- 🧵🎙️ URL 입력 — 스레드/좋아요·리트윗 유저/리스트/커뮤니티/스페이스 선택 시 표시 -->
+                            <!-- URL 입력 — 스레드/좋아요·리트윗 유저/리스트/커뮤니티/스페이스 선택 시 표시 -->
                             <div class="nt-row" id="twitter-url-field" style="display:none;">
                                 <div class="nt-rl" id="twitter-url-label">트윗 URL</div>
                                 <div class="nt-rc">
@@ -1340,12 +1340,12 @@
                                     <label class="nt-check"><input type="checkbox" id="twitter-excel" checked> Excel 저장</label>
                                     <label class="nt-check"><input type="checkbox" id="twitter-progress" onchange="onTwitterProgressToggle(this)"> 이어서 수집</label>
                                     <label class="nt-check"><input type="checkbox" id="twitter-thread-comments"> 게시물 댓글 수집</label>
-                                    <label class="nt-check" title="다운로드 후 파일 손상 검사"><input type="checkbox" id="twitter-integrity-check"> 🔍 무결성 검사</label>
+                                    <label class="nt-check" title="다운로드 후 파일 손상 검사"><input type="checkbox" id="twitter-integrity-check"> 무결성 검사</label>
                                 </div>
                                 <div style="margin-top:11px;">
                                     <input type="checkbox" id="twitter-real-capture" checked style="display:none">
                                     <input type="hidden" id="twitter-real-capture-mode" value="all">
-                                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('twitter')">📸 진짜 페이지 캡쳐: <span id="twitter-real-capture-label">전체</span> ⚙</button>
+                                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('twitter')">진짜 페이지 캡쳐: <span id="twitter-real-capture-label">전체</span></button>
                                 </div>
                                 <input type="hidden" id="twitter-resume-mode" value="both">
                             </div></div>
@@ -1361,8 +1361,8 @@
                         <div class="nt-card">
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-checks" style="margin-bottom:9px;">
-                                    <label class="nt-check"><input type="checkbox" id="twitter-nas-toggle" onchange="onPlatformStorage(this,'twitter','nas')"> 🌐 NAS</label>
-                                    <label class="nt-check"><input type="checkbox" id="twitter-external-toggle" onchange="onPlatformStorage(this,'twitter','external')"> 💾 외장 디스크</label>
+                                    <label class="nt-check"><input type="checkbox" id="twitter-nas-toggle" onchange="onPlatformStorage(this,'twitter','nas')"> NAS</label>
+                                    <label class="nt-check"><input type="checkbox" id="twitter-external-toggle" onchange="onPlatformStorage(this,'twitter','external')"> 외장 디스크</label>
                                 </div>
                                 <div style="display:flex;gap:8px;">
                                     <input type="text" class="nt-input" id="twitter-path" value="~/Downloads" style="flex:1;">
@@ -1390,7 +1390,7 @@
                     <div class="nt-actions">
                         <button class="nt-btn primary" id="twitter-start-btn" onclick="startTwitter()">▶ 수집 시작</button>
                         <button class="nt-btn ghost" id="twitter-stop-btn" onclick="stopTwitter()" disabled>■ 중지</button>
-                        <button class="nt-btn ok" id="twitter-checknew-btn" onclick="checkNewTwitter()" disabled style="opacity:.5;">🔄 새트윗확인</button>
+                        <button class="nt-btn ok" id="twitter-checknew-btn" onclick="checkNewTwitter()" disabled style="opacity:.5;">새트윗확인</button>
                     </div>
 
                     <div class="nt-group">
@@ -1426,7 +1426,7 @@
             <div class="nt-row">
                 <div class="nt-rl">수집 유형</div>
                 <div class="nt-rc"><select class="nt-input" id="bsky-type" onchange="toggleBskyOptions()">
-                    <option value="all">⭐ 전체 (포스트+답글+좋아요+댓글+팔로워+팔로잉+프로필)</option>
+                    <option value="all">전체 (포스트+답글+좋아요+댓글+팔로워+팔로잉+프로필)</option>
                     <option value="posts">포스트</option>
                     <option value="replies">답글 (내가 쓴 답글)</option>
                     <option value="likes">좋아요</option>
@@ -1493,12 +1493,12 @@
                     <label class="nt-check"><input type="checkbox" id="bsky-excel" checked> Excel 저장</label>
                     <label class="nt-check"><input type="checkbox" id="bsky-replies" checked> 답글 포함</label>
                     <label class="nt-check"><input type="checkbox" id="bsky-reposts" checked> 리포스트 포함</label>
-                    <label class="nt-check" title="다운로드 후 파일 손상 검사 — 이미지 디코딩/비디오 magic byte/HTML 태그"><input type="checkbox" id="bsky-integrity-check"> 🔍 무결성 검사</label>
+                    <label class="nt-check" title="다운로드 후 파일 손상 검사 — 이미지 디코딩/비디오 magic byte/HTML 태그"><input type="checkbox" id="bsky-integrity-check"> 무결성 검사</label>
                 </div>
                 <div style="margin-top:11px;">
                     <input type="checkbox" id="bsky-real-capture" checked style="display:none">
                     <input type="hidden" id="bsky-real-capture-mode" value="all">
-                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('bsky')">📸 진짜 페이지 캡쳐: <span id="bsky-real-capture-label">전체</span> ⚙</button>
+                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('bsky')">진짜 페이지 캡쳐: <span id="bsky-real-capture-label">전체</span></button>
                 </div>
             </div></div>
             <div class="nt-row nt-stack"><div class="nt-rc">
@@ -1525,7 +1525,7 @@
                     </label>
                 </div>
             </div></div>
-            <div class="nt-hint">⭐ 전체 다운로드 시 자동으로 15분 대기+재시도 (리밋 걸려도 중단 안 함)</div>
+            <div class="nt-hint">전체 다운로드 시 자동으로 15분 대기+재시도 (리밋 걸려도 중단 안 함)</div>
         </div>
     </div>
 
@@ -1534,8 +1534,8 @@
         <div class="nt-card">
             <div class="nt-row nt-stack"><div class="nt-rc">
                 <div class="nt-checks" style="margin-bottom:9px;">
-                    <label class="nt-check"><input type="checkbox" id="bsky-nas-toggle" onchange="onPlatformStorage(this,'bsky','nas')"> 🌐 NAS</label>
-                    <label class="nt-check"><input type="checkbox" id="bsky-external-toggle" onchange="onPlatformStorage(this,'bsky','external')"> 💾 외장 디스크</label>
+                    <label class="nt-check"><input type="checkbox" id="bsky-nas-toggle" onchange="onPlatformStorage(this,'bsky','nas')"> NAS</label>
+                    <label class="nt-check"><input type="checkbox" id="bsky-external-toggle" onchange="onPlatformStorage(this,'bsky','external')"> 외장 디스크</label>
                 </div>
                 <div style="display:flex;gap:8px;">
                     <input type="text" class="nt-input" id="bsky-path" value="~/Downloads" style="flex:1;">
@@ -1563,7 +1563,7 @@
     <div class="nt-actions">
         <button class="nt-btn primary" id="bluesky-start-btn" onclick="startBluesky()">▶ 수집 시작</button>
         <button class="nt-btn ghost" id="bluesky-stop-btn" onclick="stopBluesky()" disabled>■ 중지</button>
-        <button class="nt-btn ok" id="bluesky-checknew-btn" onclick="checkNewBluesky()" disabled style="opacity:.5;">🔄 새글확인</button>
+        <button class="nt-btn ok" id="bluesky-checknew-btn" onclick="checkNewBluesky()" disabled style="opacity:.5;">새글확인</button>
     </div>
 
     <div class="nt-group">
@@ -1628,8 +1628,8 @@
                         <div class="nt-card">
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-checks" style="margin-bottom:9px;">
-                                    <label class="nt-check"><input type="checkbox" id="youtube-nas-toggle" onchange="onPlatformStorage(this,'youtube','nas')"> 🌐 NAS</label>
-                                    <label class="nt-check"><input type="checkbox" id="youtube-external-toggle" onchange="onPlatformStorage(this,'youtube','external')"> 💾 외장 디스크</label>
+                                    <label class="nt-check"><input type="checkbox" id="youtube-nas-toggle" onchange="onPlatformStorage(this,'youtube','nas')"> NAS</label>
+                                    <label class="nt-check"><input type="checkbox" id="youtube-external-toggle" onchange="onPlatformStorage(this,'youtube','external')"> 외장 디스크</label>
                                 </div>
                                 <div style="display:flex;gap:8px;">
                                     <input type="text" class="nt-input" id="youtube-path" value="~/Downloads/YouTube" style="flex:1;">
@@ -1703,8 +1703,8 @@
                         <div class="nt-card">
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-checks" style="margin-bottom:9px;">
-                                    <label class="nt-check"><input type="checkbox" id="niconico-nas-toggle" onchange="onPlatformStorage(this,'niconico','nas')"> 🌐 NAS</label>
-                                    <label class="nt-check"><input type="checkbox" id="niconico-external-toggle" onchange="onPlatformStorage(this,'niconico','external')"> 💾 외장 디스크</label>
+                                    <label class="nt-check"><input type="checkbox" id="niconico-nas-toggle" onchange="onPlatformStorage(this,'niconico','nas')"> NAS</label>
+                                    <label class="nt-check"><input type="checkbox" id="niconico-external-toggle" onchange="onPlatformStorage(this,'niconico','external')"> 외장 디스크</label>
                                 </div>
                                 <div style="display:flex;gap:8px;">
                                     <input type="text" class="nt-input" id="niconico-path" value="~/Downloads/Niconico" style="flex:1;">
@@ -1761,7 +1761,7 @@
                             <div class="nt-row">
                                 <div class="nt-rl">유형</div>
                                 <div class="nt-rc"><select class="nt-input" id="discord-type" onchange="toggleDiscordOptions()">
-                                    <option value="all">⭐ 전체 (메시지+고정)</option>
+                                    <option value="all">전체 (메시지+고정)</option>
                                     <option value="messages">메시지</option>
                                     <option value="pins">고정 메시지</option>
                                     <option value="server-all">서버 전체 채널</option>
@@ -1798,8 +1798,8 @@
                         <div class="nt-card">
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-checks" style="margin-bottom:9px;">
-                                    <label class="nt-check"><input type="checkbox" id="discord-nas-toggle" onchange="onPlatformStorage(this,'discord','nas')"> 🌐 NAS</label>
-                                    <label class="nt-check"><input type="checkbox" id="discord-external-toggle" onchange="onPlatformStorage(this,'discord','external')"> 💾 외장 디스크</label>
+                                    <label class="nt-check"><input type="checkbox" id="discord-nas-toggle" onchange="onPlatformStorage(this,'discord','nas')"> NAS</label>
+                                    <label class="nt-check"><input type="checkbox" id="discord-external-toggle" onchange="onPlatformStorage(this,'discord','external')"> 외장 디스크</label>
                                 </div>
                                 <div style="display:flex;gap:8px;">
                                     <input type="text" class="nt-input" id="discord-path" value="~/Downloads/Discord" style="flex:1;">
@@ -1861,7 +1861,7 @@
                             <div class="nt-row">
                                 <div class="nt-rl">수집 유형</div>
                                 <div class="nt-rc"><select class="nt-input" id="instagram-type" onchange="toggleInstagramOptions()">
-                                    <option value="all">⭐ 전체 (포스트+릴스+스토리+하이라이트+프로필)</option>
+                                    <option value="all">전체 (포스트+릴스+스토리+하이라이트+프로필)</option>
                                     <option value="posts">포스트</option>
                                     <option value="reels">릴스</option>
                                     <option value="stories">스토리</option>
@@ -1922,12 +1922,12 @@
                                 <div class="nt-checks">
                                     <label class="nt-check"><input type="checkbox" id="instagram-media" checked> 미디어 다운로드</label>
                                     <label class="nt-check"><input type="checkbox" id="instagram-excel" checked> Excel 저장</label>
-                                    <label class="nt-check" title="다운로드 후 파일 손상 검사 — 이미지 디코딩/비디오 magic byte/HTML 태그"><input type="checkbox" id="instagram-integrity-check"> 🔍 무결성 검사</label>
+                                    <label class="nt-check" title="다운로드 후 파일 손상 검사 — 이미지 디코딩/비디오 magic byte/HTML 태그"><input type="checkbox" id="instagram-integrity-check"> 무결성 검사</label>
                                 </div>
                                 <div style="margin-top:11px;">
                                     <input type="checkbox" id="instagram-real-capture" checked style="display:none">
                                     <input type="hidden" id="instagram-real-capture-mode" value="all">
-                                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('instagram')">📸 진짜 페이지 캡쳐: <span id="instagram-real-capture-label">전체</span> ⚙</button>
+                                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('instagram')">진짜 페이지 캡쳐: <span id="instagram-real-capture-label">전체</span></button>
                                 </div>
                             </div></div>
                             <div class="nt-row nt-stack">
@@ -1942,8 +1942,8 @@
                         <div class="nt-card">
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-checks" style="margin-bottom:9px;">
-                                    <label class="nt-check"><input type="checkbox" id="instagram-nas-toggle" onchange="onPlatformStorage(this,'instagram','nas')"> 🌐 NAS</label>
-                                    <label class="nt-check"><input type="checkbox" id="instagram-external-toggle" onchange="onPlatformStorage(this,'instagram','external')"> 💾 외장 디스크</label>
+                                    <label class="nt-check"><input type="checkbox" id="instagram-nas-toggle" onchange="onPlatformStorage(this,'instagram','nas')"> NAS</label>
+                                    <label class="nt-check"><input type="checkbox" id="instagram-external-toggle" onchange="onPlatformStorage(this,'instagram','external')"> 외장 디스크</label>
                                 </div>
                                 <div style="display:flex;gap:8px;">
                                     <input type="text" class="nt-input" id="instagram-path" value="~/Downloads/Instagram" style="flex:1;">
@@ -2006,11 +2006,11 @@
                             <div class="nt-row">
                                 <div class="nt-rl">수집 유형</div>
                                 <div class="nt-rc"><select class="nt-input" id="pixiv-type">
-                                    <option value="all">⭐ 전체 (작품+소설+북마크)</option>
+                                    <option value="all">전체 (작품+소설+북마크)</option>
                                     <option value="user">유저 전체 작품+소설</option>
                                     <option value="bookmarks">북마크 (일러스트+소설)</option>
-                                    <option value="novels">📖 소설만</option>
-                                    <option value="novels_bookmarks">📖 북마크 소설만</option>
+                                    <option value="novels">소설만</option>
+                                    <option value="novels_bookmarks">북마크 소설만</option>
                                     <option value="illust">개별 일러스트</option>
                                 </select></div>
                             </div>
@@ -2034,12 +2034,12 @@
                                 <div class="nt-checks">
                                     <label class="nt-check"><input type="checkbox" id="pixiv-ugoira-gif" checked> 우고이라→GIF 변환</label>
                                     <label class="nt-check"><input type="checkbox" id="pixiv-excel" checked> Excel 저장</label>
-                                    <label class="nt-check" title="다운로드 후 파일 손상 검사 — 이미지 디코딩/비디오 magic byte/HTML 태그"><input type="checkbox" id="pixiv-integrity-check"> 🔍 무결성 검사</label>
+                                    <label class="nt-check" title="다운로드 후 파일 손상 검사 — 이미지 디코딩/비디오 magic byte/HTML 태그"><input type="checkbox" id="pixiv-integrity-check"> 무결성 검사</label>
                                 </div>
                                 <div style="margin-top:11px;">
                                     <input type="checkbox" id="pixiv-real-capture" checked style="display:none">
                                     <input type="hidden" id="pixiv-real-capture-mode" value="all">
-                                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('pixiv')">📸 진짜 페이지 캡쳐: <span id="pixiv-real-capture-label">전체</span> ⚙</button>
+                                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('pixiv')">진짜 페이지 캡쳐: <span id="pixiv-real-capture-label">전체</span></button>
                                 </div>
                             </div></div>
                             <div class="nt-row nt-stack">
@@ -2055,8 +2055,8 @@
                         <div class="nt-card">
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-checks" style="margin-bottom:9px;">
-                                    <label class="nt-check"><input type="checkbox" id="pixiv-nas-toggle" onchange="onPlatformStorage(this,'pixiv','nas')"> 🌐 NAS</label>
-                                    <label class="nt-check"><input type="checkbox" id="pixiv-external-toggle" onchange="onPlatformStorage(this,'pixiv','external')"> 💾 외장 디스크</label>
+                                    <label class="nt-check"><input type="checkbox" id="pixiv-nas-toggle" onchange="onPlatformStorage(this,'pixiv','nas')"> NAS</label>
+                                    <label class="nt-check"><input type="checkbox" id="pixiv-external-toggle" onchange="onPlatformStorage(this,'pixiv','external')"> 외장 디스크</label>
                                 </div>
                                 <div style="display:flex;gap:8px;">
                                     <input type="text" class="nt-input" id="pixiv-path" value="~/Downloads/Pixiv" style="flex:1;">
@@ -2128,12 +2128,12 @@
                                     <label class="nt-check"><input type="checkbox" id="fanbox-media" checked> 미디어 다운</label>
                                     <label class="nt-check"><input type="checkbox" id="fanbox-files" checked> 첨부 파일 다운</label>
                                     <label class="nt-check"><input type="checkbox" id="fanbox-excel" checked> Excel 저장</label>
-                                    <label class="nt-check" title="다운로드 후 파일 손상 검사 — 이미지 디코딩/비디오 magic byte/HTML 태그"><input type="checkbox" id="fanbox-integrity-check"> 🔍 무결성 검사</label>
+                                    <label class="nt-check" title="다운로드 후 파일 손상 검사 — 이미지 디코딩/비디오 magic byte/HTML 태그"><input type="checkbox" id="fanbox-integrity-check"> 무결성 검사</label>
                                 </div>
                                 <div style="margin-top:11px;">
                                     <input type="checkbox" id="fanbox-real-capture" checked style="display:none">
                                     <input type="hidden" id="fanbox-real-capture-mode" value="all">
-                                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('fanbox')">📸 진짜 페이지 캡쳐: <span id="fanbox-real-capture-label">전체</span> ⚙</button>
+                                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('fanbox')">진짜 페이지 캡쳐: <span id="fanbox-real-capture-label">전체</span></button>
                                 </div>
                             </div></div>
                         </div>
@@ -2144,8 +2144,8 @@
                         <div class="nt-card">
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-checks" style="margin-bottom:9px;">
-                                    <label class="nt-check"><input type="checkbox" id="fanbox-nas-toggle" onchange="onPlatformStorage(this,'fanbox','nas')"> 🌐 NAS</label>
-                                    <label class="nt-check"><input type="checkbox" id="fanbox-external-toggle" onchange="onPlatformStorage(this,'fanbox','external')"> 💾 외장 디스크</label>
+                                    <label class="nt-check"><input type="checkbox" id="fanbox-nas-toggle" onchange="onPlatformStorage(this,'fanbox','nas')"> NAS</label>
+                                    <label class="nt-check"><input type="checkbox" id="fanbox-external-toggle" onchange="onPlatformStorage(this,'fanbox','external')"> 외장 디스크</label>
                                 </div>
                                 <div style="display:flex;gap:8px;">
                                     <input type="text" class="nt-input" id="fanbox-path" value="~/Downloads/Fanbox" style="flex:1;">
@@ -2163,7 +2163,7 @@
                                 <div class="nt-rc">
                                     <div style="display:flex;gap:8px;width:100%;">
                                         <input type="text" class="nt-input" id="fanbox-session" placeholder="브라우저 → fanbox.cc → DevTools → Application → Cookies → FANBOXSESSID" style="flex:1;">
-                                        <button class="nt-pillbtn" onclick="refreshFanboxSession()" title="Chrome 쿠키에서 FANBOXSESSID + cookie 자동 추출">🔄 Chrome 에서 추출</button>
+                                        <button class="nt-pillbtn" onclick="refreshFanboxSession()" title="Chrome 쿠키에서 FANBOXSESSID + cookie 자동 추출">Chrome 에서 추출</button>
                                     </div>
                                 </div>
                             </div>
@@ -2172,7 +2172,7 @@
                                 <div class="nt-rc"><input type="text" class="nt-input" id="fanbox-cookie" placeholder="FANBOXSESSID=xxx; cf_clearance=yyy; ... (선택)"></div>
                             </div>
                         </div>
-                        <div class="nt-hint">⚠️ 멤버십 한정 컨텐츠는 후원자(서포터) 계정으로 로그인해야 다운 가능합니다. FANBOXSESSID 만 있어도 공개 포스트는 받을 수 있어요.</div>
+                        <div class="nt-hint">멤버십 한정 컨텐츠는 후원자(서포터) 계정으로 로그인해야 다운 가능합니다. FANBOXSESSID 만 있어도 공개 포스트는 받을 수 있어요.</div>
                     </div>
 
                     <div class="nt-actions">
@@ -2248,7 +2248,7 @@
                             <div class="nt-row">
                                 <div class="nt-rl">포스트 유형</div>
                                 <div class="nt-rc"><select class="nt-input" id="tumblr-type">
-                                    <option value="all">⭐ 전체 (포스트+좋아요)</option>
+                                    <option value="all">전체 (포스트+좋아요)</option>
                                     <option value="text">text</option>
                                     <option value="photo">photo</option>
                                     <option value="quote">quote</option>
@@ -2257,10 +2257,10 @@
                                     <option value="video">video</option>
                                     <option value="audio">audio</option>
                                     <option value="answer">answer (답변)</option>
-                                    <option value="likes">❤️ 좋아요한 포스트</option>
-                                    <option value="drafts">📝 초안 (Drafts)</option>
-                                    <option value="queue">⏱️ 대기열 (Queue)</option>
-                                    <option value="submissions">📩 제출함 (Submissions)</option>
+                                    <option value="likes">좋아요한 포스트</option>
+                                    <option value="drafts">초안 (Drafts)</option>
+                                    <option value="queue">⏱대기열 (Queue)</option>
+                                    <option value="submissions">제출함 (Submissions)</option>
                                 </select></div>
                             </div>
                             <div class="nt-row">
@@ -2280,12 +2280,12 @@
                                     <label class="nt-check"><input type="checkbox" id="tumblr-media" checked> 미디어 다운로드</label>
                                     <label class="nt-check"><input type="checkbox" id="tumblr-excel" checked> Excel 저장</label>
                                     <label class="nt-check"><input type="checkbox" id="tumblr-exif"> EXIF 메타데이터</label>
-                                    <label class="nt-check" title="다운로드 후 파일 손상 검사 — 이미지 디코딩/비디오 magic byte/HTML 태그"><input type="checkbox" id="tumblr-integrity-check"> 🔍 무결성 검사</label>
+                                    <label class="nt-check" title="다운로드 후 파일 손상 검사 — 이미지 디코딩/비디오 magic byte/HTML 태그"><input type="checkbox" id="tumblr-integrity-check"> 무결성 검사</label>
                                 </div>
                                 <div style="margin-top:11px;">
                                     <input type="checkbox" id="tumblr-real-capture" checked style="display:none">
                                     <input type="hidden" id="tumblr-real-capture-mode" value="all">
-                                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('tumblr')">📸 진짜 페이지 캡쳐: <span id="tumblr-real-capture-label">전체</span> ⚙</button>
+                                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('tumblr')">진짜 페이지 캡쳐: <span id="tumblr-real-capture-label">전체</span></button>
                                 </div>
                             </div></div>
                         </div>
@@ -2296,8 +2296,8 @@
                         <div class="nt-card">
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-checks" style="margin-bottom:9px;">
-                                    <label class="nt-check"><input type="checkbox" id="tumblr-nas-toggle" onchange="onPlatformStorage(this,'tumblr','nas')"> 🌐 NAS</label>
-                                    <label class="nt-check"><input type="checkbox" id="tumblr-external-toggle" onchange="onPlatformStorage(this,'tumblr','external')"> 💾 외장 디스크</label>
+                                    <label class="nt-check"><input type="checkbox" id="tumblr-nas-toggle" onchange="onPlatformStorage(this,'tumblr','nas')"> NAS</label>
+                                    <label class="nt-check"><input type="checkbox" id="tumblr-external-toggle" onchange="onPlatformStorage(this,'tumblr','external')"> 외장 디스크</label>
                                 </div>
                                 <div style="display:flex;gap:8px;">
                                     <input type="text" class="nt-input" id="tumblr-path" value="~/Downloads" style="flex:1;">
@@ -2369,12 +2369,12 @@
                                     <label class="nt-check"><input type="checkbox" id="spinspin-media" checked> 미디어 다운로드</label>
                                     <label class="nt-check"><input type="checkbox" id="spinspin-excel" checked> Excel 저장</label>
                                     <label class="nt-check"><input type="checkbox" id="spinspin-exif" checked> EXIF 메타데이터</label>
-                                    <label class="nt-check" title="다운로드 후 파일 손상 검사 — 이미지 디코딩/비디오 magic byte/HTML 태그"><input type="checkbox" id="spinspin-integrity-check"> 🔍 무결성 검사</label>
+                                    <label class="nt-check" title="다운로드 후 파일 손상 검사 — 이미지 디코딩/비디오 magic byte/HTML 태그"><input type="checkbox" id="spinspin-integrity-check"> 무결성 검사</label>
                                 </div>
                                 <div style="margin-top:11px;">
                                     <input type="checkbox" id="spinspin-real-capture" checked style="display:none">
                                     <input type="hidden" id="spinspin-real-capture-mode" value="all">
-                                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('spinspin')">📸 진짜 페이지 캡쳐: <span id="spinspin-real-capture-label">전체</span> ⚙</button>
+                                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('spinspin')">진짜 페이지 캡쳐: <span id="spinspin-real-capture-label">전체</span></button>
                                 </div>
                             </div></div>
                         </div>
@@ -2385,8 +2385,8 @@
                         <div class="nt-card">
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-checks" style="margin-bottom:9px;">
-                                    <label class="nt-check"><input type="checkbox" id="spinspin-nas-toggle" onchange="onPlatformStorage(this,'spinspin','nas')"> 🌐 NAS</label>
-                                    <label class="nt-check"><input type="checkbox" id="spinspin-external-toggle" onchange="onPlatformStorage(this,'spinspin','external')"> 💾 외장 디스크</label>
+                                    <label class="nt-check"><input type="checkbox" id="spinspin-nas-toggle" onchange="onPlatformStorage(this,'spinspin','nas')"> NAS</label>
+                                    <label class="nt-check"><input type="checkbox" id="spinspin-external-toggle" onchange="onPlatformStorage(this,'spinspin','external')"> 외장 디스크</label>
                                 </div>
                                 <div style="display:flex;gap:8px;">
                                     <input type="text" class="nt-input" id="spinspin-path" value="~/Downloads" style="flex:1;">
@@ -2458,12 +2458,12 @@
                                     <label class="nt-check"><input type="checkbox" id="asked-media" checked> 미디어 다운로드</label>
                                     <label class="nt-check"><input type="checkbox" id="asked-excel" checked> Excel 저장</label>
                                     <label class="nt-check"><input type="checkbox" id="asked-exif" checked> EXIF 메타데이터</label>
-                                    <label class="nt-check" title="다운로드 후 파일 손상 검사 — 이미지 디코딩/비디오 magic byte/HTML 태그"><input type="checkbox" id="asked-integrity-check"> 🔍 무결성 검사</label>
+                                    <label class="nt-check" title="다운로드 후 파일 손상 검사 — 이미지 디코딩/비디오 magic byte/HTML 태그"><input type="checkbox" id="asked-integrity-check"> 무결성 검사</label>
                                 </div>
                                 <div style="margin-top:11px;">
                                     <input type="checkbox" id="asked-real-capture" checked style="display:none">
                                     <input type="hidden" id="asked-real-capture-mode" value="all">
-                                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('asked')">📸 진짜 페이지 캡쳐: <span id="asked-real-capture-label">전체</span> ⚙</button>
+                                    <button type="button" class="nt-pillbtn" onclick="openCaptureModal('asked')">진짜 페이지 캡쳐: <span id="asked-real-capture-label">전체</span></button>
                                 </div>
                             </div></div>
                         </div>
@@ -2474,8 +2474,8 @@
                         <div class="nt-card">
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-checks" style="margin-bottom:9px;">
-                                    <label class="nt-check"><input type="checkbox" id="asked-nas-toggle" onchange="onPlatformStorage(this,'asked','nas')"> 🌐 NAS</label>
-                                    <label class="nt-check"><input type="checkbox" id="asked-external-toggle" onchange="onPlatformStorage(this,'asked','external')"> 💾 외장 디스크</label>
+                                    <label class="nt-check"><input type="checkbox" id="asked-nas-toggle" onchange="onPlatformStorage(this,'asked','nas')"> NAS</label>
+                                    <label class="nt-check"><input type="checkbox" id="asked-external-toggle" onchange="onPlatformStorage(this,'asked','external')"> 외장 디스크</label>
                                 </div>
                                 <div style="display:flex;gap:8px;">
                                     <input type="text" class="nt-input" id="asked-path" value="~/Downloads" style="flex:1;">
@@ -2555,8 +2555,8 @@
                         <div class="nt-card">
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-checks" style="margin-bottom:9px;">
-                                    <label class="nt-check"><input type="checkbox" id="crawl-nas-toggle" onchange="onPlatformStorage(this,'crawl','nas')"> 🌐 NAS</label>
-                                    <label class="nt-check"><input type="checkbox" id="crawl-external-toggle" onchange="onPlatformStorage(this,'crawl','external')"> 💾 외장 디스크</label>
+                                    <label class="nt-check"><input type="checkbox" id="crawl-nas-toggle" onchange="onPlatformStorage(this,'crawl','nas')"> NAS</label>
+                                    <label class="nt-check"><input type="checkbox" id="crawl-external-toggle" onchange="onPlatformStorage(this,'crawl','external')"> 외장 디스크</label>
                                 </div>
                                 <div style="display:flex;gap:8px;">
                                     <input type="text" class="nt-input" id="crawl-path" value="~/Downloads" style="flex:1;">
@@ -2575,7 +2575,7 @@
                             이미지/비디오는 브라우저 세션으로 별도 다운로드까지 합니다. (깊이·최대 페이지·같은 도메인은 위 설정을 따름)
                         </div>
                         <div class="nt-hint" style="margin-top:10px;line-height:1.6;">
-                            🔎 감지 엔진: <b id="crawl-engine" style="color:#b9a7ff">—</b>
+                            감지 엔진: <b id="crawl-engine" style="color:#b9a7ff">—</b>
                             <span style="color:#8a8a93">— <b>GNUBoard·WordPress·XpressEngine</b> 등 게시판/CMS 엔진을 자동 분석합니다.
                             게시판 쿼리 링크(<code>bo_table</code>·<code>wr_id</code>·<code>page</code>)를 글마다 분리 저장 + 로컬로 연결하고,
                             로그인·글쓰기·검색결과 같은 백엔드 동작은 크롤에서 제외합니다. 인덱스에는 <b>게시판별 그룹 + 실시간 검색</b>이 들어가 오프라인에서도 글·페이지를 찾아 이동할 수 있습니다.</span>
@@ -2594,7 +2594,7 @@
                         <div class="nt-card">
                             <div class="data-panel" id="crawl-summary-panel" style="margin-top:0;">
                                 <div class="data-panel-header">
-                                    <span>📊 크롤링 요약</span>
+                                    <span>크롤링 요약</span>
                                     <span class="data-panel-meta" id="crawl-summary-meta">대기 중</span>
                                 </div>
                                 <div class="data-panel-body">
@@ -2647,7 +2647,7 @@
                         <div class="nt-card">
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="trad-dropzone" id="trad-dropzone" onclick="selectTradFiles()">
-                                    <div class="trad-dropzone-icon">📁</div>
+                                    <div class="trad-dropzone-icon"></div>
                                     <div class="trad-dropzone-text">파일/폴더를 여기에 드래그&드롭</div>
                                     <div class="trad-dropzone-hint">또는 클릭하여 파일 선택</div>
                                 </div>
@@ -2667,8 +2667,8 @@
                         <div class="nt-card">
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-checks" style="margin-bottom:9px;">
-                                    <label class="nt-check"><input type="checkbox" id="trad-nas-toggle" onchange="onPlatformStorage(this,'trad','nas')"> 🌐 NAS</label>
-                                    <label class="nt-check"><input type="checkbox" id="trad-external-toggle" onchange="onPlatformStorage(this,'trad','external')"> 💾 외장 디스크</label>
+                                    <label class="nt-check"><input type="checkbox" id="trad-nas-toggle" onchange="onPlatformStorage(this,'trad','nas')"> NAS</label>
+                                    <label class="nt-check"><input type="checkbox" id="trad-external-toggle" onchange="onPlatformStorage(this,'trad','external')"> 외장 디스크</label>
                                 </div>
                                 <div style="display:flex;gap:8px;">
                                     <input type="text" class="nt-input" id="trad-path" value="~/Downloads" style="flex:1;">
@@ -2701,7 +2701,7 @@
 
                     <div class="data-panel" id="trad-manifest-panel" style="display:none;">
                         <div class="data-panel-header">
-                            <span>📦 TRAD 매니페스트</span>
+                            <span>TRAD 매니페스트</span>
                             <span class="data-panel-meta" id="trad-manifest-meta"></span>
                         </div>
                         <div class="data-panel-body">
@@ -2752,8 +2752,8 @@
                                 <div class="nt-rl">저장 경로 (공통)</div>
                                 <div class="nt-rc">
                                     <div class="nt-checks" style="margin-bottom:9px;">
-                                        <label class="nt-check"><input type="checkbox" id="naikakukai-nas-toggle" onchange="onPlatformStorage(this,'naikakukai','nas')"> 🌐 NAS</label>
-                                        <label class="nt-check"><input type="checkbox" id="naikakukai-external-toggle" onchange="onPlatformStorage(this,'naikakukai','external')"> 💾 외장 디스크</label>
+                                        <label class="nt-check"><input type="checkbox" id="naikakukai-nas-toggle" onchange="onPlatformStorage(this,'naikakukai','nas')"> NAS</label>
+                                        <label class="nt-check"><input type="checkbox" id="naikakukai-external-toggle" onchange="onPlatformStorage(this,'naikakukai','external')"> 외장 디스크</label>
                                     </div>
                                     <div style="display:flex;gap:8px;">
                                         <input type="text" class="nt-input" id="naikakukai-path" value="~/Downloads" style="flex:1;">
@@ -2786,7 +2786,7 @@
                     </div>
 
                     <div class="nt-group">
-                        <h3>📧 이메일 알림 감시 (즉시 다운로드 트리거)</h3>
+                        <h3>이메일 알림 감시 (즉시 다운로드 트리거)</h3>
                         <div class="nt-card">
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-hint">30초 간격 IMAP 폴링. 필터 매치된 새 메일 도착하면 위 감시 목록을 즉시 실행. Gmail: <code>imap.gmail.com</code>, port <code>993</code>, <strong>앱 비밀번호</strong> 필요.</div>
@@ -2811,7 +2811,7 @@
                             </div></div>
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div style="display:flex;gap:8px;">
-                                    <button class="nt-btn primary sm" onclick="startEmailWatchUi()">📧 감시 시작</button>
+                                    <button class="nt-btn primary sm" onclick="startEmailWatchUi()">감시 시작</button>
                                     <button class="nt-btn ghost sm" onclick="stopEmailWatchUi()">중지</button>
                                     <button class="nt-pillbtn" onclick="testEmailWatchUi()">즉시 1회 체크</button>
                                 </div>
@@ -2845,19 +2845,19 @@
                     @media (prefers-reduced-motion: reduce){ *{ transition:none !important; animation:none !important; } }
                     </style>
                     <div class="nt-group">
-                        <h3>🎨 테마 (외관)</h3>
+                        <h3>테마 (외관)</h3>
                         <div class="nt-card">
                             <div class="nt-hint">라이트 · 다크 · 자동(시스템 설정 따름) 중 선택.</div>
                             <div class="theme-seg" id="themeSeg">
-                                <button type="button" class="theme-seg-btn" data-theme-mode="auto">🌗 자동</button>
-                                <button type="button" class="theme-seg-btn" data-theme-mode="light">☀ 라이트</button>
-                                <button type="button" class="theme-seg-btn" data-theme-mode="dark">🌙 다크</button>
+                                <button type="button" class="theme-seg-btn" data-theme-mode="auto">자동</button>
+                                <button type="button" class="theme-seg-btn" data-theme-mode="light">라이트</button>
+                                <button type="button" class="theme-seg-btn" data-theme-mode="dark">다크</button>
                             </div>
                         </div>
                     </div>
 
                     <div class="nt-group">
-                        <h3>💾 사용자 정보 백업 / 복원</h3>
+                        <h3>사용자 정보 백업 / 복원</h3>
                         <div class="nt-card">
                             <div class="nt-hint">
                                 계정 토큰 / 저장 경로 / 폼 입력값 / WebDAV 자격증명 / 백업 설정 등 모든 사용자 입력 정보를 JSON 파일 1개로 통째 백업.
@@ -2865,12 +2865,12 @@
                             </div>
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-actions">
-                                    <button class="nt-btn primary" onclick="exportConfigUi()">💾 내보내기 (JSON)</button>
-                                    <button class="nt-pillbtn" onclick="importConfigUi()">📂 불러오기 (JSON)</button>
+                                    <button class="nt-btn primary" onclick="exportConfigUi()">내보내기 (JSON)</button>
+                                    <button class="nt-pillbtn" onclick="importConfigUi()">불러오기 (JSON)</button>
                                 </div>
                             </div></div>
                             <div class="nt-hint">
-                                ⚠ <strong>주의:</strong> 내보낸 파일에 계정 토큰 / 비밀번호 / 쿠키 포함 — 안전한 곳에 보관, 공유 절대 X.
+                                <strong>주의:</strong> 내보낸 파일에 계정 토큰 / 비밀번호 / 쿠키 포함 — 안전한 곳에 보관, 공유 절대 X.
                             </div>
                         </div>
                     </div>
@@ -2935,7 +2935,7 @@
                                 로그인된 쿠키/토큰을 자동 추출합니다. Bluesky는 앱 비밀번호 필요 → 수동 입력만 가능.
                             </div>
                             <div class="nt-hint" style="line-height:1.5;background:var(--accent-soft);padding:8px;border-radius:6px;border-left:3px solid var(--accent);">
-                                🍎 <strong>macOS 사용자</strong>: Chrome / Firefox / LibreWolf / Edge / Brave / Arc / Vivaldi 모두 시도합니다.<br>
+                                <strong>macOS 사용자</strong>: Chrome / Firefox / LibreWolf / Edge / Brave / Arc / Vivaldi 모두 시도합니다.<br>
                                 ★ <strong>Chrome 키체인 prompt</strong> 뜨면 <strong>"항상 허용"</strong> 누르세요 — 다음부터는 자동.<br>
                                 ★ 거부했으면 다시 ⌘ 스페이스 → <code>키체인 접근</code> → <code>login</code> → <code>Chrome Safe Storage</code> 항목 권한 변경.
                             </div>
@@ -2957,7 +2957,7 @@
                     </div>
 
                     <div class="nt-group">
-                        <h3>🤖 로컬 AI · 오픈클로</h3>
+                        <h3>로컬 AI · 오픈클로</h3>
                         <div class="nt-card">
                             <div class="nt-hint">
                                 이 컴퓨터 안에서만 도는 로컬 AI(오프라인·인터넷 안 씀). 잡담·질문·글쓰기·번역 등 <b>무엇이든 자유롭게 대화</b>할 수 있고,
@@ -2969,14 +2969,14 @@
                                     <select class="nt-input" id="llm-model" onchange="setLlmModel(this.value)" title="수리·대화에 쓸 AI 두뇌. coder(7B) 가 가장 똑똑하지만 느리고 메모리를 많이 씁니다." style="max-width:210px;height:34px;"></select>
                                     <button class="nt-btn primary" id="llm-start-btn" onclick="startLocalLlm()">AI 켜기</button>
                                     <button class="nt-btn ghost" id="llm-stop-btn" onclick="stopLocalLlm()" style="display:none;">끄기</button>
-                                    <button class="nt-btn ghost" id="llm-term-btn" onclick="openLlmTerminal()" title="오픈클로를 터미널 창에서 대화형으로 엽니다">🖥 터미널로 열기</button>
+                                    <button class="nt-btn ghost" id="llm-term-btn" onclick="openLlmTerminal()" title="오픈클로를 터미널 창에서 대화형으로 엽니다">터미널로 열기</button>
                                 </div>
                             </div></div>
-                            <div style="margin:4px 14px 6px;font-size:12px;font-weight:600;color:var(--muted);">💬 오픈클로와 자유롭게 대화</div>
+                            <div style="margin:4px 14px 6px;font-size:12px;font-weight:600;color:var(--muted);">오픈클로와 자유롭게 대화</div>
                             <div id="ai-chat" style="margin:0 14px 12px;border:1px solid var(--border);border-radius:10px;overflow:hidden;">
                                 <div id="ai-chat-log" style="height:230px;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:9px;background:var(--panel2);"></div>
                                 <div style="display:flex;gap:6px;flex-wrap:wrap;padding:8px 10px;border-top:1px solid var(--border);">
-                                    <button class="nt-btn primary" id="auto-repair-btn" onclick="startAutoRepair()" title="AI 가 현재 상태를 진단해 무엇을 고칠지 스스로 정하고 자동 실행합니다">🤖 AI 자동 수리</button>
+                                    <button class="nt-btn primary" id="auto-repair-btn" onclick="startAutoRepair()" title="AI 가 현재 상태를 진단해 무엇을 고칠지 스스로 정하고 자동 실행합니다">AI 자동 수리</button>
                                     <span style="font-size:11px;color:var(--faint);align-self:center;">· 수동:</span>
                                     <button class="nt-btn ghost" onclick="aiRepair('repairPython','환경 복구')">환경 복구</button>
                                     <button class="nt-btn ghost" onclick="aiRepair('updateModules','모듈 업데이트')">모듈 업데이트</button>
@@ -2984,7 +2984,7 @@
                                 </div>
                                 <div style="display:flex;gap:8px;align-items:center;padding:10px;border-top:1px solid var(--border);">
                                     <label title="켜면 답변 시 웹을 읽기전용으로 검색해 참고합니다 (검색 키 필요)" style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap;">
-                                        <input type="checkbox" id="ai-web-toggle" onchange="setLlmUseWeb(this.checked)" style="accent-color:var(--accent);">🔎 웹</label>
+                                        <input type="checkbox" id="ai-web-toggle" onchange="setLlmUseWeb(this.checked)" style="accent-color:var(--accent);">웹</label>
                                     <input type="text" class="nt-input" id="ai-chat-input" placeholder="무엇이든 물어보세요 — 잡담도, 질문도, 수리도" onkeydown="if(event.key==='Enter')sendAiChat()" style="flex:1;">
                                     <button class="nt-btn primary" id="ai-chat-send" onclick="sendAiChat()">보내기</button>
                                 </div>
@@ -2993,7 +2993,7 @@
                                     <span title="brave.com/search/api 에서 무료 키 발급 (월 2000회)" style="font-size:10px;color:var(--muted);white-space:nowrap;">무료 키: brave.com/search/api</span>
                                 </div>
                                 <div style="border-top:1px solid var(--border);padding:10px;">
-                                    <div style="font-size:12px;font-weight:600;color:var(--muted);">🛠 AI 스크립트 자가수리 <span style="font-weight:400;color:var(--faint);">· 백업·문법검증·자동원복(안전)</span></div>
+                                    <div style="font-size:12px;font-weight:600;color:var(--muted);">AI 스크립트 자가수리 <span style="font-weight:400;color:var(--faint);">· 백업·문법검증·자동원복(안전)</span></div>
                                     <div style="display:flex;gap:6px;align-items:center;margin-top:7px;flex-wrap:wrap;">
                                         <select class="nt-input" id="fix-script-sel" onchange="loadScriptState()" style="max-width:180px;height:30px;font-size:12px;">
                                             <option value="twitter_api.py">twitter_api.py</option>
@@ -3006,10 +3006,10 @@
                                     </div>
                                     <div style="display:flex;gap:6px;align-items:center;margin-top:6px;">
                                         <input type="text" class="nt-input" id="fix-script-problem" placeholder="문제 설명(선택) — 예: 트위터 API 변경으로 수집 오류" style="flex:1;height:30px;font-size:12px;">
-                                        <button class="nt-btn primary" onclick="aiFixScript()" title="오픈클로가 이 스크립트를 읽고 고쳐서 적용합니다(문법 통과 시에만, 실패하면 자동 원복)">🤖 AI 고치기</button>
+                                        <button class="nt-btn primary" onclick="aiFixScript()" title="오픈클로가 이 스크립트를 읽고 고쳐서 적용합니다(문법 통과 시에만, 실패하면 자동 원복)">AI 고치기</button>
                                         <button class="nt-btn ghost" onclick="revertScriptUi()" title="AI 수정본을 지우고 번들 원본으로">↺ 초기화</button>
                                     </div>
-                                    <p style="font-size:10.5px;color:var(--faint);margin-top:6px;line-height:1.4;">⚠️ 로컬 작은 모델은 코드를 완벽히 고치지 못할 수 있습니다. 잘못돼도 문법검증에서 막고 자동 원복되며, 언제든 <b>초기화</b>로 원본 복구됩니다.</p>
+                                    <p style="font-size:10.5px;color:var(--faint);margin-top:6px;line-height:1.4;">로컬 작은 모델은 코드를 완벽히 고치지 못할 수 있습니다. 잘못돼도 문법검증에서 막고 자동 원복되며, 언제든 <b>초기화</b>로 원본 복구됩니다.</p>
                                 </div>
                             </div>
                         </div>
@@ -3059,7 +3059,7 @@
                     </div>
 
                     <div class="nt-group">
-                        <h3>🛠 yt-dlp 자동 업데이트 (장기지원 · 기본 ON)</h3>
+                        <h3>yt-dlp 자동 업데이트 (장기지원 · 기본 ON)</h3>
                         <div class="nt-card">
                             <div class="nt-hint">
                                 <strong>YouTube/Twitter 등은 포맷·서명을 수시로 바꿉니다.</strong> 켜져 있으면 앱 시작 시
@@ -3077,13 +3077,13 @@
                     </div>
 
                     <div class="nt-group">
-                        <h3>📦 NAS 자동 백업 (로컬 → NAS 폴더 복사)</h3>
+                        <h3>NAS 자동 백업 (로컬 → NAS 폴더 복사)</h3>
                         <div class="nt-card">
                             <div class="nt-hint">
                                 다운로드/캡쳐 완료된 파일을 백그라운드로 NAS 마운트 폴더에 자동 cp.
                             </div>
                             <div class="nt-hint" style="line-height:1.5;background:var(--accent-soft);padding:8px;border-radius:6px;border-left:3px solid var(--accent);">
-                                🚀 <strong>속도 자동 최적화</strong>:<br>
+                                <strong>속도 자동 최적화</strong>:<br>
                                 • Apple WebDAV mount + WebDAV 자격증명 → <strong>rclone</strong> 자동 사용 (5-50배 빠름)<br>
                                 • Mountain Duck mount → 8 워커 + cache 활용 (background sync)<br>
                                 • SMB / AFP / NFS / 외장 SSD → 4 워커 병렬 cp<br>
@@ -3092,7 +3092,7 @@
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-checks">
                                     <label class="nt-check"><input type="checkbox" id="backup-enabled" onchange="onBackupToggle(this)"> <strong>백업 활성화</strong> — 모든 다운로드 자동 백업</label>
-                                    <label class="nt-check"><input type="checkbox" id="nas-auto-reconnect" checked onchange="onNasAutoReconnectToggle(this)"> 🔌 <strong>NAS 자동 재연결</strong> — 마운트 끊기면 30초 안 자동 remount</label>
+                                    <label class="nt-check"><input type="checkbox" id="nas-auto-reconnect" checked onchange="onNasAutoReconnectToggle(this)"> <strong>NAS 자동 재연결</strong> — 마운트 끊기면 30초 안 자동 remount</label>
                                 </div>
                                 <div id="backup-progress-wrap" style="margin:10px 0;display:none;">
                                     <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">
@@ -3109,11 +3109,11 @@
                                 <div class="nt-rc">
                                     <div style="display:flex;gap:8px;width:100%;flex-wrap:wrap;">
                                         <input type="text" class="nt-input" id="backup-path" placeholder="(미설정 — 아래 [경로 선택] 클릭)" readonly style="flex:1;">
-                                        <button class="nt-pillbtn" onclick="pickBackupPathUi()">📂 경로 선택</button>
+                                        <button class="nt-pillbtn" onclick="pickBackupPathUi()">경로 선택</button>
                                         <button class="nt-pillbtn" onclick="testBackupUi()">테스트</button>
-                                        <button class="nt-btn primary sm" id="backup-now-btn" onclick="backupNowUi()" title="백업 토글 OFF 여도 지금 1회 강제 백업 실행 (이미 복사된 파일 자동 skip)">📦 지금 백업</button>
-                                        <button class="nt-pillbtn" onclick="resyncAllUi()" title="수집 끝난 후 모든 폴더 통째 NAS 로 재sync (idempotent — 누락된 파일만 추가 cp)">🔄 전체 재sync</button>
-                                        <button class="nt-btn ghost sm" id="backup-stop-btn" onclick="stopBackupUi()" title="진행 중인 백업 즉시 중지 (활성 cp 강제 종료)">🛑 중지</button>
+                                        <button class="nt-btn primary sm" id="backup-now-btn" onclick="backupNowUi()" title="백업 토글 OFF 여도 지금 1회 강제 백업 실행 (이미 복사된 파일 자동 skip)">지금 백업</button>
+                                        <button class="nt-pillbtn" onclick="resyncAllUi()" title="수집 끝난 후 모든 폴더 통째 NAS 로 재sync (idempotent — 누락된 파일만 추가 cp)">전체 재sync</button>
+                                        <button class="nt-btn ghost sm" id="backup-stop-btn" onclick="stopBackupUi()" title="진행 중인 백업 즉시 중지 (활성 cp 강제 종료)">중지</button>
                                     </div>
                                 </div>
                             </div>
@@ -3121,7 +3121,7 @@
                     </div>
 
                     <div class="nt-group">
-                        <h3>🌐 원격 백업 업로드 (URL 직접 전송 — 이어올리기)</h3>
+                        <h3>원격 백업 업로드 (URL 직접 전송 — 이어올리기)</h3>
                         <div class="nt-card">
                             <div class="nt-hint">
                                 마운트 없이 <strong>URL 로 직접 업로드</strong> — WebDAV(HTTPS) · FTP · SFTP · S3.
@@ -3169,7 +3169,7 @@
                                 <div class="nt-rl">소스 폴더 (업로드할 로컬 폴더)</div>
                                 <div class="nt-rc"><div style="display:flex;gap:8px;width:100%;">
                                     <input type="text" class="nt-input" id="rbk-src" placeholder="(미설정 — [폴더 선택])" readonly style="flex:1;">
-                                    <button class="nt-pillbtn" onclick="pickRemoteBackupSrcUi()">📂 폴더 선택</button>
+                                    <button class="nt-pillbtn" onclick="pickRemoteBackupSrcUi()">폴더 선택</button>
                                 </div></div>
                             </div>
                             <div class="nt-row nt-stack">
@@ -3178,8 +3178,8 @@
                             </div>
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div style="display:flex;gap:8px;width:100%;">
-                                    <button class="nt-btn primary sm" id="rbk-go-btn" onclick="startRemoteBackupUi()">🌐 지금 업로드</button>
-                                    <button class="nt-btn ghost sm" onclick="stopRemoteBackupUi()">🛑 중지</button>
+                                    <button class="nt-btn primary sm" id="rbk-go-btn" onclick="startRemoteBackupUi()">지금 업로드</button>
+                                    <button class="nt-btn ghost sm" onclick="stopRemoteBackupUi()">중지</button>
                                 </div>
                             </div></div>
                         </div>
@@ -3214,15 +3214,15 @@
                                 <div class="nt-actions" style="margin-top:6px;">
                                     <button class="nt-btn primary" onclick="saveWebDavConfig()">저장</button>
                                     <button class="nt-pillbtn" onclick="testWebDavConn()">연결 테스트</button>
-                                    <button class="nt-pillbtn" onclick="mountWebDavFinder()" title="Mac Finder에 마운트 — 권한 문제 우회">📂 Finder에 마운트</button>
-                                    <button class="nt-pillbtn" onclick="openSecurityPrefs()" title="권한 거부 시 시스템 설정 열기">🔒 권한 설정</button>
+                                    <button class="nt-pillbtn" onclick="mountWebDavFinder()" title="Mac Finder에 마운트 — 권한 문제 우회">Finder에 마운트</button>
+                                    <button class="nt-pillbtn" onclick="openSecurityPrefs()" title="권한 거부 시 시스템 설정 열기">권한 설정</button>
                                 </div>
                             </div></div>
                             <div class="nt-row nt-stack"><div class="nt-rc">
-                                <div class="nt-rl">📦 저장 위치 모드</div>
+                                <div class="nt-rl">저장 위치 모드</div>
                                 <div class="nt-checks">
-                                    <label class="nt-check"><input type="checkbox" id="storage-mode-nas" onchange="onStorageModeToggle(this,'nas')"> 🌐 NAS 로 자동 저장 (모든 플랫폼 일괄)</label>
-                                    <label class="nt-check"><input type="checkbox" id="storage-mode-external" onchange="onStorageModeToggle(this,'external')"> 💾 외장 디스크로 자동 저장 (모든 플랫폼 일괄)</label>
+                                    <label class="nt-check"><input type="checkbox" id="storage-mode-nas" onchange="onStorageModeToggle(this,'nas')"> NAS 로 자동 저장 (모든 플랫폼 일괄)</label>
+                                    <label class="nt-check"><input type="checkbox" id="storage-mode-external" onchange="onStorageModeToggle(this,'external')"> 외장 디스크로 자동 저장 (모든 플랫폼 일괄)</label>
                                 </div>
                                 <p id="storage-mode-info" style="font-size:11px; color:var(--text-secondary); margin-top:6px;">
                                     둘 다 꺼두면 각 플랫폼 탭에서 개별 경로 지정. 체크하면 모든 플랫폼 input 자동 숨김.
@@ -3364,7 +3364,7 @@
                     ['reposts','리포스트'], ['thread_comments','게시물 댓글'],
                     ['likes','좋아요'], ['bookmarks','북마크'], ['media','미디어'],
                     ['followers','팔로워'], ['following','팔로잉'], ['profile','프로필'],
-                    ['all','⭐ 전체']
+                    ['all','전체']
                 ]},
                 { k: 'count', type: 'number', label: '최대' },
                 { k: 'dateFrom', type: 'date', label: '시작' },
@@ -3378,7 +3378,7 @@
                     ['posts','포스트'], ['replies','답글'], ['likes','좋아요'],
                     ['media_only','미디어만'], ['comments','댓글'],
                     ['followers','팔로워'], ['following','팔로잉'],
-                    ['profile','프로필'], ['all','⭐ 전체']
+                    ['profile','프로필'], ['all','전체']
                 ]},
                 { k: 'count', type: 'number', label: '최대' },
                 { k: 'dateFrom', type: 'date', label: '시작' },
@@ -3393,7 +3393,7 @@
                     ['posts','포스트'], ['reels','릴스'], ['stories','스토리'],
                     ['highlights','하이라이트'], ['tagged','태그됨'],
                     ['followers','팔로워'], ['following','팔로잉'],
-                    ['profile','프로필'], ['all','⭐ 전체']
+                    ['profile','프로필'], ['all','전체']
                 ]},
                 { k: 'count', type: 'number', label: '최대' },
                 { k: 'dateFrom', type: 'date', label: '시작' },
@@ -3405,7 +3405,7 @@
                 { k: 'type', type: 'select', label: '유형', opts: [
                     ['user','유저 전체'], ['bookmarks','북마크'], ['illust','개별'],
                     ['novels','소설'], ['novels_bookmarks','북마크 소설'],
-                    ['all','⭐ 전체']
+                    ['all','전체']
                 ]},
                 { k: 'count', type: 'number', label: '최대' },
                 { k: 'dateFrom', type: 'date', label: '시작' },
@@ -3415,7 +3415,7 @@
             ],
             tumblr: [
                 { k: 'type', type: 'select', label: '유형', opts: [
-                    ['posts','포스트'], ['likes','좋아요'], ['all','⭐ 전체']
+                    ['posts','포스트'], ['likes','좋아요'], ['all','전체']
                 ]},
                 { k: 'count', type: 'number', label: '최대' },
                 { k: 'dateFrom', type: 'date', label: '시작' },
@@ -3437,7 +3437,7 @@
             ],
             discord: [
                 { k: 'type', type: 'select', label: '유형', opts: [
-                    ['all','⭐ 전체 (메시지+고정)'], ['messages','메시지'],
+                    ['all','전체 (메시지+고정)'], ['messages','메시지'],
                     ['pins','고정 메시지'], ['server-all','서버 전체 채널']
                 ]},
                 { k: 'count', type: 'number', label: '메시지 수' },
@@ -3899,10 +3899,10 @@
                 // stats 강조 (badge 스타일)
                 const statsHtml = '<span style="display:inline-block;background:rgba(29,155,240,.12);'
                     + 'padding:1px 6px;border-radius:10px;font-weight:600;color:#1d9bf0;margin-right:2px;">'
-                    + '📝 '+(stat.posts||0)+'</span>'
+                    + ''+(stat.posts||0)+'</span>'
                     + '<span style="display:inline-block;background:rgba(40,167,69,.12);'
                     + 'padding:1px 6px;border-radius:10px;font-weight:600;color:#28a745;margin-right:2px;">'
-                    + '🖼 '+(stat.media||0)+'</span>'
+                    + ''+(stat.media||0)+'</span>'
                     + (stat.status ? '<span style="color:var(--text-tertiary);font-size:10px;">'+stat.status+'</span>' : '');
                 rowsHtml += '<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:'+color+';padding:2px 0;">'
                     + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
@@ -3981,12 +3981,12 @@
                 try {
                     config = buildBatchConfig(plat, entry.target, entry.accountIdx, entry.options || {});
                 } catch (e) {
-                    appendLog('❌ ['+entry.target+'] buildBatchConfig 예외: '+(e && e.message ? e.message : String(e)),'error', logKey);
+                    appendLog('['+entry.target+'] buildBatchConfig 예외: '+(e && e.message ? e.message : String(e)),'error', logKey);
                     m.states[parallelKey] = 'error';
                     return;
                 }
                 if (!config) {
-                    appendLog('❌ '+entry.target+' — 설정 오류 (계정 미설정 등)','error', logKey);
+                    appendLog(''+entry.target+' — 설정 오류 (계정 미설정 등)','error', logKey);
                     m.states[parallelKey] = 'error';
                     return;
                 }
@@ -3998,7 +3998,7 @@
                 try {
                     backend.startCollection(JSON.stringify(config));
                 } catch (e) {
-                    appendLog('❌ ['+entry.target+'] startCollection 예외: '+(e && e.message ? e.message : String(e)),'error', logKey);
+                    appendLog('['+entry.target+'] startCollection 예외: '+(e && e.message ? e.message : String(e)),'error', logKey);
                     m.states[parallelKey] = 'error';
                 }
             });
@@ -4055,13 +4055,13 @@
             try {
                 config = buildBatchConfig(plat, entry.target, entry.accountIdx, entry.options || {});
             } catch (e) {
-                appendLog('❌ 항목 #'+(idx+1)+' config 빌드 실패: '+(e&&e.message||e), 'error', m.logKey);
+                appendLog('항목 #'+(idx+1)+' config 빌드 실패: '+(e&&e.message||e), 'error', m.logKey);
                 m.states[key] = 'error';
                 updateMultiProgress(plat);
                 return;
             }
             if (!config) {
-                appendLog('❌ 항목 #'+(idx+1)+' 설정 오류', 'error', m.logKey);
+                appendLog('항목 #'+(idx+1)+' 설정 오류', 'error', m.logKey);
                 m.states[key] = 'error';
                 updateMultiProgress(plat);
                 return;
@@ -4077,7 +4077,7 @@
             try {
                 backend.startCollection(JSON.stringify(config));
             } catch (e) {
-                appendLog('❌ 항목 #'+(idx+1)+' 시작 실패: '+(e&&e.message||e), 'error', m.logKey);
+                appendLog('항목 #'+(idx+1)+' 시작 실패: '+(e&&e.message||e), 'error', m.logKey);
                 m.states[key] = 'error';
             }
             updateMultiProgress(plat);
@@ -4093,7 +4093,7 @@
             }
             const m = _multis[plat]; if (!m) return;
             m.stopped = true;
-            appendLog('⚠️ 다중 수집 중지 요청','warning', m.logKey);
+            appendLog('다중 수집 중지 요청','warning', m.logKey);
             if (backend && backend.stopCollection) backend.stopCollection(plat);
             updateMultiProgress(plat);
         }
@@ -4535,7 +4535,7 @@
                 }
             }
             saveWebDavConfig();
-            appendLog('WebDAV 자동 업로드: ' + (cb.checked ? '✅ 활성' : '❌ 비활성'),
+            appendLog('WebDAV 자동 업로드: ' + (cb.checked ? '활성' : '비활성'),
                 cb.checked ? 'success' : 'info', 'settings');
         }
         function testWebDavConn() {
@@ -4594,7 +4594,7 @@
             const otherEl = document.getElementById(other);
             if (otherEl) otherEl.checked = false;
             if (!backend || !backend.pickMountedVolume) {
-                appendLog('[NAS UI] ❌ backend.pickMountedVolume 없음 — backend='+(typeof backend), 'error', 'settings');
+                appendLog('[NAS UI] backend.pickMountedVolume 없음 — backend='+(typeof backend), 'error', 'settings');
                 cb.checked = false;
                 return;
             }
@@ -4672,7 +4672,7 @@
             const path = document.getElementById('backup-path').value.trim();
             if (cb.checked && !path) {
                 cb.checked = false;
-                alert('먼저 [📂 경로 선택] 으로 백업 경로 지정하세요.');
+                alert('먼저 [경로 선택] 으로 백업 경로 지정하세요.');
                 return;
             }
             if (backend && backend.setBackupConfig) backend.setBackupConfig(cb.checked, path);
@@ -4690,10 +4690,10 @@
         function backupNowUi() {
             const path = document.getElementById('backup-path').value.trim();
             if (!path) {
-                alert('📦 먼저 [📂 경로 선택] 으로 백업 폴더를 지정하세요.');
+                alert('먼저 [경로 선택] 으로 백업 폴더를 지정하세요.');
                 return;
             }
-            if (!confirm('📦 지금 백업\n\n모든 플랫폼의 다운로드 폴더를:\n' + path + '\n로 즉시 통째 백업합니다.\n\n(이미 복사된 파일은 자동 skip — 안전, 빠름)\n진행하시겠습니까?')) return;
+            if (!confirm('지금 백업\n\n모든 플랫폼의 다운로드 폴더를:\n' + path + '\n로 즉시 통째 백업합니다.\n\n(이미 복사된 파일은 자동 skip — 안전, 빠름)\n진행하시겠습니까?')) return;
             if (backend && backend.backupNow) backend.backupNow();
         }
         // ★ 사용자 정보 export/import
@@ -4701,16 +4701,16 @@
             if (backend && backend.exportConfig) backend.exportConfig();
         }
         function importConfigUi() {
-            if (!confirm('📂 사용자 정보 불러오기\n\n현재 설정 (계정/토큰/경로/폼) 모두 덮어씌워집니다.\n진행하시겠습니까?')) return;
+            if (!confirm('사용자 정보 불러오기\n\n현재 설정 (계정/토큰/경로/폼) 모두 덮어씌워집니다.\n진행하시겠습니까?')) return;
             if (backend && backend.importConfig) backend.importConfig();
         }
 
         function stopBackupUi() {
-            if (!confirm('🛑 백업 중지\n\n진행 중인 모든 백업 워커를 즉시 종료합니다.\n(활성 cp 프로세스도 강제 kill — 부분 복사된 파일은 다음 호출 시 자동 재시도)\n\n중지하시겠습니까?')) return;
+            if (!confirm('백업 중지\n\n진행 중인 모든 백업 워커를 즉시 종료합니다.\n(활성 cp 프로세스도 강제 kill — 부분 복사된 파일은 다음 호출 시 자동 재시도)\n\n중지하시겠습니까?')) return;
             if (backend && backend.stopBackup) backend.stopBackup();
         }
 
-        // ───────── 🌐 원격 백업 업로드 (WebDAV/HTTPS · FTP · SFTP · S3 — 이어올리기) ─────────
+        // ───────── 원격 백업 업로드 (WebDAV/HTTPS · FTP · SFTP · S3 — 이어올리기) ─────────
         function onRemoteBackupTypeChange() {
             var t = (document.getElementById('rbk-type') || {}).value || 'webdav';
             function show(sel, on){ document.querySelectorAll(sel).forEach(function(e){ e.style.display = on ? '' : 'none'; }); }
@@ -4725,7 +4725,7 @@
         }
         function setRemoteBackupBusy(busy) {
             var b = document.getElementById('rbk-go-btn');
-            if (b) { b.disabled = !!busy; b.textContent = busy ? '⏳ 업로드 중…' : '🌐 지금 업로드'; }
+            if (b) { b.disabled = !!busy; b.textContent = busy ? '⏳ 업로드 중…' : '지금 업로드'; }
         }
         function startRemoteBackupUi() {
             if (!backend || !backend.startRemoteBackup) { alert('백엔드 미연결'); return; }
@@ -4747,7 +4747,7 @@
             }
             setRemoteBackupBusy(true);
             switchTab('settings');
-            appendLog('🌐 원격 백업 업로드 시작 (' + type.toUpperCase() + ') — 이어올리기 적용', 'info', 'settings');
+            appendLog('원격 백업 업로드 시작 (' + type.toUpperCase() + ') — 이어올리기 적용', 'info', 'settings');
             backend.startRemoteBackup(JSON.stringify(cfg));
         }
         function stopRemoteBackupUi() {
@@ -4765,7 +4765,7 @@
             appendLog('동시 다운로드 개수: ' + (n === 0 ? '자동(플랫폼 기본)' : n + '개') + ' — 다음 수집부터 적용', 'info', 'settings');
         }
         window.onNasReconnected = function() {
-            appendLog('✅ NAS 다시 마운트됨 — 자동 재연결 성공', 'success', 'settings');
+            appendLog('NAS 다시 마운트됨 — 자동 재연결 성공', 'success', 'settings');
         };
 
         // ★ 백업 진행률 콜백
@@ -4782,7 +4782,7 @@
             wrap.style.display = 'block';
             bar.style.width = pct + '%';
             const fmt = b => b < 1024*1024 ? (b/1024).toFixed(0)+'KB' : (b/1024/1024).toFixed(1)+'MB';
-            txt.textContent = `📦 ${doneN}/${totalN} 파일 · ${fmt(doneBytes)} / ${fmt(totalBytes)}`;
+            txt.textContent = `${doneN}/${totalN} 파일 · ${fmt(doneBytes)} / ${fmt(totalBytes)}`;
             pctEl.textContent = pct + '%';
             // 완료 시 5초 후 숨김
             if (doneN >= totalN && totalN > 0) {
@@ -4856,7 +4856,7 @@
             document.querySelectorAll('input[id$="-external-toggle"]').forEach(el => { el.checked = isExt; });
             if (info) {
                 if (isNas || isExt) {
-                    const icon = isNas ? '🌐 NAS' : '💾 외장';
+                    const icon = isNas ? 'NAS' : '외장';
                     info.innerHTML = `<strong>${icon} 모드 활성 (전체 일괄)</strong> — 모든 플랫폼이 <code>${root}/Chernobyl/&lt;Platform&gt;</code>. 각 탭에서 따로 변경하면 그 플랫폼만 다른 경로.`;
                     info.style.color = 'var(--accent)';
                 } else {
@@ -4983,7 +4983,7 @@
         }
         function checkNewTwitter() {
             if(backend) {
-                appendLog('🔄 새 트윗 체크 중...','info','twitter');
+                appendLog('새 트윗 체크 중...','info','twitter');
                 backend.checkNewPosts('twitter');
             }
         }
@@ -5489,7 +5489,7 @@
         window.onEngineDetected = function(engine){
             const el = document.getElementById('crawl-engine');
             if (el) el.textContent = engine || 'unknown';
-            if (engine && engine !== 'unknown') appendLog('🔎 엔진 감지: ' + engine + ' — 게시판 구조에 맞춰 미러링합니다', 'success', 'crawl');
+            if (engine && engine !== 'unknown') appendLog('엔진 감지: ' + engine + ' — 게시판 구조에 맞춰 미러링합니다', 'success', 'crawl');
         };
 
         // ── 内閣会 (Naikakukai) ──
@@ -5504,7 +5504,7 @@
             }
             let html = '';
             naikakukaiWatches.forEach((w,i) => {
-                const plName = {twitter:'🐦 Twitter', bluesky:'🦋 Bluesky', tumblr:'📓 Tumblr'}[w.platform] || w.platform;
+                const plName = {twitter:'Twitter', bluesky:'Bluesky', tumblr:'Tumblr'}[w.platform] || w.platform;
                 html += `<div style="display:flex; align-items:center; justify-content:space-between; padding:6px 8px; border-bottom:1px solid var(--border); font-size:13px;">
                     <span>${plName} / <b>${w.target}</b></span>
                     <button class="btn btn-secondary btn-sm" onclick="removeNaikakukaiWatch(${i})">삭제</button>
@@ -5654,7 +5654,7 @@
         }
         function checkNewBluesky() {
             if(backend) {
-                appendLog('🔄 새 글 체크 중...','info','bluesky');
+                appendLog('새 글 체크 중...','info','bluesky');
                 backend.checkNewPosts('bluesky');
             }
         }
@@ -5798,7 +5798,7 @@
                     const pending  = count - verified - failed;
                     if (failed > 0) {
                         summary.className = 'manifest-summary err';
-                        summary.innerHTML = '<span>⚠ 손상 감지: '+failed+'개</span>'+
+                        summary.innerHTML = '<span>손상 감지: '+failed+'개</span>'+
                             '<span>정상 '+verified+' · 확인중 '+pending+' · 손상 '+failed+'</span>';
                     } else if (pending === 0 && verified === count && count > 0) {
                         summary.className = 'manifest-summary ok';
@@ -5972,15 +5972,15 @@
         function startAutoRepair() {
             if (!backend) return;
             var b = document.getElementById('auto-repair-btn');
-            if (b) { b.disabled = true; b.textContent = '🤖 진단 중…'; }
+            if (b) { b.disabled = true; b.textContent = '진단 중…'; }
             backend.autoRepair();
         }
         // 백엔드 → 자동 수리 진행 상황 통지: [phase, msg]
         function onAutoRepair(arr) {
             var phase = arr[0], msg = arr[1] || '';
             var b = document.getElementById('auto-repair-btn');
-            if (phase === 'start') { _aiBubble('assistant', '🤖 AI 자동 수리를 시작합니다…'); return; }
-            if (phase === 'done') { if (b) { b.disabled = false; b.textContent = '🤖 AI 자동 수리'; } return; }
+            if (phase === 'start') { _aiBubble('assistant', 'AI 자동 수리를 시작합니다…'); return; }
+            if (phase === 'done') { if (b) { b.disabled = false; b.textContent = 'AI 자동 수리'; } return; }
             if (msg) _aiBubble('assistant', msg);
         }
         // 오픈클로를 별도 터미널 창에서 대화형으로 — 서버가 꺼져 있으면 백엔드가 먼저 기동
@@ -6511,7 +6511,7 @@
                 if (plat === 'youtube') window.backend.stopYoutube();
                 else window.backend.stopCollection(plat);
             }
-            batchLog('⚠️ 사용자 중지 요청');
+            batchLog('사용자 중지 요청');
             finishBatch();
         };
 
@@ -6533,7 +6533,7 @@
             // 해당 플랫폼 설정을 그대로 사용 (현재 탭의 설정)
             var config = buildBatchConfig(plat, target, accIdx);
             if (!config) {
-                batchLog('❌ ' + target + ' — 설정 오류');
+                batchLog('' + target + ' — 설정 오류');
                 batchCurrentIdx++;
                 setTimeout(runNextBatchItem, 500);
                 return;
@@ -6564,9 +6564,9 @@
             try {
                 switch (plat) {
                     case 'twitter': {
-                        if (!accounts.twitter || !accounts.twitter.length) { batchLog('❌ Twitter 계정 필요'); return null; }
+                        if (!accounts.twitter || !accounts.twitter.length) { batchLog('Twitter 계정 필요'); return null; }
                         var pickedTw = pickAccounts(accounts.twitter, accIdx);
-                        if (!pickedTw.length) { batchLog('❌ Twitter 계정 선택 오류'); return null; }
+                        if (!pickedTw.length) { batchLog('Twitter 계정 선택 오류'); return null; }
                         config.path = document.getElementById('twitter-path').value;
                         config.type = _mk('type', document.getElementById('twitter-type').value);
                         config.mode = document.getElementById('twitter-mode').value;
@@ -6607,9 +6607,9 @@
                         break;
                     }
                     case 'instagram': {
-                        if (!accounts.instagram || !accounts.instagram.length) { batchLog('❌ Instagram 계정 필요'); return null; }
+                        if (!accounts.instagram || !accounts.instagram.length) { batchLog('Instagram 계정 필요'); return null; }
                         var pickedIg = pickAccounts(accounts.instagram, accIdx);
-                        if (!pickedIg.length) { batchLog('❌ Instagram 계정 선택 오류'); return null; }
+                        if (!pickedIg.length) { batchLog('Instagram 계정 선택 오류'); return null; }
                         config.username = target;
                         config.targets = [target];
                         config.sessionId = pickedIg[0].sessionId;
@@ -6635,9 +6635,9 @@
                         break;
                     }
                     case 'pixiv': {
-                        if (!accounts.pixiv || !accounts.pixiv.length) { batchLog('❌ Pixiv 계정 필요'); return null; }
+                        if (!accounts.pixiv || !accounts.pixiv.length) { batchLog('Pixiv 계정 필요'); return null; }
                         var pickedPx = pickAccounts(accounts.pixiv, accIdx);
-                        if (!pickedPx.length) { batchLog('❌ Pixiv 계정 선택 오류'); return null; }
+                        if (!pickedPx.length) { batchLog('Pixiv 계정 선택 오류'); return null; }
                         config.sessionId = pickedPx[0].sessionId;
                         config.accounts = pickedPx;
                         config.path = document.getElementById('pixiv-path').value;
@@ -6653,7 +6653,7 @@
                     case 'fanbox': {
                         // Fanbox 는 UI 에서 직접 FANBOXSESSID 입력 (브라우저에서 추출 또는 수동 붙여넣기)
                         var fbSid = document.getElementById('fanbox-session').value.trim();
-                        if (!fbSid) { batchLog('❌ FANBOXSESSID 필요'); return null; }
+                        if (!fbSid) { batchLog('FANBOXSESSID 필요'); return null; }
                         var fbCk = document.getElementById('fanbox-cookie') ? document.getElementById('fanbox-cookie').value.trim() : '';
                         config.sessionId = fbSid;
                         config.cookie = fbCk;
@@ -6669,9 +6669,9 @@
                         break;
                     }
                     case 'tumblr': {
-                        if (!accounts.tumblr || !accounts.tumblr.length) { batchLog('❌ Tumblr 계정 필요'); return null; }
+                        if (!accounts.tumblr || !accounts.tumblr.length) { batchLog('Tumblr 계정 필요'); return null; }
                         var pickedTb = pickAccounts(accounts.tumblr, accIdx);
-                        if (!pickedTb.length) { batchLog('❌ Tumblr 계정 선택 오류'); return null; }
+                        if (!pickedTb.length) { batchLog('Tumblr 계정 선택 오류'); return null; }
                         config.apiKey = pickedTb[0].apiKey;
                         config.type = _mk('type', document.getElementById('tumblr-type').value);
                         config.count = _mk('count', parseInt(document.getElementById('tumblr-count').value) || 0);
@@ -6709,9 +6709,9 @@
                         break;
                     }
                     case 'discord': {
-                        if (!accounts.discord || !accounts.discord.length) { batchLog('❌ Discord 계정 필요'); return null; }
+                        if (!accounts.discord || !accounts.discord.length) { batchLog('Discord 계정 필요'); return null; }
                         var pickedDc = pickAccounts(accounts.discord, accIdx);
-                        if (!pickedDc.length) { batchLog('❌ Discord 계정 선택 오류'); return null; }
+                        if (!pickedDc.length) { batchLog('Discord 계정 선택 오류'); return null; }
                         // target = "server" 또는 "server/channel" 형식
                         var dcParts = String(target).split('/');
                         config.server = (dcParts[0] || '').trim();
@@ -6745,7 +6745,7 @@
                         break;
                 }
             } catch(e) {
-                batchLog('❌ 설정 읽기 오류: ' + e.message);
+                batchLog('설정 읽기 오류: ' + e.message);
                 return null;
             }
             return config;
@@ -6786,8 +6786,8 @@
                 if (platform === batchPlat && (isDone || isError)) {
                     var curItem = batchQueue[batchCurrentIdx];
                     var t = curItem ? (curItem.target || String(curItem)) : '?';
-                    if (isError) batchLog('❌ ' + t + ' — 오류');
-                    else batchLog('✅ ' + t + ' — 완료 (게시물: ' + posts + ', 미디어: ' + media + ')');
+                    if (isError) batchLog('' + t + ' — 오류');
+                    else batchLog('' + t + ' — 완료 (게시물: ' + posts + ', 미디어: ' + media + ')');
                     batchCurrentIdx++;
                     setTimeout(runNextBatchItem, 2000);
                 }
@@ -6810,9 +6810,9 @@
                         var entry = m.queue[keyIdx];
                         var label = entry ? entry.target : ('#'+keyIdx);
                         if (prev === 'running') {
-                            if (isError) appendLog('❌ '+label+' — 오류','error', m.logKey);
+                            if (isError) appendLog(''+label+' — 오류','error', m.logKey);
                             else if (isStopped) appendLog('⏹ '+label+' — 중단됨 (▶ 누르면 재시작)','warning', m.logKey);
-                            else appendLog('✅ '+label+' — 완료 (게시물: '+posts+', 미디어: '+media+')','success', m.logKey);
+                            else appendLog(''+label+' — 완료 (게시물: '+posts+', 미디어: '+media+')','success', m.logKey);
                         }
                         updateMultiProgress(lookupPlat);
                         checkMultiAllDone(lookupPlat);
@@ -7046,7 +7046,7 @@
                 const card = document.createElement('div');
                 card.className = 'login-pause-card';
                 card.innerHTML = `
-                    <div class="icon">⚠</div>
+                    <div class="icon"></div>
                     <div class="body">
                         <div class="title">${label} 로그인 대기</div>
                         <div class="desc">Chrome 창에서 로그인 후 '확인' 누르세요</div>
