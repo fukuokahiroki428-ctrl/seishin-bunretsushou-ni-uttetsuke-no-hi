@@ -2992,6 +2992,25 @@
                                     <input type="password" class="nt-input" id="ai-search-key" placeholder="Brave Search API 키 (무료·읽기전용 웹검색용)" onchange="setSearchKey(this.value)" style="flex:1;font-size:11px;height:30px;">
                                     <span title="brave.com/search/api 에서 무료 키 발급 (월 2000회)" style="font-size:10px;color:var(--muted);white-space:nowrap;">무료 키: brave.com/search/api</span>
                                 </div>
+                                <div style="border-top:1px solid var(--border);padding:10px;">
+                                    <div style="font-size:12px;font-weight:600;color:var(--muted);">🛠 AI 스크립트 자가수리 <span style="font-weight:400;color:var(--faint);">· 백업·문법검증·자동원복(안전)</span></div>
+                                    <div style="display:flex;gap:6px;align-items:center;margin-top:7px;flex-wrap:wrap;">
+                                        <select class="nt-input" id="fix-script-sel" onchange="loadScriptState()" style="max-width:180px;height:30px;font-size:12px;">
+                                            <option value="twitter_api.py">twitter_api.py</option>
+                                            <option value="twitter_tid.py">twitter_tid.py</option>
+                                            <option value="twitter_daemon.py">twitter_daemon.py</option>
+                                            <option value="bluesky_daemon.py">bluesky_daemon.py</option>
+                                            <option value="email_watch.py">email_watch.py</option>
+                                        </select>
+                                        <span id="fix-script-badge" style="font-size:11px;color:var(--faint);white-space:nowrap;">○ 번들 원본</span>
+                                    </div>
+                                    <div style="display:flex;gap:6px;align-items:center;margin-top:6px;">
+                                        <input type="text" class="nt-input" id="fix-script-problem" placeholder="문제 설명(선택) — 예: 트위터 API 변경으로 수집 오류" style="flex:1;height:30px;font-size:12px;">
+                                        <button class="nt-btn primary" onclick="aiFixScript()" title="오픈클로가 이 스크립트를 읽고 고쳐서 적용합니다(문법 통과 시에만, 실패하면 자동 원복)">🤖 AI 고치기</button>
+                                        <button class="nt-btn ghost" onclick="revertScriptUi()" title="AI 수정본을 지우고 번들 원본으로">↺ 초기화</button>
+                                    </div>
+                                    <p style="font-size:10.5px;color:var(--faint);margin-top:6px;line-height:1.4;">⚠️ 로컬 작은 모델은 코드를 완벽히 고치지 못할 수 있습니다. 잘못돼도 문법검증에서 막고 자동 원복되며, 언제든 <b>초기화</b>로 원본 복구됩니다.</p>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -4232,7 +4251,7 @@
             const names = {dashboard:'대시보드',twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',niconico:'ニコニコ',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',naikakukai:'内閣会',crawl:'Capture',settings:'설정'};
             document.getElementById('toolbar-title').textContent = names[tab] || tab;
             // Load system info when switching to settings
-            if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); if (backend && backend.getLlmStatus) backend.getLlmStatus(); }
+            if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); if (backend && backend.getLlmStatus) backend.getLlmStatus(); if (window.loadScriptState) loadScriptState(); }
             // 해당 플랫폼의 저장된 stats 복원
             const s = platformStats[tab] || {posts:0, media:0, status:'대기'};
             document.getElementById('stat-posts').textContent = s.posts;
@@ -5944,6 +5963,11 @@
         // 웹 검색(읽기전용) — 토글 + Brave API 키
         function setLlmUseWeb(on) { if (backend && backend.setLlmUseWeb) backend.setLlmUseWeb(!!on); }
         function setSearchKey(k) { k = (k || '').trim(); try { localStorage.setItem('braveKey', k); } catch (e) {} if (backend && backend.setSearchKey) backend.setSearchKey(k); }
+        // AI 스크립트 자가수리 (안전: 백업·문법검증·자동원복)
+        function aiFixScript() { if (!backend || !backend.aiFixScript) return; var n = document.getElementById('fix-script-sel').value; var p = (document.getElementById('fix-script-problem') || {}).value || ''; backend.aiFixScript(n, p); }
+        function revertScriptUi() { if (!backend || !backend.revertScript) return; backend.revertScript(document.getElementById('fix-script-sel').value); }
+        function loadScriptState() { if (!backend || !backend.getScriptSource) return; var s = document.getElementById('fix-script-sel'); if (s) backend.getScriptSource(s.value); }
+        function onScriptSource(a) { var isOv = a && a[2]; var b = document.getElementById('fix-script-badge'); if (!b) return; b.textContent = isOv ? '● AI 수정본 적용됨' : '○ 번들 원본'; b.style.color = isOv ? '#3fb950' : 'var(--faint)'; }
         // AI 자동 수리 — AI 가 진단하고 무엇을 고칠지 스스로 정해 실행
         function startAutoRepair() {
             if (!backend) return;

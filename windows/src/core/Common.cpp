@@ -421,6 +421,20 @@ QString bundledToolsDir()
     return bundledResourcesDir() + "/tools";
 }
 
+// ── AI 자가수리: 편집가능 스크립트의 쓰기가능 override 위치 ──
+//   AI 가 고친 스크립트는 여기에 저장된다. override 가 있으면 그걸 쓰고,
+//   없으면 번들 원본을 쓴다(= 아무 것도 안 바꾸면 동작 무변화 → 안전).
+QString scriptOverrideDir()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/script_overrides";
+}
+QString activeToolScriptPath(const QString &name)
+{
+    const QString ov = scriptOverrideDir() + "/" + name;
+    if (QFileInfo::exists(ov)) return ov;
+    return bundledToolsDir() + "/" + name;
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 // yt-dlp 자동 업데이트 — 사용자 폴더 우선, GitHub 죽어도 번들 fallback
 // ═════════════════════════════════════════════════════════════════════════

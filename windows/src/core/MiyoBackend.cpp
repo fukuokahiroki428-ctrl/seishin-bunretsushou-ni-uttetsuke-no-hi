@@ -2834,8 +2834,8 @@ void MiyoBackend::emailWatchTick()
 {
     if (m_emailServer.isEmpty()) return;
 
-    // Python script 경로 — 번들 우선 (플랫폼별 레이아웃은 Common 헬퍼가 처리)
-    QString scriptPath = Common::bundledToolsDir() + "/email_watch.py";
+    // Python script 경로 — AI override 우선, 없으면 번들 (플랫폼별 레이아웃은 Common 헬퍼가 처리)
+    QString scriptPath = Common::activeToolScriptPath("email_watch.py");
     if (!QFileInfo::exists(scriptPath)) {
         // dev fallback (빌드 디렉토리 옆)
         scriptPath = QCoreApplication::applicationDirPath() + "/../../../resources/tools/email_watch.py";
@@ -13048,6 +13048,128 @@ void MiyoBackend::setLlmModel(const QString &hint)
 }
 void MiyoBackend::setSearchKey(const QString &key) { m_searchKey = key.trimmed(); }
 void MiyoBackend::setLlmUseWeb(bool on) { m_llmUseWeb = on; }
+
+// ═════════════════════════════════════════════════════════════════════════
+// AI 스크립트 자가수리 — 백업 → 적용 → 문법검증(py_compile) → 실패 시 자동 원복.
+//   번들 스크립트는 직접 수정하지 않고 쓰기가능 override 에만 저장(안전).
+//   실행부는 Common::activeToolScriptPath() 로 override 우선 사용.
+// ═════════════════════════════════════════════════════════════════════════
+static const QStringList kEditableScripts = {
+    "twitter_api.py", "twitter_tid.py", "twitter_daemon.py", "bluesky_daemon.py", "email_watch.py"};
+
+void MiyoBackend::getScriptSource(const QString &name)
+{
+    QString src; bool isOv = false;
+    if (kEditableScripts.contains(name)) {
+        const QString path = Common::activeToolScriptPath(name);
+        isOv = path.startsWith(Common::scriptOverrideDir());
+        QFile f(path);
+        if (f.open(QIODevice::ReadOnly)) { src = QString::fromUtf8(f.readAll()); f.close(); }
+    }
+    runJs(QString("onScriptSource(%1)").arg(QString::fromUtf8(
+        QJsonDocument(QJsonArray{name, src, isOv}).toJson(QJsonDocument::Compact))));
+}
+
+// 백업 → override 에 쓰기 → py_compile 검증 → 실패 시 원복. 성공 true.
+bool MiyoBackend::applyScriptPatchImpl(const QString &name, const QString &newContent, QString &err)
+{
+    if (!kEditableScripts.contains(name)) { err = "편집 불가 스크립트"; return false; }
+    if (newContent.trimmed().isEmpty()) { err = "빈 내용"; return false; }
+    const QString dir = Common::scriptOverrideDir();
+    QDir().mkpath(dir);
+    const QString ov = dir + "/" + name;
+    // 백업: 기존 override 있으면 그것, 없으면 번들 원본을 .bak 로
+    const QString bak = ov + ".bak";
+    QFile::remove(bak);
+    if (QFile::exists(ov)) QFile::copy(ov, bak);
+    else QFile::copy(Common::bundledToolsDir() + "/" + name, bak);
+    // 쓰기
+    { QFile f(ov); if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) { err = "override 쓰기 실패"; return false; }
+      f.write(newContent.toUtf8()); f.close(); }
+    // 문법 검증
+    QProcess proc;
+    proc.setProcessEnvironment(Common::bundledProcessEnv());
+    proc.start(Common::bundledPythonPath(), {"-m", "py_compile", ov});
+    proc.waitForFinished(20000);
+    const bool ok = (proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0);
+    if (!ok) {
+        err = QString::fromUtf8(proc.readAllStandardError()).left(300);
+        // 원복: .bak 이 있으면 되돌리고, 없으면 override 삭제(번들 사용)
+        if (QFile::exists(bak)) { QFile::remove(ov); QFile::copy(bak, ov); }
+        else QFile::remove(ov);
+        return false;
+    }
+    return true;
+}
+
+void MiyoBackend::aiPatchScript(const QString &name, const QString &newContent)
+{
+    QString err;
+    if (applyScriptPatchImpl(name, newContent, err))
+        log(QString("✅ %1 수정 적용됨(문법검증 통과). 문제 생기면 '원본으로 초기화' 가능.").arg(name), "success", "settings");
+    else
+        log(QString("❌ %1 수정 실패 — 원래대로 되돌림. 사유: %2").arg(name, err), "error", "settings");
+    getScriptSource(name);
+}
+
+void MiyoBackend::revertScript(const QString &name)
+{
+    if (!kEditableScripts.contains(name)) return;
+    const QString ov = Common::scriptOverrideDir() + "/" + name;
+    const bool had = QFile::exists(ov);
+    QFile::remove(ov); QFile::remove(ov + ".bak");
+    log(had ? QString("↺ %1 을(를) 번들 원본으로 초기화했습니다.").arg(name)
+            : QString("%1 은(는) 이미 원본입니다.").arg(name), "info", "settings");
+    getScriptSource(name);
+}
+
+// AI 가 스크립트를 읽고 문제를 반영해 '전체 파일'을 다시 써서 안전 적용.
+void MiyoBackend::aiFixScript(const QString &name, const QString &problem)
+{
+    if (!kEditableScripts.contains(name)) { log("편집 불가 스크립트", "error", "settings"); return; }
+    if (m_scriptFixBusy.exchange(true)) { log("AI 스크립트 수리가 이미 진행 중입니다.", "warning", "settings"); return; }
+    log(QString("🤖 오픈클로가 %1 을(를) 읽고 수정안을 만드는 중...").arg(name), "info", "settings");
+
+    QString src;
+    { QFile f(Common::activeToolScriptPath(name)); if (f.open(QIODevice::ReadOnly)) { src = QString::fromUtf8(f.readAll()); f.close(); } }
+
+    QThread *t = QThread::create([this, name, problem, src]() {
+        const QString base = "http://127.0.0.1:8737";
+        HttpClient probe;
+        if (!probe.get(base + "/v1/models").isOk()) {
+            QMetaObject::invokeMethod(this, [this]() { startLocalLlm(m_llmModelHint); }, Qt::QueuedConnection);
+            for (int i = 0; i < 240; ++i) { QThread::msleep(500); HttpClient h; if (h.get(base + "/v1/models").isOk()) break; }
+        }
+        const QString sys = QString(
+            "너는 파이썬 코드를 고치는 엔지니어다. 아래 파일 '%1' 의 현재 소스와 문제 설명을 보고, "
+            "문제를 해결한 '완전한 파일 전체'를 출력하라. 반드시 파일 전체를 그대로 출력하고(잘림 금지), "
+            "설명·주석 인사말·코드펜스(```) 없이 순수 파이썬 코드만 출력하라. 기존 동작은 최대한 보존하라.\n\n"
+            "[문제]\n%2\n\n[현재 소스]\n%3").arg(name, problem.isEmpty() ? QStringLiteral("(자동 진단)") : problem, src);
+        QJsonObject body{{"model", "default"},
+            {"messages", QJsonArray{QJsonObject{{"role", "system"}, {"content", sys}}}},
+            {"temperature", 0.2}, {"max_tokens", 4000}};
+        HttpClient http;
+        HttpResponse r = http.postJson(base + "/v1/chat/completions", body);
+        QString out;
+        if (r.isOk())
+            out = r.json().value("choices").toArray().first().toObject()
+                      .value("message").toObject().value("content").toString();
+        // 코드펜스 제거
+        out = out.trimmed();
+        if (out.startsWith("```")) { int nl = out.indexOf('\n'); if (nl > 0) out = out.mid(nl + 1); if (out.endsWith("```")) out.chop(3); out = out.trimmed(); }
+
+        QMetaObject::invokeMethod(this, [this, name, out]() {
+            if (out.trimmed().isEmpty()) { log("⚠️ AI 가 수정안을 만들지 못했습니다.", "warning", "settings"); }
+            else { QString err; if (applyScriptPatchImpl(name, out, err))
+                       log(QString("✅ 오픈클로가 %1 을(를) 고쳐 적용했습니다(문법검증 통과). 문제 있으면 '원본으로 초기화'.").arg(name), "success", "settings");
+                   else log(QString("❌ AI 수정안이 문법검증에서 걸려 적용 안 함(안전). 사유: %1").arg(err), "error", "settings"); }
+            getScriptSource(name);
+            m_scriptFixBusy = false;
+        }, Qt::QueuedConnection);
+    });
+    connect(t, &QThread::finished, t, &QObject::deleteLater);
+    t->start(QThread::LowPriority);
+}
 
 // ── 읽기 전용 웹 검색 (Brave Search API) — 키가 있어야 동작.
 static QString webSearchSnippets(const QString &apiKey, const QString &query)
