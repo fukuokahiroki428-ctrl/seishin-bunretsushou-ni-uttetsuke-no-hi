@@ -2982,9 +2982,15 @@
                                     <button class="nt-btn ghost" onclick="aiRepair('updateModules','모듈 업데이트')">모듈 업데이트</button>
                                     <button class="nt-btn ghost" onclick="aiRepair('refreshAllTokens','토큰 추출')">토큰 추출</button>
                                 </div>
-                                <div style="display:flex;gap:8px;padding:10px;border-top:1px solid var(--border);">
+                                <div style="display:flex;gap:8px;align-items:center;padding:10px;border-top:1px solid var(--border);">
+                                    <label title="켜면 답변 시 웹을 읽기전용으로 검색해 참고합니다 (검색 키 필요)" style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap;">
+                                        <input type="checkbox" id="ai-web-toggle" onchange="setLlmUseWeb(this.checked)" style="accent-color:var(--accent);">🔎 웹</label>
                                     <input type="text" class="nt-input" id="ai-chat-input" placeholder="무엇이든 물어보세요 — 잡담도, 질문도, 수리도" onkeydown="if(event.key==='Enter')sendAiChat()" style="flex:1;">
                                     <button class="nt-btn primary" id="ai-chat-send" onclick="sendAiChat()">보내기</button>
+                                </div>
+                                <div style="display:flex;gap:6px;align-items:center;padding:0 10px 10px;">
+                                    <input type="password" class="nt-input" id="ai-search-key" placeholder="Brave Search API 키 (무료·읽기전용 웹검색용)" onchange="setSearchKey(this.value)" style="flex:1;font-size:11px;height:30px;">
+                                    <span title="brave.com/search/api 에서 무료 키 발급 (월 2000회)" style="font-size:10px;color:var(--muted);white-space:nowrap;">무료 키: brave.com/search/api</span>
                                 </div>
                             </div>
                         </div>
@@ -4095,6 +4101,7 @@
             // ★ 별도 IIFE (예: 로그인 대기 배너)에서 접근 가능하게 window 글로벌로도 노출
             window.backend = backend;
             try{ if (backend && backend.setWindowChrome) backend.setWindowChrome(!!window._chromeDark); }catch(e){}
+            try{ var _bk=localStorage.getItem('braveKey')||''; if(_bk){ var _el=document.getElementById('ai-search-key'); if(_el)_el.value=_bk; if(backend.setSearchKey) backend.setSearchKey(_bk); } }catch(e){}
             // ★ PEN(팬을 잘 쓰고 싶다) 통합 — 사이트 미러 백엔드. 로그/콜백은 같은 webView 로 자동 전달.
             window.penBackend = channel.objects.penBackend;
             if (backend) backend.loadConfig();
@@ -5934,6 +5941,9 @@
         function stopLocalLlm() { if (backend) backend.stopLocalLlm(); }
         // 드롭다운에서 AI 두뇌(모델) 변경 → 백엔드가 기억, 이후 자동기동/수리에 사용
         function setLlmModel(v) { if (backend) backend.setLlmModel(v || ''); }
+        // 웹 검색(읽기전용) — 토글 + Brave API 키
+        function setLlmUseWeb(on) { if (backend && backend.setLlmUseWeb) backend.setLlmUseWeb(!!on); }
+        function setSearchKey(k) { k = (k || '').trim(); try { localStorage.setItem('braveKey', k); } catch (e) {} if (backend && backend.setSearchKey) backend.setSearchKey(k); }
         // AI 자동 수리 — AI 가 진단하고 무엇을 고칠지 스스로 정해 실행
         function startAutoRepair() {
             if (!backend) return;
