@@ -2342,10 +2342,10 @@
                     </div>
 
                     <div class="section">
-                        <div class="section-label">🩺 로컬 AI (자가진단)</div>
+                        <div class="section-label">🤖 로컬 AI · 오픈클로</div>
                         <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
-                            앱에 내장된 로컬 LLM(오프라인). 켜두면 도구 복구 실패·수집 오류 시 원인·조치를 한국어로 진단합니다.
-                            외부 서버(Ollama/LM Studio) 없이 앱 안에서 실행됩니다.
+                            이 컴퓨터 안에서만 도는 로컬 AI(오프라인·인터넷 안 씀). 잡담·질문·글쓰기·번역 등 <b>무엇이든 자유롭게 대화</b>할 수 있고,
+                            수집이 안 될 땐 원인 진단·수리도 도와줍니다. 외부 서버 없이 앱 안(127.0.0.1)에서 실행됩니다.
                         </p>
                         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
                             <span id="llm-status-pill" style="font-size:11.5px;font-weight:700;padding:4px 11px;border-radius:20px;background:var(--bg-tertiary);color:var(--text-secondary);">확인 중…</span>
@@ -2359,7 +2359,7 @@
                         </p>
 
                         <!-- ★ AI 와 대화하며 수리 -->
-                        <div style="margin-top:14px;font-size:12px;font-weight:600;color:var(--text-secondary);">💬 AI 와 대화하며 수리</div>
+                        <div style="margin-top:14px;font-size:12px;font-weight:600;color:var(--text-secondary);">💬 오픈클로와 자유롭게 대화</div>
                         <div id="ai-chat" style="margin-top:7px;border:1px solid var(--border-light);border-radius:10px;overflow:hidden;">
                             <div id="ai-chat-log" style="height:230px;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:9px;background:var(--bg-secondary);"></div>
                             <div style="display:flex;gap:6px;flex-wrap:wrap;padding:8px 10px;border-top:1px solid var(--border-light);">
@@ -2370,7 +2370,7 @@
                                 <button class="btn btn-secondary btn-sm" onclick="aiRepair('refreshAllTokens','토큰 추출')">토큰 추출</button>
                             </div>
                             <div style="display:flex;gap:8px;padding:10px;border-top:1px solid var(--border-light);">
-                                <input type="text" class="input" id="ai-chat-input" placeholder="문제를 물어보세요 — 예: 트위터 수집이 안 돼" onkeydown="if(event.key==='Enter')sendAiChat()" style="flex:1;">
+                                <input type="text" class="input" id="ai-chat-input" placeholder="무엇이든 물어보세요 — 잡담도, 질문도, 수리도" onkeydown="if(event.key==='Enter')sendAiChat()" style="flex:1;">
                                 <button class="btn btn-primary btn-sm" id="ai-chat-send" onclick="sendAiChat()">보내기</button>
                             </div>
                         </div>
