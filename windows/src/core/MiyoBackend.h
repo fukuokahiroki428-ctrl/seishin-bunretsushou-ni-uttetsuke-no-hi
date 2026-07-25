@@ -66,6 +66,10 @@ public slots:
     void autoRepair();                               // AI 가 자가진단→수리동작을 스스로 판단해 자동 실행
     void setSearchKey(const QString &key);           // 웹 검색 API 키(Brave) 저장 — 읽기전용 인터넷 검색용
     void setLlmUseWeb(bool on);                       // AI 답변 시 웹 검색 참고 on/off (읽기전용)
+    void getScriptSource(const QString &name);       // 편집가능 스크립트 원문 → JS onScriptSource
+    void aiPatchScript(const QString &name, const QString &newContent); // 백업→적용→문법검증→실패시 원복
+    void revertScript(const QString &name);          // AI override 삭제 → 번들 원본 복원
+    void aiFixScript(const QString &name, const QString &problem);      // AI 가 스크립트 읽고 고쳐 적용(안전)
 
     // Check if any collection is running
     bool isAnyRunning() const;
@@ -263,6 +267,8 @@ private:
     std::atomic<bool> m_autoRepairBusy{false};// AI 자동 수리 중복 실행 방지
     QString m_searchKey;                      // 웹 검색 API 키(Brave). 없으면 검색 비활성.
     std::atomic<bool> m_llmUseWeb{false};     // AI 답변 시 웹 검색 참고 여부(읽기전용)
+    std::atomic<bool> m_scriptFixBusy{false}; // AI 스크립트 수리 중복 방지
+    bool applyScriptPatchImpl(const QString &name, const QString &newContent, QString &err); // 백업·검증·원복
 
     // 쓰레드 안전 m_isRunning 접근
     bool platformRunning(const QString &p) const {
