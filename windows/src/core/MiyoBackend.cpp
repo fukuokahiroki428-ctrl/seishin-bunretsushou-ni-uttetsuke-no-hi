@@ -12787,6 +12787,8 @@ void MiyoBackend::stopLocalLlm()
 }
 
 // 로컬 AI 와 대화 — 수리 도우미. historyJson = [{role,content}...]. 응답은 onLlmReply(text).
+static QString webSearchSnippets(const QString &apiKey, const QString &query);  // 전방 선언(정의는 아래)
+
 void MiyoBackend::llmChat(const QString &historyJson)
 {
     const QJsonArray history = QJsonDocument::fromJson(historyJson.toUtf8()).array();
@@ -12813,6 +12815,19 @@ void MiyoBackend::llmChat(const QString &historyJson)
         QJsonArray messages;
         messages.append(QJsonObject{{"role", "system"}, {"content", sys}});
         for (const QJsonValue &v : history) messages.append(v);
+        // 웹 검색 참고(읽기전용) — 토글 켜짐 + 키 있으면 마지막 사용자 질문을 검색해 맥락으로 삽입
+        if (m_llmUseWeb.load() && !m_searchKey.isEmpty() && !history.isEmpty()) {
+            QString lastUser;
+            for (int i = history.size() - 1; i >= 0; --i) {
+                const QJsonObject m = history.at(i).toObject();
+                if (m.value("role").toString() == "user") { lastUser = m.value("content").toString(); break; }
+            }
+            const QString web = webSearchSnippets(m_searchKey, lastUser);
+            if (!web.isEmpty())
+                messages.insert(1, QJsonObject{{"role", "system"},
+                    {"content", QString("아래는 방금 웹에서 찾은 참고 자료다(읽기전용 검색 결과). 관련 있으면 활용해 "
+                                        "답하고 출처 URL 을 자연스럽게 곁들여도 좋아. 무관하면 무시해.\n\n%1").arg(web)}});
+        }
         QJsonObject body{{"model", "default"}, {"messages", messages}, {"temperature", 0.7}, {"max_tokens", 600}};
         HttpClient http;
         HttpResponse r = http.postJson("http://127.0.0.1:8737/v1/chat/completions", body);
@@ -13030,6 +13045,34 @@ if __name__ == "__main__":
 void MiyoBackend::setLlmModel(const QString &hint)
 {
     m_llmModelHint = hint;
+}
+void MiyoBackend::setSearchKey(const QString &key) { m_searchKey = key.trimmed(); }
+void MiyoBackend::setLlmUseWeb(bool on) { m_llmUseWeb = on; }
+
+// ── 읽기 전용 웹 검색 (Brave Search API) — 키가 있어야 동작.
+static QString webSearchSnippets(const QString &apiKey, const QString &query)
+{
+    if (apiKey.isEmpty() || query.trimmed().isEmpty()) return QString();
+    HttpClient http; http.setTimeout(9000);
+    QMap<QString, QString> h;
+    h["Accept"] = "application/json";
+    h["X-Subscription-Token"] = apiKey;
+    const QString url = "https://api.search.brave.com/res/v1/web/search?count=5&q="
+                        + QString::fromUtf8(QUrl::toPercentEncoding(query));
+    HttpResponse r = http.get(url, h);
+    if (!r.isOk()) return QString();
+    const QJsonArray results = r.json().value("web").toObject().value("results").toArray();
+    QString out; int n = 0;
+    for (const QJsonValue &v : results) {
+        const QJsonObject o = v.toObject();
+        const QString title = o.value("title").toString();
+        const QString desc = o.value("description").toString();
+        const QString u = o.value("url").toString();
+        if (title.isEmpty() && desc.isEmpty()) continue;
+        out += "• " + title + "\n  " + desc + "\n  (" + u + ")\n";
+        if (++n >= 5) break;
+    }
+    return out;
 }
 
 // ═════════════════════════════════════════════════════════════════════════
