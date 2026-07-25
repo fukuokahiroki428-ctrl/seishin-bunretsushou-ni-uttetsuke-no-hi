@@ -880,7 +880,10 @@
                 <div class="sidebar-title">カメラ</div>
             </div>
             <div class="sidebar-nav">
-                <div class="nav-item active" onclick="switchTab('twitter')">
+                <div class="nav-item active dash-nav" onclick="switchTab('dashboard')">
+                    <div class="nav-icon dash-ico">▦</div> 현황
+                </div>
+                <div class="nav-item" onclick="switchTab('twitter')">
                     <div class="nav-icon twitter">T</div> Twitter <span class="nav-badge" id="nav-badge-twitter"></span>
                 </div>
                 <div class="nav-item" onclick="switchTab('bluesky')">
@@ -947,8 +950,17 @@
 
             <div class="scroll-area">
 
+                <!-- ━━ 현황 대시보드 (캡처 콘솔 홈) ━━ -->
+                <div class="tab-content active" id="tab-dashboard">
+                    <div class="dash-kpis" id="dash-kpis"></div>
+                    <div class="section">
+                        <div class="section-label">채널 현황</div>
+                        <div class="dash-grid" id="dash-grid"></div>
+                    </div>
+                </div>
+
                 <!-- ━━ Twitter ━━ -->
-                <div class="tab-content active" id="tab-twitter">
+                <div class="tab-content" id="tab-twitter">
                     <div class="section">
                         <div class="section-label">대상 (여러 유저 · 유저별 계정 지정)</div>
                         <div id="twitter-target-list" class="account-list" style="display:none;"></div>
@@ -3449,6 +3461,28 @@
 
         let tradFiles = [];
 
+        // ── 캡처 콘솔 홈: 현황 대시보드 (platformStats/platformTargets 기반, 클릭 시 해당 탭으로) ──
+        var DASH_PLATS=[['twitter','T','Twitter'],['bluesky','B','Bluesky'],['youtube','Y','YouTube'],['niconico','ニ','ニコニコ'],['discord','D','Discord'],['instagram','I','Instagram'],['pixiv','P','Pixiv'],['fanbox','F','Fanbox'],['tumblr','T','Tumblr'],['spinspin','S','SpinSpin'],['asked','A','Asked'],['trad','F','trad'],['naikakukai','内','内閣会']];
+        function dashLed(s){ s=String(s||''); return /오류|error|fail/i.test(s)?'err':((/수집|다운로드|진행|중/.test(s)&&!/완료|대기/.test(s))?'live':'idle'); }
+        function renderDashboard(){
+            var K=document.getElementById('dash-kpis'), G=document.getElementById('dash-grid'); if(!K||!G) return;
+            function num(v){ try{return (v||0).toLocaleString();}catch(e){return String(v||0);} }
+            var totMedia=0, act=0, totTg=0;
+            DASH_PLATS.forEach(function(p){ var st=platformStats[p[0]]||{}; totMedia+=(+st.media||0); if(dashLed(st.status)==='live') act++; totTg+=((platformTargets[p[0]]||[]).length); });
+            function kpi(cap,val,sub,on){ return '<div class="dash-kpi'+(on?' on':'')+'"><div class="dk-cap">'+cap+'</div><div class="dk-val">'+val+' <small>'+sub+'</small></div></div>'; }
+            K.innerHTML = kpi('총 수집',num(totMedia),'미디어') + kpi('활성 채널',act,'수집 중',act>0) + kpi('등록 대상',totTg,'유저')
+                + '<div class="dash-kpi"><div class="dk-cap">로컬 AI</div><div class="dk-val" style="font-size:16px">오픈클로 <small>오프라인</small></div></div>';
+            G.innerHTML='';
+            DASH_PLATS.forEach(function(p){ var st=platformStats[p[0]]||{}; var led=dashLed(st.status); var tg=(platformTargets[p[0]]||[]).length;
+                var c=document.createElement('button'); c.className='dash-card'; c.type='button'; c.setAttribute('onclick',"switchTab('"+p[0]+"')");
+                c.innerHTML='<div class="dc-top"><span class="dc-badge">'+p[1]+'</span><span class="dc-nm">'+p[2]+'</span><span class="dc-led '+led+'"></span></div>'
+                    +'<div class="dc-row"><span>대상 '+tg+'</span><span>'+num(+st.media||0)+' 미디어</span></div>'
+                    +'<div class="dc-tag '+led+'">'+(led==='live'?'수집 중':(led==='err'?'오류':'대기'))+'</div>';
+                G.appendChild(c);
+            });
+        }
+        window.renderDashboard = renderDashboard;
+
         // ── Tab ──
         function switchTab(tab) {
             currentTab = tab;
@@ -3467,10 +3501,11 @@
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             const tabEl = document.getElementById('tab-' + tab);
             if (tabEl) tabEl.classList.add('active');
-            const names = {twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',niconico:'ニコニコ',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',naikakukai:'内閣会',crawl:'経済産業省',settings:'설정'};
+            const names = {dashboard:'현황 대시보드',twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',niconico:'ニコニコ',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',naikakukai:'内閣会',crawl:'経済産業省',settings:'설정'};
             document.getElementById('toolbar-title').textContent = names[tab] || tab;
             // Load system info when switching to settings
             if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); if (backend && backend.getLlmStatus) backend.getLlmStatus(); }
+            if (tab === 'dashboard' && window.renderDashboard) renderDashboard();   // 캡처 콘솔 홈
             // 해당 플랫폼의 저장된 stats 복원
             const s = platformStats[tab] || {posts:0, media:0, status:'대기'};
             document.getElementById('stat-posts').textContent = s.posts;
@@ -3521,6 +3556,7 @@
                 if(!/오류|error|fail/i.test(_s) && /수집|다운로드|진행|중/.test(_s) && !/완료|대기/.test(_s)) _act++; }
                 var _ga=document.getElementById('global-active'); if(_ga)_ga.textContent=_act;
                 var _tg=document.getElementById('tb-global'); if(_tg)_tg.setAttribute('data-on', _act>0?'1':'0'); } catch(e){}   // 상단바 전역 활성 게이지
+            if (currentTab === 'dashboard' && window.renderDashboard) renderDashboard();   // 대시보드 실시간 갱신
             // 현재 보고 있는 탭이면 UI 업데이트
             if (p === currentPlatform) {
                 document.getElementById('stat-posts').textContent = posts;
@@ -6387,6 +6423,30 @@
       margin:0 -10px 8px !important; padding:7px 12px !important; font-family:ui-monospace,Menlo,monospace !important;
       font-size:9px !important; letter-spacing:2px !important; text-transform:uppercase !important;
       color:#5f6b7a !important; background:#080A0E !important; border-bottom:1px solid rgba(255,255,255,.06) !important; }
+    /* ═══ 콘솔 스테이지 4: 현황 대시보드 홈 ═══ */
+    .dash-nav .nav-icon{ font-size:13px !important; }
+    .dash-kpis{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:18px; }
+    .dash-kpi{ background:var(--card); border:1px solid var(--border); border-radius:12px; padding:13px 15px; position:relative; overflow:hidden; box-shadow:var(--shadow); }
+    .dash-kpi::before{ content:''; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--accent); opacity:.85; }
+    .dash-kpi.on::before{ background:var(--green); }
+    .dk-cap{ font-family:ui-monospace,Menlo,monospace; font-size:9px; letter-spacing:1.4px; text-transform:uppercase; color:var(--text-tertiary); }
+    .dk-val{ font-family:ui-monospace,Menlo,monospace; font-size:24px; font-weight:600; font-variant-numeric:tabular-nums; margin-top:4px; letter-spacing:-.5px; color:var(--text); }
+    .dk-val small{ font-size:11px; color:var(--text-tertiary); font-weight:400; letter-spacing:0; }
+    .dash-kpi.on .dk-val{ color:var(--green); }
+    .dash-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(188px,1fr)); gap:11px; }
+    .dash-card{ background:var(--card); border:1px solid var(--border); border-radius:11px; padding:12px 13px; cursor:pointer; text-align:left;
+      display:flex; flex-direction:column; gap:9px; box-shadow:var(--shadow); transition:transform .12s, border-color .12s; font-family:inherit; }
+    .dash-card:hover{ transform:translateY(-2px); border-color:color-mix(in srgb,var(--accent) 40%,transparent); }
+    .dc-top{ display:flex; align-items:center; gap:9px; }
+    .dc-badge{ width:26px; height:26px; border-radius:7px; display:grid; place-items:center; flex:none; font-family:ui-monospace,Menlo,monospace; font-weight:600; font-size:12px; color:var(--text-secondary); background:var(--bg-tertiary); border:1px solid var(--border-light); }
+    .dc-nm{ flex:1; font-weight:600; font-size:13.5px; color:var(--text); }
+    .dc-led{ width:8px; height:8px; border-radius:50%; flex:none; background:var(--text-tertiary); opacity:.35; }
+    .dc-led.live{ background:var(--green); opacity:1; animation:navled 1.6s ease-in-out infinite; }
+    .dc-led.err{ background:var(--red); opacity:1; }
+    .dc-row{ display:flex; justify-content:space-between; font-family:ui-monospace,Menlo,monospace; font-size:10.5px; color:var(--text-tertiary); font-variant-numeric:tabular-nums; }
+    .dc-tag{ font-family:ui-monospace,Menlo,monospace; font-size:9px; letter-spacing:.5px; text-transform:uppercase; padding:2px 8px; border-radius:6px; align-self:flex-start; background:var(--bg-tertiary); color:var(--text-tertiary); }
+    .dc-tag.live{ background:color-mix(in srgb,var(--green) 15%,transparent); color:var(--green); }
+    .dc-tag.err{ background:color-mix(in srgb,var(--red) 14%,transparent); color:var(--red); }
     </style>
     <script>
     /* 스테이션 레일 LED — 수집 상태를 nav-item[data-led] 로 반영 (updateStats 가 setNavLed 호출) */
@@ -6403,7 +6463,8 @@
         var v=/오류|error|fail/i.test(s)?'err':((/수집|다운로드|진행|중/.test(s)&&!/완료|대기/.test(s))?'live':'idle');
         it.setAttribute('data-led', v);
       };
-      if(document.readyState!=='loading') tag(); else document.addEventListener('DOMContentLoaded', tag);
+      function _boot(){ tag(); [200,900,2000].forEach(function(ms){ setTimeout(function(){ try{ if(window.renderDashboard) renderDashboard(); }catch(e){} }, ms); }); }
+      if(document.readyState!=='loading') _boot(); else document.addEventListener('DOMContentLoaded', _boot);
     })();
     </script>
 </body>
