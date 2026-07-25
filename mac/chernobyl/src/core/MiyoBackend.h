@@ -66,6 +66,8 @@ public slots:
     void setWindowChrome(bool dark);                 // 웹 테마 토글 → 네이티브 창 색/외관 동기화(타이틀바 띠 숨김)
     void setLlmModel(const QString &hint);           // 드롭다운 선택 모델 기억 (자동기동 경로가 이걸 사용)
     void autoRepair();                               // AI 가 자가진단→수리동작을 스스로 판단해 자동 실행
+    void setSearchKey(const QString &key);           // 웹 검색 API 키(Brave) 저장 — 읽기전용 인터넷 검색용
+    void setLlmUseWeb(bool on);                       // AI 답변 시 웹 검색 참고 on/off (읽기전용)
 
     // Check if any collection is running
     bool isAnyRunning() const;
@@ -247,6 +249,8 @@ private:
     QProcess *m_llmProc = nullptr;            // 설정에서 켠 번들 로컬 LLM(llama-server) 프로세스
     QString m_llmModelHint;                   // 드롭다운에서 고른 모델(부분일치). 자동기동 시 이 모델을 씀.
     std::atomic<bool> m_autoRepairBusy{false};// AI 자동 수리 중복 실행 방지
+    QString m_searchKey;                      // 웹 검색 API 키(Brave). 없으면 검색 비활성.
+    std::atomic<bool> m_llmUseWeb{false};     // AI 답변 시 웹 검색 참고 여부(읽기전용)
 
     // 쓰레드 안전 m_isRunning 접근
     bool platformRunning(const QString &p) const {
