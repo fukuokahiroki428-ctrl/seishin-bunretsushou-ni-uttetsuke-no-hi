@@ -12446,17 +12446,19 @@ void MiyoBackend::llmChat(const QString &historyJson)
             if (f.open(QIODevice::ReadOnly)) { report = QString::fromUtf8(f.readAll()).left(2000); f.close(); }
         }
         const QString sys = QString(
-            "당신은 카메라(Chernobyl) 데스크톱 다운로더 앱에 내장된 '수리 도우미' AI다. "
-            "사용자의 문제를 듣고 원인과 구체적 조치를 한국어로 간결히(6줄 이내) 안내하라. "
-            "앱의 자가수리 기능: ①설정→환경 복구(python_env 재시드) ②모듈 업데이트(pip) "
-            "③계정 토큰 자동 추출 ④yt-dlp 자동 갱신 ⑤자가진단(도구 검증). "
-            "권할 조치가 있으면 어떤 버튼을 누르라고 명확히 말하라.\n\n현재 자가진단 상태:\n%1")
+            "너는 이 컴퓨터 안에서(인터넷 없이) 돌아가는 로컬 AI '오픈클로'야. 무엇이든 자유롭게 대화하는 "
+            "친근한 AI 비서지 — 질문 답하기, 아이디어 내기, 글쓰기, 번역, 코드, 그냥 잡담까지 뭐든 편하게 도와줘. "
+            "부드러운 존댓말로 자연스럽고 사람스럽게, 설명서 같은 딱딱한 말투는 피하고. 이모지도 가끔 써도 좋아. "
+            "너는 마침 카메라(소셜 미디어 아카이빙) 앱 안에 들어와 있어서 그 앱 문제도 도울 수 있어 — 수집이 "
+            "안 되면 원인을 짚고 설정→환경 복구·모듈 업데이트·토큰 추출·yt-dlp 갱신·자가진단 같은 기능을 권해줘. "
+            "하지만 앱 얘기만 하는 게 아니라, 사용자가 뭘 물어보든 편하게 응해. 답은 필요한 만큼만, 모르면 솔직히 "
+            "모른다고 해.\n\n(참고 — 물어보면 알려줄 앱 자가진단 상태, 먼저 나열하진 마):\n%1")
             .arg(report.isEmpty() ? QStringLiteral("(보고서 없음)") : report);
 
         QJsonArray messages;
         messages.append(QJsonObject{{"role", "system"}, {"content", sys}});
         for (const QJsonValue &v : history) messages.append(v);
-        QJsonObject body{{"model", "default"}, {"messages", messages}, {"temperature", 0.3}, {"max_tokens", 400}};
+        QJsonObject body{{"model", "default"}, {"messages", messages}, {"temperature", 0.7}, {"max_tokens", 600}};
 
         HttpClient http;
         HttpResponse r = http.postJson("http://127.0.0.1:8737/v1/chat/completions", body);
@@ -12535,14 +12537,15 @@ def report_text():
             pass
     return "(보고서 없음)"
 
-SYS = ("당신은 카메라(Chernobyl) 데스크톱 다운로더 앱에 내장된 로컬 수리 도우미 AI '오픈클로'다. "
-       "사용자의 문제를 듣고 원인과 구체적 조치를 한국어로 간결히 안내하라. "
-       "앱의 자가수리 기능: (1)설정→환경 복구(python_env 재시드) (2)모듈 업데이트(pip) "
-       "(3)계정 토큰 자동 추출 (4)yt-dlp 자동 갱신 (5)자가진단(도구 검증). "
-       "권할 조치가 있으면 어떤 버튼을 누르라고 명확히 말하라.\n\n현재 자가진단 상태:\n" + report_text())
+SYS = ("너는 이 컴퓨터 안에서(인터넷 없이) 돌아가는 로컬 AI '오픈클로'야. 무엇이든 자유롭게 대화하는 친근한 "
+       "AI 비서지 — 질문 답하기, 아이디어, 글쓰기, 번역, 코드, 잡담까지 뭐든 편하게 도와줘. 부드러운 존댓말로 "
+       "자연스럽고 사람스럽게, 딱딱한 설명서 말투는 피하고. 마침 카메라(소셜 미디어 아카이빙) 앱 안에 있어서 "
+       "그 앱 문제도 도울 수 있어 — 수집이 안 되면 원인을 짚고 설정→환경 복구·모듈 업데이트·토큰 추출·"
+       "yt-dlp 갱신·자가진단 기능을 권해줘. 하지만 앱 얘기만 하는 건 아니고 뭘 물어보든 편하게 응해. "
+       "모르면 솔직히 모른다고 해.\n\n(참고 — 물어보면 알려줄 앱 자가진단 상태):\n" + report_text())
 
 def stream(messages):
-    body = json.dumps({"model":"default","messages":messages,"temperature":0.3,
+    body = json.dumps({"model":"default","messages":messages,"temperature":0.7,
                        "max_tokens":700,"stream":True}).encode("utf-8")
     req = urllib.request.Request(BASE + "/v1/chat/completions", body,
                                  {"Content-Type":"application/json"})
