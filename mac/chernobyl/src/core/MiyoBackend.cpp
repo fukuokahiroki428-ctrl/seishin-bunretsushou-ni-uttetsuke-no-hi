@@ -9014,6 +9014,7 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
     dlHeaders["Referer"] = "https://www.pixiv.net/";
     dlHeaders["Accept"] = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
     dlHeaders["Accept-Language"] = "ja,en-US;q=0.9,en;q=0.8";
+    dlHeaders["Cookie"] = cookieStr;  // 일부 R-18 원본은 세션 쿠키도 요구 (i.pximg 는 보통 Referer 로 충분하지만 보강)
 
     // Parse target: could be user ID, user URL, illust URL, or NOVEL URL
     QString userId;
@@ -9418,7 +9419,8 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
                     continue;
                 }
 
-                if (http.downloadFile(imgUrl, filePath, dlHeaders)) {
+                HttpClient::DownloadResult _dr = http.downloadFileEx(imgUrl, filePath, dlHeaders);
+                if (_dr.success) {
                     QString pxUrl = QString("https://www.pixiv.net/artworks/%1").arg(iid);
                     Common::addExifMetadata(filePath, pixivUserName, title,
                         "Pixiv @" + pixivUserName, pxUrl, createDate);
@@ -9434,7 +9436,12 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
                     }
                     log(QString("저장: %1").arg(filename), "success", "pixiv");
                 } else {
-                    log(QString("다운로드 실패: %1").arg(imgUrl), "error", "pixiv");
+                    // ★ 원인 진단: HTTP 상태코드 표시 (403=Referer/차단, 404=URL, 0=네트워크/파일열기 실패)
+                    QString why = _dr.statusCode == 0 ? "네트워크/파일쓰기 실패"
+                                : _dr.statusCode == 403 ? "403 차단(Referer/쿠키)"
+                                : _dr.statusCode == 404 ? "404 없음(URL)"
+                                : QString("HTTP %1").arg(_dr.statusCode);
+                    log(QString("다운로드 실패 [%1]: %2").arg(why, imgUrl), "error", "pixiv");
                 }
 
                 if (i < total - 1) {
