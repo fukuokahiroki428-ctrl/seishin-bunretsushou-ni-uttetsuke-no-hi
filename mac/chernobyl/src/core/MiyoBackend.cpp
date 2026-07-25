@@ -12347,7 +12347,13 @@ void MiyoBackend::getLlmStatus()
     const QString dir = Common::bundledResourcesDir() + "/llm";
     QJsonObject o;
     o["hasServer"] = QFile::exists(dir + "/llama-server");
-    o["running"] = (m_llmProc && m_llmProc->state() != QProcess::NotRunning);
+    bool running = (m_llmProc && m_llmProc->state() != QProcess::NotRunning);
+    if (!running) {
+        // m_llmProc 가 없어도 8737 에 서버가 떠 있으면(자동기동/직접실행/이전 세션 잔류) 실행중으로 본다.
+        HttpClient h; h.setTimeout(600);
+        running = h.get("http://127.0.0.1:8737/v1/models").isOk();
+    }
+    o["running"] = running;
     QJsonArray ms;
     for (const QString &m : bundledLlmModelHeads()) ms.append(m);
     o["models"] = ms;
@@ -12362,6 +12368,14 @@ void MiyoBackend::startLocalLlm(const QString &modelHint)
         getLlmStatus();
         return;
     }
+    // 이미 8737 포트에 서버가 떠 있으면(자동기동/직접실행/이전 세션 잔류) 중복 기동하지 않고 채택.
+    //  — 중복 기동은 포트 충돌로 즉시 종료돼 '켜자마자 꺼짐'처럼 보였다.
+    { HttpClient h; h.setTimeout(600);
+      if (h.get("http://127.0.0.1:8737/v1/models").isOk()) {
+          log("로컬 AI 가 이미 실행 중입니다(기존 서버 사용).", "info", "settings");
+          getLlmStatus();
+          return;
+      } }
     const QString dir = Common::bundledResourcesDir() + "/llm";
     const QString server = dir + "/llama-server";
     if (!QFile::exists(server)) {
