@@ -104,11 +104,16 @@ def main():
     stop_requested = False
 
     def check_stdin_for_quit():
-        """Non-blocking stdin check for quit command during rate limit waits."""
+        """Non-blocking stdin check for quit command during rate limit waits.
+        POSIX uses select(); Windows can't select() on a file object (raises
+        OSError WinError 10093) → short-circuit so the collection loop never crashes.
+        On Windows the Stop button still works via QProcess kill from C++."""
         nonlocal stop_requested
-        import select
-        while select.select([sys.stdin], [], [], 0)[0]:
-            try:
+        if sys.platform == 'win32':
+            return False
+        try:
+            import select
+            while select.select([sys.stdin], [], [], 0)[0]:
                 line = sys.stdin.readline().strip()
                 if not line:
                     continue
@@ -116,8 +121,8 @@ def main():
                 if cmd.get("action") == "quit":
                     stop_requested = True
                     return True
-            except:
-                pass
+        except Exception:
+            return False
         return False
 
     # Rate limit mode: "wait" = 대기 후 재시도, "stop" = 즉시 중지
