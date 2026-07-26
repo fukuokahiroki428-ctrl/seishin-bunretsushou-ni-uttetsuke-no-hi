@@ -13,10 +13,23 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 # Qt6
-#   ★ GuiPrivate 명시 — QXlsx 가 Qt6::GuiPrivate 를 링크하므로 private 컴포넌트를 직접 요청해
-#     Qt6::GuiPrivate 타깃을 생성해야 한다(Gui 만으론, transitive 만으론 미생성).
 find_package(Qt6 REQUIRED COMPONENTS
-    Core Gui GuiPrivate Widgets WebEngineWidgets WebChannel Network WebSockets)
+    Core Gui Widgets WebEngineWidgets WebChannel Network WebSockets)
+
+# QXlsx 는 Qt6::GuiPrivate(QZipReader/QZipWriter, QtCore private)를 링크한다.
+#   mac/공식 Qt 는 private 를 포함하지만, CI 의 aqt(install-qt-action) Qt 6.7.3 는 Qt 모듈
+#   private(헤더+CMake config)를 담지 않는다(Freetype/Png 등 3rd-party private 만 있음).
+#   → 실제 GuiPrivate 가 있으면(mac 등) 그걸 쓰고, 없으면(CI) QZip 헤더 2개만 vendoring 한
+#     shim 타깃을 만든다. QZipReader/QZipWriter 구현은 Qt6Core.dll 에 Q_CORE_EXPORT 로 존재하므로
+#     헤더(선언) + Qt6::Core 링크만으로 해결된다. (third_party/qtzip/private/*.h)
+find_package(Qt6 QUIET OPTIONAL_COMPONENTS GuiPrivate)
+if(NOT TARGET Qt6::GuiPrivate)
+    message(STATUS "Qt6::GuiPrivate 없음(aqt) → vendored QZip shim 사용: ${CMAKE_CURRENT_SOURCE_DIR}/third_party/qtzip")
+    add_library(Qt6::GuiPrivate INTERFACE IMPORTED)
+    set_target_properties(Qt6::GuiPrivate PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/qtzip"
+        INTERFACE_LINK_LIBRARIES "Qt6::Core;Qt6::Gui")
+endif()
 
 # QXlsx
 include(FetchContent)
