@@ -47,6 +47,20 @@ jobs:
           modules: 'qtwebengine qtwebchannel qtwebsockets qtpositioning'
           cache: true
 
+      # 2.5) 진단 — QXlsx 가 요구하는 Qt6::GuiPrivate 의 CMake 설정이 설치됐는지 확인.
+      #      (aqt 설치본에 private 모듈이 빠지면 여기서 목록이 비어 configure 가 실패한다.)
+      - name: Diag — Qt private modules
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: |
+          Write-Host "QT_ROOT_DIR = $env:QT_ROOT_DIR"
+          Write-Host "== lib/cmake 하위 *Private* 패키지 =="
+          Get-ChildItem "$env:QT_ROOT_DIR/lib/cmake" -Filter "*Private*" -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+          Write-Host "== Qt6GuiPrivate 설정 파일 존재? =="
+          Test-Path "$env:QT_ROOT_DIR/lib/cmake/Qt6GuiPrivate/Qt6GuiPrivateConfig.cmake"
+          Write-Host "== QtGui private 헤더 디렉토리 존재? =="
+          Get-ChildItem "$env:QT_ROOT_DIR/include/QtGui" -Filter "*.*" -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name | Select-Object -First 5
+
       # 3) Windows 용 외부 도구 다운로드 (yt-dlp / ffmpeg / ffprobe / rclone / deno)
       #    repo 에는 .exe 안 올림 (.gitignore) → 빌드 시 최신 버전 받음
       - name: Download Windows tools
