@@ -21,7 +21,16 @@ set -euo pipefail
 
 TARGET="${1:?사용법: bash scripts/bundle_llm.sh <App.app 또는 배포폴더>}"
 
-MODEL_URL="${LLM_MODEL_URL:-https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf}"
+# 기본 모델 세트 — 작은 것(빠른 응답)부터 코드 특화(수리 품질)까지.
+#   LLM_MODEL_URL 하나만 주면 그것만, LLM_MODEL_URLS(공백/줄바꿈 구분)로 여러 개 지정 가능.
+HF=https://huggingface.co/Qwen
+DEFAULT_MODELS="\
+$HF/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf \
+$HF/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf \
+$HF/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/qwen2.5-coder-3b-instruct-q4_k_m.gguf \
+$HF/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m-00001-of-00002.gguf \
+$HF/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m-00002-of-00002.gguf"
+MODEL_URLS="${LLM_MODEL_URLS:-${LLM_MODEL_URL:-$DEFAULT_MODELS}}"
 
 # ── 대상 llm 폴더 결정 ─────────────────────────────────────────────────────
 if [[ "$TARGET" == *.app ]]; then
@@ -74,20 +83,34 @@ else
     echo "✔ llama-server 이미 존재 — 건너뜀"
 fi
 
-# ── 모델 ──────────────────────────────────────────────────────────────────
-MODEL_FILE="$LLM_DIR/$(basename "$MODEL_URL")"
-if [ ! -f "$MODEL_FILE" ]; then
-    echo "▶ 모델 다운로드 (~1GB): $MODEL_URL"
-    curl -fL --retry 3 -C - -o "$MODEL_FILE" "$MODEL_URL"
-else
-    echo "✔ 모델 이미 존재 — 건너뜀"
-fi
+# ── 모델(여러 개) ─────────────────────────────────────────────────────────
+for MODEL_URL in $MODEL_URLS; do
+    MODEL_FILE="$LLM_DIR/$(basename "$MODEL_URL")"
+    if [ ! -f "$MODEL_FILE" ]; then
+        echo "▶ 모델 다운로드: $(basename "$MODEL_URL")"
+        curl -fL --retry 3 -C - -o "$MODEL_FILE" "$MODEL_URL"
+    else
+        echo "✔ $(basename "$MODEL_URL") 이미 존재 — 건너뜀"
+    fi
+done
 
 # ── 검증 ──────────────────────────────────────────────────────────────────
 if [ "$PLAT" = "mac" ]; then
     "$SRV" --version >/dev/null 2>&1 && echo "✔ llama-server 실행 확인" \
         || echo "⚠ llama-server 실행 실패 — 아키텍처/서명 확인 필요 (앱은 LLM 없이도 정상 동작)"
 fi
+# ── mac 재서명 ────────────────────────────────────────────────────────────
+#   앱 번들 안에 파일을 넣으면 codesign 봉인이 깨져 macOS 가 앱을 죽일 수 있다 → 즉시 재서명.
+if [ "$PLAT" = "mac" ]; then
+    echo "▶ 앱 재서명(번들에 모델을 넣었으므로 봉인 복구)..."
+    SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null | grep -m1 -oE "[0-9A-F]{40}" || true)
+    [ -z "$SIGN_ID" ] && SIGN_ID="-"
+    codesign -f -s "$SIGN_ID" --deep "$TARGET" 2>/dev/null \
+        && codesign --verify --deep --strict "$TARGET" 2>/dev/null \
+        && echo "✔ 재서명·검증 통과" \
+        || echo "⚠ 재서명 실패 — 앱이 실행 안 되면 다시 빌드하세요"
+fi
+
 echo ""
 echo "✅ 완료. 앱 시작 시 SelfRepair 가 자동 감지·기동한다 (포트 8737)."
 echo "   확인: 앱 실행 후 AppData(Application Support)/…/selfrepair/last_report.txt"
