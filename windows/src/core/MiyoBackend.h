@@ -270,6 +270,7 @@ private:
     std::atomic<bool> m_scriptFixBusy{false}; // AI 스크립트 수리 중복 방지
     bool applyScriptPatchImpl(const QString &name, const QString &newContent, QString &err); // 백업·검증·원복
     QString aiRewriteScriptSync(const QString &name, const QString &problem); // AI 가 스크립트 전체 재작성(동기, 워커스레드 전용)
+    void resealBundleAfterInstall(const QString &why);  // 앱 내부 설치 후 서명 복구(Windows 는 무동작)
 
     // 쓰레드 안전 m_isRunning 접근
     bool platformRunning(const QString &p) const {

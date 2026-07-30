@@ -5,6 +5,7 @@
 #include <QLocale>
 #include <QFile>
 #include <QDir>
+#include <QDirIterator>
 #include <QStorageInfo>
 #include <QDebug>
 #include <QCoreApplication>
@@ -380,6 +381,13 @@ QString activePythonEnvDir()
         bundled = bundledResourcesDir() + "/python_env";
     const bool bundleReady = QFile::exists(bundled + "/bin/python3") && pythonEnvHasCorePackages(bundled);
 
+    // ★★ 앱 내부(번들) 우선 — 모듈/라이브러리를 앱 안에 두고 앱 안에 설치한다.
+    //   번들에 쓰면 codesign 봉인이 깨지지만, 설치·수리 직후 Common::resealAppBundle() 이
+    //   자동 재서명해 복구하므로 안전하다(재서명 실패 시에는 아래 외부 복사본 경로로 자연 폴백).
+    //   번들이 읽기전용(권한 없는 위치·검역 등)이면 예전처럼 외부 복사본을 쓴다.
+    if (bundleReady && isDirWritable(bundled))
+        return bundled;
+
     // ★ 외부본이 존재하되 핵심 패키지(twikit)까지 있어야 그대로 사용한다.
     //   bin/python3 만 있고 패키지가 빠진 깨진 복사본(옛 설치의 3.15b·패키지 0개 등)은
     //   재시드 대상 — 이게 'twikit not installed' 로 트위터 수집이 죽던 근본 원인이었다.
@@ -438,6 +446,84 @@ QString activeToolScriptPath(const QString &name)
     const QString ov = scriptOverrideDir() + "/" + name;
     if (QFileInfo::exists(ov)) return ov;
     return bundledToolsDir() + "/" + name;
+}
+
+bool isDirWritable(const QString &dir)
+{
+    if (dir.isEmpty() || !QFileInfo::exists(dir)) return false;
+    QFile probe(dir + "/.kamera_write_test");
+    if (!probe.open(QIODevice::WriteOnly)) return false;
+    probe.write("1"); probe.close(); probe.remove();
+    return true;
+}
+
+QString appBundlePath()
+{
+#ifdef Q_OS_MACOS
+    // <...>/Chernobyl.app/Contents/MacOS  →  <...>/Chernobyl.app
+    QDir d(QCoreApplication::applicationDirPath());
+    if (!d.cdUp()) return QString();          // Contents
+    if (!d.cdUp()) return QString();          // *.app
+    const QString p = d.absolutePath();
+    return p.endsWith(".app") ? p : QString();
+#else
+    return QString();
+#endif
+}
+
+// 번들 안에 파일을 쓴 뒤 봉인을 복구한다. 실패하면 false + 사유.
+bool resealAppBundle(QString *err)
+{
+#ifdef Q_OS_MACOS
+    const QString app = appBundlePath();
+    if (app.isEmpty()) { if (err) *err = "앱 번들이 아님(개발 실행)"; return true; }  // 번들 아니면 서명 무관
+
+    // 파이썬 바이트코드 캐시는 서명 후에도 계속 생겨 봉인을 깨뜨린다 → 서명 전에 제거.
+    {
+        QDirIterator it(app + "/Contents/Resources", QStringList() << "__pycache__",
+                        QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+        QStringList caches;
+        while (it.hasNext()) caches << it.next();
+        for (const QString &c : caches) QDir(c).removeRecursively();
+    }
+
+    // 서명 아이덴티티 탐색 — 있으면 그걸로, 없으면 ad-hoc(-). 로컬 실행에는 ad-hoc 로 충분하다.
+    QString identity = "-";
+    {
+        QProcess find;
+        find.start("/usr/bin/security", {"find-identity", "-v", "-p", "codesigning"});
+        if (find.waitForFinished(10000)) {
+            const QString out = QString::fromUtf8(find.readAllStandardOutput());
+            const QRegularExpression re("\\b([0-9A-F]{40})\\b");
+            const QRegularExpressionMatch m = re.match(out);
+            if (m.hasMatch()) identity = m.captured(1);
+        }
+    }
+
+    QProcess cs;
+    cs.start("/usr/bin/codesign", {"-f", "-s", identity, "--deep", app});
+    if (!cs.waitForFinished(900000)) {                    // 번들이 크면(모델 포함) 수 분 걸릴 수 있음
+        cs.kill(); cs.waitForFinished(3000);
+        if (err) *err = "codesign 시간 초과";
+        return false;
+    }
+    if (cs.exitCode() != 0) {
+        if (err) *err = QString::fromUtf8(cs.readAllStandardError()).left(300);
+        return false;
+    }
+
+    QProcess vf;
+    vf.start("/usr/bin/codesign", {"--verify", "--deep", "--strict", app});
+    vf.waitForFinished(900000);
+    if (vf.exitCode() != 0) {
+        if (err) *err = "재서명 후 검증 실패: " + QString::fromUtf8(vf.readAllStandardError()).left(300);
+        return false;
+    }
+    return true;
+#else
+    Q_UNUSED(err);
+    return true;   // 서명 봉인 없음(Windows/Linux) — 앱 내부 수정이 그대로 안전
+#endif
 }
 
 // ═════════════════════════════════════════════════════════════════════════

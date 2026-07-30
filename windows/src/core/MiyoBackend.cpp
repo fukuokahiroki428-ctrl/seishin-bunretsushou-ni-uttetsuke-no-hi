@@ -12646,6 +12646,7 @@ void MiyoBackend::updateModules()
 
         log(QString("모듈 업데이트 완료 (업데이트: %1, 실패: %2)").arg(updated).arg(failed),
             failed > 0 ? "warning" : "success", "settings");
+        if (updated > 0) resealBundleAfterInstall("모듈 업데이트");   // 앱 내부 설치 → 서명 복구
         runJs("setModuleUpdating(false)");
 
         // Refresh system info
@@ -12653,6 +12654,22 @@ void MiyoBackend::updateModules()
     });
     connect(thread, &QThread::finished, thread, &QThread::deleteLater);
     thread->start();
+}
+
+// 앱 내부에 모듈을 설치한 뒤 서명 봉인을 복구한다.
+//   Windows 는 코드서명 봉인이 없어 무동작(Common::resealAppBundle 이 항상 true) — mac 과 코드 대칭용.
+void MiyoBackend::resealBundleAfterInstall(const QString &why)
+{
+    const QString app = Common::appBundlePath();
+    if (app.isEmpty()) return;                                   // Windows: 항상 여기서 반환
+    if (!Common::activePythonEnvDir().startsWith(app)) return;
+
+    log(QString("앱 내부에 설치했으므로 서명을 복구합니다 (%1)...").arg(why), "info", "settings");
+    QString err;
+    if (Common::resealAppBundle(&err))
+        log("✅ 앱 서명 복구 완료 — 앱 내부 모듈이 정상 반영됐습니다.", "success", "settings");
+    else
+        log(QString("⚠️ 앱 서명 복구 실패: %1").arg(err), "warning", "settings");
 }
 
 // ── Python 환경 진단 (내부 헬퍼) ──
@@ -13133,7 +13150,8 @@ bool MiyoBackend::applyScriptPatchImpl(const QString &name, const QString &newCo
     // 문법 검증
     QProcess proc;
     proc.setProcessEnvironment(Common::bundledProcessEnv());
-    proc.start(Common::bundledPythonPath(), {"-m", "py_compile", ov});
+    proc.start(Common::bundledPythonPath(),
+               {"-c", "import ast,sys;ast.parse(open(sys.argv[1],encoding='utf-8').read())", ov});
     proc.waitForFinished(20000);
     const bool ok = (proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0);
     if (!ok) {
@@ -13290,7 +13308,9 @@ void MiyoBackend::autoRepair()
                 const QString path = Common::activeToolScriptPath(sc);
                 if (!QFileInfo::exists(path)) continue;
                 QProcess pc; pc.setProcessEnvironment(Common::bundledProcessEnv());
-                pc.start(Common::bundledPythonPath(), {"-m", "py_compile", path});
+                // ★ py_compile 은 __pycache__ 를 만든다(mac 에선 codesign 봉인이 깨짐) → 쓰지 않는 검사 사용.
+                pc.start(Common::bundledPythonPath(),
+                         {"-c", "import ast,sys;ast.parse(open(sys.argv[1],encoding='utf-8').read())", path});
                 pc.waitForFinished(20000);
                 if (pc.exitStatus() == QProcess::NormalExit && pc.exitCode() == 0) continue;  // 문법 정상
                 const QString err = QString::fromUtf8(pc.readAllStandardError()).left(400);
@@ -13643,6 +13663,7 @@ void MiyoBackend::upgradePython()
         if (failed > 0)
             log(QString("  ⚠️ %1개 패키지 실패 — '환경 복구' 버튼으로 재시도하세요").arg(failed), "warning", "settings");
 
+        resealBundleAfterInstall("Python 업그레이드");   // 앱 내부 설치 → 서명 복구
         m_pythonBusy = false;
         runJs("setPythonEnvBusy(false, '완료')");
         QMetaObject::invokeMethod(this, "getSystemInfo", Qt::QueuedConnection);
@@ -13783,6 +13804,7 @@ void MiyoBackend::repairPython()
         }
 
         // 5. 최종 검증
+        resealBundleAfterInstall("Python 환경 복구");   // 앱 내부 설치 → 서명 복구
         QStringList remaining = diagnosePythonEnv(python);
         m_pythonBusy = false;
         if (remaining.isEmpty()) {
