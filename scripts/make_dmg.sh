@@ -84,7 +84,9 @@ make_dmg() {
 }
 
 # 1) Predormition (메인 앱)
-PRED_APP="${PRED_APP:-/Users/shio/Downloads/무제폴더/귀찮아/mac/miyo_cpp/build/Predormition.app}"
+# 기본값 = 이 repo 의 mac 빌드 산출물 (스크립트 위치 기준). 다른 곳이면 PRED_APP 로 덮어쓰기.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PRED_APP="${PRED_APP:-$REPO_ROOT/mac/chernobyl/build/Predormition.app}"
 make_dmg "$PRED_APP" "Predormition" "Predormition"
 
 # 2) Pen (배포명 "팬을 잘 쓰고 싶다") — self-contained 번들 생성 후 DMG
