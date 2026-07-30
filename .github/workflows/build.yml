@@ -172,13 +172,18 @@ jobs:
           path: windows/installer_out/Predormition_Setup.exe
           retention-days: 14
 
-      # 9) GitHub Release 발행 — v* 태그 push 시 Predormition_Setup.exe 를 릴리즈 자산으로 업로드
-      - name: Publish GitHub Release
+      # 9) GitHub Release — v* 태그 push 시 Predormition_Setup.exe 를 자산으로 올린다.
+      #    ★ draft 로 만든다: 이 저장소는 '발행된 릴리즈 = immutable' 정책이라 발행 후에는
+      #      자산을 추가할 수 없다. mac 은 CI 가 아니라 로컬에서 빌드·서명하므로
+      #      (Predormition.dmg) 초안에 나중에 올린 뒤 함께 발행해야 두 플랫폼이 한 릴리즈에 담긴다.
+      #      → 배포 순서: 태그 push → (CI) 초안 생성 → mac DMG 업로드 → 릴리즈 발행.
+      - name: Publish GitHub Release (draft)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: windows/installer_out/Predormition_Setup.exe
           generate_release_notes: true
           fail_on_unmatched_files: true
+          draft: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
