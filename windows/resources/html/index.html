@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>カメラ</title>
+    <title>Predormition</title>
     <style>
         @font-face {
             font-family: 'NanumGothic';
@@ -843,7 +843,7 @@
         .metric-chip.err { background: rgba(255,59,48,0.12); color: var(--red); }
     </style>
     <style id="nt-v2">
-    /* ════════════════ Chernobyl v2 — clean workspace (from scratch) ════════════════ */
+    /* ════════════════ Predormition — clean workspace (from scratch) ════════════════ */
     /* ═══ Darkroom 디자인 시스템 v2 ═══
        사진 도구(카메라/암실) 무드 — 아이리스 바이올렛 액센트,
        라이트=웜뉴트럴 캔버스 + 화이트 카드, 다크=트루다크 암실. */
@@ -1112,7 +1112,7 @@
         <!-- Sidebar -->
         <div class="sidebar">
             <div class="sidebar-header">
-                <div class="sidebar-title">カメラ</div>
+                <div class="sidebar-title">Predormition</div>
             </div>
             <div class="sidebar-nav">
                 <div class="nav-item active" onclick="switchTab('dashboard')">
@@ -1215,7 +1215,7 @@
                 <!-- ━━ Dashboard (home) ━━ -->
                 <div class="tab-content active nt-tab" id="tab-dashboard">
                     <div class="nt-dash-head">
-                        <h1>カメラ</h1>
+                        <h1>Predormition</h1>
                         <p>플랫폼을 선택해 수집을 시작하세요.</p>
                     </div>
                     <div class="nt-grid">
@@ -4857,7 +4857,7 @@
             if (info) {
                 if (isNas || isExt) {
                     const icon = isNas ? 'NAS' : '외장';
-                    info.innerHTML = `<strong>${icon} 모드 활성 (전체 일괄)</strong> — 모든 플랫폼이 <code>${root}/Chernobyl/&lt;Platform&gt;</code>. 각 탭에서 따로 변경하면 그 플랫폼만 다른 경로.`;
+                    info.innerHTML = `<strong>${icon} 모드 활성 (전체 일괄)</strong> — 모든 플랫폼이 <code>${root}/Predormition/&lt;Platform&gt;</code>. 각 탭에서 따로 변경하면 그 플랫폼만 다른 경로.`;
                     info.style.color = 'var(--accent)';
                 } else {
                     info.innerHTML = '둘 다 OFF → 각 플랫폼 탭에서 따로 NAS/외장 선택. 또는 입력란에 직접 경로.';
@@ -5753,7 +5753,7 @@
                 const total = m.total_size || 0;
                 const count = (m.files || []).length;
                 // 헤더 메타
-                if (meta) meta.textContent = 'v' + (m.version || '1') + ' · ' + (m.app || 'Chernobyl');
+                if (meta) meta.textContent = 'v' + (m.version || '1') + ' · ' + (m.app || 'Predormition');
                 // KV 행
                 if (kv) {
                     kv.innerHTML = '';

@@ -1,7 +1,7 @@
 #!/bin/bash
-# DMG 생성 스크립트 — Chernobyl.app + Pen.app 둘 다
+# DMG 생성 스크립트 — Predormition.app + Pen.app 둘 다
 # 사용: ./make_dmg.sh
-#   경로/서명ID 는 환경변수로 덮어쓸 수 있음 (DIST_DIR, CHERN_APP, MAKE_DIST, SIGN_ID).
+#   경로/서명ID 는 환경변수로 덮어쓸 수 있음 (DIST_DIR, PRED_APP, MAKE_DIST, SIGN_ID).
 
 set -e
 
@@ -83,9 +83,9 @@ make_dmg() {
     echo "  ✅ $OUT_DMG ($SIZE)"
 }
 
-# 1) Chernobyl (메인 앱)
-CHERN_APP="${CHERN_APP:-/Users/shio/Downloads/무제폴더/귀찮아/mac/miyo_cpp/build/Chernobyl.app}"
-make_dmg "$CHERN_APP" "Chernobyl" "Chernobyl"
+# 1) Predormition (메인 앱)
+PRED_APP="${PRED_APP:-/Users/shio/Downloads/무제폴더/귀찮아/mac/miyo_cpp/build/Predormition.app}"
+make_dmg "$PRED_APP" "Predormition" "Predormition"
 
 # 2) Pen (배포명 "팬을 잘 쓰고 싶다") — self-contained 번들 생성 후 DMG
 #    ★ 파일명은 ASCII "Pen" (GitHub 릴리스 자산은 ASCII 만 허용). 볼륨명만 한글.

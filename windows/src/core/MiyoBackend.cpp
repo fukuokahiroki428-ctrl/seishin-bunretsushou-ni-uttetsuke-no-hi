@@ -2026,7 +2026,7 @@ void MiyoBackend::writeDownloadManifest(const QString &dir, const QString &platf
     // 2) JSON manifest
     QJsonObject root;
     root["version"] = 1;
-    root["app"] = "Chernobyl";
+    root["app"] = "Predormition";
     root["platform"] = platform;
     root["dir"] = dir;
     root["created_at"] = QDateTime::currentDateTime().toString(Qt::ISODate);
@@ -2095,7 +2095,7 @@ void MiyoBackend::writeDownloadManifest(const QString &dir, const QString &platf
         QTextStream out(&tf);
         out.setEncoding(QStringConverter::Utf8);
         out << "═══════════════════════════════════════════════════════════════\n";
-        out << "  📦 カメラ Chernobyl — " << platform.toUpper() << " 다운로드 manifest\n";
+        out << "  📦 Predormition — " << platform.toUpper() << " 다운로드 manifest\n";
         out << "═══════════════════════════════════════════════════════════════\n";
         out << "생성: " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n";
         out << "위치: " << dir << "\n";
@@ -2234,7 +2234,7 @@ void MiyoBackend::exportConfig()
     QJsonObject root = m_config->toJson();
     // 메타 추가 — version + 생성 시각 + app
     QJsonObject meta;
-    meta["app"] = "Chernobyl";
+    meta["app"] = "Predormition";
     meta["version"] = QCoreApplication::applicationVersion().isEmpty() ? "1.0" : QCoreApplication::applicationVersion();
     meta["exported_at"] = QDateTime::currentDateTime().toString(Qt::ISODate);
     meta["exported_unix"] = QDateTime::currentSecsSinceEpoch();
@@ -2278,7 +2278,7 @@ void MiyoBackend::importConfig()
     QJsonDocument doc = QJsonDocument::fromJson(bytes, &err);
     if (err.error != QJsonParseError::NoError || !doc.isObject()) {
         log(QString("❌ JSON 파싱 실패: %1").arg(err.errorString()), "error", "settings");
-        runJs(QString("alert('❌ JSON 파싱 실패:\\n%1\\n\\n올바른 Chernobyl config 파일이 아닙니다.');").arg(err.errorString()));
+        runJs(QString("alert('❌ JSON 파싱 실패:\\n%1\\n\\n올바른 Predormition config 파일이 아닙니다.');").arg(err.errorString()));
         return;
     }
     QJsonObject root = doc.object();
@@ -2286,7 +2286,8 @@ void MiyoBackend::importConfig()
     QString fromApp = root["__meta__"].toObject()["app"].toString();
     QString fromVer = root["__meta__"].toObject()["version"].toString();
     QString fromTime = root["__meta__"].toObject()["exported_at"].toString();
-    if (!fromApp.isEmpty() && fromApp != "Chernobyl") {
+    // 옛 이름(Chernobyl)으로 내보낸 config 도 그대로 받는다 — 앱 이름만 바뀌었을 뿐 형식은 동일.
+    if (!fromApp.isEmpty() && fromApp != "Predormition" && fromApp != "Chernobyl") {
         log(QString("⚠ 다른 앱의 config (%1) — 그래도 시도").arg(fromApp), "warning", "settings");
     }
 
@@ -3797,9 +3798,12 @@ void MiyoBackend::setAllPathsToNas()
 
         log(QString("🌐 NAS 일괄 적용: %1").arg(root), "success", "settings");
         // 각 input 값 일괄 갱신
+        // ★ 앱 이름이 바뀌어도 기존 아카이브가 갈라지지 않게: 이미 쓰던 Chernobyl 폴더가 있으면 그대로 쓴다.
+        const QString brandDir = QFileInfo::exists(root + "/Chernobyl") ? QStringLiteral("Chernobyl")
+                                                                       : QStringLiteral("Predormition");
         QString js = "(function(){ var c=0;";
         for (const auto &m : mappings) {
-            QString fullPath = root + "/Chernobyl/" + m.subdir;
+            QString fullPath = root + "/" + brandDir + "/" + m.subdir;
             QDir().mkpath(fullPath);  // 미리 폴더 생성
             QString p = fullPath;
             QString safeInput  = Common::jsStringLiteral(QString(m.inputId));
@@ -3811,7 +3815,7 @@ void MiyoBackend::setAllPathsToNas()
             ).arg(safeInput, safePath);
         }
         js += " if(typeof saveForm==='function') saveForm();"
-              " alert('🌐 NAS 일괄 적용 완료 ('+c+'개 플랫폼)\\n경로: " + root + "/Chernobyl/...');"
+              " alert('🌐 NAS 일괄 적용 완료 ('+c+'개 플랫폼)\\n경로: " + root + "/" + brandDir + "/...');"
               " })();";
         runJs(js);
     }, Qt::QueuedConnection);
@@ -10718,7 +10722,7 @@ void MiyoBackend::startTrad(const QString &configJson)
         {
             QJsonObject manifest;
             manifest["version"] = "1";
-            manifest["app"] = "Chernobyl";
+            manifest["app"] = "Predormition";
             manifest["app_version"] = QCoreApplication::applicationVersion().isEmpty()
                 ? QString("1.0") : QCoreApplication::applicationVersion();
             manifest["format"] = "PNG+ZIP Polyglot";
@@ -12935,7 +12939,7 @@ void MiyoBackend::openLlmTerminal()
     // ── 대화형 REPL 클라이언트 (stdlib only) — SSE 스트리밍으로 토큰 실시간 출력 ──
     static const char *REPL_PY = R"PYEOF(#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 오픈클로 대화형 터미널 — 카메라(Chernobyl) 내장 로컬 LLM 클라이언트.
+# 오픈클로 대화형 터미널 — Predormition 내장 로컬 LLM 클라이언트.
 # 127.0.0.1:8737 (llama-server, OpenAI 호환) 와 SSE 스트리밍으로 대화한다.
 import json, os, sys, time, urllib.request
 try:
@@ -13342,7 +13346,7 @@ void MiyoBackend::autoRepair()
 
         // 3) AI 에게 '어떤 수리를 돌릴지' JSON 으로만 결정하게 한다.
         const QString sys = QString::fromUtf8(
-            "너는 카메라(Chernobyl) 앱의 자동 수리 결정 엔진이다. 아래 '자가진단'을 읽고 실행할 수리 동작을 고른다.\n"
+            "너는 Predormition 앱의 자동 수리 결정 엔진이다. 아래 '자가진단'을 읽고 실행할 수리 동작을 고른다.\n"
             "선택 가능한 동작(정확히 이 영어 이름만 사용):\n"
             "- repairPython : 파이썬 실행환경이 깨졌을 때(모듈 import 실패, twikit/atproto 없음, site-packages 손상)\n"
             "- updateModules : 모듈이 오래되어 수집이 실패할 때 pip 업그레이드(twikit, yt-dlp, atproto 등)\n"

@@ -1,6 +1,6 @@
 @echo off
 REM ═════════════════════════════════════════════════════════════════
-REM Chernobyl Windows 빌드 스크립트
+REM Predormition Windows 빌드 스크립트
 REM
 REM 사전 조건:
 REM   1) Qt6 (6.5+) 설치됨 — qt-online-installer.exe 로 MinGW 또는 MSVC 컴포넌트 선택
@@ -11,7 +11,7 @@ REM 사용법:
 REM   1) Qt6 설치 경로를 QT_DIR 환경변수에 설정 (예: C:\Qt\6.7.0\mingw_64)
 REM      또는 아래 SET QT_DIR=... 줄 직접 수정
 REM   2) build_windows.bat 더블클릭
-REM   3) 결과: dist\Chernobyl_win\Chernobyl.exe + 모든 DLL
+REM   3) 결과: dist\Predormition_win\Predormition.exe + 모든 DLL
 REM ═════════════════════════════════════════════════════════════════
 
 setlocal enabledelayedexpansion
@@ -57,7 +57,7 @@ if %errorlevel%==0 (
 cmake -G "%GENERATOR%" ^
     -DCMAKE_BUILD_TYPE=Release ^
     -DCMAKE_PREFIX_PATH="%QT_DIR%" ^
-    -DAPP_NAME=Chernobyl ^
+    -DAPP_NAME=Predormition ^
     -DAPP_ID=com.chernobyl.app ^
     -DAPP_ICON=chernobyl.icns ^
     ..
@@ -78,17 +78,17 @@ if %errorlevel% neq 0 (
 cd ..
 
 REM ─── 배포 디렉토리 ──────────────────────────────────────────────
-set "DIST_DIR=dist\Chernobyl_win"
+set "DIST_DIR=dist\Predormition_win"
 if exist "%DIST_DIR%" rmdir /S /Q "%DIST_DIR%"
 mkdir "%DIST_DIR%"
 
 REM exe 복사
-copy /Y "build_win\Chernobyl.exe" "%DIST_DIR%\" >nul 2>&1
-if not exist "%DIST_DIR%\Chernobyl.exe" copy /Y "build_win\Miyo.exe" "%DIST_DIR%\Chernobyl.exe" >nul 2>&1
+copy /Y "build_win\Predormition.exe" "%DIST_DIR%\" >nul 2>&1
+if not exist "%DIST_DIR%\Predormition.exe" copy /Y "build_win\Miyo.exe" "%DIST_DIR%\Predormition.exe" >nul 2>&1
 
 REM windeployqt — Qt DLL 자동 번들
 "%QT_DIR%\bin\windeployqt.exe" --release --no-translations --no-system-d3d-compiler ^
-    --no-opengl-sw "%DIST_DIR%\Chernobyl.exe"
+    --no-opengl-sw "%DIST_DIR%\Predormition.exe"
 
 REM 추가 리소스
 if exist "resources\fonts"          xcopy /E /I /Y "resources\fonts"          "%DIST_DIR%\fonts\"          >nul
@@ -123,7 +123,7 @@ powershell -Command "Compress-Archive -Path '%DIST_DIR%\*' -DestinationPath '%DI
 echo.
 echo ─────────────────────────────────────────────────────────
 echo ✅ 빌드 완료!
-echo    실행파일: %DIST_DIR%\Chernobyl.exe
+echo    실행파일: %DIST_DIR%\Predormition.exe
 echo    압축본:   %DIST_DIR%.zip
 echo ─────────────────────────────────────────────────────────
 echo.
