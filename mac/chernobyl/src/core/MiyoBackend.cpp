@@ -12449,6 +12449,36 @@ void MiyoBackend::llmChat(const QString &historyJson)
 {
     const QJsonArray history = QJsonDocument::fromJson(historyJson.toUtf8()).array();
     QThread *t = QThread::create([this, history]() {
+        // ★ 자율 자가수리 라우팅 — 사용자가 '코드 점검/수리'를 부탁하면, 대화 응답 대신 오픈클로가
+        //   스스로 앱을 점검·수리한다(자동 자가수리 발동). 소소한 잡담/질문은 그대로 대화로 처리.
+        {
+            QString lastUser;
+            for (int i = history.size() - 1; i >= 0; --i) {
+                const QJsonObject m = history.at(i).toObject();
+                if (m.value("role").toString() == "user") { lastUser = m.value("content").toString(); break; }
+            }
+            auto has = [&lastUser](const QString &k) { return lastUser.contains(k, Qt::CaseInsensitive); };
+            const bool wantsRepair =
+                (has("코드") && (has("확인") || has("점검") || has("검사") || has("고쳐") || has("수리")
+                                 || has("체크") || has("봐") || has("fix") || has("버그"))) ||
+                has("자가수리") || has("자가 수리") || has("자동수리") || has("자동 수리") ||
+                has("알아서 고쳐") || has("스스로 고쳐") || has("직접 고쳐") || has("네가 고쳐")
+                || has("자체수리") || has("자체 수리");
+            if (wantsRepair) {
+                QMetaObject::invokeMethod(this, [this]() { autoRepair(); }, Qt::QueuedConnection);
+                const QString ack = QStringLiteral(
+                    "네, 제가 직접 앱을 점검하고 스스로 고쳐볼게요 — 자동 자가수리를 시작합니다. 🔧\n"
+                    "· 앱 스크립트 코드 문법을 점검해 깨진 건 고칩니다(문법검증 통과분만 반영, 실패하면 원본으로 자동 복구).\n"
+                    "· 파이썬 환경·모듈·로그인 토큰 문제도 진단해 수리합니다.\n"
+                    "진행 상황은 이 창과 아래 로그에 표시돼요. 다 돌린 뒤에도 안 되면 증상을 구체적으로 알려주세요.");
+                QMetaObject::invokeMethod(this, [this, ack]() {
+                    runJs(QString("onLlmReply(%1)").arg(QString::fromUtf8(
+                        QJsonDocument(QJsonArray{ack}).toJson(QJsonDocument::Compact))));
+                }, Qt::QueuedConnection);
+                return;
+            }
+        }
+
         // AI 미가동이면 자동 기동 후 로딩 대기
         HttpClient probe;
         if (!probe.get("http://127.0.0.1:8737/v1/models").isOk()) {
@@ -12790,6 +12820,32 @@ void MiyoBackend::revertScript(const QString &name)
     getScriptSource(name);
 }
 
+// AI 에게 스크립트 전체 파일을 다시 쓰게 해서 반환. 동기(블로킹 HTTP) — 워커 스레드에서만 호출.
+//  실패/빈 응답이면 빈 문자열. LLM 기동은 호출자가 보장한다.
+QString MiyoBackend::aiRewriteScriptSync(const QString &name, const QString &problem)
+{
+    QString src;
+    { QFile f(Common::activeToolScriptPath(name)); if (f.open(QIODevice::ReadOnly)) { src = QString::fromUtf8(f.readAll()); f.close(); } }
+    if (src.trimmed().isEmpty()) return QString();
+    const QString sys = QString(
+        "너는 파이썬 코드를 고치는 엔지니어다. 아래 파일 '%1' 의 현재 소스와 문제 설명을 보고, "
+        "문제를 해결한 '완전한 파일 전체'를 출력하라. 반드시 파일 전체를 그대로 출력하고(잘림 금지), "
+        "설명·주석 인사말·코드펜스(```) 없이 순수 파이썬 코드만 출력하라. 기존 동작은 최대한 보존하라.\n\n"
+        "[문제]\n%2\n\n[현재 소스]\n%3").arg(name, problem.isEmpty() ? QStringLiteral("(자동 진단)") : problem, src);
+    QJsonObject body{{"model", "default"},
+        {"messages", QJsonArray{QJsonObject{{"role", "system"}, {"content", sys}}}},
+        {"temperature", 0.2}, {"max_tokens", 4000}};
+    HttpClient http;
+    HttpResponse r = http.postJson("http://127.0.0.1:8737/v1/chat/completions", body);
+    QString out;
+    if (r.isOk())
+        out = r.json().value("choices").toArray().first().toObject()
+                  .value("message").toObject().value("content").toString();
+    out = out.trimmed();
+    if (out.startsWith("```")) { int nl = out.indexOf('\n'); if (nl > 0) out = out.mid(nl + 1); if (out.endsWith("```")) out.chop(3); out = out.trimmed(); }
+    return out;
+}
+
 // AI 가 스크립트를 읽고 문제를 반영해 '전체 파일'을 다시 써서 안전 적용.
 void MiyoBackend::aiFixScript(const QString &name, const QString &problem)
 {
@@ -12797,34 +12853,14 @@ void MiyoBackend::aiFixScript(const QString &name, const QString &problem)
     if (m_scriptFixBusy.exchange(true)) { log("AI 스크립트 수리가 이미 진행 중입니다.", "warning", "settings"); return; }
     log(QString("🤖 오픈클로가 %1 을(를) 읽고 수정안을 만드는 중...").arg(name), "info", "settings");
 
-    QString src;
-    { QFile f(Common::activeToolScriptPath(name)); if (f.open(QIODevice::ReadOnly)) { src = QString::fromUtf8(f.readAll()); f.close(); } }
-
-    QThread *t = QThread::create([this, name, problem, src]() {
+    QThread *t = QThread::create([this, name, problem]() {
         const QString base = "http://127.0.0.1:8737";
         HttpClient probe;
         if (!probe.get(base + "/v1/models").isOk()) {
             QMetaObject::invokeMethod(this, [this]() { startLocalLlm(m_llmModelHint); }, Qt::QueuedConnection);
             for (int i = 0; i < 240; ++i) { QThread::msleep(500); HttpClient h; if (h.get(base + "/v1/models").isOk()) break; }
         }
-        const QString sys = QString(
-            "너는 파이썬 코드를 고치는 엔지니어다. 아래 파일 '%1' 의 현재 소스와 문제 설명을 보고, "
-            "문제를 해결한 '완전한 파일 전체'를 출력하라. 반드시 파일 전체를 그대로 출력하고(잘림 금지), "
-            "설명·주석 인사말·코드펜스(```) 없이 순수 파이썬 코드만 출력하라. 기존 동작은 최대한 보존하라.\n\n"
-            "[문제]\n%2\n\n[현재 소스]\n%3").arg(name, problem.isEmpty() ? QStringLiteral("(자동 진단)") : problem, src);
-        QJsonObject body{{"model", "default"},
-            {"messages", QJsonArray{QJsonObject{{"role", "system"}, {"content", sys}}}},
-            {"temperature", 0.2}, {"max_tokens", 4000}};
-        HttpClient http;
-        HttpResponse r = http.postJson(base + "/v1/chat/completions", body);
-        QString out;
-        if (r.isOk())
-            out = r.json().value("choices").toArray().first().toObject()
-                      .value("message").toObject().value("content").toString();
-        // 코드펜스 제거
-        out = out.trimmed();
-        if (out.startsWith("```")) { int nl = out.indexOf('\n'); if (nl > 0) out = out.mid(nl + 1); if (out.endsWith("```")) out.chop(3); out = out.trimmed(); }
-
+        const QString out = aiRewriteScriptSync(name, problem);
         QMetaObject::invokeMethod(this, [this, name, out]() {
             if (out.trimmed().isEmpty()) { log("⚠️ AI 가 수정안을 만들지 못했습니다.", "warning", "settings"); }
             else { QString err; if (applyScriptPatchImpl(name, out, err))
@@ -12897,6 +12933,37 @@ void MiyoBackend::autoRepair()
             bool up = false;
             for (int i = 0; i < 240; ++i) { QThread::msleep(500); HttpClient h; if (h.get(base + "/v1/models").isOk()) { up = true; break; } }
             if (!up) { say("error", "AI 서버 기동에 실패했습니다. 설정 → 로컬 AI 에서 'AI 켜기'를 먼저 눌러보세요."); m_autoRepairBusy = false; say("done", ""); return; }
+        }
+
+        // 1.5) ★ 코드 자가수리 — 편집가능 스크립트 문법(py_compile)을 자동 점검하고, 깨진 스크립트는
+        //       오픈클로가 스스로 코드를 다시 써서 고친다. 백업·문법검증·실패 시 자동 원복(안전).
+        say("info", "앱 스크립트 코드를 점검하는 중입니다…");
+        {
+            QStringList broken, fixed, kept;
+            for (const QString &sc : kEditableScripts) {
+                const QString path = Common::activeToolScriptPath(sc);
+                if (!QFileInfo::exists(path)) continue;
+                QProcess pc; pc.setProcessEnvironment(Common::bundledProcessEnv());
+                pc.start(Common::bundledPythonPath(), {"-m", "py_compile", path});
+                pc.waitForFinished(20000);
+                if (pc.exitStatus() == QProcess::NormalExit && pc.exitCode() == 0) continue;  // 문법 정상
+                const QString err = QString::fromUtf8(pc.readAllStandardError()).left(400);
+                broken << sc;
+                say("run", "🩺 " + sc + " 문법 오류 감지 → 오픈클로가 코드 수리 시도");
+                const QString newSrc = aiRewriteScriptSync(sc, "파이썬 문법 오류(py_compile 실패):\n" + err);
+                if (newSrc.trimmed().isEmpty()) { say("error", "⚠️ " + sc + " — AI 가 수정안을 만들지 못함"); continue; }
+                QString e2;
+                if (applyScriptPatchImpl(sc, newSrc, e2)) {
+                    fixed << sc;
+                    say("ok", "✅ " + sc + " 코드 수리 성공(문법검증 통과)");
+                    QMetaObject::invokeMethod(this, [this, sc]() { getScriptSource(sc); }, Qt::QueuedConnection);
+                } else {
+                    kept << sc;
+                    say("error", "⚠️ " + sc + " — AI 수정안이 검증 실패, 원본 유지(안전): " + e2);
+                }
+            }
+            if (broken.isEmpty()) say("info", "코드 점검: 스크립트 문법 정상 ✓");
+            else say("info", QString("코드 점검 — 깨진 %1개 중 수리 %2개, 실패 %3개").arg(broken.size()).arg(fixed.size()).arg(kept.size()));
         }
 
         // 2) 자가진단 보고서 확보

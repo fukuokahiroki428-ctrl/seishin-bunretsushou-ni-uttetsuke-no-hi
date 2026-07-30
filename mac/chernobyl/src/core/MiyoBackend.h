@@ -257,6 +257,7 @@ private:
     std::atomic<bool> m_llmUseWeb{false};     // AI 답변 시 웹 검색 참고 여부(읽기전용)
     std::atomic<bool> m_scriptFixBusy{false}; // AI 스크립트 수리 중복 방지
     bool applyScriptPatchImpl(const QString &name, const QString &newContent, QString &err); // 백업·검증·원복
+    QString aiRewriteScriptSync(const QString &name, const QString &problem); // AI 가 스크립트 전체 재작성(동기, 워커스레드 전용)
 
     // 쓰레드 안전 m_isRunning 접근
     bool platformRunning(const QString &p) const {
