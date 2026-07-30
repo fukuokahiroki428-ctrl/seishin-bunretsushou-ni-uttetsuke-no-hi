@@ -1,5 +1,5 @@
 ; Predormition Windows 단일 설치 파일 (Inno Setup 6)
-; GitHub Actions 의 Deploy 단계가 만든 dist\Predormition_win\ 전체를 하나의 Predormition_Setup.exe 로 패키징.
+; GitHub Actions 의 Deploy 단계가 만든 dist\win\ 전체를 하나의 Predormition_Setup.exe 로 패키징.
 ; iscc 는 repo 루트에서 호출 → 모든 상대경로는 repo 루트 기준.
 
 #define MyAppName    "Predormition"
@@ -31,8 +31,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-; dist\Predormition_win 전체 (exe + Qt DLL + tools + python_env)
-Source: "dist\Predormition_win\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+; dist\win 전체 (스테이징 폴더는 MAX_PATH 여유 위해 짧게) (exe + Qt DLL + tools + python_env)
+Source: "dist\win\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
 Name: "{autoprograms}\Predormition"; Filename: "{app}\{#MyAppExeName}"

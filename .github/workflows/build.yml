@@ -103,7 +103,7 @@ jobs:
       - name: Deploy
         shell: pwsh
         run: |
-          $dist = "dist/Predormition_win"
+          $dist = "dist/win"   # ★ 짧게 — Windows MAX_PATH(260자) 여유 확보(python_env 의 깊은 경로가 한계에 걸림)
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
           # exe 찾기 (Predormition.exe / 구 이름 fallback)
@@ -150,7 +150,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Predormition-Windows-${{ github.sha }}
-          path: windows/dist/Predormition_win/
+          path: windows/dist/win/
           retention-days: 14
 
       # 7) 단일 설치 파일 (Inno Setup) — dist 전체를 Predormition_Setup.exe 하나로 패키징
