@@ -11,7 +11,7 @@ if [ -z "$APP" ] || [ ! -d "$APP" ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ENTITLEMENTS="${ENTITLEMENTS:-$SCRIPT_DIR/chernobyl.entitlements}"
+ENTITLEMENTS="${ENTITLEMENTS:-$SCRIPT_DIR/predormition.entitlements}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 서명 ID 선택 (우선순위)
