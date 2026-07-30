@@ -35,6 +35,7 @@ cat > yt-dlp <<'WRAP'
 export PYTHONDONTWRITEBYTECODE=1
 DIR="$(cd "$(dirname "$0")" && pwd)"
 for P in \
+  "$HOME/Library/Application Support/Miyo/Predormition/python_env_arm64/bin/python3" \
   "$HOME/Library/Application Support/Miyo/Chernobyl/python_env_arm64/bin/python3" \
   "$HOME/Library/Application Support/Miyo/Chernobyl/python_env/bin/python3" \
   "$DIR/../Resources/python_env/bin/python3" \

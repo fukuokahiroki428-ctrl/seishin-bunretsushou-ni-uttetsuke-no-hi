@@ -1,6 +1,8 @@
 #include <QApplication>
 #include <QLockFile>
 #include <QStandardPaths>
+#include <QDir>
+#include <QFileInfo>
 #include <QMenu>
 #include <QSystemTrayIcon>
 #include "core/MainWindow.h"
@@ -87,10 +89,26 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
 #ifdef Q_OS_WIN
     qInstallMessageHandler(chernobylLogHandler);
-    qInfo() << "[startup] Chernobyl starting — exe dir:" << QCoreApplication::applicationDirPath();
+    qInfo() << "[startup] Predormition starting — exe dir:" << QCoreApplication::applicationDirPath();
 #endif
-    app.setApplicationName("Chernobyl");
+    app.setApplicationName("Predormition");
     app.setOrganizationName("Miyo");
+
+    // ★ 앱 이름 변경(Chernobyl → Predormition) 시 사용자 데이터 자동 이전.
+    //   AppDataLocation 이 ...\Miyo\Chernobyl → ...\Miyo\Predormition 로 바뀌므로,
+    //   새 폴더가 없고 옛 폴더가 있으면 통째로 옮긴다(설정·토큰·AI 수정본 유지).
+    {
+        const QString base = QFileInfo(
+            QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).absolutePath();
+        const QString oldDir = base + "/Chernobyl";
+        const QString newDir = base + "/Predormition";
+        if (!QFileInfo::exists(newDir) && QFileInfo::exists(oldDir)) {
+            if (QDir().rename(oldDir, newDir))
+                qInfo() << "[startup] user data migrated:" << oldDir << "→" << newDir;
+            else
+                qWarning() << "[startup] user data migration failed";
+        }
+    }
     // ★ Mac 전용: Dock 컨벤션 — 창 닫아도 앱 살아있고 Dock 클릭으로 재오픈.
     //   Windows 에선 X 누르면 죽는 게 정상이라 기본값(true) 유지.
 #ifdef Q_OS_MACOS

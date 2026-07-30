@@ -7,7 +7,7 @@
 # 보고서의 원인 분석에 사용한다. 이 스크립트는 그 폴더를 채운다.
 #
 # 사용법:
-#   mac:     bash scripts/bundle_llm.sh "path/to/Chernobyl.app"
+#   mac:     bash scripts/bundle_llm.sh "path/to/Predormition.app"
 #   windows: bash scripts/bundle_llm.sh "path/to/배포폴더"   (git-bash/WSL)
 #
 # 환경변수로 교체 가능:

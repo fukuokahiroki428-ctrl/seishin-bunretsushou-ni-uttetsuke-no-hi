@@ -1,5 +1,5 @@
 #!/bin/bash
-# Comprehensive codesign script for Chernobyl.app
+# Comprehensive codesign script for Predormition.app
 # 컴포넌트를 inside-out 으로 서명한 뒤 --deep --strict 로 검증한다.
 # ★ set -e 안 씀: 일부 nested(companion) 서명 실패는 허용하되,
 #   메인 번들 서명/검증은 반드시 성공해야 하며 실패 시 즉시 비정상 종료(exit 1)한다.
@@ -17,7 +17,7 @@ ENTITLEMENTS="${ENTITLEMENTS:-$SCRIPT_DIR/chernobyl.entitlements}"
 # 서명 ID 선택 (우선순위)
 #   1) Developer ID Application — 배포+공증 가능(Gatekeeper 통과). 하드닝 런타임+entitlements 적용.
 #   2) Apple Development (사용자 개발자 ID) — 로컬 안정 식별자 → TCC 권한 영구 유지.
-#        이전 버전 Chernobyl 이 이걸로 서명됨. 평범 서명(하드닝 런타임 X) — 이전과 동일 동작.
+#        이전 버전 Predormition 이 이걸로 서명됨. 평범 서명(하드닝 런타임 X) — 이전과 동일 동작.
 #   3) ad-hoc(-) — 인증서가 하나도 없을 때. 매 빌드 해시가 바뀌어 권한이 재설정됨.
 #   SIGN_ID 환경변수로 강제 지정 가능.
 # ─────────────────────────────────────────────────────────────────────────────

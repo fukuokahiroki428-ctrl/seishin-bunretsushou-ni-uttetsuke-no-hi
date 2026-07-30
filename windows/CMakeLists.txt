@@ -170,7 +170,7 @@ endif()
 if(APPLE)
     # App name / icon / identifier — override with -DAPP_NAME="..." -DAPP_ICON="..." -DAPP_ID="..."
     if(NOT APP_NAME)
-        set(APP_NAME "ABIWA")
+        set(APP_NAME "Predormition")
     endif()
     if(NOT APP_ICON)
         set(APP_ICON "abiwa.icns")
@@ -373,7 +373,7 @@ endif()
 if(WIN32)
     # ★ APP_NAME 미설정 시 Chernobyl 기본값 (이전 "ABIWA" 하드코딩 → -DAPP_NAME 무시됐음)
     if(NOT APP_NAME)
-        set(APP_NAME "Chernobyl")
+        set(APP_NAME "Predormition")
     endif()
     set_target_properties(Miyo PROPERTIES
         OUTPUT_NAME "${APP_NAME}"

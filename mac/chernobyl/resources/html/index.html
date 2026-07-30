@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>カメラ</title>
+    <title>Predormition</title>
     <style>
         @font-face {
             font-family: 'NanumGothic';
@@ -877,7 +877,7 @@
         <!-- Sidebar -->
         <div class="sidebar">
             <div class="sidebar-header">
-                <div class="sidebar-title">カメラ</div>
+                <div class="sidebar-title">Predormition</div>
             </div>
             <div class="sidebar-nav">
                 <div class="nav-item active dash-nav" onclick="switchTab('dashboard')">
@@ -4122,7 +4122,7 @@
             if (info) {
                 if (isNas || isExt) {
                     const icon = isNas ? 'NAS' : '외장';
-                    info.innerHTML = `<strong>${icon} 모드 활성 (전체 일괄)</strong> — 모든 플랫폼이 <code>${root}/Chernobyl/&lt;Platform&gt;</code>. 각 탭에서 따로 변경하면 그 플랫폼만 다른 경로.`;
+                    info.innerHTML = `<strong>${icon} 모드 활성 (전체 일괄)</strong> — 모든 플랫폼이 <code>${root}/Predormition/&lt;Platform&gt;</code>. 각 탭에서 따로 변경하면 그 플랫폼만 다른 경로.`;
                     info.style.color = '#7c5cff';
                 } else {
                     info.innerHTML = '둘 다 OFF → 각 플랫폼 탭에서 따로 NAS/외장 선택. 또는 입력란에 직접 경로.';
@@ -5005,7 +5005,7 @@
                 const total = m.total_size || 0;
                 const count = (m.files || []).length;
                 // 헤더 메타
-                if (meta) meta.textContent = 'v' + (m.version || '1') + ' · ' + (m.app || 'Chernobyl');
+                if (meta) meta.textContent = 'v' + (m.version || '1') + ' · ' + (m.app || 'Predormition');
                 // KV 행
                 if (kv) {
                     kv.innerHTML = '';

@@ -1,5 +1,5 @@
 ═══════════════════════════════════════════════════════════════
-  Chernobyl — Windows 빌드 안내 (소스 ZIP)
+  Predormition — Windows 빌드 안내 (소스 ZIP)
 ═══════════════════════════════════════════════════════════════
 
 이 ZIP은 Windows에서 직접 빌드하는 소스 패키지입니다.
@@ -70,8 +70,8 @@ ZIP에는 Mac용 바이너리가 빠져있습니다.
 │ 4. 결과물                                                    │
 └─────────────────────────────────────────────────────────────┘
 
-  dist\Chernobyl_win\Chernobyl.exe   ← 더블클릭 실행
-  dist\Chernobyl_win.zip              ← 배포용 ZIP
+  dist\Predormition_win\Predormition.exe   ← 더블클릭 실행
+  dist\Predormition_win.zip              ← 배포용 ZIP
 
 Qt DLL, 폰트, tools, SingleFile 확장 등 자체 완결 패키지.
 

@@ -91,8 +91,24 @@ int main(int argc, char *argv[])
 #endif
 
     QApplication app(argc, argv);
-    app.setApplicationName("Chernobyl");
+    app.setApplicationName("Predormition");
     app.setOrganizationName("Miyo");
+
+    // ★ 앱 이름 변경(Chernobyl → Predormition) 시 사용자 데이터 자동 이전.
+    //   AppDataLocation 이 .../Miyo/Chernobyl → .../Miyo/Predormition 로 바뀌므로,
+    //   새 폴더가 없고 옛 폴더가 있으면 통째로 옮긴다(설정·토큰·AI 수정본·python_env 유지).
+    {
+        const QString base = QFileInfo(
+            QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).absolutePath();
+        const QString oldDir = base + "/Chernobyl";
+        const QString newDir = base + "/Predormition";
+        if (!QFileInfo::exists(newDir) && QFileInfo::exists(oldDir)) {
+            if (QDir().rename(oldDir, newDir))
+                qInfo() << "[startup] user data migrated:" << oldDir << "→" << newDir;
+            else
+                qWarning() << "[startup] user data migration failed — 기존 설정이 새 폴더에 없을 수 있음";
+        }
+    }
     app.setQuitOnLastWindowClosed(false);
 
     // Single instance lock — setStaleLockTime(0) ensures stale locks are auto-removed

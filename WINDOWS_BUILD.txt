@@ -53,7 +53,7 @@ Mac에서 cross-compile은 환경 셋업이 매우 복잡하므로, 다음 두 �
 [1] GitHub 저장소에 push (private OK)
 [2] 저장소 → Actions 탭 → "Windows Build" 워크플로우 → "Run workflow"
 [3] 빌드 완료 (~10분) 후 Actions 페이지 하단 "Artifacts" 섹션:
-      Chernobyl-windows.zip
+      Predormition-windows.zip
       Pen-windows.zip
     각각 다운로드 → 압축 풀고 .exe 실행.
 

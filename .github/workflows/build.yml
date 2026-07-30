@@ -1,4 +1,4 @@
-name: Windows Build (Chernobyl)
+name: Windows Build (Predormition)
 
 # Mac 에서 코드 작성 → git push → 이 workflow 가 GitHub 의 Windows 서버에서 자동 빌드.
 # 결과 .exe + DLL + 도구가 zip 으로 Artifacts 에 올라감. Actions 탭에서 다운로드.
@@ -23,7 +23,7 @@ jobs:
       contents: write   # ★ 태그 push 시 GITHUB_TOKEN 으로 Release 생성/자산 업로드
 
     # ★ 이 워크플로는 레포 루트(.github/workflows)에 있지만 Windows 프로젝트는 windows/ 하위에 있다.
-    #   모든 shell(run) 스텝을 windows/ 에서 실행 → 내부 상대경로(resources, chernobyl.iss, build_win 등)가 그대로 맞음.
+    #   모든 shell(run) 스텝을 windows/ 에서 실행 → 내부 상대경로(resources, predormition.iss, build_win 등)가 그대로 맞음.
     #   (uses: 스텝은 working-directory 를 무시 → checkout 은 루트, 아티팩트 path 는 windows/ 접두어로 지정.)
     defaults:
       run:
@@ -95,23 +95,23 @@ jobs:
           cmake -B build_win -G "Ninja" `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
-            -DAPP_NAME=Chernobyl `
-            -DAPP_ID=com.chernobyl.app
+            -DAPP_NAME=Predormition `
+            -DAPP_ID=com.predormition.app
           cmake --build build_win -j
 
       # 5) windeployqt — Qt DLL 자동 번들 + 리소스 복사
       - name: Deploy
         shell: pwsh
         run: |
-          $dist = "dist/Chernobyl_win"
+          $dist = "dist/Predormition_win"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
-          # exe 찾기 (Chernobyl.exe 또는 Miyo.exe)
-          $exe = Get-ChildItem -Path "build_win" -Filter "*.exe" -Recurse | Where-Object { $_.Name -match "Chernobyl|Miyo" } | Select-Object -First 1
-          Copy-Item $exe.FullName "$dist/Chernobyl.exe" -Force
+          # exe 찾기 (Predormition.exe / 구 이름 fallback)
+          $exe = Get-ChildItem -Path "build_win" -Filter "*.exe" -Recurse | Where-Object { $_.Name -match "Predormition|Chernobyl|Miyo" } | Select-Object -First 1
+          Copy-Item $exe.FullName "$dist/Predormition.exe" -Force
 
           # Qt DLL 번들 (--compiler-runtime: VC++ 런타임 DLL 동봉 → 사용자 PC 에 VC redist 없어도 실행)
-          & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --no-translations --compiler-runtime --no-system-d3d-compiler "$dist/Chernobyl.exe"
+          & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --no-translations --compiler-runtime --no-system-d3d-compiler "$dist/Predormition.exe"
 
           # 리소스 복사
           if (Test-Path "resources/fonts") { Copy-Item "resources/fonts" "$dist/fonts" -Recurse -Force }
@@ -149,18 +149,18 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Chernobyl-Windows-${{ github.sha }}
-          path: windows/dist/Chernobyl_win/
+          name: Predormition-Windows-${{ github.sha }}
+          path: windows/dist/Predormition_win/
           retention-days: 14
 
-      # 7) 단일 설치 파일 (Inno Setup) — dist 전체를 Chernobyl_Setup.exe 하나로 패키징
+      # 7) 단일 설치 파일 (Inno Setup) — dist 전체를 Predormition_Setup.exe 하나로 패키징
       - name: Build single-file installer (Inno Setup)
         shell: pwsh
         run: |
           choco install innosetup --no-progress -y
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { $iscc = "iscc" }
-          & $iscc chernobyl.iss
+          & $iscc predormition.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed (exit $LASTEXITCODE)" }
           Get-ChildItem installer_out | Format-Table Name, @{N='MB';E={[math]::Round($_.Length/1MB,1)}}
 
@@ -168,16 +168,16 @@ jobs:
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: Chernobyl-Setup-${{ github.sha }}
-          path: windows/installer_out/Chernobyl_Setup.exe
+          name: Predormition-Setup-${{ github.sha }}
+          path: windows/installer_out/Predormition_Setup.exe
           retention-days: 14
 
-      # 9) GitHub Release 발행 — v* 태그 push 시 Chernobyl_Setup.exe 를 릴리즈 자산으로 업로드
+      # 9) GitHub Release 발행 — v* 태그 push 시 Predormition_Setup.exe 를 릴리즈 자산으로 업로드
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: windows/installer_out/Chernobyl_Setup.exe
+          files: windows/installer_out/Predormition_Setup.exe
           generate_release_notes: true
           fail_on_unmatched_files: true
         env:

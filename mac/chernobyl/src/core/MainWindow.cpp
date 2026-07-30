@@ -166,7 +166,7 @@ QMenu *MainWindow::createDockMenu()
 {
     auto *menu = new QMenu(this);
 
-    auto *showAction = menu->addAction("Chernobyl 열기");
+    auto *showAction = menu->addAction("Predormition 열기");
     connect(showAction, &QAction::triggered, this, [this]() {
         show();
         raise();
@@ -280,7 +280,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     if (m_backend && m_backend->isAnyRunning()) {
         auto reply = QMessageBox::question(
             this,
-            "Chernobyl",
+            "Predormition",
             "수집이 진행 중입니다. 종료하시겠습니까?",
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No
@@ -323,7 +323,7 @@ void MainWindow::holdAwake()
     if (m_sleepAssertionHeld) return;
 
     // 1. IOPMAssertion — Prevent System Sleep
-    CFStringRef reason = CFSTR("Chernobyl active — preventing sleep");
+    CFStringRef reason = CFSTR("Predormition active — preventing sleep");
     IOReturn result = IOPMAssertionCreateWithName(
         kIOPMAssertionTypePreventSystemSleep,
         kIOPMAssertionLevelOn,
@@ -339,7 +339,7 @@ void MainWindow::holdAwake()
     IOPMAssertionCreateWithName(
         kIOPMAssertionTypeNoIdleSleep,  // 두 번째 layer
         kIOPMAssertionLevelOn,
-        CFSTR("Chernobyl user activity"),
+        CFSTR("Predormition user activity"),
         &userActiveAssertion
     );
 
