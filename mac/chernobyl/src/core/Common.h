@@ -43,6 +43,16 @@ QString bundledToolsDir();
 QString scriptOverrideDir();                       // AI 가 고친 스크립트 저장 위치(쓰기가능)
 QString activeToolScriptPath(const QString &name); // override 있으면 그것, 없으면 번들 원본
 
+// ★ macOS: 앱 번들 경로(.../Chernobyl.app). 번들이 아니면 빈 문자열.
+QString appBundlePath();
+// ★ macOS: 앱 번들 재서명 — 번들 안에 파일이 추가/변경되면(모듈 설치 등) codesign 봉인이 깨져
+//   macOS 가 앱을 SIGKILL 할 수 있다. 설치 직후 이걸 호출해 봉인을 복구한다.
+//   유효한 서명 아이덴티티가 있으면 그걸 쓰고, 없으면 ad-hoc(-) 서명. 검증까지 통과해야 true.
+//   Windows/Linux 는 서명 봉인이 없어 항상 true(무동작).
+bool resealAppBundle(QString *err = nullptr);
+// 디렉토리에 실제로 쓸 수 있는지(임시파일 생성/삭제로 확인).
+bool isDirWritable(const QString &dir);
+
 // ★ 사용자 도구 폴더 (~/Library/Application Support/Chernobyl/tools/)
 //   yt-dlp 자동 업데이트 시 여기에 저장. 우선순위 더 높음.
 QString userToolsDir();

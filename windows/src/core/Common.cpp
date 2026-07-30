@@ -435,6 +435,19 @@ QString activeToolScriptPath(const QString &name)
     return bundledToolsDir() + "/" + name;
 }
 
+bool isDirWritable(const QString &dir)
+{
+    if (dir.isEmpty() || !QFileInfo::exists(dir)) return false;
+    QFile probe(dir + "/.kamera_write_test");
+    if (!probe.open(QIODevice::WriteOnly)) return false;
+    probe.write("1"); probe.close(); probe.remove();
+    return true;
+}
+
+// Windows 는 앱 번들/코드서명 봉인 개념이 없다 — 설치 폴더 안에서 직접 수정해도 안전.
+QString appBundlePath() { return QString(); }
+bool resealAppBundle(QString *err) { Q_UNUSED(err); return true; }
+
 // ═════════════════════════════════════════════════════════════════════════
 // yt-dlp 자동 업데이트 — 사용자 폴더 우선, GitHub 죽어도 번들 fallback
 // ═════════════════════════════════════════════════════════════════════════
