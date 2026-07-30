@@ -60,12 +60,30 @@ jobs:
           # yt-dlp
           Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile "$tools/yt-dlp.exe"
 
-          # ffmpeg + ffprobe (gyan.dev essentials)
-          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "ffmpeg.zip"
-          Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg_tmp" -Force
-          $ff = Get-ChildItem -Path "ffmpeg_tmp" -Directory | Select-Object -First 1
-          Copy-Item "$($ff.FullName)/bin/ffmpeg.exe"  "$tools/ffmpeg.exe"  -Force
-          Copy-Item "$($ff.FullName)/bin/ffprobe.exe" "$tools/ffprobe.exe" -Force
+          # ffmpeg + ffprobe — gyan.dev 우선, 죽어 있으면 BtbN(GitHub) 미러로 폴백.
+          #   ★ gyan.dev 는 간헐적으로 503(NFSN Error) 을 내며 빌드를 통째로 깨뜨린 적이 있다.
+          $ffSources = @(
+            "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+            "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
+          )
+          $ffOk = $false
+          foreach ($url in $ffSources) {
+            try {
+              Write-Host "ffmpeg 다운로드 시도: $url"
+              Invoke-WebRequest -Uri $url -OutFile "ffmpeg.zip" -MaximumRedirection 5
+              Remove-Item "ffmpeg_tmp" -Recurse -Force -ErrorAction SilentlyContinue
+              Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg_tmp" -Force
+              $ffExe = Get-ChildItem -Path "ffmpeg_tmp" -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1
+              $fpExe = Get-ChildItem -Path "ffmpeg_tmp" -Filter "ffprobe.exe" -Recurse | Select-Object -First 1
+              if ($ffExe -and $fpExe) {
+                Copy-Item $ffExe.FullName "$tools/ffmpeg.exe"  -Force
+                Copy-Item $fpExe.FullName "$tools/ffprobe.exe" -Force
+                $ffOk = $true; Write-Host "  → 성공"; break
+              }
+              Write-Host "  → 압축 안에 ffmpeg/ffprobe 없음, 다음 소스 시도"
+            } catch { Write-Host "  → 실패: $($_.Exception.Message)" }
+          }
+          if (-not $ffOk) { throw "ffmpeg 를 어느 소스에서도 받지 못했습니다" }
 
           # rclone
           Invoke-WebRequest -Uri "https://github.com/rclone/rclone/releases/download/v1.74.2/rclone-v1.74.2-windows-amd64.zip" -OutFile "rclone.zip"
