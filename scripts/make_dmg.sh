@@ -48,12 +48,24 @@ make_dmg() {
     cp -R "$APP_PATH" "$STAGE_DIR/"
     ln -s /Applications "$STAGE_DIR/Applications"
 
+    local SCRIPTS_DIR; SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
+
     # 서명/실행허용 헬퍼 동봉 (Gatekeeper 차단 시 더블클릭으로 해제)
-    local HELPER; HELPER="$(cd "$(dirname "$0")" && pwd)/dmg_fix_open.command"
+    local HELPER="$SCRIPTS_DIR/dmg_fix_open.command"
     if [ -f "$HELPER" ]; then
         cp "$HELPER" "$STAGE_DIR/실행이_안되면_더블클릭.command"
         chmod +x "$STAGE_DIR/실행이_안되면_더블클릭.command"
         xattr -cr "$STAGE_DIR/실행이_안되면_더블클릭.command" 2>/dev/null || true
+    fi
+
+    # ★ AI 모델 설치기 동봉 — 모델(1~9GB)은 GitHub 릴리즈 2GB 제한 때문에 DMG 에 못 넣는다.
+    #   대신 이 파일을 더블클릭하면 공식 배포처에서 받아 앱 내부에 합쳐 넣고 재서명한다.
+    #   (메인 앱에만 넣는다 — Pen 등 다른 앱 DMG 에는 불필요)
+    local AI_INSTALLER="$SCRIPTS_DIR/dmg_install_ai.command"
+    if [ -f "$AI_INSTALLER" ] && [ "$DMG_NAME" = "Predormition" ]; then
+        cp "$AI_INSTALLER" "$STAGE_DIR/AI_설치_더블클릭.command"
+        chmod +x "$STAGE_DIR/AI_설치_더블클릭.command"
+        xattr -cr "$STAGE_DIR/AI_설치_더블클릭.command" 2>/dev/null || true
     fi
 
     local OUT_DMG="$DIST_DIR/$DMG_NAME.dmg"
