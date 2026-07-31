@@ -3,7 +3,6 @@
 #include <QObject>
 #include <QString>
 #include <QMap>
-#include <QSet>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QMutex>
@@ -40,6 +39,8 @@ public:
     void updateStats(int posts, int media, const QString &status, const QString &platform = QString());
     // 수집 종료 후 로그 꼬리에서 오류 다발 감지 시 로컬 LLM 진단 (SelfRepair 연동)
     void llmDiagnoseIfBroken(const QString &platformName, const QString &trackKey);
+    // 수집 종료 시 UI 시작/정지 버튼 동기화 통지 (CollectionGuard 소멸자에서 호출)
+    void notifyCollectionEnded(const QString &platform);
 
     // 단일 스페이스 URL 을 outDir 에 yt-dlp 로 다운로드(스페이스 자동탐지에서도 재사용). 성공 시 true.
     //   running: 중지 판단용 실행 플래그(병렬 트랙 flag). nullptr 이면 platformRunning("twitter") 사용.
@@ -57,11 +58,12 @@ public slots:
     void loadFormData();
 
     // 로컬 AI (자가진단 LLM) — 번들 llama-server 수동 제어 (설정 탭 토글)
-    void startLocalLlm(const QString &modelHint);
-    void stopLocalLlm();
-    void getLlmStatus();
+    void startLocalLlm(const QString &modelHint);  // 번들 모델 기동 (modelHint=파일 부분일치)
+    void stopLocalLlm();                            // 우리가 띄운 서버 종료
+    void getLlmStatus();                            // JS onLlmStatus(json) 로 상태·모델목록 통지
     void llmChat(const QString &historyJson);       // 로컬 AI 와 대화(수리 도우미) — JS onLlmReply(text)
-    void openLlmTerminal();                          // 오픈클로를 대화형 터미널 REPL 로 띄움
+    void openLlmTerminal();                          // 오픈클로를 Terminal.app 대화형 REPL 로 띄움
+    void setWindowChrome(bool dark);                 // 웹 테마 토글 → 네이티브 창 색/외관 동기화(타이틀바 띠 숨김)
     void setLlmModel(const QString &hint);           // 드롭다운 선택 모델 기억 (자동기동 경로가 이걸 사용)
     void autoRepair();                               // AI 가 자가진단→수리동작을 스스로 판단해 자동 실행
     void setSearchKey(const QString &key);           // 웹 검색 API 키(Brave) 저장 — 읽기전용 인터넷 검색용
@@ -99,7 +101,7 @@ public slots:
     void stopYoutube();
     void analyzeYoutube(const QString &url);
 
-    // 니코니코동화(니코동) — yt-dlp 파이프라인 재사용 (맥에서 온 지령 포팅)
+    // 니코니코동화(니코동) — yt-dlp 파이프라인 재사용
     void startNiconico(const QString &configJson);
     void stopNiconico();
 
@@ -165,17 +167,12 @@ public slots:
     Q_INVOKABLE void getDiagnosticInfo();
     Q_INVOKABLE void killZombieChromes();
 
-    // ★ Frameless 창 컨트롤 — 커스텀 타이틀바(JS)에서 호출
-    Q_INVOKABLE void winMinimize();
-    Q_INVOKABLE void winToggleMaximize();
-    Q_INVOKABLE void winClose();
-    Q_INVOKABLE bool winIsMaximized() const;
-    Q_INVOKABLE void winStartMove();
-    Q_INVOKABLE void winStartResize(int edges);  // 비트: 1=top 2=right 4=bottom 8=left
-
     // ★ WebDAV NAS 업로드 (Synology 등)
     Q_INVOKABLE void setWebDavConfig(const QString &url, const QString &user, const QString &pass, bool enabled);
     Q_INVOKABLE void testWebDavConnection();
+    // NAS 파일시스템이 유닉스(ext4/Btrfs)면 true — 특수문자 원문 보존.
+    // false(기본)면 윈도우 호환(전각 치환)으로 NTFS·exFAT·윈도우 NAS 에서도 저장된다.
+    Q_INVOKABLE void setUnixFilenames(bool on);
     void enqueueWebDavUpload(const QString &localPath);  // 캡쳐/다운로드 직후 자동 호출
 
     // ★ Finder 에 WebDAV 마운트 — macOS AppleScript "mount volume" 사용
@@ -217,12 +214,6 @@ public slots:
     // ★ rclone 백업 — WebDAV / SFTP / S3 / Google Drive 등 50+ protocol 빠른 전송 (mountainduck 호환)
     //   사용자의 WebDAV creds 사용해서 rclone copy 호출 → 8 parallel transfers + HTTP/2 + checksum
     void runRcloneBackup(const QStringList &srcDirs, const QString &destSubPath);
-    // ★ 원격 백업 업로드 — 사용자가 종류/주소/자격증명 직접 지정해 URL 로 직접 업로드 (마운트 불필요).
-    //   webdav(https)·ftp·sftp·s3 지원 + rclone copy = 이어올리기(skip-existing + 끊긴 전송 재개) 내장. 전 플랫폼.
-    //   configJson: {type,srcPath,destPath,url|host,port,user,pass,bucket,provider,region,endpoint,accessKey,secret}
-    Q_INVOKABLE void startRemoteBackup(const QString &configJson);
-    Q_INVOKABLE void stopRemoteBackup();
-    Q_INVOKABLE void pickRemoteBackupSrc();  // 원격 백업 소스 폴더 선택 → rbk-src 필드 채움
     // ★ 수집 옵션 dump — 사용자가 체크한 옵션 / 입력값 모두 로그에 기록 (디버깅/재현)
     void logCollectionOptions(const QJsonObject &config, const QString &platform);
     // ★ 다운로드 manifest — 폴더 안 모든 파일 통계 (개수 / 사이즈 / 확장자별) JSON + TXT 생성
@@ -270,7 +261,7 @@ private:
     std::atomic<bool> m_scriptFixBusy{false}; // AI 스크립트 수리 중복 방지
     bool applyScriptPatchImpl(const QString &name, const QString &newContent, QString &err); // 백업·검증·원복
     QString aiRewriteScriptSync(const QString &name, const QString &problem); // AI 가 스크립트 전체 재작성(동기, 워커스레드 전용)
-    void resealBundleAfterInstall(const QString &why);  // 앱 내부 설치 후 서명 복구(Windows 는 무동작)
+    void resealBundleAfterInstall(const QString &why);  // 앱 내부(번들) 설치 후 codesign 봉인 자동 복구
 
     // 쓰레드 안전 m_isRunning 접근
     bool platformRunning(const QString &p) const {
@@ -289,15 +280,10 @@ private:
     void openBackupTerminalLog();
     void writeTerminalLog(const QString &message, const QString &platform = QString());
     void closeTerminalLog(const QString &platform = QString());
-    // ★ Windows: .bat 을 자체 콘솔 창 + Chernobyl 자식 프로세스로 실행 (cmd /c start 분리 대신).
-    //   작업관리자에서 Chernobyl 아래 nested, 앱 종료 시 트리 kill. 다른 OS 에선 no-op.
-    void launchChildConsole(const QString &scriptPath);
-    QList<QProcess*> m_childConsoleProcs;  // 실행 중인 자식 콘솔 추적 (종료 시 정리)
 public:
     void closeAllTerminalLogs();
     QString m_terminalLogPath;
     QMap<QString, QString> m_terminalLogPaths;
-    QSet<QString> m_openTerminalBases;   // ★ 다중 수집: 베이스 플랫폼당 터미널 1개만 (twitter#0/#1 → twitter 하나)
     QMap<QString, qint64> m_lastStatsUpdate;
 
     // Log batching — 로그 배치 처리로 UI 부하 감소

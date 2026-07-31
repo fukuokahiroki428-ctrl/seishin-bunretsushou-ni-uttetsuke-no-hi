@@ -2515,6 +2515,14 @@
                         <div class="btn-row" style="margin-top:6px;">
                             <button class="btn btn-primary btn-sm" onclick="saveWebDavConfig()">저장</button>
                             <button class="btn btn-secondary btn-sm" onclick="testWebDavConn()">연결 테스트</button>
+                            <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);width:100%;">
+                                <label style="display:flex;align-items:flex-start;gap:7px;font-size:12px;color:var(--text-secondary);cursor:pointer;">
+                                    <input type="checkbox" id="unix-filenames" onchange="setUnixFilenames(this.checked)" style="margin-top:2px;accent-color:var(--accent);">
+                                    <span>NAS 가 유닉스 파일시스템(ext4 · Btrfs)입니다 — 특수문자를 원문 그대로 저장
+                                    <br><span style="color:var(--text-tertiary);font-size:10.5px;">끄면(기본) 윈도우 호환 — <code>: * ? " &lt; &gt; |</code> 를 모양이 같은 전각 문자로 바꿔 저장합니다. NTFS · exFAT · 윈도우 기반 NAS · SMB 공유에서도 안전합니다.</span></span>
+                                </label>
+                            </div>
+                            
                             <button class="btn btn-secondary btn-sm" onclick="mountWebDavFinder()" title="Mac Finder에 마운트 — 권한 문제 우회">Finder에 마운트</button>
                             <button class="btn btn-secondary btn-sm" onclick="openSecurityPrefs()" title="권한 거부 시 시스템 설정 열기">권한 설정</button>
                         </div>
@@ -5213,6 +5221,7 @@
         // 드롭다운에서 AI 두뇌(모델) 변경 → 백엔드가 기억, 이후 자동기동/수리에 사용
         function setLlmModel(v) { if (backend) backend.setLlmModel(v || ''); }
         // 웹 검색(읽기전용) — 토글 + Brave API 키
+        function setUnixFilenames(on) { if (backend && backend.setUnixFilenames) backend.setUnixFilenames(!!on); }
         function setLlmUseWeb(on) { if (backend && backend.setLlmUseWeb) backend.setLlmUseWeb(!!on); }
         function setSearchKey(k) { k = (k || '').trim(); try { localStorage.setItem('braveKey', k); } catch (e) {} if (backend && backend.setSearchKey) backend.setSearchKey(k); }
         // AI 스크립트 자가수리 (안전: 백업·문법검증·자동원복)

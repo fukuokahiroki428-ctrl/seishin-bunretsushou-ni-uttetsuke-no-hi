@@ -99,6 +99,10 @@ public:
 
     // ★ NAS 자동 재연결 — 마운트 끊겼을 때 자동 remount
     bool nasAutoReconnect() const { return m_nasAutoReconnect; }
+    // NAS 가 순수 유닉스(ext4/Btrfs)면 true — 특수문자를 원문 그대로 저장.
+    // 기본 false = 윈도우 호환(NTFS·exFAT·윈도우 기반 NAS 에서도 저장되게 전각 치환).
+    bool unixFilenames() const { return m_unixFilenames; }
+    void setUnixFilenames(bool v) { m_unixFilenames = v; }
     void setNasAutoReconnect(bool b) { m_nasAutoReconnect = b; }
 
     // ★ 동시 다운로드 개수 — 0 = 플랫폼별 기본값, 1~N = 모든 플랫폼 동시 작업 한도(전역 override)
@@ -128,6 +132,7 @@ private:
                                      //   yt-dlp SHA256 검증 + sanity(--version) + 실패 시 번들 복원 안전망 있음.
                                      //   최대 보안을 원하면 설정에서 OFF (그럼 포맷 변경 시 새 빌드 필요).
     bool m_firstRunCompleted = false;
+    bool m_unixFilenames = false;
     bool m_nasAutoReconnect = true;  // 기본 ON (대부분 원하는 동작)
     int m_maxConcurrent = 0;         // 0 = 플랫폼별 기본값
 };

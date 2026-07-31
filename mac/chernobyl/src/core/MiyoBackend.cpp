@@ -3315,6 +3315,9 @@ void MiyoBackend::showLog(const QString &message)
 
 void MiyoBackend::loadConfig()
 {
+    // 저장된 파일명 규칙을 적용 (윈도우 호환 / 유닉스 원문 보존)
+    FileHelper::setUnixFilenames(m_config->unixFilenames());
+
     m_config->load();
     QJsonDocument doc(m_config->toJson());
     QString configStr = QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
@@ -4155,6 +4158,16 @@ void MiyoBackend::setWebDavConfig(const QString &url, const QString &user, const
         m_webdav->setConfig(url, user, pass, m_config->tempDir(), enabled);
     }
     log(QString("WebDAV 설정 저장: %1 (활성화=%2)").arg(url).arg(enabled ? "ON" : "OFF"), "success", "settings");
+}
+
+void MiyoBackend::setUnixFilenames(bool on)
+{
+    m_config->setUnixFilenames(on);
+    m_config->save();
+    FileHelper::setUnixFilenames(on);
+    log(on ? "파일명 규칙: 유닉스 — 특수문자를 원문 그대로 저장합니다(NAS 가 ext4/Btrfs 일 때)."
+           : "파일명 규칙: 윈도우 호환 — : * ? \" < > | 를 모양이 같은 전각 문자로 바꿔 저장합니다"
+             "(NTFS·exFAT·윈도우 기반 NAS 에서도 안전).", "info", "settings");
 }
 
 void MiyoBackend::testWebDavConnection()
