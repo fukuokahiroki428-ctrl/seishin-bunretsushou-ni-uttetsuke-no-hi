@@ -2,6 +2,7 @@
 #include "core/MiyoBackend.h"
 #include "core/Common.h"
 #include "utils/HttpClient.h"
+#include "utils/FileHelper.h"
 #include "utils/ExcelWriter.h"
 #include "utils/ContentSecurityScanner.h"
 
@@ -625,11 +626,28 @@ QString SiteCrawler::urlToLocalPath(const QString &url)
         else filename += ".html";
     }
 
-    filename.replace(QRegularExpression("[?#].*"), "");
-    filename.replace(QRegularExpression("[^a-zA-Z0-9._-]"), "_");
-    if (filename.length() > 200) filename = filename.left(190) + "." + QFileInfo(filename).suffix();
+    filename.replace(QRegularExpression("[?#].*"), "");   // URL 쿼리·프래그먼트는 파일명이 아니다
+    // ★ 유니코드 보존 — 예전엔 [^a-zA-Z0-9._-] 를 전부 '_' 로 바꿔서 한글·일본어 자료 이름이
+    //   통째로 밑줄이 됐다(프로필사진.jpg → _____.jpg). 유닉스/리눅스 NAS 에서 쓸 수 있는
+    //   문자는 그대로 살린다. HTML/CSS 안의 참조는 toPageRelativePath 에서 퍼센트 인코딩되므로
+    //   저장한 페이지를 열었을 때 링크가 깨지지 않는다.
+    //   확장자는 따로 떼어 보존한다 — 로컬 파일은 확장자로 종류를 판단하므로 잘리면 안 된다.
+    {
+        const QString ext = QFileInfo(filename).suffix();
+        QString base = QFileInfo(filename).completeBaseName();
+        base = FileHelper::sanitizeFilename(base, 150);   // NFC 정규화 + 금지문자만 치환 + 바이트 상한
+        filename = ext.isEmpty() ? base : base + "." + ext;
+    }
 
     QString localPath = subdir.isEmpty() ? filename : (subdir + "/" + filename);
+
+    // ★ 세션 폴더 루트의 index.html 은 '오프라인 뷰어'(목록+iframe)가 쓰는 예약 이름이다.
+    //   사이트 첫 페이지(/ 또는 /index.html)도 같은 이름이 되어 뷰어가 캡처 본문을 통째로
+    //   덮어써 없애고 있었다 — 크롤한 사이트의 대문 페이지가 매번 사라지던 원인.
+    //   → 충돌하면 페이지 쪽 이름을 바꾼다. 참조도 이 함수를 거치므로 링크는 그대로 맞는다.
+    if (localPath.compare("index.html", Qt::CaseInsensitive) == 0)
+        localPath = "index_page.html";
+
     QString fullCheck = m_saveDir + "/" + localPath;
     if (QFile::exists(fullCheck) && !m_urlToLocal.contains(url)) {
         QString hash = QCryptographicHash::hash(url.toUtf8(), QCryptographicHash::Md5).toHex().left(8);
@@ -954,15 +972,37 @@ QString SiteCrawler::normalizeUrl(const QString &href, const QUrl &baseUrl)
 // root 기준 로컬경로(예: "sub/inner.html")를 fromPage의 디렉토리 기준 상대경로로 변환
 // fromPage="sub/inner.html", toPath="page.html" → "../page.html"
 // fromPage="page.html"(루트), toPath="css/foo.css" → "css/foo.css"
+// 저장된 파일명(한글·일본어·공백·특수문자 포함)을 HTML/CSS 참조에 쓸 수 있게 인코딩한다.
+//   경로 구분자 '/' 는 그대로 두고 각 조각만 퍼센트 인코딩 →
+//   디스크의 UTF-8 파일명과 바이트가 정확히 일치해 링크가 깨지지 않는다.
+//   (인코딩을 안 하면 파일명 속 ? # 공백 때문에 브라우저가 다른 주소로 해석한다.)
+static QString encodeRefPath(const QString &rel)
+{
+    QStringList out;
+    const QStringList segs = rel.split('/');
+    out.reserve(segs.size());
+    for (const QString &seg : segs) {
+        if (seg == "." || seg == "..") { out << seg; continue; }   // 상대경로 표기는 유지
+        out << QString::fromUtf8(QUrl::toPercentEncoding(seg));
+    }
+    return out.join('/');
+}
+
 QString SiteCrawler::toPageRelativePath(const QString &fromPage, const QString &toPath)
 {
     if (toPath.isEmpty()) return toPath;
+    QString rel;
     QString fromDir = QFileInfo(fromPage).path();
-    if (fromDir.isEmpty() || fromDir == ".") return toPath;  // fromPage가 루트에 있음
-    // QDir::relativeFilePath 는 절대경로 입력에서 제대로 동작하므로 "/" prefix 붙여서 계산
-    QDir d("/" + fromDir);
-    QString rel = d.relativeFilePath("/" + toPath);
-    return rel;
+    if (fromDir.isEmpty() || fromDir == ".") {
+        rel = toPath;               // fromPage가 루트에 있음
+    } else {
+        // QDir::relativeFilePath 는 절대경로 입력에서 제대로 동작하므로 "/" prefix 붙여서 계산
+        QDir d("/" + fromDir);
+        rel = d.relativeFilePath("/" + toPath);
+    }
+    // ★ 참조에 쓰이는 값이므로 여기서 한 번에 인코딩 — 호출부(HTML 속성/srcset/CSS url/@import)가
+    //   모두 이 함수를 거치기 때문에 인코딩 누락이 생기지 않는다.
+    return encodeRefPath(rel);
 }
 
 // ── CSS 재귀 처리 ──
