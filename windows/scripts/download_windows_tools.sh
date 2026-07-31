@@ -64,10 +64,10 @@ else
     echo -e "  ${CYAN}→ exiftool.org 최신 버전 확인 중...${RESET}"
     # 최신 버전 number 자동 가져오기
     VER=$(curl -sS "https://exiftool.org/ver.txt" | tr -d '\n\r ')
-    if [ -z "$VER" ]; then VER="12.97"; fi
+    if [ -z "$VER" ]; then VER="13.59"; fi
     echo -e "  ${CYAN}→ exiftool ${VER} 다운로드 (~12MB)...${RESET}"
     curl -L -sS -o "$TMP_DIR/exiftool.zip" \
-        "https://exiftool.org/exiftool-${VER}_64.zip"
+        "https://sourceforge.net/projects/exiftool/files/exiftool-${VER}_64.zip/download"
     cd "$TMP_DIR"
     unzip -q exiftool.zip
     # 파일명이 exiftool(-k).exe 인 경우 rename
