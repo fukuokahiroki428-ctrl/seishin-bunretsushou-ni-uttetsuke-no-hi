@@ -1,6 +1,6 @@
 #!/bin/bash
 # ════════════════════════════════════════════════════════════════════════════
-#  Chernobyl 실행 허용 / 서명 수리 도구  (더블클릭)
+#  Predormition 실행 허용 / 서명 수리 도구  (더블클릭)
 #  - macOS Gatekeeper 가 "손상됨/확인 불가" 로 막을 때 풀어줍니다.
 #  - 검역(quarantine) 속성 제거 + 코드사인 재서명(개발자 인증서 있으면 그걸로, 없으면 ad-hoc).
 #  ※ 본인이 받은 앱에만 사용하세요.
@@ -10,12 +10,12 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # 대상 앱 탐색: 같은 DMG/폴더 → Applications → 상위 폴더
 APP=""
-for c in "$DIR/Chernobyl.app" "/Applications/Chernobyl.app" "$DIR/../Chernobyl.app"; do
+for c in "$DIR/Predormition.app" "/Applications/Predormition.app" "$DIR/../Predormition.app"; do
     [ -d "$c" ] && { APP="$c"; break; }
 done
 if [ -z "$APP" ]; then
-    echo "❌ Chernobyl.app 을 찾지 못했습니다."
-    echo "   먼저 Chernobyl.app 을 Applications 폴더로 드래그한 뒤 다시 실행하세요."
+    echo "❌ Predormition.app 을 찾지 못했습니다."
+    echo "   먼저 Predormition.app 을 Applications 폴더로 드래그한 뒤 다시 실행하세요."
     echo ""; read -r -p "엔터를 눌러 닫기..."; exit 1
 fi
 
