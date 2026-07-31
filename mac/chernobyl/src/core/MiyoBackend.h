@@ -170,6 +170,9 @@ public slots:
     // ★ WebDAV NAS 업로드 (Synology 등)
     Q_INVOKABLE void setWebDavConfig(const QString &url, const QString &user, const QString &pass, bool enabled);
     Q_INVOKABLE void testWebDavConnection();
+    // NAS 파일시스템이 유닉스(ext4/Btrfs)면 true — 특수문자 원문 보존.
+    // false(기본)면 윈도우 호환(전각 치환)으로 NTFS·exFAT·윈도우 NAS 에서도 저장된다.
+    Q_INVOKABLE void setUnixFilenames(bool on);
     void enqueueWebDavUpload(const QString &localPath);  // 캡쳐/다운로드 직후 자동 호출
 
     // ★ Finder 에 WebDAV 마운트 — macOS AppleScript "mount volume" 사용

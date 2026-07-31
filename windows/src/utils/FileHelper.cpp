@@ -57,6 +57,15 @@ void setFinderComment(const QString &filePath, const QString &comment)
 #endif
 }
 
+// ── 파일명 규칙 ──────────────────────────────────────────────────────────────
+//   기본값 false = '윈도우 호환' 모드. 저장 대상이 윈도우 계열 파일시스템
+//   (NTFS·exFAT·윈도우 기반 NAS·SMB 공유)이면 : * ? " < > | \\ 를 쓸 수 없어
+//   업로드/복사가 실패하거나 이름이 잘린다. 전각 문자로 바꿔 어디서든 저장되게 한다.
+//   NAS 가 순수 유닉스(ext4/Btrfs)라 원문 그대로 두고 싶으면 setUnixFilenames(true).
+static bool g_unixFilenames = false;
+void setUnixFilenames(bool on) { g_unixFilenames = on; }
+bool unixFilenames() { return g_unixFilenames; }
+
 // 파일명 정리 — 리눅스 NAS(ext4/btrfs/Samba)에 그대로 올려도 깨지지 않게 만든다.
 //   원칙: 유닉스에서 실제로 쓸 수 있는 문자는 100% 살린다. 못 쓰는 것만 바꾼다.
 QString sanitizeFilename(const QString &name, int maxLength)
@@ -67,21 +76,35 @@ QString sanitizeFilename(const QString &name, int maxLength)
     //    어긋나고, 일부 프로그램은 파일을 아예 못 찾는다. 리눅스/삼바 표준인 NFC 로 통일한다.
     QString result = name.normalized(QString::NormalizationForm_C);
 
-    // 2) 진짜 못 쓰는 문자만 치환.
-    //    유닉스(macOS·리눅스)에서 파일명에 금지된 건 '/' 와 NUL 뿐이다.
-    //    : * ? " < > | 공백 한글 이모지 등은 전부 정상적으로 쓸 수 있는데, 예전엔 이걸 전부
-    //    '_' 로 바꿔버려서 제목이 뭉개졌다(예: 「What? "Really"」 → 「What_ _Really_」).
-    //    제어문자(0x00-0x1f)는 유닉스에서도 허용되지만 터미널·로그를 깨뜨려 실용상 제외한다.
-#ifdef Q_OS_WIN
-    // Windows 는 금지 문자가 많고 끝의 점·공백과 예약어(CON, PRN…)도 못 쓴다 → 기존대로 엄격히.
-    result.replace(QRegularExpression("[/\\\\:*?\"<>|\\x00-\\x1f]"), "_");
-    while (result.endsWith('.') || result.endsWith(' ')) result.chop(1);
-    static const QRegularExpression kReserved(
-        "^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\\.|$)", QRegularExpression::CaseInsensitiveOption);
-    if (kReserved.match(result).hasMatch()) result.prepend('_');
-#else
-    result.replace(QRegularExpression("[/\\x00-\\x1f]"), "_");
-#endif
+    // 2) 못 쓰는 문자 처리.
+    //    유닉스(macOS·리눅스 ext4)에서 금지된 건 '/' 와 NUL 뿐이지만, 저장 대상이 윈도우
+    //    계열(NTFS·exFAT·윈도우 기반 NAS·SMB 공유)이면 : * ? " < > | \ 도 못 쓴다.
+    //    → 기본값은 '윈도우 호환': 못 쓰는 문자를 '_' 로 뭉개지 않고 모양이 같은 전각 문자로
+    //      바꾼다. 어느 OS·파일시스템에서도 저장되면서 제목이 읽는 그대로 남는다.
+    //      (rclone·Syncthing 등이 쓰는 방식)
+    //        What? "Really" <yes>  →  What？ ＂Really＂ ＜yes＞
+    //      유닉스 전용 NAS(ext4/Btrfs)라 원문 그대로 두고 싶으면 unixFilenames(true) 로 끈다.
+    if (g_unixFilenames) {
+        // 유닉스 모드: '/' 와 제어문자만 치환(특수문자 100% 보존)
+        result.replace(QRegularExpression("[/\\x00-\\x1f]"), "_");
+    } else {
+        // 윈도우 호환 모드(기본): 금지 문자를 전각 대응 문자로
+        static const QList<QPair<QChar, QChar>> kMap = {
+            {QLatin1Char('/'),  QChar(u'／')}, {QLatin1Char('\\'), QChar(u'＼')},
+            {QLatin1Char(':'),  QChar(u'：')}, {QLatin1Char('*'),  QChar(u'＊')},
+            {QLatin1Char('?'),  QChar(u'？')}, {QLatin1Char('"'),  QChar(u'＂')},
+            {QLatin1Char('<'),  QChar(u'＜')}, {QLatin1Char('>'),  QChar(u'＞')},
+            {QLatin1Char('|'),  QChar(u'｜')},
+        };
+        for (const auto &m : kMap) result.replace(m.first, m.second);
+        result.replace(QRegularExpression("[\\x00-\\x1f]"), "_");
+        // 끝의 점·공백은 윈도우가 잘라버려 이름이 어긋난다 → 미리 제거
+        while (result.endsWith('.') || result.endsWith(' ')) result.chop(1);
+        // 예약어(CON, PRN, COM1…)는 윈도우에서 파일명으로 못 쓴다
+        static const QRegularExpression kReserved(
+            "^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\\.|$)", QRegularExpression::CaseInsensitiveOption);
+        if (kReserved.match(result).hasMatch()) result.prepend('_');
+    }
     result = result.trimmed();
 
     // 3) 길이 제한 — 리눅스 파일시스템의 한계는 '글자 수'가 아니라 'UTF-8 255바이트'다.

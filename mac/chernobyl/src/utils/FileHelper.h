@@ -17,6 +17,12 @@ void setFinderComment(const QString &filePath, const QString &comment);
 // Sanitize filename
 QString sanitizeFilename(const QString &name, int maxLength = 200);
 
+// ★ 파일명 규칙 — 기본은 '윈도우 호환'(NTFS·exFAT·윈도우 기반 NAS·SMB 에서도 저장되게
+//   : * ? " < > | \ 를 모양이 같은 전각 문자로 치환). NAS 가 순수 유닉스(ext4/Btrfs)면
+//   true 로 켜서 특수문자를 원문 그대로 보존한다.
+void setUnixFilenames(bool on);
+bool unixFilenames();
+
 // Ensure directory exists
 bool ensureDir(const QString &path);
 
