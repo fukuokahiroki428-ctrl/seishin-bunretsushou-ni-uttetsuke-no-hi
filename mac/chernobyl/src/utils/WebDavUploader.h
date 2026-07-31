@@ -13,6 +13,8 @@
 #include <QObject>
 #include <QString>
 #include <QQueue>
+#include <QSet>
+#include <QStringList>
 #include <QMutex>
 #include <QThread>
 #include <atomic>
@@ -47,6 +49,10 @@ signals:
 
 private:
     void workerLoop();
+    // curl 실행 — 자격증명은 stdin 설정으로 전달(명령줄 -u 는 ps 로 비밀번호가 노출된다).
+    int runCurl(const QStringList &args, bool insecure, int *httpCode, QString *output);
+    // TLS 검증 우선, 자체서명 인증서면 1회 경고 후 그 세션 동안만 검증 생략.
+    int curlWithTlsFallback(const QStringList &args, int *httpCode, QString *output);
 
     QString m_baseUrl;      // e.g. https://nas.synology.me:5006/captures
     QString m_user;
@@ -57,6 +63,10 @@ private:
     QQueue<QString> m_queue;
     mutable QMutex m_mutex;
     QThread *m_worker = nullptr;
+    QThread *m_finished = nullptr;      // 종료한 워커 — 다음 enqueue 가 정리(자기 자신 delete 금지)
+    QSet<QString> m_madeDirs;           // MKCOL 완료한 폴더 URL 캐시 (파일마다 반복 방지)
+    std::atomic<bool> m_insecureOk{false};   // 자체서명이라 검증 생략하기로 판정됨
+    std::atomic<bool> m_warnedInsecure{false};
     std::atomic<bool> m_stop{false};
 
     std::atomic<int> m_uploadedCount{0};

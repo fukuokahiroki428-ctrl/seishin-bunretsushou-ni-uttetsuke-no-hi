@@ -4166,33 +4166,77 @@ void MiyoBackend::testWebDavConnection()
         log("WebDAV URL 미설정", "warning", "settings");
         return;
     }
+    if (!url.startsWith("http://", Qt::CaseInsensitive) && !url.startsWith("https://", Qt::CaseInsensitive)) {
+        log("❌ WebDAV URL 은 http:// 또는 https:// 로 시작해야 합니다 (예: https://내나스:5006/webdav/공유폴더)",
+            "error", "settings");
+        return;
+    }
     log(QString("WebDAV 연결 테스트: %1").arg(url), "info", "settings");
     QThread *t = QThread::create([this, url, user, pass]() {
-        // PROPFIND 또는 OPTIONS 로 연결 확인
-        QProcess curl;
-        curl.start("curl", {
-            "-sS", "-k",
-            "-X", "OPTIONS",
-            "-u", user + ":" + pass,
-            "--max-time", "10",
-            "-w", "HTTP_CODE=%{http_code}",
-            url
-        });
-        bool fin = curl.waitForFinished(15000);
-        QString out = QString::fromUtf8(curl.readAllStandardOutput());
-        QMetaObject::invokeMethod(this, [this, fin, out]() {
-            if (!fin) {
-                log("WebDAV 연결 타임아웃 (10초)", "error", "settings");
-                return;
+        // ★ 자격증명은 명령줄(-u)이 아니라 stdin 설정으로 — ps 로 NAS 비밀번호가 노출되지 않게.
+        // ★ TLS 검증을 먼저 시도하고, 자체서명(curl 60/51)일 때만 검증을 생략해 재시도한다.
+        //   예전엔 무조건 -k 라 중간자 공격을 탐지할 방법이 아예 없었다.
+        auto probe = [&](bool insecure, int *code, QString *out) -> int {
+            QProcess c;
+            c.setProcessChannelMode(QProcess::MergedChannels);
+            // ★ OPTIONS 가 아니라 PROPFIND(Depth:0) — OPTIONS 는 서버 단위라 경로가 틀려도 200 을
+            //   돌려줘서 "연결 성공"이라 해놓고 정작 업로드가 전부 404/409 로 실패했다.
+            //   PROPFIND 는 그 경로가 실제로 있는지까지 확인한다(있으면 207, 없으면 404).
+            c.start("curl", {"-sS", "-K", "-", "-X", "PROPFIND", "-H", "Depth: 0",
+                             "--max-time", "10", "-w", "\n__HTTPCODE__%{http_code}\n", url});
+            if (!c.waitForStarted(5000)) return -1;
+            QString cfg;
+            if (!user.isEmpty()) {
+                QString u = user, p = pass;
+                u.replace('\\', "\\\\"); u.replace('"', "\\\"");
+                p.replace('\\', "\\\\"); p.replace('"', "\\\"");
+                cfg += QString("user = \"%1:%2\"\n").arg(u, p);
             }
-            if (out.contains("HTTP_CODE=200") || out.contains("HTTP_CODE=207")) {
-                log("✅ WebDAV 연결 성공!", "success", "settings");
-            } else if (out.contains("HTTP_CODE=401")) {
-                log("❌ 인증 실패 — 사용자/비번 확인", "error", "settings");
-            } else if (out.contains("HTTP_CODE=404")) {
-                log("❌ URL 경로 없음 — base URL 확인 (예: /webdav/공유폴더)", "error", "settings");
-            } else {
-                log(QString("❌ WebDAV 응답 비정상: %1").arg(out.left(150)), "error", "settings");
+            if (insecure) cfg += "insecure\n";
+            c.write(cfg.toUtf8());
+            c.closeWriteChannel();
+            if (!c.waitForFinished(20000)) { c.kill(); c.waitForFinished(2000); return -2; }
+            const QString o = QString::fromUtf8(c.readAll());
+            if (out) *out = o;
+            const int i = o.lastIndexOf("__HTTPCODE__");
+            if (code) *code = (i >= 0) ? o.mid(i + 12).trimmed().left(3).toInt() : 0;
+            return c.exitCode();
+        };
+
+        int code = 0; QString out;
+        int rc = probe(false, &code, &out);
+        bool selfSigned = false;
+        if (rc == 60 || rc == 51) { selfSigned = true; rc = probe(true, &code, &out); }
+
+        QMetaObject::invokeMethod(this, [this, rc, code, out, selfSigned]() {
+            if (rc == -2) { log("❌ 연결 타임아웃 (10초) — 주소·포트·방화벽을 확인하세요.", "error", "settings"); return; }
+            if (selfSigned)
+                log("⚠️ 인증서를 검증할 수 없습니다(자체서명 NAS로 보임) — 암호화는 되지만 서버 신원 확인은 못 합니다.",
+                    "warning", "settings");
+            switch (code) {
+                case 200: case 207:
+                    log("✅ WebDAV 연결 성공!", "success", "settings"); return;
+                case 401:
+                    log("❌ 인증 실패 — 사용자/비밀번호를 확인하세요.", "error", "settings"); return;
+                case 403:
+                    log("❌ 권한 없음 — 이 계정에 해당 폴더 권한이 있는지 확인하세요.", "error", "settings"); return;
+                case 404:
+                    log("❌ 경로 없음 — base URL 을 확인하세요 (예: https://내나스:5006/webdav/공유폴더)", "error", "settings"); return;
+                case 405:
+                    log("⚠️ 서버가 OPTIONS 를 막고 있습니다. 업로드는 될 수 있으니 실제 저장으로 확인하세요.", "warning", "settings"); return;
+                case 0: {
+                    QString hint;
+                    switch (rc) {
+                        case 6:  hint = "주소를 찾을 수 없습니다(DNS) — 호스트명 확인"; break;
+                        case 7:  hint = "연결 거부 — 포트/방화벽/NAS WebDAV 켜짐 확인"; break;
+                        case 28: hint = "시간 초과 — 네트워크 또는 NAS 응답 없음"; break;
+                        case 35: hint = "TLS 연결 실패 — https 포트가 맞는지 확인(WebDAV HTTPS 는 보통 5006)"; break;
+                        default: hint = QString("연결 실패 (curl %1)").arg(rc);
+                    }
+                    log("❌ " + hint, "error", "settings"); return;
+                }
+                default:
+                    log(QString("❌ 예상치 못한 응답 (HTTP %1) — %2").arg(code).arg(out.left(120)), "error", "settings");
             }
         }, Qt::QueuedConnection);
     });

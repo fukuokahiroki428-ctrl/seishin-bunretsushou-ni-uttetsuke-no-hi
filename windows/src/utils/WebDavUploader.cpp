@@ -13,10 +13,12 @@ WebDavUploader::WebDavUploader(QObject *parent)
 WebDavUploader::~WebDavUploader()
 {
     m_stop.store(true);
-    if (m_worker) {
-        m_worker->quit();
-        m_worker->wait(3000);
-        delete m_worker;
+    QThread *w = nullptr;
+    { QMutexLocker lock(&m_mutex); w = m_worker; m_worker = nullptr; }
+    if (w) {
+        // 워커는 m_stop 을 보고 스스로 빠져나온다. 실행 중인 curl 이 있으면 최대 몇 초.
+        if (!w->wait(8000)) { w->terminate(); w->wait(2000); }
+        delete w;
     }
 }
 
@@ -31,6 +33,9 @@ void WebDavUploader::setConfig(const QString &baseUrl, const QString &user, cons
     m_localBase = localBase;
     while (m_localBase.endsWith('/')) m_localBase.chop(1);
     m_enabled = enabled;
+    // 접속 대상이 바뀌면 폴더 캐시·TLS 판정은 무효
+    m_madeDirs.clear();
+    m_insecureOk.store(false);
 }
 
 void WebDavUploader::enqueue(const QString &localPath)
@@ -38,15 +43,17 @@ void WebDavUploader::enqueue(const QString &localPath)
     if (!isEnabled()) return;
     if (localPath.isEmpty() || !QFileInfo(localPath).exists()) return;
 
-    {
-        QMutexLocker lock(&m_mutex);
-        m_queue.enqueue(localPath);
-    }
-
-    // 첫 enqueue 면 워커 스레드 시작
+    QMutexLocker lock(&m_mutex);
+    m_queue.enqueue(localPath);
+    // 워커가 없을 때만 새로 만든다. m_worker 접근은 항상 뮤텍스 안에서 —
+    //   예전엔 워커 스레드가 밖에서 m_worker 를 nullptr 로 덮어써 객체가 새고,
+    //   소멸자가 그 스레드를 기다리지 못해 종료 시 크래시(use-after-free) 위험이 있었다.
     if (!m_worker) {
+        QThread *old = m_finished;      // 이전에 끝난 워커가 있으면 여기서 정리
+        m_finished = nullptr;
         m_worker = QThread::create([this]() { workerLoop(); });
         m_worker->start();
+        if (old) { old->wait(2000); delete old; }
     }
 }
 
@@ -62,6 +69,67 @@ int WebDavUploader::queueSize() const
     return m_queue.size();
 }
 
+// curl 설정 파일(stdin) 한 줄 escape — 값은 "..." 로 감싸므로 \ 와 " 를 escape.
+static QString curlQuote(const QString &s)
+{
+    QString o = s;
+    o.replace('\\', "\\\\");
+    o.replace('"', "\\\"");
+    return o;
+}
+
+// curl 실행 — 자격증명은 명령줄(-u)이 아니라 stdin 설정으로 넘긴다.
+//   -u 로 넘기면 같은 PC 의 다른 프로세스가 `ps` 로 NAS 비밀번호를 그대로 볼 수 있다.
+//   반환: curl 종료코드. httpCode 에 HTTP 상태코드(없으면 0).
+int WebDavUploader::runCurl(const QStringList &args, bool insecure, int *httpCode, QString *output)
+{
+    QString user, pass;
+    { QMutexLocker lock(&m_mutex); user = m_user; pass = m_pass; }
+
+    QProcess p;
+    p.setProcessChannelMode(QProcess::MergedChannels);
+    QStringList full = {"-sS", "-K", "-"};      // -K - : 설정을 stdin 에서 읽음
+    full += args;
+    full << "-w" << "\n__HTTPCODE__%{http_code}\n";
+    p.start("curl", full);
+    if (!p.waitForStarted(5000)) { if (httpCode) *httpCode = 0; return -1; }
+
+    QString cfg;
+    if (!user.isEmpty()) cfg += QString("user = \"%1:%2\"\n").arg(curlQuote(user), curlQuote(pass));
+    if (insecure)        cfg += "insecure\n";
+    p.write(cfg.toUtf8());
+    p.closeWriteChannel();
+
+    const bool fin = p.waitForFinished(600 * 1000);
+    const QString out = QString::fromUtf8(p.readAll());
+    if (output) *output = out;
+    if (!fin) { p.kill(); p.waitForFinished(2000); if (httpCode) *httpCode = 0; return -2; }
+
+    // HTTP 코드는 표식이 붙은 마지막 줄에서만 읽는다(본문에 "HTTP 200" 이 있어도 오탐 없게).
+    int code = 0;
+    const int idx = out.lastIndexOf("__HTTPCODE__");
+    if (idx >= 0) code = out.mid(idx + 12).trimmed().left(3).toInt();
+    if (httpCode) *httpCode = code;
+    return p.exitCode();
+}
+
+// 보안 연결 우선 — 자체서명 인증서(curl 60)면 1회만 경고하고 이후 그 호스트는 insecure 로.
+int WebDavUploader::curlWithTlsFallback(const QStringList &args, int *httpCode, QString *output)
+{
+    if (m_insecureOk.load())
+        return runCurl(args, true, httpCode, output);
+
+    int rc = runCurl(args, false, httpCode, output);
+    if (rc == 60 || rc == 51) {   // 60: 인증서 검증 실패, 51: 호스트명 불일치
+        if (!m_warnedInsecure.exchange(true))
+            emit logMessage("[WebDAV] 인증서를 검증할 수 없습니다(자체서명 NAS로 보임) — "
+                            "이 연결은 암호화는 되지만 서버 신원 확인 없이 진행합니다.", "warning");
+        m_insecureOk.store(true);
+        rc = runCurl(args, true, httpCode, output);
+    }
+    return rc;
+}
+
 void WebDavUploader::workerLoop()
 {
     while (!m_stop.load()) {
@@ -69,10 +137,8 @@ void WebDavUploader::workerLoop()
         {
             QMutexLocker lock(&m_mutex);
             if (m_queue.isEmpty()) {
-                // 큐 비면 잠시 후 다시 (sleep + retry)
                 lock.unlock();
-                QThread::msleep(500);
-                // 5초 동안 빈 채로 있으면 워커 종료 — 다음 enqueue 시 다시 시작
+                // 5초간 조용하면 워커 종료(다음 enqueue 가 다시 만든다).
                 int waited = 0;
                 while (waited < 5000 && !m_stop.load()) {
                     QThread::msleep(200);
@@ -82,7 +148,9 @@ void WebDavUploader::workerLoop()
                 }
                 QMutexLocker chk(&m_mutex);
                 if (m_queue.isEmpty()) {
-                    m_worker = nullptr;  // 다음 enqueue 가 새 워커 만들도록
+                    // ★ 자기 자신을 삭제하지 않는다 — m_finished 로 넘겨 다음 enqueue 가 정리.
+                    m_finished = m_worker;
+                    m_worker = nullptr;
                     return;
                 }
                 continue;
@@ -93,79 +161,65 @@ void WebDavUploader::workerLoop()
         QFileInfo fi(path);
         if (!fi.exists()) continue;
 
-        // 로컬 경로 → remote URL 매핑
-        // localBase 가 prefix 면 제거하고 baseUrl 에 붙임
-        QString relPath = path;
-        if (!m_localBase.isEmpty() && relPath.startsWith(m_localBase)) {
-            relPath = relPath.mid(m_localBase.length());
-        } else {
-            // localBase 가 매칭 안 되면 그냥 파일명만
-            relPath = "/" + fi.fileName();
-        }
+        // 로컬 경로 → remote URL 매핑 (localBase prefix 제거)
+        QString base, relPath = path;
+        { QMutexLocker lock(&m_mutex); base = m_baseUrl;
+          if (!m_localBase.isEmpty() && relPath.startsWith(m_localBase)) relPath = relPath.mid(m_localBase.length());
+          else relPath = "/" + fi.fileName(); }
         while (relPath.startsWith('/')) relPath = relPath.mid(1);
 
-        // URL 인코딩 — 경로 컴포넌트만 (슬래시는 유지)
-        QStringList parts = relPath.split('/');
         QStringList encoded;
-        for (const QString &p : parts) {
-            encoded << QUrl::toPercentEncoding(p);
-        }
-        QString remoteUrl = m_baseUrl + "/" + encoded.join('/');
+        for (const QString &p : relPath.split('/'))
+            encoded << QString::fromUtf8(QUrl::toPercentEncoding(p));
+        const QString remoteUrl = base + "/" + encoded.join('/');
 
-        // 부모 폴더 생성 (MKCOL) — 시놀로지 WebDAV 는 중간 폴더 자동 생성 안 함.
-        //   각 dir 단계마다 MKCOL 시도. 이미 있으면 405 (그래도 진행).
-        QStringList dirs;
-        QString cur = m_baseUrl;
+        // 부모 폴더 생성(MKCOL) — 시놀로지 등은 중간 폴더를 자동 생성하지 않는다.
+        //   ★ 이미 만든 폴더는 건너뛴다. 예전엔 파일마다 전부 다시 MKCOL 해서
+        //     같은 폴더에 100개 올리면 수백 번 왕복했다.
+        QString cur = base;
         for (int i = 0; i < encoded.size() - 1; ++i) {
             cur += "/" + encoded[i];
-            dirs << cur;
-        }
-        for (const QString &dirUrl : dirs) {
-            QProcess mkcol;
-            mkcol.start("curl", {
-                "-sS", "-k",  // -k: 자체서명 인증서 허용
-                "-X", "MKCOL",
-                "-u", m_user + ":" + m_pass,
-                "--max-time", "10",
-                dirUrl
-            });
-            mkcol.waitForFinished(15000);
-            // 응답 무시 — 폴더 있으면 405, 없었으면 201
+            { QMutexLocker lock(&m_mutex); if (m_madeDirs.contains(cur)) continue; }
+            int code = 0;
+            curlWithTlsFallback({"-X", "MKCOL", "--max-time", "15", cur}, &code, nullptr);
+            // 201=생성, 405=이미 있음 → 둘 다 성공으로 보고 캐시
+            if (code == 201 || code == 405 || code == 301 || code == 200) {
+                QMutexLocker lock(&m_mutex); m_madeDirs.insert(cur);
+            }
         }
 
-        // PUT 업로드
-        QProcess put;
-        put.setProcessChannelMode(QProcess::MergedChannels);
-        QStringList args = {
-            "-sS", "-k",
-            "-T", path,
-            "-u", m_user + ":" + m_pass,
-            "--max-time", "600",  // 10분 (대용량 대비)
-            "-w", "HTTP %{http_code}\n",
-            remoteUrl
-        };
-        put.start("curl", args);
-        bool finished = put.waitForFinished(600 * 1000);
-        QString output = QString::fromUtf8(put.readAll()).trimmed();
-
-        if (!finished) {
-            m_failedCount++;
-            emit logMessage(QString("[WebDAV] 타임아웃: %1").arg(fi.fileName()), "warning");
-            continue;
+        // PUT 업로드 — 일시적 장애(네트워크 순단·5xx)면 재시도.
+        //   예전엔 한 번 실패하면 그대로 버려서 파일이 조용히 유실됐다.
+        bool ok = false; int code = 0; QString out; int rc = 0;
+        for (int attempt = 1; attempt <= 3 && !m_stop.load(); ++attempt) {
+            rc = curlWithTlsFallback({"-T", path, "--max-time", "600", remoteUrl}, &code, &out);
+            ok = (rc == 0 && (code == 200 || code == 201 || code == 204));
+            if (ok) break;
+            // 인증/권한/경로 문제는 재시도해도 소용없다 → 즉시 중단
+            if (code == 401 || code == 403 || code == 404 || code == 409 || code == 507) break;
+            if (attempt < 3) {
+                emit logMessage(QString("[WebDAV] %1 실패(HTTP %2) — %3초 후 재시도 %4/3")
+                                    .arg(fi.fileName()).arg(code).arg(attempt * 3).arg(attempt + 1), "info");
+                for (int s = 0; s < attempt * 3 * 5 && !m_stop.load(); ++s) QThread::msleep(200);
+            }
         }
 
-        // HTTP 응답 코드 파싱
-        bool ok = false;
-        if (output.contains("HTTP 201") || output.contains("HTTP 204") || output.contains("HTTP 200")) {
-            ok = true;
-        }
         if (ok) {
             m_uploadedCount++;
             emit logMessage(QString("[WebDAV] ✓ %1").arg(fi.fileName()), "success");
         } else {
             m_failedCount++;
-            QString errInfo = output.left(150);
-            emit logMessage(QString("[WebDAV] ✗ %1: %2").arg(fi.fileName(), errInfo), "warning");
+            QString why;
+            switch (code) {
+                case 401: why = "인증 실패 — 사용자/비밀번호 확인"; break;
+                case 403: why = "권한 없음 — NAS 폴더 쓰기 권한 확인"; break;
+                case 404: why = "경로 없음 — WebDAV base URL 확인"; break;
+                case 409: why = "상위 폴더 없음(MKCOL 실패)"; break;
+                case 507: why = "NAS 저장공간 부족"; break;
+                case 0:   why = (rc == -2 ? "타임아웃" : QString("연결 실패(curl %1)").arg(rc)); break;
+                default:  why = QString("HTTP %1").arg(code);
+            }
+            emit logMessage(QString("[WebDAV] ✗ %1 — %2").arg(fi.fileName(), why), "warning");
         }
     }
 }
