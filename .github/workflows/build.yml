@@ -92,28 +92,44 @@ jobs:
           Copy-Item "$($rc.FullName)/rclone.exe" "$tools/rclone.exe" -Force
 
           # exiftool — EXIF 메타데이터 기록(작가·설명·촬영일). 없으면 이 기능만 조용히 빠진다.
-          #   ★ 예전엔 CI 가 이걸 안 받아서 Deploy 의 exiftool 복사가 늘 no-op → 배포본에 항상 누락돼 있었다.
-          #   ★ 윈도우 실행본은 exiftool.org 가 아니라 SourceForge 에 있다(exiftool.org 는 링크만 제공).
-          #     GitHub 저장소 zip 은 Perl 소스라 .exe 가 없다 — 쓰면 안 된다.
-          #   ★ 버전을 하드코딩하면 배포처가 구버전을 지우는 순간 404 가 된다 → ver.txt 로 현재 버전을 읽어 조립.
+          #   ★ 배포처 주의(실측으로 확인함):
+          #     - GitHub 저장소 zip 은 Perl 소스라 .exe 가 없다
+          #     - exiftool.org 는 버전별 zip 을 직접 두지 않고(구버전은 404) 링크만 제공
+          #     - SourceForge 는 자동화 요청에 HTML 안내페이지를 돌려줘 zip 이 아니다
+          #     → exiftool.org 가 안내하는 oliverbetz.de 미러가 실제 ZIP 을 준다. SF 는 폴백.
+          #   ★ 버전은 ver.txt 로 조회해 조립 — 하드코딩하면 구버전 정리 시 404 가 된다.
           $exifOk = $false
           try {
             $exVer = (Invoke-WebRequest -Uri "https://exiftool.org/ver.txt" -UseBasicParsing).Content.Trim()
             Write-Host "exiftool 최신 버전: $exVer"
-            $exUrl = "https://sourceforge.net/projects/exiftool/files/exiftool-${exVer}_64.zip/download"
-            Invoke-WebRequest -Uri $exUrl -OutFile "exiftool.zip" -MaximumRedirection 10
-            Remove-Item "exiftool_tmp" -Recurse -Force -ErrorAction SilentlyContinue
-            Expand-Archive -Path "exiftool.zip" -DestinationPath "exiftool_tmp" -Force
-            # 배포본의 실행파일 이름은 'exiftool(-k).exe' — 앱은 exiftool.exe 로 찾으므로 이름을 바꿔 복사
-            $ex = Get-ChildItem -Path "exiftool_tmp" -Filter "exiftool*.exe" -Recurse | Select-Object -First 1
-            if ($ex) {
-              Copy-Item $ex.FullName "$tools/exiftool.exe" -Force
-              $exFiles = Get-ChildItem -Path "exiftool_tmp" -Filter "exiftool_files" -Directory -Recurse | Select-Object -First 1
-              if ($exFiles) { Copy-Item $exFiles.FullName "$tools/exiftool_files" -Recurse -Force }
-              $exifOk = $true
-              Write-Host "  → exiftool $exVer 설치됨 (exiftool_files 포함: $([bool]$exFiles))"
-            } else { Write-Host "  → 압축 안에 exiftool 실행파일이 없음" }
-          } catch { Write-Host "  → exiftool 다운로드 실패: $($_.Exception.Message)" }
+            $exSources = @(
+              "https://oliverbetz.de/cms/files/Artikel/ExifTool-for-Windows/exiftool-${exVer}_64.zip",
+              "https://sourceforge.net/projects/exiftool/files/exiftool-${exVer}_64.zip/download"
+            )
+            foreach ($u in $exSources) {
+              try {
+                Write-Host "  시도: $u"
+                Invoke-WebRequest -Uri $u -OutFile "exiftool.zip" -MaximumRedirection 10 -UserAgent "Mozilla/5.0"
+                # 받은 것이 진짜 ZIP 인지 확인 — HTML 안내페이지를 받아놓고 성공으로 오인하지 않게
+                $fs = [System.IO.File]::OpenRead("$PWD\exiftool.zip")
+                $sig = New-Object byte[] 2; $null = $fs.Read($sig, 0, 2); $fs.Close()
+                if ($sig[0] -ne 0x50 -or $sig[1] -ne 0x4B) { Write-Host "    → ZIP 이 아님(안내페이지?) — 다음 소스"; continue }
+                Remove-Item "exiftool_tmp" -Recurse -Force -ErrorAction SilentlyContinue
+                Expand-Archive -Path "exiftool.zip" -DestinationPath "exiftool_tmp" -Force
+                # 실행파일 이름은 배포처마다 다르다: ExifTool.exe / exiftool(-k).exe → exiftool.exe 로 통일
+                $ex = Get-ChildItem -Path "exiftool_tmp" -Filter "exiftool*.exe" -Recurse | Select-Object -First 1
+                if ($ex) {
+                  Copy-Item $ex.FullName "$tools/exiftool.exe" -Force
+                  $exFiles = Get-ChildItem -Path "exiftool_tmp" -Filter "exiftool_files" -Directory -Recurse | Select-Object -First 1
+                  if ($exFiles) { Copy-Item $exFiles.FullName "$tools/exiftool_files" -Recurse -Force }
+                  $exifOk = $true
+                  Write-Host "    → exiftool $exVer 설치됨 (Perl 런타임 포함: $([bool]$exFiles))"
+                  break
+                }
+                Write-Host "    → 압축 안에 실행파일 없음 — 다음 소스"
+              } catch { Write-Host "    → 실패: $($_.Exception.Message)" }
+            }
+          } catch { Write-Host "  → exiftool 버전 조회 실패: $($_.Exception.Message)" }
           if (-not $exifOk) { Write-Host "WARN: exiftool 없음 — EXIF 메타데이터 기록 기능만 비활성(빌드는 계속)" }
 
           # deno — yt-dlp 의 JS 런타임 (YouTube 추출에 필수, 없으면 일부 포맷 누락)
