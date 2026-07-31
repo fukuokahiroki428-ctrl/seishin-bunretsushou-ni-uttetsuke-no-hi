@@ -1,22 +1,22 @@
 # 精神分裂症を患うにはうってつけの日
 
-> **Chernobyl / カメラ** (Windows · macOS)
+> **Predormition** (Windows · macOS)
 > 소셜 미디어 다운로더 · 사이트 통째 크롤러 통합 앱
-> (구 별도 앱 "팬을 잘 쓰고 싶다 / Pen"은 Chernobyl 에 **통합**되었습니다 — PenBackend)
+> (구 별도 앱 "팬을 잘 쓰고 싶다 / Pen"은 Predormition 에 **통합**되었습니다 — PenBackend)
 
 ---
 
 ## 📦 구성 (Overview)
 
-이 저장소는 Chernobyl(카메라) 앱의 Windows / macOS 포트를 담은 모노레포입니다.
+이 저장소는 Predormition(구 Chernobyl · カメラ) 앱의 Windows / macOS 포트를 담은 모노레포입니다.
 
 | 앱 | 플랫폼 | 설명 |
 |----|--------|------|
-| **Chernobyl** | Windows | Twitter/Bluesky/Instagram/Pixiv/Fanbox/Tumblr/Discord/YouTube 등 다운로더 |
-| **Chernobyl** | macOS | 위와 동일 (원본). rclone 기반 NAS 백업 + CDP 캡쳐 포함 |
+| **Predormition** | Windows | Twitter/Bluesky/Instagram/Pixiv/Fanbox/Tumblr/Discord/YouTube 등 다운로더 |
+| **Predormition** | macOS | 위와 동일 (원본). rclone 기반 NAS 백업 + CDP 캡쳐 포함 |
 
 > 구 **팬을 잘 쓰고 싶다 (Pen)** 독립 앱은 폐기되고 기능(사이트 통째 미러)이
-> Chernobyl 내부(`PenBackend`)로 통합되었습니다.
+> Predormition 내부(`PenBackend`)로 통합되었습니다.
 
 > **다운로드(설치파일/DMG)는 [Releases](../../releases) 에 있습니다.** 소스 코드는 이 저장소에 있습니다.
 
@@ -63,7 +63,7 @@
 `windows/` 의 코드를 push 하면 `.github/workflows/build.yml` 이 GitHub 서버(windows-2022)에서 자동 빌드합니다.
 - Qt 6.7.3 (`win64_msvc2019_64`) + WebEngine 자동 설치
 - yt-dlp / ffmpeg / rclone 자동 다운로드
-- `windeployqt` 로 Qt DLL 번들 + `Inno Setup` 으로 단일 `Chernobyl_Setup.exe` 생성
+- `windeployqt` 로 Qt DLL 번들 + `Inno Setup` 으로 단일 `Predormition_Setup.exe` 생성
 - 결과물은 Actions 탭의 **Artifacts** 또는 Releases 에서 다운로드
 
 로컬 빌드 시: `windows/scripts/download_windows_tools.sh` 로 도구 받은 뒤 CMake + MSVC.
@@ -72,10 +72,10 @@
 요구사항: **Qt 6.7+ (Homebrew: `brew install qt`)**, CMake 3.20+, Xcode CLT
 
 ```bash
-# Chernobyl
 cd mac/chernobyl
-cmake -B build -DAPP_NAME=Chernobyl -DAPP_ID=com.chernobyl.app
+cmake -B build -DAPP_NAME=Predormition -DAPP_ID=com.predormition.app
 cmake --build build -j
+#  ★ 앱 이름을 바꾸면 scripts/make_dmg.sh 의 기본 경로(build/Predormition.app)와 어긋나 DMG 생성이 실패한다.
 
 ```
 
@@ -155,3 +155,34 @@ cd mac/chernobyl
 - 본 소스는 개인 사용 목적입니다. 번들 외부 도구는 각자의 라이선스를 따릅니다
   (yt-dlp: Unlicense, ffmpeg: LGPL/GPL, rclone: MIT, exiftool: Perl/Artistic, Chromium: BSD).
 - 다운로드 대상 콘텐츠의 저작권 및 각 플랫폼 약관 준수는 사용자 책임입니다.
+
+---
+
+## 🚀 릴리즈 배포 절차 (중요)
+
+이 저장소는 **발행된 릴리즈가 immutable** 이라, 발행 후에는 자산을 추가할 수 없다.
+mac DMG 는 CI 가 아니라 **로컬에서 빌드·서명**하므로 순서를 반드시 지켜야 한다.
+
+```bash
+# 1) mac 앱 빌드 (모델 제외본으로 DMG 를 만든다 — 릴리즈 자산은 파일당 2GB 제한)
+cd mac/chernobyl && cmake -B build -DAPP_NAME=Predormition -DAPP_ID=com.predormition.app && cmake --build build -j
+
+# 2) DMG 생성 (서명 자동) → repo/dist/Predormition.dmg
+cd ../.. && bash scripts/make_dmg.sh
+
+# 3) 태그 push → CI 가 Windows 빌드 후 '초안(draft)' 릴리즈에 Predormition_Setup.exe 를 올린다
+git tag -a v3.7.1 -m "..." && git push origin v3.7.1
+
+# 4) CI 완료를 기다린 뒤 DMG 를 같은 초안에 추가
+gh release upload v3.7.1 dist/Predormition.dmg
+
+# 5) 발행 (이 시점 이후로는 자산 추가 불가)
+gh release edit v3.7.1 --draft=false --latest --notes "..."
+```
+
+**주의**
+- 3단계에서 CI 가 만드는 것은 **초안**이다. GitHub UI 에서 먼저 발행해 버리면 mac DMG 를 붙일 수 없다.
+- 로컬 AI 모델(gguf, 약 9GB)은 용량 때문에 배포본에 넣지 않는다. DMG 안의
+  `AI_설치_더블클릭.command` 가 사용자 PC 에서 내려받아 앱 내부에 설치한다.
+- mac 앱 번들 안에 파일을 추가하면 코드서명 봉인이 깨진다 → 반드시 재서명
+  (`scripts/bundle_llm.sh` 와 `Common::resealAppBundle()` 이 자동 처리).

@@ -91,6 +91,31 @@ jobs:
           $rc = Get-ChildItem -Path "rclone_tmp" -Directory | Select-Object -First 1
           Copy-Item "$($rc.FullName)/rclone.exe" "$tools/rclone.exe" -Force
 
+          # exiftool — EXIF 메타데이터 기록(작가·설명·촬영일). 없으면 이 기능만 조용히 빠진다.
+          #   ★ 예전엔 CI 가 이걸 안 받아서 Deploy 의 exiftool 복사가 늘 no-op → 배포본에 항상 누락돼 있었다.
+          #   공식 배포처(exiftool.org)는 구버전을 지우므로, GitHub 릴리스 미러를 우선 시도한다.
+          $exifOk = $false
+          foreach ($u in @(
+            "https://github.com/exiftool/exiftool/archive/refs/tags/13.42.zip",
+            "https://exiftool.org/exiftool-13.42_64.zip"
+          )) {
+            try {
+              Write-Host "exiftool 시도: $u"
+              Invoke-WebRequest -Uri $u -OutFile "exiftool.zip" -MaximumRedirection 5
+              Remove-Item "exiftool_tmp" -Recurse -Force -ErrorAction SilentlyContinue
+              Expand-Archive -Path "exiftool.zip" -DestinationPath "exiftool_tmp" -Force
+              $ex = Get-ChildItem -Path "exiftool_tmp" -Filter "exiftool*.exe" -Recurse | Select-Object -First 1
+              if ($ex) {
+                Copy-Item $ex.FullName "$tools/exiftool.exe" -Force
+                $exFiles = Get-ChildItem -Path "exiftool_tmp" -Filter "exiftool_files" -Directory -Recurse | Select-Object -First 1
+                if ($exFiles) { Copy-Item $exFiles.FullName "$tools/exiftool_files" -Recurse -Force }
+                $exifOk = $true; Write-Host "  → exiftool 설치됨"; break
+              }
+              Write-Host "  → 압축 안에 exiftool.exe 없음"
+            } catch { Write-Host "  → 실패: $($_.Exception.Message)" }
+          }
+          if (-not $exifOk) { Write-Host "WARN: exiftool 없음 — EXIF 메타데이터 기록 기능만 비활성(빌드는 계속)" }
+
           # deno — yt-dlp 의 JS 런타임 (YouTube 추출에 필수, 없으면 일부 포맷 누락)
           Invoke-WebRequest -Uri "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip" -OutFile "deno.zip"
           Expand-Archive -Path "deno.zip" -DestinationPath "deno_tmp" -Force

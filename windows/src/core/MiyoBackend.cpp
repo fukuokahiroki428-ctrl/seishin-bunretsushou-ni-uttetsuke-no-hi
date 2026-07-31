@@ -751,7 +751,16 @@ void MiyoBackend::nasWatchdogTick()
     if (!m_config->nasAutoReconnect()) return;
     // 체크 대상 — backupPath 가 NAS 경로이면 그 부모 마운트 확인
     QString path = m_config->backupPath();
-    if (path.isEmpty() || !path.startsWith("/Volumes/")) return;
+    if (path.isEmpty()) return;
+#ifdef Q_OS_WIN
+    // Windows 의 NAS 경로는 드라이브 문자(Z:\\...) 또는 UNC(\\\\nas\\share).
+    //   예전엔 macOS 전용 "/Volumes/" 접두사만 검사해 Windows 에서는 감시가 항상 무동작이었다.
+    const bool isUnc   = path.startsWith("\\\\") || path.startsWith("//");
+    const bool isDrive = path.size() >= 2 && path[1] == QLatin1Char(':');
+    if (!isUnc && !isDrive) return;
+#else
+    if (!path.startsWith("/Volumes/")) return;
+#endif
     // /Volumes/X 의 X 마운트 디렉토리 존재 + 읽기 가능 여부
     int slash = path.indexOf('/', QString("/Volumes/").length());
     QString mountPoint = slash > 0 ? path.left(slash) : path;

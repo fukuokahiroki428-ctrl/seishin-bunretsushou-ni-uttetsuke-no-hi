@@ -5,7 +5,9 @@
 
 set -e
 
-DIST_DIR="${DIST_DIR:-/Users/shio/Downloads/무제폴더/귀찮아/dist}"
+# 기본 출력 위치 = 이 저장소의 dist/ (스크립트 위치 기준). 다른 곳이면 DIST_DIR 로 지정.
+REPO_ROOT_D="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DIST_DIR="${DIST_DIR:-$REPO_ROOT_D/dist}"
 mkdir -p "$DIST_DIR"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -45,7 +47,18 @@ make_dmg() {
     trap 'rm -rf "$STAGE_DIR"' RETURN
 
     echo "  복사 중..."
-    cp -R "$APP_PATH" "$STAGE_DIR/"
+    # ★ 로컬 AI 모델(Resources/llm, 약 9GB)은 기본적으로 제외한다.
+    #   GitHub 릴리즈는 파일당 2GB 제한이라 포함하면 업로드 자체가 불가능하고,
+    #   사용자는 DMG 안 'AI_설치_더블클릭.command' 로 받아서 앱 내부에 설치한다.
+    #   모델까지 넣은 DMG 가 필요하면 INCLUDE_AI=1 로 실행.
+    if [ "${INCLUDE_AI:-0}" = "1" ]; then
+        cp -R "$APP_PATH" "$STAGE_DIR/"
+    else
+        rsync -a --exclude "Contents/Resources/llm" "$APP_PATH" "$STAGE_DIR/"
+        # 번들에서 파일을 뺐으므로 서명 봉인이 깨진다 → 재서명(안 하면 macOS 가 앱을 죽인다)
+        codesign -f -s "$SIGN_ID" --deep "$STAGE_DIR/$(basename "$APP_PATH")" 2>/dev/null \
+            || echo "  ⚠ 재서명 실패 — 앱이 실행 안 될 수 있음"
+    fi
     ln -s /Applications "$STAGE_DIR/Applications"
 
     local SCRIPTS_DIR; SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
