@@ -57,17 +57,46 @@ void setFinderComment(const QString &filePath, const QString &comment)
 #endif
 }
 
+// 파일명 정리 — 리눅스 NAS(ext4/btrfs/Samba)에 그대로 올려도 깨지지 않게 만든다.
+//   원칙: 유닉스에서 실제로 쓸 수 있는 문자는 100% 살린다. 못 쓰는 것만 바꾼다.
 QString sanitizeFilename(const QString &name, int maxLength)
 {
-    QString result = name;
-    // Remove invalid characters
+    // 1) 유니코드 NFC 정규화.
+    //    macOS(APFS)는 파일명을 NFD(자모 분리)로 다룬다 — '한글' 이 'ㅎㅏㄴㄱㅡㄹ' 로 저장된다.
+    //    그대로 리눅스 NAS 에 올리면 겉보기엔 같은데 바이트가 달라서 검색·정렬·중복확인이
+    //    어긋나고, 일부 프로그램은 파일을 아예 못 찾는다. 리눅스/삼바 표준인 NFC 로 통일한다.
+    QString result = name.normalized(QString::NormalizationForm_C);
+
+    // 2) 진짜 못 쓰는 문자만 치환.
+    //    유닉스(macOS·리눅스)에서 파일명에 금지된 건 '/' 와 NUL 뿐이다.
+    //    : * ? " < > | 공백 한글 이모지 등은 전부 정상적으로 쓸 수 있는데, 예전엔 이걸 전부
+    //    '_' 로 바꿔버려서 제목이 뭉개졌다(예: 「What? "Really"」 → 「What_ _Really_」).
+    //    제어문자(0x00-0x1f)는 유닉스에서도 허용되지만 터미널·로그를 깨뜨려 실용상 제외한다.
+#ifdef Q_OS_WIN
+    // Windows 는 금지 문자가 많고 끝의 점·공백과 예약어(CON, PRN…)도 못 쓴다 → 기존대로 엄격히.
     result.replace(QRegularExpression("[/\\\\:*?\"<>|\\x00-\\x1f]"), "_");
-    // Trim whitespace
+    while (result.endsWith('.') || result.endsWith(' ')) result.chop(1);
+    static const QRegularExpression kReserved(
+        "^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\\.|$)", QRegularExpression::CaseInsensitiveOption);
+    if (kReserved.match(result).hasMatch()) result.prepend('_');
+#else
+    result.replace(QRegularExpression("[/\\x00-\\x1f]"), "_");
+#endif
     result = result.trimmed();
-    // Truncate
-    if (result.length() > maxLength) {
+
+    // 3) 길이 제한 — 리눅스 파일시스템의 한계는 '글자 수'가 아니라 'UTF-8 255바이트'다.
+    //    한글·일본어는 한 글자가 3바이트, 이모지는 4바이트라서 예전처럼 200'자'로 자르면
+    //    600바이트가 되어 NAS 에서 "File name too long" 으로 생성 자체가 실패했다.
+    //    또 글자 중간(서로게이트 쌍)에서 잘리면 깨진 문자가 남으므로 짝을 맞춰 자른다.
+    constexpr int kMaxBytes = 255;
+    if (maxLength > 0 && result.size() > maxLength)
         result = result.left(maxLength);
+    while (result.toUtf8().size() > kMaxBytes && !result.isEmpty()) {
+        result.chop(1);
+        if (!result.isEmpty() && result.back().isHighSurrogate()) result.chop(1);
     }
+    result = result.trimmed();
+
     if (result.isEmpty()) {
         result = "unnamed";
     }

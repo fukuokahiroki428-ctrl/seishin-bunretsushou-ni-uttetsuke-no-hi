@@ -168,9 +168,14 @@ void WebDavUploader::workerLoop()
           else relPath = "/" + fi.fileName(); }
         while (relPath.startsWith('/')) relPath = relPath.mid(1);
 
+        // ★ NAS 로 보내는 이름은 NFC 로 통일.
+        //   macOS 는 파일명을 NFD(자모 분리)로 저장한다 — 그대로 올리면 리눅스 NAS 에서
+        //   '한글' 이 분해된 형태로 남아 검색·정렬이 어긋나고 일부 앱은 파일을 못 찾는다.
+        //   (이 수정 이전에 저장된 기존 파일도 업로드 시점에 바로잡힌다.)
         QStringList encoded;
         for (const QString &p : relPath.split('/'))
-            encoded << QString::fromUtf8(QUrl::toPercentEncoding(p));
+            encoded << QString::fromUtf8(
+                QUrl::toPercentEncoding(p.normalized(QString::NormalizationForm_C)));
         const QString remoteUrl = base + "/" + encoded.join('/');
 
         // 부모 폴더 생성(MKCOL) — 시놀로지 등은 중간 폴더를 자동 생성하지 않는다.
