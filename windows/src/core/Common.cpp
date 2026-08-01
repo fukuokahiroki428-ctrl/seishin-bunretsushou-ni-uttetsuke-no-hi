@@ -612,6 +612,9 @@ static QString findBundledYtDlp()
     paths << QCoreApplication::applicationDirPath() + "/yt-dlp";  // Contents/MacOS/yt-dlp
     paths << bundledToolsDir() + "/yt-dlp";                        // Contents/Resources/tools/yt-dlp
 #else
+    // ★ Windows 배포본은 .exe 도구를 exe 루트에 둔다(워크플로 Deploy 참고).
+    //   예전엔 tools/ 하위만 봐서 번들 yt-dlp 를 못 찾았다.
+    paths << QCoreApplication::applicationDirPath() + "/yt-dlp.exe";
     paths << bundledToolsDir() + "/yt-dlp.exe";
     paths << bundledToolsDir() + "/yt-dlp";
 #endif
@@ -624,7 +627,13 @@ static QString findBundledYtDlp()
 QString ytDlpExecutable()
 {
     // 1) 사용자 폴더 (자동 업데이트된 최신본)
+    //   ★ Windows 는 확장자가 있어야 실행 파일로 인식된다. 예전엔 확장자 없는 이름만 봐서
+    //     자동 업데이트본이 있어도 항상 무시되고, ensureYtDlpReady 의 복사본도 못 쓰였다.
+#ifdef Q_OS_WIN
+    QString userBin = userToolsDir() + "/yt-dlp.exe";
+#else
     QString userBin = userToolsDir() + "/yt-dlp";
+#endif
     if (QFile::exists(userBin)) {
         QFileInfo fi(userBin);
         if (fi.size() > 1000000 && fi.isExecutable()) return userBin;
@@ -747,7 +756,7 @@ QString pickSavePath(const QString &primary, const QString &secondary, double th
 {
     auto expand = [](const QString &p) {
         QString r = p;
-        r.replace("~", QDir::homePath());
+        if (r.startsWith(QLatin1Char('~'))) r.replace(0, 1, QDir::homePath());
         return r;
     };
     QString p1 = expand(primary);

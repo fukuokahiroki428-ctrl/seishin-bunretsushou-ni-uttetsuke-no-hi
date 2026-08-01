@@ -987,7 +987,7 @@ void MiyoBackend::backupNow()
     for (const QString &k : platKeys) {
         QString p = form[k].toString();
         if (p.isEmpty()) continue;
-        p.replace("~", QDir::homePath());
+        if (p.startsWith(QLatin1Char('~'))) p.replace(0, 1, QDir::homePath());
         if (QDir(p).exists() && p != backupRoot) {
             platformDirs << p;
         }
@@ -2402,7 +2402,7 @@ void MiyoBackend::backupWorker()
         for (const QString &k : platKeys) {
             QString p = form[k].toString();
             if (p.isEmpty()) continue;
-            p.replace("~", QDir::homePath());
+            if (p.startsWith(QLatin1Char('~'))) p.replace(0, 1, QDir::homePath());
             // backup 대상 자체가 NAS 면 그 path 가 backupRoot 일 수도 — skip
             if (!p.isEmpty() && p != backupRoot) candidateBases << p;
         }
@@ -3673,7 +3673,7 @@ void MiyoBackend::setStorageMode(const QString &mode)
 void MiyoBackend::openFolder(const QString &path)
 {
     QString folderPath = path;
-    folderPath.replace("~", QDir::homePath());
+    if (folderPath.startsWith(QLatin1Char('~'))) folderPath.replace(0, 1, QDir::homePath());
     QDir().mkpath(folderPath);
 
 #ifdef Q_OS_MACOS
@@ -3886,7 +3886,7 @@ void MiyoBackend::startCollection(const QString &configJson)
         //     → 이번 수집의 대상 폴더(플랫폼/유저)로 한정. 못 찾으면 플랫폼 폴더, 그것도
         //       없으면 루트로 폴백.
         QString plPath = config["path"].toString();
-        plPath.replace("~", QDir::homePath());
+        if (plPath.startsWith(QLatin1Char('~'))) plPath.replace(0, 1, QDir::homePath());
         if (!plPath.isEmpty() && QDir(plPath).exists()) {
             QString manifestDir = plPath;
             if (!platformName.isEmpty()) {
@@ -4660,7 +4660,7 @@ void MiyoBackend::stopYoutube()
     m_isRunning["youtube"] = false;
     // Signal terminal script to stop — 마지막 config의 path에서 찾기
     QString ytPath = m_lastConfig.value("youtube")["path"].toString();
-    ytPath.replace("~", QDir::homePath());
+    if (ytPath.startsWith(QLatin1Char('~'))) ytPath.replace(0, 1, QDir::homePath());
     QString ytBaseDir = ytPath + "/youtube";
     // ★ 시스템 /tmp 안 씀 — 사용자가 지정한 임시 디스크 사용 (없으면 ytBaseDir)
     QString tempDir = ytPath.isEmpty()
@@ -5735,7 +5735,7 @@ void MiyoBackend::runWebCrawlCollection(const QJsonObject &config)
     // QWebEngine 기반 웹 크롤 수집: 실제 브라우저로 페이지 로드 → JS로 스크롤 + 미디어 추출
     QString platform = config["platform"].toString();
     QString savePath = config["path"].toString();
-    savePath.replace("~", QDir::homePath());
+    if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
 
     // 플랫폼별 URL 생성
     QString targetUrl;
@@ -6347,7 +6347,7 @@ void MiyoBackend::runRealChromeCollection(const QJsonObject &config)
         QString platform = config["platform"].toString();
         QString target = config["target"].toString();
         QString savePath = config["path"].toString();
-        savePath.replace("~", QDir::homePath());
+        if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
 
         // URL 생성 (runWebCrawlCollection과 동일한 패턴)
         QString targetUrl;
@@ -6681,7 +6681,7 @@ void MiyoBackend::runTwitterSpace(const QJsonObject &config)
         return;
     }
     QString savePath = config["path"].toString();
-    savePath.replace("~", QDir::homePath());
+    if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
     if (savePath.isEmpty()) { log("저장 경로가 없습니다.", "error", "twitter"); return; }
     downloadSpaceUrl(url, savePath + "/twitter/spaces");
 }
@@ -6710,7 +6710,7 @@ void MiyoBackend::runTwitterCollection(const QJsonObject &config)
     // 임시파일 — 사용자 임시 디스크 우선, 없으면 저장 경로 안 .abiwa_tmp
     //   (사용자가 빠른 SSD 를 임시 디스크로 지정했으면 그것 사용 — NAS write 회피)
     QString savePath = config["path"].toString();
-    savePath.replace("~", QDir::homePath());
+    if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
     QString tempDir;
     QString userTmp = m_config ? m_config->tempDir() : QString();
     if (!userTmp.isEmpty() && QDir(userTmp).exists()) {
@@ -6755,7 +6755,7 @@ void MiyoBackend::runBlueskyCollection(const QJsonObject &config)
 
     QJsonObject enrichedConfig = config;
     QString savePath = config["path"].toString();
-    savePath.replace("~", QDir::homePath());
+    if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
     QString tempDir;
     {
         QString userTmp = m_config ? m_config->tempDir() : QString();
@@ -6792,7 +6792,7 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
     QString channelId = config["channel"].toString();
     QString serverId = config["server"].toString();
     QString savePath = config["path"].toString();
-    savePath.replace("~", QDir::homePath());
+    if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
     int maxCount = config["count"].toInt(0); // 0 = 무제한
     bool downloadMedia = config["media"].toBool(true);
     bool saveExcel = config["excel"].toBool(true);
@@ -7639,7 +7639,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     QString sessionId = config["sessionId"].toString();
     QString username = config["username"].toString().replace("@", "");
     QString savePath = config["path"].toString();
-    savePath.replace("~", QDir::homePath());
+    if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
     int maxCount = config["count"].toInt(0); // 0 = all
     bool saveExcel = config["excel"].toBool(true);
     QString igType = config["type"].toString("posts");
@@ -8544,7 +8544,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 
     QString url = config["url"].toString();
     QString path = config["path"].toString();
-    path.replace("~", QDir::homePath());
+    if (path.startsWith(QLatin1Char('~'))) path.replace(0, 1, QDir::homePath());
 
     QString quality = config["quality"].toString("1080p");
     QString type = config["type"].toString("video");
@@ -9039,7 +9039,7 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
     QString sessionId = config["sessionId"].toString();
     QString target = config["target"].toString().trimmed();
     QString savePath = config["path"].toString();
-    savePath.replace("~", QDir::homePath());
+    if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
     int maxCount = config["count"].toInt(0);
     double delay = config["delay"].toDouble(1.5);
     bool ugoiraGif = config["ugoiraGif"].toBool(true);
@@ -10200,7 +10200,7 @@ void MiyoBackend::browseSecondaryPath()
 void MiyoBackend::getFreeSpaceGB(const QString &path)
 {
     QString p = path;
-    p.replace("~", QDir::homePath());
+    if (p.startsWith(QLatin1Char('~'))) p.replace(0, 1, QDir::homePath());
     qint64 bytes = Common::freeSpace(p);
     double gb = bytes / 1024.0 / 1024.0 / 1024.0;
     runJs(QString("onSecondaryFreeSpaceResult(%1)").arg(gb, 0, 'f', 2));
@@ -10323,7 +10323,7 @@ void MiyoBackend::startTrad(const QString &configJson)
     m_tradCancelled.store(false);
     QJsonObject config = QJsonDocument::fromJson(configJson.toUtf8()).object();
     QString savePath = config["path"].toString();
-    savePath.replace("~", QDir::homePath());
+    if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
     QDir().mkpath(savePath);
     QJsonArray files = config["files"].toArray();
     QString outputFilename = config["filename"].toString();
@@ -11286,7 +11286,7 @@ void MiyoBackend::extractTrad(const QString &configJson)
 
     // 추출 경로 선택 다이얼로그
     QString defaultDir = config["path"].toString();
-    defaultDir.replace("~", QDir::homePath());
+    if (defaultDir.startsWith(QLatin1Char('~'))) defaultDir.replace(0, 1, QDir::homePath());
     QString outputDir = QFileDialog::getExistingDirectory(m_window, "추출할 폴더 선택", defaultDir);
     if (outputDir.isEmpty()) {
         runJs("setTradProgress(-1, '')");
@@ -14023,7 +14023,7 @@ void MiyoBackend::runFanboxCollection(const QJsonObject &config)
     }
 
     QString savePath = config["path"].toString();
-    savePath.replace("~", QDir::homePath());
+    if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
     QString creatorDir = savePath + "/fanbox/" + target;
     QDir().mkpath(creatorDir);
     QString mediaDir = creatorDir + "/media";
@@ -14511,7 +14511,7 @@ void MiyoBackend::runTumblrCollection(const QJsonObject &config)
     QString apiKey = config["apiKey"].toString();
     QString blogName = config["target"].toString().trimmed();
     QString savePath = config["path"].toString();
-    savePath.replace("~", QDir::homePath());
+    if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
     bool saveExcel = config["excel"].toBool(true);
     bool downloadMediaFlag = config["downloadMedia"].toBool(true);
     int maxCount = config["count"].toInt(0);
@@ -14873,7 +14873,7 @@ void MiyoBackend::runSpinSpinCollection(const QJsonObject &config)
     }
     QString cookie = config["cookie"].toString();
     QString savePath = config["path"].toString();
-    savePath.replace("~", QDir::homePath());
+    if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
     bool saveExcel = config["excel"].toBool(true);
     bool downloadMedia = config["downloadMedia"].toBool(true);
 
@@ -15620,7 +15620,7 @@ void MiyoBackend::runAskedCollection(const QJsonObject &config)
     if (target.startsWith("@")) target = target.mid(1);
     QString cookie = config["cookie"].toString();
     QString savePath = config["path"].toString();
-    savePath.replace("~", QDir::homePath());
+    if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
     bool saveExcel = config["excel"].toBool(true);
     bool downloadMediaFlag = config["downloadMedia"].toBool(true);
     bool saveExif = config["exif"].toBool(true);
@@ -16169,7 +16169,7 @@ void MiyoBackend::runCrawlCollection(const QJsonObject &config)
     //   QWebEngine으로는 봇 탐지 / JS-shell 페이지 → 실제 Chrome으로 우회.
     if (config["useRealChrome"].toBool(false) || config["method"].toString() == "chrome") {
         QString savePath = config["path"].toString();
-        savePath.replace("~", QDir::homePath());
+        if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
         QString urls = config["url"].toString();
         QStringList urlList;
         for (const QString &u : urls.split(QRegularExpression("[\\s,;]+"), Qt::SkipEmptyParts)) {

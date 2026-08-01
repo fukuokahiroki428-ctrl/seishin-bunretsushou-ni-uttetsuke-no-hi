@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
+#include <QThread>
 #include <QRegularExpression>
 #include <QDateTime>
 #include <QUrl>
@@ -152,7 +153,16 @@ bool moveFileSafe(const QString &srcPath, const QString &dstPath, QString *err)
         return fail("기존 파일을 지울 수 없습니다: " + dstPath);
 
     // 1) 같은 디스크면 rename 이 즉시 끝난다.
-    if (QFile::rename(srcPath, dstPath)) return true;
+    //    ★ Windows 는 다른 프로세스(백신·탐색기 미리보기·데몬)가 파일을 잠깐 잡고 있으면
+    //      rename 이 실패한다 — 곧 풀리는 경우가 많아 짧게 재시도한다.
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (QFile::rename(srcPath, dstPath)) return true;
+#ifdef Q_OS_WIN
+        QThread::msleep(120);      // 잠금이 풀릴 시간을 준다
+#else
+        break;                     // 유닉스는 잠금 때문에 실패하지 않는다 → 바로 복사 폴백
+#endif
+    }
 
     // 2) 디스크가 다르면(내장→NAS/외장) rename 이 실패한다 → 복사 후 원본 삭제.
     //    ★ 복사가 끝나기 전에는 원본을 절대 지우지 않는다 — 중간에 끊겨도 원본이 남게.
