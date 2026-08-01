@@ -58,9 +58,9 @@ QString RealChromeCrawler::findChromeExecutable() const
         << "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
         << "/Applications/Arc.app/Contents/MacOS/Arc";
 #elif defined(Q_OS_WIN)
-    QString programFiles = qgetenv("ProgramFiles");
-    QString programFilesX86 = qgetenv("ProgramFiles(x86)");
-    QString localAppData = qgetenv("LOCALAPPDATA");
+    QString programFiles = qEnvironmentVariable("ProgramFiles");
+    QString programFilesX86 = qEnvironmentVariable("ProgramFiles(x86)");
+    QString localAppData = qEnvironmentVariable("LOCALAPPDATA");
     if (!programFiles.isEmpty()) {
         candidates << programFiles + "\\Google\\Chrome\\Application\\chrome.exe"
                    << programFiles + "\\Microsoft\\Edge\\Application\\msedge.exe"
