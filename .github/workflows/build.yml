@@ -7,6 +7,11 @@ on:
     branches: [ main, master ]
     tags: [ 'v*' ]     # ★ v* 태그 push 시 빌드 + GitHub Release 발행
   workflow_dispatch:   # Actions 탭에서 수동 실행 버튼
+    inputs:
+      runner:
+        description: '빌드 러너 (windows-2022 은퇴 시 windows-2025 등으로 바꿔 재시도)'
+        required: false
+        default: 'windows-2022' 
 
 # ★ Node.js 20 deprecation 대응 — JS 액션(checkout/upload-artifact/msvc-dev-cmd)을
 #   Node 24 로 강제 실행 → "Node.js 20 actions are deprecated" 경고 제거 + 6/2 강제전환 대비.
@@ -18,7 +23,11 @@ jobs:
     # ★ windows-latest 는 6/15 부터 windows-2025-vs2026 (VS 2026) 로 자동 변경됨.
     #   Qt 6.7.3 msvc2019_64 프리빌드 라이브러리는 VS 2022 까지만 ABI 검증돼 있어서
     #   VS 2026 으로 갑자기 바뀌면 링킹 깨질 수 있음 → 명시적으로 windows-2022 핀.
-    runs-on: windows-2022
+    # ★ 러너 이미지는 GitHub 이 주기적으로 은퇴시킨다(windows-2019 는 2025-06 은퇴).
+    #   은퇴하면 잡이 스케줄조차 안 되고 실패하므로, 코드 수정 없이 갈아탈 수 있게 입력으로 뺐다.
+    #   수동 실행(Run workflow) 시 runner 를 windows-2025 등으로 지정하면 그대로 시도한다.
+    #   기본값을 바꿀 때는 Qt 프리빌드의 MSVC ABI 호환을 먼저 확인할 것(아래 Install Qt 주석 참고).
+    runs-on: ${{ inputs.runner || 'windows-2022' }}
     permissions:
       contents: write   # ★ 태그 push 시 GITHUB_TOKEN 으로 Release 생성/자산 업로드
 
@@ -57,8 +66,30 @@ jobs:
           $tools = "resources/tools"
           New-Item -ItemType Directory -Force -Path $tools | Out-Null
 
-          # yt-dlp
+          # ★ 무결성 검증 — 예전엔 받은 파일을 그대로 번들해서, 미러가 오염되거나 중간에
+          #   끊겨도 알 수 없었다(체크섬 검증이 저장소 전체에 0건이었다).
+          #   공식 체크섬을 제공하는 도구는 대조하고, 없는 것은 최소한 형식·크기를 본다.
+          function Assert-Sha256($file, $expected, $name) {
+            $got = (Get-FileHash -Algorithm SHA256 $file).Hash.ToLower()
+            if ($got -ne $expected.ToLower()) {
+              throw "$name 체크섬 불일치 — 받은 파일이 손상됐거나 변조됐습니다`n  기대: $expected`n  실제: $got"
+            }
+            Write-Host "  ✔ $name 체크섬 확인"
+          }
+          function Assert-Zip($file, $name) {
+            $fs = [System.IO.File]::OpenRead((Resolve-Path $file))
+            $sig = New-Object byte[] 2; $null = $fs.Read($sig,0,2); $fs.Close()
+            if ($sig[0] -ne 0x50 -or $sig[1] -ne 0x4B) { throw "$name 이 ZIP 이 아닙니다(안내페이지/오류페이지를 받았을 수 있음)" }
+          }
+
+          # yt-dlp — 공식 SHA2-256SUMS 로 검증(릴리스마다 함께 배포된다)
           Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile "$tools/yt-dlp.exe"
+          try {
+            $sums = (Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS" -UseBasicParsing).Content
+            $line = ($sums -split "`n" | Where-Object { $_ -match '\syt-dlp\.exe\s*$' } | Select-Object -First 1)
+            if ($line) { Assert-Sha256 "$tools/yt-dlp.exe" ($line -split '\s+')[0] "yt-dlp" }
+            else { Write-Host "  ⚠ yt-dlp 체크섬 항목을 찾지 못함(검증 생략)" }
+          } catch { Write-Host "  ⚠ yt-dlp 체크섬 조회 실패(검증 생략): $($_.Exception.Message)" }
 
           # ffmpeg + ffprobe — gyan.dev 우선, 죽어 있으면 BtbN(GitHub) 미러로 폴백.
           #   ★ gyan.dev 는 간헐적으로 503(NFSN Error) 을 내며 빌드를 통째로 깨뜨린 적이 있다.
@@ -85,8 +116,10 @@ jobs:
           }
           if (-not $ffOk) { throw "ffmpeg 를 어느 소스에서도 받지 못했습니다" }
 
-          # rclone
+          # rclone — 버전을 고정했으므로 체크섬도 고정해서 대조한다(공식 SHA256SUMS 값)
           Invoke-WebRequest -Uri "https://github.com/rclone/rclone/releases/download/v1.74.2/rclone-v1.74.2-windows-amd64.zip" -OutFile "rclone.zip"
+          Assert-Zip "rclone.zip" "rclone"
+          Assert-Sha256 "rclone.zip" "71f376f47428bd467bf92e8bfe7fb36f4c108a4fc4edd3df30fc74dd409c7eef" "rclone v1.74.2"
           Expand-Archive -Path "rclone.zip" -DestinationPath "rclone_tmp" -Force
           $rc = Get-ChildItem -Path "rclone_tmp" -Directory | Select-Object -First 1
           Copy-Item "$($rc.FullName)/rclone.exe" "$tools/rclone.exe" -Force
@@ -134,6 +167,11 @@ jobs:
 
           # deno — yt-dlp 의 JS 런타임 (YouTube 추출에 필수, 없으면 일부 포맷 누락)
           Invoke-WebRequest -Uri "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip" -OutFile "deno.zip"
+          Assert-Zip "deno.zip" "deno"
+          try {
+            $dsum = (Invoke-WebRequest -Uri "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip.sha256sum" -UseBasicParsing).Content
+            Assert-Sha256 "deno.zip" (($dsum -split '\s+')[0]) "deno"
+          } catch { Write-Host "  ⚠ deno 체크섬 조회 실패(검증 생략): $($_.Exception.Message)" }
           Expand-Archive -Path "deno.zip" -DestinationPath "deno_tmp" -Force
           Copy-Item "deno_tmp/deno.exe" "$tools/deno.exe" -Force
 
