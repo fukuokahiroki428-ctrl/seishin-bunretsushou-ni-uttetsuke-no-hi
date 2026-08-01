@@ -173,6 +173,11 @@ public slots:
     // NAS 파일시스템이 유닉스(ext4/Btrfs)면 true — 특수문자 원문 보존.
     // false(기본)면 윈도우 호환(전각 치환)으로 NTFS·exFAT·윈도우 NAS 에서도 저장된다.
     Q_INVOKABLE void setUnixFilenames(bool on);
+    // ★ 시간이 지나면 바뀌는 외부 서비스 상수(X 의 GraphQL query ID·Bearer 등)를 재빌드 없이 교체.
+    //   오픈클로(로컬 AI)가 수집 실패를 진단해 스스로 갱신할 수 있는 지점이기도 하다.
+    Q_INVOKABLE void setApiOverride(const QString &key, const QString &value);
+    Q_INVOKABLE void getApiOverrides();      // JS onApiOverrides(json, path)
+    Q_INVOKABLE void openApiOverridesFile(); // 파일을 직접 편집하도록 열기
     void enqueueWebDavUpload(const QString &localPath);  // 캡쳐/다운로드 직후 자동 호출
 
     // ★ Finder 에 WebDAV 마운트 — macOS AppleScript "mount volume" 사용

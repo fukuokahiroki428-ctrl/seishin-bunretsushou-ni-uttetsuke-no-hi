@@ -31,6 +31,8 @@ public:
 private:
     // Twitter GraphQL API endpoints
     static const QString GRAPHQL_BASE;
+    // 외부 서비스 상수를 런타임에 교체(api_overrides.json) — X 가 query ID 를 회전시켜도 재빌드 불필요
+    static QString apiUrl(const QString &key, const QString &builtin);
     static const QString SEARCH_TIMELINE_URL;
     static const QString USER_BY_SCREEN_NAME_URL;
     static const QString USER_TWEETS_URL;

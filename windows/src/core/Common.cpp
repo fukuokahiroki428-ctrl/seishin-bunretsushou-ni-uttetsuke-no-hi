@@ -5,7 +5,11 @@
 #include <QLocale>
 #include <QFile>
 #include <QDir>
-#include <QRandomGenerator>
+#include <QDirIterator>
+#include <QJsonObject>
+#include <QJsonDocument>
+#include <QMutex>
+#include <QDateTime>
 #include <QStorageInfo>
 #include <QDebug>
 #include <QCoreApplication>
@@ -238,6 +242,7 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
     static QString exiftoolPath;
     static QString exiftoolPerl;  // 번들 exiftool용 Perl 인터프리터
     static QString exiftoolPerlLib;
+    static QString exiftoolPerlCoreLib;  // ★ 번들 Perl 의 코어 @INC (자체완결 perl 사용 시)
     if (exiftoolPath.isEmpty()) {
         // 번들된 exiftool (Resources/tools/exiftool/exiftool)
         QString bundledExiftool = bundledResourcesDir() + "/tools/exiftool/exiftool";
@@ -246,12 +251,18 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
         if (QFile::exists(bundledExiftool)) {
             exiftoolPath = bundledExiftool;
             exiftoolPerlLib = bundledResourcesDir() + "/tools/exiftool/lib/perl5";
-            // macOS/Linux 시스템 Perl 사용
-            QStringList perls = {"/usr/bin/perl", "/usr/bin/perl5.34", "/usr/bin/perl5.30"};
-            for (const QString &p : perls) {
-                if (QFile::exists(p)) { exiftoolPerl = p; break; }
+            // ★ 번들 Perl 우선 (자체완결 — 시스템 perl 없어도 동작). 없으면 시스템 perl 폴백.
+            QString bundledPerl = bundledResourcesDir() + "/tools/perl/bin/perl";
+            if (QFile::exists(bundledPerl)) {
+                exiftoolPerl = bundledPerl;
+                exiftoolPerlCoreLib = bundledResourcesDir() + "/tools/perl/lib";  // 번들 perl 코어 @INC
+            } else {
+                QStringList perls = {"/usr/bin/perl", "/usr/bin/perl5.34", "/usr/bin/perl5.30"};
+                for (const QString &p : perls) {
+                    if (QFile::exists(p)) { exiftoolPerl = p; break; }
+                }
+                if (exiftoolPerl.isEmpty()) exiftoolPerl = "perl";
             }
-            if (exiftoolPerl.isEmpty()) exiftoolPerl = "perl";
             qDebug() << "[Common] bundled exiftool:" << exiftoolPath
                      << "perl:" << exiftoolPerl << "lib:" << exiftoolPerlLib;
         } else {
@@ -273,37 +284,21 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
 
     QProcess proc;
     proc.setProcessEnvironment(bundledProcessEnv());
-    QString exifArgFile;   // ★ Windows UTF-8 argfile (사용 시 경로 보관 → 끝나면 삭제)
     if (!exiftoolPerl.isEmpty()) {
         // 번들 exiftool: perl -I<lib> exiftool <args>
         QStringList perlArgs;
+        // ★ 번들 perl 코어 @INC (arch lib + base) 먼저 — 시스템 /System/Library/Perl 없이도 동작.
+        if (!exiftoolPerlCoreLib.isEmpty()) {
+            perlArgs << "-I" + exiftoolPerlCoreLib + "/darwin-thread-multi-2level";
+            perlArgs << "-I" + exiftoolPerlCoreLib;
+        }
         if (!exiftoolPerlLib.isEmpty())
             perlArgs << "-I" + exiftoolPerlLib;
         perlArgs << exiftoolPath;
         perlArgs.append(args);
         proc.start(exiftoolPerl, perlArgs);
     } else {
-#ifdef Q_OS_WIN
-        // ★ Windows mojibake 수정 — exiftool.exe 는 명령줄 인자를 시스템 ANSI 코드페이지(cp949 등)로
-        //   받아 일본어/한글 메타데이터(작가명·설명)가 깨진다. → 인자를 UTF-8 argfile 에 한 줄씩 쓰고
-        //   `-charset filename=utf8 -charset utf8 -@ argfile` 로 전달해 우회.
-        //   (실측: 직접 인자/-charset 만으론 깨지고, UTF-8 argfile 만 정상으로 써짐.)
-        exifArgFile = QDir::tempPath() + QString("/.miyo_exifargs_%1.txt")
-                          .arg(QRandomGenerator::global()->generate(), 0, 16);
-        QFile af(exifArgFile);
-        if (af.open(QIODevice::WriteOnly)) {
-            QByteArray body;
-            for (const QString &a : args) body += (a + "\n").toUtf8();
-            af.write(body);
-            af.close();
-            proc.start(exiftoolPath, {"-charset", "filename=utf8", "-charset", "utf8", "-@", exifArgFile});
-        } else {
-            exifArgFile.clear();
-            proc.start(exiftoolPath, args);   // argfile 못 쓰면 기존 방식 폴백
-        }
-#else
         proc.start(exiftoolPath, args);
-#endif
     }
     if (!proc.waitForStarted(3000)) {
         if (exiftoolAvailable == -1) {
@@ -312,7 +307,6 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
                        << "error:" << proc.errorString();
             exiftoolAvailable = 0;
         }
-        if (!exifArgFile.isEmpty()) QFile::remove(exifArgFile);
         return;
     }
     exiftoolAvailable = 1;
@@ -320,7 +314,6 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
     if (proc.exitCode() != 0) {
         qWarning() << "[Common] exiftool error:" << proc.readAllStandardError().trimmed();
     }
-    if (!exifArgFile.isEmpty()) QFile::remove(exifArgFile);   // ★ argfile 정리
 }
 
 // ─── Cross-platform path helpers ───
@@ -336,9 +329,20 @@ QString bundledResourcesDir()
 #endif
 }
 
+// ★ 유니버설 빌드: arch 슬라이스별로 #if 가 각각 컴파일되므로 런타임 arch 에 맞는 접미사가 박힌다.
+//   (arm64 슬라이스 → _arm64, x86_64 슬라이스 → _x86_64). Intel/Apple Silicon 둘 다 자체 python 사용.
+#if defined(Q_OS_MACOS) && defined(__aarch64__)
+#  define KAMERA_PY_ARCH "_arm64"
+#elif defined(Q_OS_MACOS)
+#  define KAMERA_PY_ARCH "_x86_64"
+#else
+#  define KAMERA_PY_ARCH ""
+#endif
+
 QString userPythonEnvDir()
 {
-    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/python_env";
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+           + "/python_env" KAMERA_PY_ARCH;
 }
 
 #ifdef Q_OS_MACOS
@@ -353,7 +357,8 @@ static bool copyTreePreserving(const QString &src, const QString &dst)
 }
 
 // 외부 python_env 가 '완전한지' 검증 — bin/python3 는 있는데 핵심 패키지(twikit)가 빠진
-// 깨진/구 복사본이면 번들에서 재시드해야 한다. (python 실행 없이 site-packages/twikit 존재로 판단)
+// 깨진/구 복사본(예: 옛 설치의 다른 파이썬 버전 · 패키지 0개)이면 번들에서 재시드해야 한다.
+// python 실행 없이 site-packages/twikit 디렉토리 존재로 판단(빠름).
 static bool pythonEnvHasCorePackages(const QString &envDir)
 {
     QDir libDir(envDir + "/lib");
@@ -374,11 +379,23 @@ QString activePythonEnvDir()
     const QString ext = userPythonEnvDir();
     const QString extPy = ext + "/bin/python3";
 
-    const QString bundled = bundledResourcesDir() + "/python_env";
+    QString bundled = bundledResourcesDir() + "/python_env" KAMERA_PY_ARCH;
+    // 호환: arch 별 디렉토리가 없으면 단일 python_env 로 폴백 (구 번들/단일 arch 빌드).
+    if (!QFile::exists(bundled + "/bin/python3"))
+        bundled = bundledResourcesDir() + "/python_env";
     const bool bundleReady = QFile::exists(bundled + "/bin/python3") && pythonEnvHasCorePackages(bundled);
 
-    // ★ 외부본이 존재하되 핵심 패키지(twikit)까지 있어야 그대로 사용 — 패키지 빠진 깨진 복사본은
-    //   재시드 대상('twikit not installed' 로 트위터 수집이 죽던 근본 원인).
+    // ★★ 앱 내부(번들) 우선 — 모듈/라이브러리를 앱 안에 두고 앱 안에 설치한다.
+    //   번들에 쓰면 codesign 봉인이 깨지지만, 설치·수리 직후 Common::resealAppBundle() 이
+    //   자동 재서명해 복구하므로 안전하다(재서명 실패 시에는 아래 외부 복사본 경로로 자연 폴백).
+    //   번들이 읽기전용(권한 없는 위치·검역 등)이면 예전처럼 외부 복사본을 쓴다.
+    if (bundleReady && isDirWritable(bundled))
+        return bundled;
+
+    // ★ 외부본이 존재하되 핵심 패키지(twikit)까지 있어야 그대로 사용한다.
+    //   bin/python3 만 있고 패키지가 빠진 깨진 복사본(옛 설치의 3.15b·패키지 0개 등)은
+    //   재시드 대상 — 이게 'twikit not installed' 로 트위터 수집이 죽던 근본 원인이었다.
+    //   (번들에 완전한 env 가 없으면 재시드해도 소용없으니 그때는 외부본을 그대로 둔다.)
     if (QFile::exists(extPy) && (pythonEnvHasCorePackages(ext) || !bundleReady))
         return ext;
 
@@ -422,8 +439,8 @@ QString bundledToolsDir()
 }
 
 // ── AI 자가수리: 편집가능 스크립트의 쓰기가능 override 위치 ──
-//   AI 가 고친 스크립트는 여기에 저장된다. override 가 있으면 그걸 쓰고,
-//   없으면 번들 원본을 쓴다(= 아무 것도 안 바꾸면 동작 무변화 → 안전).
+//   AI 가 고친 스크립트는 여기에 저장된다(번들은 서명 봉인이라 못 씀). override 가 있으면
+//   그걸 쓰고, 없으면 번들 원본을 쓴다(= 아무 것도 안 바꾸면 동작 무변화 → 안전).
 QString scriptOverrideDir()
 {
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/script_overrides";
@@ -435,6 +452,70 @@ QString activeToolScriptPath(const QString &name)
     return bundledToolsDir() + "/" + name;
 }
 
+// ── 외부 서비스 상수 런타임 오버라이드 ────────────────────────────────────────
+//   X(트위터)의 GraphQL query ID·Bearer 토큰처럼 '언젠가 반드시 바뀌는' 값을 코드에서
+//   분리한다. 파일이 없거나 키가 없으면 코드 기본값을 그대로 쓰므로 기존 동작과 동일하다.
+QString apiOverridesPath()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/api_overrides.json";
+}
+
+static QJsonObject loadApiOverrides()
+{
+    static QMutex mu;
+    static QJsonObject cache;
+    static QDateTime cachedAt;
+    QMutexLocker lock(&mu);
+
+    const QString p = apiOverridesPath();
+    const QFileInfo fi(p);
+    if (!fi.exists()) { cache = QJsonObject(); return cache; }
+    // 파일이 바뀌었을 때만 다시 읽는다(수집 루프에서 자주 불리므로).
+    if (cachedAt.isValid() && fi.lastModified() <= cachedAt) return cache;
+
+    QFile f(p);
+    if (f.open(QIODevice::ReadOnly)) {
+        const QJsonDocument d = QJsonDocument::fromJson(f.readAll());
+        f.close();
+        if (d.isObject()) { cache = d.object(); cachedAt = fi.lastModified(); }
+    }
+    return cache;
+}
+
+QString apiOverride(const QString &key, const QString &builtinDefault)
+{
+    const QJsonObject o = loadApiOverrides();
+    const QString v = o.value(key).toString();
+    return v.isEmpty() ? builtinDefault : v;
+}
+
+bool setApiOverride(const QString &key, const QString &value)
+{
+    const QString p = apiOverridesPath();
+    QDir().mkpath(QFileInfo(p).absolutePath());
+
+    QJsonObject o;
+    { QFile f(p);
+      if (f.open(QIODevice::ReadOnly)) {
+          const QJsonDocument d = QJsonDocument::fromJson(f.readAll()); f.close();
+          if (d.isObject()) o = d.object();
+      } }
+
+    if (value.isEmpty()) o.remove(key);      // 빈 값 = 기본값으로 되돌리기
+    else                 o[key] = value;
+
+    QFile f(p);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+    f.write(QJsonDocument(o).toJson(QJsonDocument::Indented));
+    f.close();
+    return true;
+}
+
+QString apiOverridesJson()
+{
+    return QString::fromUtf8(QJsonDocument(loadApiOverrides()).toJson(QJsonDocument::Indented));
+}
+
 bool isDirWritable(const QString &dir)
 {
     if (dir.isEmpty() || !QFileInfo::exists(dir)) return false;
@@ -444,9 +525,74 @@ bool isDirWritable(const QString &dir)
     return true;
 }
 
-// Windows 는 앱 번들/코드서명 봉인 개념이 없다 — 설치 폴더 안에서 직접 수정해도 안전.
-QString appBundlePath() { return QString(); }
-bool resealAppBundle(QString *err) { Q_UNUSED(err); return true; }
+QString appBundlePath()
+{
+#ifdef Q_OS_MACOS
+    // <...>/Chernobyl.app/Contents/MacOS  →  <...>/Chernobyl.app
+    QDir d(QCoreApplication::applicationDirPath());
+    if (!d.cdUp()) return QString();          // Contents
+    if (!d.cdUp()) return QString();          // *.app
+    const QString p = d.absolutePath();
+    return p.endsWith(".app") ? p : QString();
+#else
+    return QString();
+#endif
+}
+
+// 번들 안에 파일을 쓴 뒤 봉인을 복구한다. 실패하면 false + 사유.
+bool resealAppBundle(QString *err)
+{
+#ifdef Q_OS_MACOS
+    const QString app = appBundlePath();
+    if (app.isEmpty()) { if (err) *err = "앱 번들이 아님(개발 실행)"; return true; }  // 번들 아니면 서명 무관
+
+    // 파이썬 바이트코드 캐시는 서명 후에도 계속 생겨 봉인을 깨뜨린다 → 서명 전에 제거.
+    {
+        QDirIterator it(app + "/Contents/Resources", QStringList() << "__pycache__",
+                        QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+        QStringList caches;
+        while (it.hasNext()) caches << it.next();
+        for (const QString &c : caches) QDir(c).removeRecursively();
+    }
+
+    // 서명 아이덴티티 탐색 — 있으면 그걸로, 없으면 ad-hoc(-). 로컬 실행에는 ad-hoc 로 충분하다.
+    QString identity = "-";
+    {
+        QProcess find;
+        find.start("/usr/bin/security", {"find-identity", "-v", "-p", "codesigning"});
+        if (find.waitForFinished(10000)) {
+            const QString out = QString::fromUtf8(find.readAllStandardOutput());
+            const QRegularExpression re("\\b([0-9A-F]{40})\\b");
+            const QRegularExpressionMatch m = re.match(out);
+            if (m.hasMatch()) identity = m.captured(1);
+        }
+    }
+
+    QProcess cs;
+    cs.start("/usr/bin/codesign", {"-f", "-s", identity, "--deep", app});
+    if (!cs.waitForFinished(900000)) {                    // 번들이 크면(모델 포함) 수 분 걸릴 수 있음
+        cs.kill(); cs.waitForFinished(3000);
+        if (err) *err = "codesign 시간 초과";
+        return false;
+    }
+    if (cs.exitCode() != 0) {
+        if (err) *err = QString::fromUtf8(cs.readAllStandardError()).left(300);
+        return false;
+    }
+
+    QProcess vf;
+    vf.start("/usr/bin/codesign", {"--verify", "--deep", "--strict", app});
+    vf.waitForFinished(900000);
+    if (vf.exitCode() != 0) {
+        if (err) *err = "재서명 후 검증 실패: " + QString::fromUtf8(vf.readAllStandardError()).left(300);
+        return false;
+    }
+    return true;
+#else
+    Q_UNUSED(err);
+    return true;   // 서명 봉인 없음(Windows/Linux) — 앱 내부 수정이 그대로 안전
+#endif
+}
 
 // ═════════════════════════════════════════════════════════════════════════
 // yt-dlp 자동 업데이트 — 사용자 폴더 우선, GitHub 죽어도 번들 fallback
@@ -466,9 +612,6 @@ static QString findBundledYtDlp()
     paths << QCoreApplication::applicationDirPath() + "/yt-dlp";  // Contents/MacOS/yt-dlp
     paths << bundledToolsDir() + "/yt-dlp";                        // Contents/Resources/tools/yt-dlp
 #else
-    // ★ Windows 배포 레이아웃은 yt-dlp.exe 를 exe 루트에 둔다 (CMake POST_BUILD / CI Deploy).
-    //   tools/ 만 보면 항상 빈손 → 자동 업데이트·번들 복원이 조용히 no-op 이 되던 버그.
-    paths << QCoreApplication::applicationDirPath() + "/yt-dlp.exe";
     paths << bundledToolsDir() + "/yt-dlp.exe";
     paths << bundledToolsDir() + "/yt-dlp";
 #endif
@@ -481,11 +624,7 @@ static QString findBundledYtDlp()
 QString ytDlpExecutable()
 {
     // 1) 사용자 폴더 (자동 업데이트된 최신본)
-#ifdef Q_OS_WIN
-    QString userBin = userToolsDir() + "/yt-dlp.exe";
-#else
     QString userBin = userToolsDir() + "/yt-dlp";
-#endif
     if (QFile::exists(userBin)) {
         QFileInfo fi(userBin);
         if (fi.size() > 1000000 && fi.isExecutable()) return userBin;
@@ -504,11 +643,7 @@ QString ytDlpExecutable()
 //   4) GitHub 죽거나 변조되어도 → 번들 yt-dlp 항상 작동 보장.
 void ensureYtDlpReady(bool autoUpdate)
 {
-#ifdef Q_OS_WIN
-    QString userBin = userToolsDir() + "/yt-dlp.exe";
-#else
     QString userBin = userToolsDir() + "/yt-dlp";
-#endif
     QString bundled = findBundledYtDlp();
 
     // 1) 사용자 폴더에 yt-dlp 없거나 너무 작으면 번들 복사 (앱과 함께 출하된 검증된 버전)

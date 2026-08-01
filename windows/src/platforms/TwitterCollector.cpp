@@ -25,9 +25,17 @@
 #include <QQueue>
 
 const QString TwitterCollector::GRAPHQL_BASE = "https://x.com/i/api/graphql";
+// ★ 아래 3개는 '코드에 박힌 기본값'일 뿐 — 실제 사용 값은 apiUrl() 이 런타임에 고른다.
+//   X 는 배포마다 GraphQL query ID 를 회전시킨다 → api_overrides.json 으로 재빌드 없이 교체.
 const QString TwitterCollector::SEARCH_TIMELINE_URL = "https://x.com/i/api/graphql/flaR-PUMshxFWZWPNpq4zA/SearchTimeline";
 const QString TwitterCollector::USER_BY_SCREEN_NAME_URL = "https://x.com/i/api/graphql/NimuplG1OB7Fd2btCLdBOw/UserByScreenName";
 const QString TwitterCollector::USER_TWEETS_URL = "https://x.com/i/api/graphql/QWF3SzpHmykQHsQMixG0cg/UserTweets";
+
+// 런타임 조회 — api_overrides.json 에 값이 있으면 그것, 없으면 기본값.
+QString TwitterCollector::apiUrl(const QString &key, const QString &builtin)
+{
+    return Common::apiOverride("twitter." + key, builtin);
+}
 
 TwitterCollector::TwitterCollector(MiyoBackend *backend, QObject *parent)
     : QObject(parent)
@@ -293,7 +301,8 @@ QMap<QString, QString> TwitterCollector::getHeaders() const
 {
     QMap<QString, QString> headers;
     // Match twikit 2.3.3 _base_headers exactly
-    headers["Authorization"] = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
+    headers["Authorization"] = "Bearer " + apiUrl("bearer",
+        "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA");
     headers["Content-Type"] = "application/json";
     headers["X-Twitter-Auth-Type"] = "OAuth2Session";
     headers["X-Twitter-Active-User"] = "yes";
@@ -323,15 +332,16 @@ bool TwitterCollector::initTransactionIds()
     }
 
     // All GraphQL API paths that need TIDs
+    //   ★ 각 경로도 api_overrides.json 으로 교체 가능(X 가 query ID 를 바꿔도 재빌드 불필요)
     QJsonArray paths;
-    paths.append("/i/api/graphql/NimuplG1OB7Fd2btCLdBOw/UserByScreenName");
-    paths.append("/i/api/graphql/QWF3SzpHmykQHsQMixG0cg/UserTweets");
-    paths.append("/i/api/graphql/flaR-PUMshxFWZWPNpq4zA/SearchTimeline");
-    paths.append("/i/api/graphql/IohM3gxQHfvWePH5E3KuNA/Likes");
-    paths.append("/i/api/graphql/qToeLeMs43Q8cr7tRYXmaQ/Bookmarks");
-    paths.append("/i/api/graphql/gC_lyAxZOptAMLCJX5UhWw/Followers");
-    paths.append("/i/api/graphql/2vUj-_Ek-UmBVDNtd8OnQA/Following");
-    paths.append("/i/api/graphql/nBS-WpgA6ZG0CyNHD517JQ/TweetDetail");
+    paths.append(apiUrl("userByScreenName", "/i/api/graphql/NimuplG1OB7Fd2btCLdBOw/UserByScreenName"));
+    paths.append(apiUrl("userTweets", "/i/api/graphql/QWF3SzpHmykQHsQMixG0cg/UserTweets"));
+    paths.append(apiUrl("searchTimeline", "/i/api/graphql/flaR-PUMshxFWZWPNpq4zA/SearchTimeline"));
+    paths.append(apiUrl("likes", "/i/api/graphql/IohM3gxQHfvWePH5E3KuNA/Likes"));
+    paths.append(apiUrl("bookmarks", "/i/api/graphql/qToeLeMs43Q8cr7tRYXmaQ/Bookmarks"));
+    paths.append(apiUrl("followers", "/i/api/graphql/gC_lyAxZOptAMLCJX5UhWw/Followers"));
+    paths.append(apiUrl("following", "/i/api/graphql/2vUj-_Ek-UmBVDNtd8OnQA/Following"));
+    paths.append(apiUrl("tweetDetail", "/i/api/graphql/nBS-WpgA6ZG0CyNHD517JQ/TweetDetail"));
 
     QJsonObject args;
     args["auth_token"] = m_authToken;

@@ -20,6 +20,7 @@ using FileHelper::sanitizeFilename;
 #include <QClipboard>
 #include <QFileDialog>
 #include <QJsonDocument>
+#include <QDesktopServices>
 #include <QInputDialog>
 #include <QProcess>
 #include <QThread>
@@ -4158,6 +4159,35 @@ void MiyoBackend::setWebDavConfig(const QString &url, const QString &user, const
         m_webdav->setConfig(url, user, pass, m_config->tempDir(), enabled);
     }
     log(QString("WebDAV 설정 저장: %1 (활성화=%2)").arg(url).arg(enabled ? "ON" : "OFF"), "success", "settings");
+}
+
+void MiyoBackend::setApiOverride(const QString &key, const QString &value)
+{
+    if (key.trimmed().isEmpty()) { log("키가 비었습니다.", "warning", "settings"); return; }
+    if (Common::setApiOverride(key.trimmed(), value.trimmed())) {
+        log(value.trimmed().isEmpty()
+                ? QString("↺ %1 을(를) 기본값으로 되돌렸습니다.").arg(key)
+                : QString("✅ %1 을(를) 교체했습니다 — 재빌드 없이 다음 수집부터 적용됩니다.").arg(key),
+            "success", "settings");
+    } else {
+        log(QString("❌ %1 저장 실패 (쓰기 권한 확인)").arg(key), "error", "settings");
+    }
+    getApiOverrides();
+}
+
+void MiyoBackend::getApiOverrides()
+{
+    runJs(QString("onApiOverrides(%1)").arg(QString::fromUtf8(
+        QJsonDocument(QJsonArray{Common::apiOverridesJson(), Common::apiOverridesPath()})
+            .toJson(QJsonDocument::Compact))));
+}
+
+void MiyoBackend::openApiOverridesFile()
+{
+    const QString p = Common::apiOverridesPath();
+    if (!QFileInfo::exists(p)) Common::setApiOverride("_note", "여기에 twitter.userTweets 같은 키를 넣으면 코드 기본값 대신 사용됩니다");
+    QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(p).absolutePath()));
+    log(QString("API 상수 파일 위치: %1").arg(p), "info", "settings");
 }
 
 void MiyoBackend::setUnixFilenames(bool on)

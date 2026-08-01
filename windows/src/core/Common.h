@@ -43,10 +43,26 @@ QString bundledToolsDir();
 QString scriptOverrideDir();                       // AI 가 고친 스크립트 저장 위치(쓰기가능)
 QString activeToolScriptPath(const QString &name); // override 있으면 그것, 없으면 번들 원본
 
-// ★ macOS 전용 개념(앱 번들/서명 봉인). Windows 는 봉인이 없어 무동작 — mac 과 코드 대칭을 위해 둔다.
-QString appBundlePath();                           // Windows: 항상 빈 문자열
-bool resealAppBundle(QString *err = nullptr);      // Windows: 항상 true(무동작)
-bool isDirWritable(const QString &dir);            // 실제 쓰기 가능 여부(임시파일로 확인)
+// ★ 시간이 지나면 바뀌는 외부 서비스 상수(X 의 GraphQL query ID, Bearer 토큰 등)를
+//   재빌드 없이 교체하기 위한 런타임 오버라이드.
+//     - 값은 쓰기가능 위치의 api_overrides.json 에 저장된다.
+//     - 없으면 코드에 박힌 기본값을 그대로 쓴다(동작 무변화).
+//   X 가 query ID 를 회전시키면 예전엔 앱을 다시 빌드해야 했다 — 이제 이 파일만 고치면 되고,
+//   로컬 AI(오픈클로)나 사용자가 설정 화면에서 바로 바꿀 수 있다.
+QString apiOverride(const QString &key, const QString &builtinDefault);
+bool setApiOverride(const QString &key, const QString &value);   // 빈 값이면 해당 키 삭제(기본값 복귀)
+QString apiOverridesPath();
+QString apiOverridesJson();                                       // 현재 오버라이드 전체(JSON 문자열)
+
+// ★ macOS: 앱 번들 경로(.../Chernobyl.app). 번들이 아니면 빈 문자열.
+QString appBundlePath();
+// ★ macOS: 앱 번들 재서명 — 번들 안에 파일이 추가/변경되면(모듈 설치 등) codesign 봉인이 깨져
+//   macOS 가 앱을 SIGKILL 할 수 있다. 설치 직후 이걸 호출해 봉인을 복구한다.
+//   유효한 서명 아이덴티티가 있으면 그걸 쓰고, 없으면 ad-hoc(-) 서명. 검증까지 통과해야 true.
+//   Windows/Linux 는 서명 봉인이 없어 항상 true(무동작).
+bool resealAppBundle(QString *err = nullptr);
+// 디렉토리에 실제로 쓸 수 있는지(임시파일 생성/삭제로 확인).
+bool isDirWritable(const QString &dir);
 
 // ★ 사용자 도구 폴더 (~/Library/Application Support/Chernobyl/tools/)
 //   yt-dlp 자동 업데이트 시 여기에 저장. 우선순위 더 높음.
