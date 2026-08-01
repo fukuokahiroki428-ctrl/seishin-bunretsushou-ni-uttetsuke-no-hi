@@ -235,6 +235,24 @@ jobs:
           # Qt DLL 번들 (--compiler-runtime: VC++ 런타임 DLL 동봉 → 사용자 PC 에 VC redist 없어도 실행)
           & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --no-translations --compiler-runtime --no-system-d3d-compiler "$dist/Predormition.exe"
 
+          # ★ VC++ 런타임 DLL 실제 확인 — --compiler-runtime 이 vc_redist 설치본만 넣고
+          #   DLL 은 안 넣는 경우가 있다. 그러면 VC redist 가 없는 깨끗한 PC 에서
+          #   "VCRUNTIME140_1.dll 을 찾을 수 없어..." 로 앱이 아예 안 켜진다.
+          if (-not (Test-Path "$dist/VCRUNTIME140.dll")) {
+            $redist = $env:VCToolsRedistDir
+            if ($redist -and (Test-Path "$redist/x64")) {
+              $crt = Get-ChildItem "$redist/x64" -Filter "Microsoft.VC*.CRT" -Directory | Select-Object -First 1
+              if ($crt) {
+                Copy-Item "$($crt.FullName)/*.dll" $dist -Force
+                Write-Host "  ✔ VC++ 런타임 DLL 직접 복사: $($crt.Name)"
+              }
+            }
+          }
+          if (Test-Path "$dist/VCRUNTIME140.dll") { Write-Host "  ✔ VCRUNTIME140.dll 확인" }
+          else { Write-Host "  ⚠ VC++ 런타임 DLL 없음 — VC redist 미설치 PC 에서 실행 실패 가능" }
+          # redist 설치본(.exe)은 배포본에 불필요 — 용량만 차지
+          Remove-Item "$dist/vc_redist*.exe" -Force -ErrorAction SilentlyContinue
+
           # 리소스 복사
           if (Test-Path "resources/fonts") { Copy-Item "resources/fonts" "$dist/fonts" -Recurse -Force }
           if (Test-Path "resources/html")  { Copy-Item "resources/html"  "$dist/html"  -Recurse -Force }
@@ -249,7 +267,13 @@ jobs:
           Copy-Item "resources/tools/*.py"  "$dist/tools/" -Force -ErrorAction SilentlyContinue
           # exiftool 의 Perl 런타임 폴더는 exiftool.exe 와 같은 위치(루트)에 있어야 함
           if (Test-Path "resources/tools/exiftool_files")     { Copy-Item "resources/tools/exiftool_files"     "$dist/exiftool_files"     -Recurse -Force }
-          if (Test-Path "resources/tools/singlefile_extension"){ Copy-Item "resources/tools/singlefile_extension" "$dist/tools/singlefile_extension" -Recurse -Force }
+          # ★ SingleFile 확장 — 페이지 통째 캡쳐(트위터 realCapture / 사이트 미러)에 필수.
+          #   windows 트리에는 없고 mac 트리에만 있어서 배포본에서 늘 빠져 있었다(무음 실패).
+          $sfSrc = if (Test-Path "resources/tools/singlefile_extension") { "resources/tools/singlefile_extension" }
+                   elseif (Test-Path "../mac/chernobyl/resources/tools/singlefile_extension") { "../mac/chernobyl/resources/tools/singlefile_extension" }
+                   else { $null }
+          if ($sfSrc) { Copy-Item $sfSrc "$dist/tools/singlefile_extension" -Recurse -Force; Write-Host "  ✔ SingleFile 확장 포함" }
+          else { Write-Host "  ⚠ SingleFile 확장 없음 — 페이지 통째 캡쳐 기능이 비활성" }
 
           # ★ Python 환경 — Twitter/Bluesky 데몬(twikit/atproto)에 필수.
           #   bundle_python_win.bat 가 build_win/python_env 에 생성 → 앱은 <exe>/python_env/python.exe 를 찾으므로 dist 루트로 복사.
@@ -259,6 +283,17 @@ jobs:
             Write-Host ("python_env bundled: {0:N1} MB" -f $pyMB)
           } else {
             Write-Host "WARN: build_win/python_env 없음 — Twitter/Bluesky 는 시스템 Python 필요"
+          }
+
+          # ★ python_env 검증 게이트 — bundle_python_win.bat 이 실패해도 exit 0 을 내서
+          #   Python 이 없거나 패키지가 빠진 '반쪽 설치본' 이 그대로 릴리즈되곤 했다.
+          #   여기서 실제로 import 해보고, 깨졌으면 빌드를 세운다.
+          $pyExe = "$dist/python_env/python.exe"
+          if (Test-Path $pyExe) {
+            & $pyExe -c "import twikit, atproto, browser_cookie3; print('python_env OK')"
+            if ($LASTEXITCODE -ne 0) { throw "python_env 가 불완전합니다(twikit/atproto/browser_cookie3 import 실패) — Twitter/Bluesky 가 동작하지 않는 설치본이므로 중단" }
+          } else {
+            throw "python_env 가 배포본에 없습니다 — Twitter/Bluesky 수집이 불가능한 설치본이므로 중단"
           }
 
           # exiftool.exe → exe 루트 (Windows 앱은 applicationDirPath()/exiftool.exe 탐색)

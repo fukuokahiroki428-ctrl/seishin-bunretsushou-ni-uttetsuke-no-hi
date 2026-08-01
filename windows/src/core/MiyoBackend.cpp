@@ -62,7 +62,13 @@ struct CollectionGuard {
             if (backend) backend->log(QString("▶ [%1] 수집 시작 (큐 해제)").arg(platform), "info", platform);
         }
     }
-    ~CollectionGuard() { sem->release(1); }
+    ~CollectionGuard() {
+        sem->release(1);
+        // ★ 수집이 어떤 경로로 끝나든(정상/오류/조기 return/세션실패) UI 버튼을 동기화.
+        //   최종 updateStats("완료") 를 못 부르고 return 하면 시작/정지 버튼이 '수집 중' 으로
+        //   멈춰 있던 문제 → 종료 시 항상 통지(멀티 진행 중이면 JS 가 유지 판단).
+        if (backend) backend->notifyCollectionEnded(platform);
+    }
 };
 }
 
@@ -775,6 +781,12 @@ void MiyoBackend::nasWatchdogTick()
 
 void MiyoBackend::silentRemountWebDav()
 {
+#ifdef Q_OS_WIN
+    // macOS 의 osascript "mount volume" 전용 — Windows 에선 자동 재마운트를 시도하지 않는다.
+    //   (탐색기에서 '로그인할 때 다시 연결' 로 붙여두면 OS 가 알아서 복구한다.)
+    return;
+#else
+
     if (!m_config) return;
     QString url  = m_config->webdavUrl();
     QString user = m_config->webdavUser();
@@ -809,6 +821,7 @@ void MiyoBackend::silentRemountWebDav()
     });
     connect(t, &QThread::finished, t, &QThread::deleteLater);
     t->start();
+#endif
 }
 
 void MiyoBackend::resyncAllFoldersToBackup()
@@ -3612,6 +3625,16 @@ void MiyoBackend::updateStats(int posts, int media, const QString &status, const
     runJs(QString("updateStats(%1, %2, '%3', '%4')").arg(posts).arg(media).arg(status, p));
 }
 
+void MiyoBackend::notifyCollectionEnded(const QString &platform)
+{
+    // 수집 스레드 종료 시 호출 — JS 가 멀티 진행 여부를 보고 시작/정지 버튼을 안전하게 리셋.
+    //   (단일 수집: 즉시 리셋. 병렬: 마지막 트랙 종료 시 리셋.)
+    QString p = platform;
+    if (p.isEmpty()) { QString tk = currentThreadTrackKey(); p = tk.isEmpty() ? m_currentPlatform : tk; }
+    runJs(QString("if(window.onCollectionEnded)window.onCollectionEnded(%1);")
+              .arg(Common::jsStringLiteral(p)));
+}
+
 void MiyoBackend::showLog(const QString &message)
 {
     log(message, "warning");
@@ -4580,6 +4603,18 @@ void MiyoBackend::enqueueWebDavUpload(const QString &localPath)
 // ═════════════════════════════════════════════════════════════════════════
 void MiyoBackend::mountWebDavInFinder()
 {
+#ifdef Q_OS_WIN
+    // ★ 이 기능은 macOS 의 Finder/osascript 전용이다. Windows 에서 그대로 두면
+    //   QDir("/Volumes") 가 C:\Volumes 로 해석돼 항상 빈 목록 + osascript 부재로
+    //   '마운트 타임아웃(60초)' 만 남고 아무 일도 일어나지 않았다.
+    //   Windows 는 탐색기의 '네트워크 드라이브 연결'로 붙이는 것이 정석이라 그렇게 안내한다.
+    log("Windows 에서는 탐색기에서 연결하세요 — 파일 탐색기 → 내 PC → '네트워크 드라이브 연결' → "
+        "폴더에 WebDAV 주소 입력(예: \\\\내나스@SSL\\DavWWWRoot\\공유폴더). "
+        "연결한 드라이브(예: Z:)를 저장 경로로 지정하면 다운로드가 NAS 로 직행합니다.",
+        "info", "settings");
+    return;
+#else
+
     QString url  = m_config->webdavUrl();
     QString user = m_config->webdavUser();
     QString pass = m_config->webdavPass();
@@ -4661,6 +4696,7 @@ void MiyoBackend::mountWebDavInFinder()
     });
     connect(t, &QThread::finished, t, &QThread::deleteLater);
     t->start();
+#endif
 }
 
 void MiyoBackend::openSecurityPrefs()
@@ -7970,6 +8006,14 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     baseHeaders["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
     baseHeaders["Cookie"] = "sessionid=" + sessionId;
     baseHeaders["X-IG-App-ID"] = "936619743392459";
+    // ★ www.instagram.com 웹 API 가 요구하는 XHR 헤더. 특히 X-ASBD-ID 누락 시 '빈 200' 소프트 차단
+    //   (401 이 아니라 200 인데 게시물 0개 → 앱이 실패로 인지하지 못한다).
+    baseHeaders["X-Requested-With"] = "XMLHttpRequest";
+    baseHeaders["X-ASBD-ID"] = "129477";
+    baseHeaders["X-IG-WWW-Claim"] = "0";
+    baseHeaders["Accept"] = "*/*";
+    baseHeaders["Referer"] = "https://www.instagram.com/";
+    baseHeaders["Origin"] = "https://www.instagram.com";
 
     // ★ Cookie 우선순위:
     //   1) config["captureCookie"] — 사용자가 [Instagram] 버튼으로 추출한 전체 cookie (UI 표시됨)
@@ -7999,7 +8043,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     }
 
     // Get user info
-    QString userInfoUrl = QString("https://i.instagram.com/api/v1/users/web_profile_info/?username=%1").arg(username);
+    QString userInfoUrl = QString("https://www.instagram.com/api/v1/users/web_profile_info/?username=%1").arg(username);
     HttpResponse resp = http.get(userInfoUrl, baseHeaders);
 
     // ★ 401 시 한 번 더 자동 갱신 + 재시도
@@ -8144,7 +8188,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
 
     // Use API v1 feed endpoint (more reliable than GraphQL query_hash)
     while (hasMore && m_isRunning.value("instagram", false)) {
-        QString feedUrl = QString("https://i.instagram.com/api/v1/feed/user/%1/?count=12").arg(userId);
+        QString feedUrl = QString("https://www.instagram.com/api/v1/feed/user/%1/?count=12").arg(userId);
         if (!nextMaxId.isEmpty()) feedUrl += "&max_id=" + nextMaxId;
 
         HttpResponse mediaResp = http.get(feedUrl, baseHeaders);
@@ -8518,7 +8562,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     // ── Reels 수집 ──
     if (effectiveConfig["reels"].toBool(false) && m_isRunning.value("instagram", false)) {
         log("릴스 수집 중...", "info", "instagram");
-        QString reelsUrl = QString("https://i.instagram.com/api/v1/clips/user/?target_user_id=%1&page_size=12").arg(userId);
+        QString reelsUrl = QString("https://www.instagram.com/api/v1/clips/user/?target_user_id=%1&page_size=12").arg(userId);
         int reelsCount = 0;
         QString reelsMaxId;
 
@@ -8581,7 +8625,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     // ── Stories 수집 ──
     if (effectiveConfig["stories"].toBool(false) && m_isRunning.value("instagram", false)) {
         log("스토리 수집 중...", "info", "instagram");
-        QString storiesUrl = QString("https://i.instagram.com/api/v1/feed/reels_media/?reel_ids=%1").arg(userId);
+        QString storiesUrl = QString("https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=%1").arg(userId);
         HttpResponse storiesResp = http.get(storiesUrl, baseHeaders);
         if (storiesResp.isOk()) {
             QJsonArray reels = storiesResp.json()["reels_media"].toArray();
@@ -8636,7 +8680,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
         log("하이라이트 수집 중...", "info", "instagram");
 
         // Step 1: Get highlight tray (list of highlight reels)
-        QString highlightsTrayUrl = QString("https://i.instagram.com/api/v1/highlights/%1/highlights_tray/").arg(userId);
+        QString highlightsTrayUrl = QString("https://www.instagram.com/api/v1/highlights/%1/highlights_tray/").arg(userId);
         HttpResponse hlResp = http.get(highlightsTrayUrl, baseHeaders);
         int highlightsMediaCount = 0;
 
@@ -8653,7 +8697,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
                 log(QString("  [%1/%2] %3").arg(hi + 1).arg(tray.size()).arg(highlightTitle), "info", "instagram");
 
                 // Step 2: Get items for each highlight reel
-                QString hlItemsUrl = QString("https://i.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight:%1").arg(highlightId.contains(":") ? highlightId.split(":").last() : highlightId);
+                QString hlItemsUrl = QString("https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight:%1").arg(highlightId.contains(":") ? highlightId.split(":").last() : highlightId);
                 HttpResponse hlItemsResp = http.get(hlItemsUrl, baseHeaders);
 
                 if (hlItemsResp.isOk()) {
