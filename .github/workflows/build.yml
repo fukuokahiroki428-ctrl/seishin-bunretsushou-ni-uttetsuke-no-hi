@@ -299,6 +299,45 @@ jobs:
           # exiftool.exe → exe 루트 (Windows 앱은 applicationDirPath()/exiftool.exe 탐색)
           if (Test-Path "resources/tools/exiftool.exe") { Copy-Item "resources/tools/exiftool.exe" "$dist/exiftool.exe" -Force }
 
+          # ★ 산출물 검증 게이트 — 위 복사들은 대부분 -ErrorAction SilentlyContinue 라
+          #   파일이 하나도 안 옮겨져도 빌드가 초록불로 끝난다. 그 결과 "켜지긴 하는데
+          #   YouTube/캡쳐/폰트가 통째로 없는" 설치본이 릴리즈된 적이 있다.
+          #   필수 산출물은 없으면 빌드를 세우고, 있으면 없어도 되는 것만 경고로 남긴다.
+          $must = @{
+            "Predormition.exe"   = "본체 실행 파일"
+            "Qt6Core.dll"        = "Qt 런타임"
+            "Qt6WebEngineCore.dll" = "WebEngine(캡쳐·UI) 런타임"
+            "html/index.html"    = "앱 UI"
+            "yt-dlp.exe"         = "YouTube/니코동 다운로더"
+            "ffmpeg.exe"         = "영상 병합/변환"
+          }
+          $missing = @()
+          foreach ($k in $must.Keys) { if (-not (Test-Path "$dist/$k")) { $missing += "$k ($($must[$k]))" } }
+          if ($missing.Count -gt 0) {
+            throw "배포본에 필수 파일이 빠졌습니다 — 설치해도 동작하지 않으므로 중단:`n  - " + ($missing -join "`n  - ")
+          }
+          $should = @{ "exiftool.exe" = "EXIF 메타데이터"; "rclone.exe" = "NAS 백업";
+                       "deno.exe" = "yt-dlp JS 런타임"; "fonts" = "한글 폰트";
+                       "tools/singlefile_extension" = "페이지 통째 캡쳐" }
+          foreach ($k in $should.Keys) {
+            if (-not (Test-Path "$dist/$k")) { Write-Host "  ⚠ $k 없음 — $($should[$k]) 기능 비활성" }
+          }
+          Write-Host "  ✔ 필수 산출물 $($must.Count)종 모두 확인"
+
+          # ★ MAX_PATH 게이트 — 설치 경로는 보통
+          #   C:\Users\<이름>\AppData\Local\Programs\Predormition\ (약 60자) 이다.
+          #   여기에 dist 안의 상대 경로가 더해져 260자를 넘으면 Inno 가 파일을 못 풀거나
+          #   앱이 그 파일을 못 연다(python_env 의 깊은 경로가 늘 한계에 가깝다).
+          $root = (Resolve-Path $dist).Path
+          $longest = Get-ChildItem $dist -Recurse -File |
+                     ForEach-Object { $_.FullName.Substring($root.Length + 1) } |
+                     Sort-Object Length -Descending | Select-Object -First 1
+          $budget = 260 - 80   # 설치 경로 여유분 80자
+          Write-Host ("  가장 긴 상대 경로: {0}자 (여유 한도 {1}자)" -f $longest.Length, $budget)
+          if ($longest.Length -gt $budget) {
+            throw "상대 경로가 너무 깁니다($($longest.Length)자 > $budget자): $longest`n설치 시 MAX_PATH(260자)를 넘겨 파일이 누락됩니다."
+          }
+
           Write-Host "=== dist content ==="
           Get-ChildItem $dist -Recurse | Measure-Object -Property Length -Sum | ForEach-Object { "Total: {0:N1} MB" -f ($_.Sum/1MB) }
 

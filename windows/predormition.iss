@@ -3,7 +3,7 @@
 ; iscc 는 repo 루트에서 호출 → 모든 상대경로는 repo 루트 기준.
 
 #define MyAppName    "Predormition"
-#define MyAppVersion "1.0"
+#define MyAppVersion "3.9.0"   ; ★ 릴리즈마다 갱신 — 설치본 버전이 영구 1.0 이면 업그레이드 판단·제어판 표시가 어긋난다
 #define MyAppExeName "Predormition.exe"
 
 [Setup]
@@ -40,3 +40,11 @@ Name: "{autodesktop}\Predormition"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,Predormition}"; Flags: nowait postinstall skipifsilent
+
+[UninstallDelete]
+; ★ 앱이 설치 폴더 안에 런타임으로 만드는 것들(파이썬 캐시·로그·도구 갱신본)은
+;   Inno 가 추적하지 못해 제거 후에도 남는다 → 명시적으로 지운다.
+Type: filesandordirs; Name: "{app}\python_env"
+Type: filesandordirs; Name: "{app}\tools"
+Type: files;          Name: "{app}\*.log"
+Type: dirifempty;     Name: "{app}"

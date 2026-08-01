@@ -49,7 +49,19 @@ static void chernobylLogHandler(QtMsgType type, const QMessageLogContext &, cons
     static QFile *logFile = nullptr;
     QMutexLocker lock(&mtx);
     if (!logFile) {
-        logFile = new QFile(QCoreApplication::applicationDirPath() + "/chernobyl_log.txt");
+        // ★ 로그 위치 — 설치 폴더(Program Files)는 일반 사용자 권한으로 쓸 수 없어
+        //   진단 로그가 아예 안 남는다. 쓰기 가능한 앱 데이터 폴더로 옮긴다.
+        QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        if (dir.isEmpty()) dir = QCoreApplication::applicationDirPath();
+        QDir().mkpath(dir);
+        const QString path = dir + "/predormition_log.txt";
+        // ★ 무한 증가 방지 — 5MB 넘으면 직전 로그 1개만 남기고 새로 시작.
+        //   append 만 하면 오래 쓴 설치본에서 로그가 수 GB 까지 자란다.
+        if (QFileInfo(path).size() > 5LL * 1024 * 1024) {
+            QFile::remove(path + ".1");
+            QFile::rename(path, path + ".1");
+        }
+        logFile = new QFile(path);
         logFile->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
     }
     const char *lvl = "D";

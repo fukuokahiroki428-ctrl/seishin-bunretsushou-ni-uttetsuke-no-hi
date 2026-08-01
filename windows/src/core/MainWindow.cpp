@@ -52,7 +52,7 @@ protected:
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle("カメラ");
+    setWindowTitle("Predormition");
     // ★ 새 대시보드 UI 는 와이드 데스크톱 레이아웃 (사이드바 246px + 대시보드 2단 그리드 720+300px).
     //   옛 단일컬럼 시절 420px 기본값이면 내용이 세로로 찌그러짐 → 와이드 기본/최소로 조정.
     setMinimumSize(1024, 660);
@@ -190,7 +190,7 @@ QMenu *MainWindow::createDockMenu()
 {
     auto *menu = new QMenu(this);
 
-    auto *showAction = menu->addAction("カメラ 열기");
+    auto *showAction = menu->addAction("Predormition 열기");
     connect(showAction, &QAction::triggered, this, [this]() {
         show();
         raise();
@@ -304,7 +304,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     if (m_backend && m_backend->isAnyRunning()) {
         auto reply = QMessageBox::question(
             this,
-            "カメラ",
+            "Predormition",
             "수집이 진행 중입니다. 종료하시겠습니까?",
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No
@@ -323,13 +323,13 @@ void MainWindow::closeEvent(QCloseEvent *event)
         m_backend->closeAllTerminalLogs();
     }
 
-    // macOS: Terminal.app에서 ABIWA/カメラ 관련 탭/창 닫기
+    // macOS: Terminal.app에서 ABIWA/Predormition 관련 탭/창 닫기
 #ifdef Q_OS_MACOS
     QProcess::startDetached("/usr/bin/osascript", {"-e",
         "tell application \"Terminal\"\n"
         "  repeat with w in windows\n"
         "    repeat with t in tabs of w\n"
-        "      if name of t contains \"miyo_\" or name of t contains \"ABIWA\" or name of t contains \"カメラ\" then\n"
+        "      if name of t contains \"miyo_\" or name of t contains \"ABIWA\" or name of t contains \"Predormition\" then\n"
         "        do script \"exit\" in t\n"
         "      end if\n"
         "    end repeat\n"
@@ -347,7 +347,7 @@ void MainWindow::holdAwake()
     if (m_sleepAssertionHeld) return;
 
     // 1. IOPMAssertion — Prevent System Sleep
-    CFStringRef reason = CFSTR("Chernobyl active — preventing sleep");
+    CFStringRef reason = CFSTR("Predormition active — preventing sleep");
     IOReturn result = IOPMAssertionCreateWithName(
         kIOPMAssertionTypePreventSystemSleep,
         kIOPMAssertionLevelOn,
@@ -363,7 +363,7 @@ void MainWindow::holdAwake()
     IOPMAssertionCreateWithName(
         kIOPMAssertionTypeNoIdleSleep,  // 두 번째 layer
         kIOPMAssertionLevelOn,
-        CFSTR("Chernobyl user activity"),
+        CFSTR("Predormition user activity"),
         &userActiveAssertion
     );
 
