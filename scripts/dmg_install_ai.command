@@ -59,6 +59,11 @@ echo ""
 read -r -p "선택 [2]: " CHOICE
 CHOICE="${CHOICE:-2}"
 
+# ★ 1순위 = 이 프로젝트의 보관 릴리즈(ai-assets-v1).
+#   허깅페이스나 원 배포처가 사라져도 설치할 수 있도록 모델 원본을 직접 보관해 둔다.
+#   2GB 넘는 모델은 .partaa/.partab… 로 나눠 올려두고, 받은 뒤 합쳐서 쓴다.
+MIRROR="https://github.com/fukuokahiroki428-ctrl/seishin-bunretsushou-ni-uttetsuke-no-hi/releases/download/ai-assets-v1"
+
 M15="$HF/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
 M3="$HF/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
 MC3="$HF/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/qwen2.5-coder-3b-instruct-q4_k_m.gguf"
@@ -118,16 +123,44 @@ FAIL=0
 for URL in $MODELS; do
     NAME=$(basename "$URL")
     OUT="$LLM_DIR/$NAME"
-    if [ -f "$OUT" ] && [ ! -f "$OUT.part" ]; then
+    if [ -f "$OUT" ]; then
         echo "▶ $NAME — 이미 있음, 건너뜀"
         continue
     fi
     echo ""
     echo "▶ 다운로드: $NAME"
+
+    # ① 보관 릴리즈에서 통째로
+    if curl -fL --retry 3 -C - --progress-bar -o "$OUT" "$MIRROR/$NAME"; then
+        echo "  ✔ 완료(보관본)"
+        continue
+    fi
+    rm -f "$OUT"
+
+    # ② 보관 릴리즈의 분할본 (2GB 넘는 모델은 .partaa/.partab… 로 올려둠)
+    PARTS=""; OK=1
+    for SFX in aa ab ac ad ae af; do
+        if curl -fsIL "$MIRROR/$NAME.part$SFX" >/dev/null 2>&1; then
+            echo "   조각 part$SFX 받는 중..."
+            if curl -fL --retry 3 -C - --progress-bar -o "$OUT.part$SFX" "$MIRROR/$NAME.part$SFX"; then
+                PARTS="$PARTS $OUT.part$SFX"
+            else OK=0; break; fi
+        else
+            break
+        fi
+    done
+    if [ -n "$PARTS" ] && [ "$OK" = "1" ]; then
+        cat $PARTS > "$OUT" && rm -f $PARTS && { echo "  ✔ 완료(보관본 조각 합침)"; continue; }
+    fi
+    rm -f $PARTS "$OUT" 2>/dev/null
+
+    # ③ 원 배포처(Hugging Face)
+    echo "   보관본이 없어 원 배포처에서 받습니다..."
     if curl -fL --retry 3 -C - --progress-bar -o "$OUT" "$URL"; then
         echo "  ✔ 완료"
     else
         echo "  ✗ 실패 — 이 파일은 다시 실행하면 이어받습니다"
+        rm -f "$OUT"
         FAIL=1
     fi
 done
