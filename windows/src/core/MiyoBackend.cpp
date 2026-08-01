@@ -3982,7 +3982,9 @@ void MiyoBackend::openFolder(const QString &path)
 #ifdef Q_OS_MACOS
     QProcess::startDetached("open", {folderPath});
 #elif defined(Q_OS_WIN)
-    QProcess::startDetached("explorer", {folderPath});
+    // ★ Qt 경로는 'C:/Users/...' (슬래시)인데 explorer.exe 는 슬래시를 스위치로 해석해
+    //   엉뚱한 창을 열거나 아무 반응이 없다 → 역슬래시로 바꿔 넘긴다.
+    QProcess::startDetached("explorer", {QDir::toNativeSeparators(folderPath)});
 #else
     QProcess::startDetached("xdg-open", {folderPath});
 #endif

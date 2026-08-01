@@ -3219,8 +3219,8 @@
                                     <button class="nt-pillbtn" onclick="testWebDavConn()">연결 테스트</button>
                             <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);width:100%;">
                                 <label style="display:flex;align-items:flex-start;gap:7px;font-size:12px;color:var(--muted);cursor:pointer;">
-                                    <input type="checkbox" id="unix-filenames" onchange="setUnixFilenames(this.checked)" style="margin-top:2px;accent-color:var(--accent);">
-                                    <span>NAS 가 유닉스 파일시스템(ext4 · Btrfs)입니다 — 특수문자를 원문 그대로 저장
+                                    <input type="checkbox" id="unix-filenames" disabled title="Windows 는 : * ? \" &lt; &gt; | 를 파일명에 쓸 수 없어 이 설정을 켤 수 없습니다" style="margin-top:2px;accent-color:var(--accent);opacity:.5;">
+                                    <span>NAS 가 유닉스 파일시스템(ext4 · Btrfs)입니다 — 특수문자를 원문 그대로 저장 <span style="color:var(--faint)">(Windows 에서는 사용 불가)</span>
                                     <br><span style="color:var(--faint);font-size:10.5px;">끄면(기본) 윈도우 호환 — <code>: * ? " &lt; &gt; |</code> 를 모양이 같은 전각 문자로 바꿔 저장합니다.</span></span>
                                 </label>
                             </div>
