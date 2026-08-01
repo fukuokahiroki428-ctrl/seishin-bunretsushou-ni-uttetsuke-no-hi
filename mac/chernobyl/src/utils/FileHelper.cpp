@@ -84,7 +84,15 @@ QString sanitizeFilename(const QString &name, int maxLength)
     //      (rclone·Syncthing 등이 쓰는 방식)
     //        What? "Really" <yes>  →  What？ ＂Really＂ ＜yes＞
     //      유닉스 전용 NAS(ext4/Btrfs)라 원문 그대로 두고 싶으면 unixFilenames(true) 로 끈다.
-    if (g_unixFilenames) {
+    // ★ 유닉스 모드는 '저장하는 쪽'이 유닉스일 때만 쓸 수 있다.
+    //   Windows 에서는 : * ? " < > | 를 파일명에 아예 못 쓰므로, 이 설정을 켜 두면
+    //   저장 자체가 실패한다 → Windows 빌드에서는 설정값과 무관하게 항상 윈도우 호환 모드.
+#ifdef Q_OS_WIN
+    const bool useUnixRule = false;   // Windows 파일시스템이 못 받는 문자라 설정과 무관하게 항상 호환 모드
+#else
+    const bool useUnixRule = g_unixFilenames;
+#endif
+    if (useUnixRule) {
         // 유닉스 모드: '/' 와 제어문자만 치환(특수문자 100% 보존)
         result.replace(QRegularExpression("[/\\x00-\\x1f]"), "_");
     } else {
