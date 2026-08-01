@@ -624,13 +624,7 @@ void MiyoBackend::pickBackupPath()
     QStringList paths, items;
 #ifdef Q_OS_MACOS
     // 1) /Volumes 의 마운트된 NAS / 외장
-    QDir d(
-#ifdef Q_OS_WIN
-        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
-#else
-        "/Volumes"
-#endif
-);
+    QDir d("/Volumes");
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
     QProcess df;
     df.start("df", {"-T", "webdav,smbfs,afpfs,nfs,fuse"});
@@ -1273,13 +1267,7 @@ void MiyoBackend::backupNow()
         }
         QString home = QDir::homePath();
         QStringList genericParents = {home, home + "/Downloads", home + "/Documents", home + "/Desktop",
-                                       "/", "/Users", 
-#ifdef Q_OS_WIN
-        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
-#else
-        "/Volumes"
-#endif
-, ""};
+                                       "/", "/Users", "/Volumes", ""};
         bool useCommonParent = !commonParent.isEmpty()
             && !genericParents.contains(commonParent)
             && commonParent.length() > home.length() + 1
@@ -3798,20 +3786,22 @@ void MiyoBackend::loadFormData()
 
 void MiyoBackend::browsePath(const QString &platform)
 {
-    // ★ 시작 디렉토리 /Volumes — Finder 처럼 NAS/외장 목록부터 보임
-    QString startDir = QDir(
+    // ★ 시작 디렉토리 — macOS 는 /Volumes(Finder 처럼 NAS/외장 목록부터 보임).
+    //   Windows 엔 /Volumes 가 없어 항상 홈으로 떨어졌다 → "내 PC"(드라이브 목록)에서 시작해
+    //   NAS 드라이브·외장 디스크를 바로 고를 수 있게 한다.
 #ifdef Q_OS_WIN
-        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
+    // Windows: 이미 쓰고 있는 저장 경로가 있으면 거기서, 없으면 홈에서 시작.
+    //   (탐색기 대화상자 왼쪽에 "내 PC"/매핑된 NAS 드라이브가 항상 나오므로 충분하다.)
+    QString startDir;
+    if (m_config) {
+        startDir = m_config->backupPath();
+        if (startDir.isEmpty()) startDir = m_config->tempDir();
+    }
+    if (startDir.isEmpty() || !QDir(startDir).exists())
+        startDir = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
 #else
-        "/Volumes"
+    QString startDir = QDir("/Volumes").exists() ? "/Volumes" : QDir::homePath();
 #endif
-).exists() ? 
-#ifdef Q_OS_WIN
-        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
-#else
-        "/Volumes"
-#endif
- : QDir::homePath();
     QString folder = QFileDialog::getExistingDirectory(m_window, "저장 경로 선택", startDir);
     if (!folder.isEmpty()) {
         runJs(QString("setPath('%1', '%2')").arg(platform, folder));
@@ -3826,13 +3816,7 @@ void MiyoBackend::setAllPathsToNas()
     QString chosenPath;
     QStringList paths, items;
 #ifdef Q_OS_MACOS
-    QDir d(
-#ifdef Q_OS_WIN
-        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
-#else
-        "/Volumes"
-#endif
-);
+    QDir d("/Volumes");
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
     QProcess df;
     df.start("df", {"-T", "webdav,smbfs,afpfs,nfs,fuse"});
@@ -3935,13 +3919,7 @@ void MiyoBackend::setStorageMode(const QString &mode)
     bool wantNetwork = (mode == "nas");
     QStringList paths, items;
 #ifdef Q_OS_MACOS
-    QDir d(
-#ifdef Q_OS_WIN
-        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
-#else
-        "/Volumes"
-#endif
-);
+    QDir d("/Volumes");
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
     QProcess df;
     df.start("df", {"-T", "webdav,smbfs,afpfs,nfs,fuse"});
@@ -4682,13 +4660,7 @@ void MiyoBackend::mountWebDavInFinder()
 {
 #ifdef Q_OS_WIN
     // ★ 이 기능은 macOS 의 Finder/osascript 전용이다. Windows 에서 그대로 두면
-    //   QDir(
-#ifdef Q_OS_WIN
-        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
-#else
-        "/Volumes"
-#endif
-) 가 C:\Volumes 로 해석돼 항상 빈 목록 + osascript 부재로
+    //   QDir("/Volumes") 가 C:\Volumes 로 해석돼 항상 빈 목록 + osascript 부재로
     //   '마운트 타임아웃(60초)' 만 남고 아무 일도 일어나지 않았다.
     //   Windows 는 탐색기의 '네트워크 드라이브 연결'로 붙이는 것이 정석이라 그렇게 안내한다.
     log("Windows 에서는 탐색기에서 연결하세요 — 파일 탐색기 → 내 PC → '네트워크 드라이브 연결' → "
@@ -4727,13 +4699,7 @@ void MiyoBackend::mountWebDavInFinder()
         // 마운트 전 /Volumes 상태 스냅샷
         QStringList before;
         {
-            QDir d(
-#ifdef Q_OS_WIN
-        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
-#else
-        "/Volumes"
-#endif
-);
+            QDir d("/Volumes");
             before = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
         }
 
@@ -4746,13 +4712,7 @@ void MiyoBackend::mountWebDavInFinder()
 
         QStringList after;
         {
-            QDir d(
-#ifdef Q_OS_WIN
-        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
-#else
-        "/Volumes"
-#endif
-);
+            QDir d("/Volumes");
             after = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
         }
         // 새로 생긴 볼륨 = NAS
@@ -4818,13 +4778,7 @@ void MiyoBackend::listMountedVolumes()
     QJsonArray vols;
 #ifdef Q_OS_MACOS
     // /Volumes 의 폴더들 (시스템 볼륨 제외)
-    QDir d(
-#ifdef Q_OS_WIN
-        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
-#else
-        "/Volumes"
-#endif
-);
+    QDir d("/Volumes");
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
 
     // df로 네트워크/로컬 판정 — fstype 가 webdav, smbfs, afpfs, nfs 면 network
@@ -4901,13 +4855,7 @@ void MiyoBackend::pickMountedVolume(const QString &targetInputId)
     QStringList items;
 #ifdef Q_OS_MACOS
     // 1) /Volumes 마운트 (Apple WebDAV / SMB / AFP / NFS / 외장)
-    QDir d(
-#ifdef Q_OS_WIN
-        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
-#else
-        "/Volumes"
-#endif
-);
+    QDir d("/Volumes");
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
     QProcess df;
     df.start("df", {"-T", "webdav,smbfs,afpfs,nfs,fuse"});
