@@ -76,6 +76,14 @@ jobs:
             }
             Write-Host "  ✔ $name 체크섬 확인"
           }
+          # 체크섬 파일 형식이 배포처마다 다르다:
+          #   표준 sha256sum : "<64hex>  파일명"
+          #   deno           : PowerShell Format-List ("Hash      : <64HEX>")
+          #   → 형식을 가리지 않고 첫 64자리 hex 를 해시로 본다.
+          function Get-Sha256FromText($text) {
+            $m = [regex]::Match($text, '(?i)\b[0-9a-f]{64}\b')
+            if ($m.Success) { return $m.Value } else { return $null }
+          }
           function Assert-Zip($file, $name) {
             $fs = [System.IO.File]::OpenRead((Resolve-Path $file))
             $sig = New-Object byte[] 2; $null = $fs.Read($sig,0,2); $fs.Close()
@@ -84,12 +92,15 @@ jobs:
 
           # yt-dlp — 공식 SHA2-256SUMS 로 검증(릴리스마다 함께 배포된다)
           Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile "$tools/yt-dlp.exe"
+          $ytExpect = $null
           try {
             $sums = (Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS" -UseBasicParsing).Content
-            $line = ($sums -split "`n" | Where-Object { $_ -match '\syt-dlp\.exe\s*$' } | Select-Object -First 1)
-            if ($line) { Assert-Sha256 "$tools/yt-dlp.exe" ($line -split '\s+')[0] "yt-dlp" }
-            else { Write-Host "  ⚠ yt-dlp 체크섬 항목을 찾지 못함(검증 생략)" }
+            $line = ($sums -split "`n" | Where-Object { $_ -match '(?i)\syt-dlp\.exe\s*$' } | Select-Object -First 1)
+            if ($line) { $ytExpect = Get-Sha256FromText $line }
           } catch { Write-Host "  ⚠ yt-dlp 체크섬 조회 실패(검증 생략): $($_.Exception.Message)" }
+          # ★ 조회 실패는 경고로 넘어가지만, 값을 얻었는데 다르면 빌드를 세운다(오염 차단).
+          if ($ytExpect) { Assert-Sha256 "$tools/yt-dlp.exe" $ytExpect "yt-dlp" }
+          else { Write-Host "  ⚠ yt-dlp 체크섬 항목을 찾지 못함(검증 생략)" }
 
           # ffmpeg + ffprobe — gyan.dev 우선, 죽어 있으면 BtbN(GitHub) 미러로 폴백.
           #   ★ gyan.dev 는 간헐적으로 503(NFSN Error) 을 내며 빌드를 통째로 깨뜨린 적이 있다.
@@ -168,10 +179,14 @@ jobs:
           # deno — yt-dlp 의 JS 런타임 (YouTube 추출에 필수, 없으면 일부 포맷 누락)
           Invoke-WebRequest -Uri "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip" -OutFile "deno.zip"
           Assert-Zip "deno.zip" "deno"
+          $dnExpect = $null
           try {
+            # deno 는 표준 sha256sum 이 아니라 PowerShell Format-List 형식("Hash : <HEX>")을 올린다
             $dsum = (Invoke-WebRequest -Uri "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip.sha256sum" -UseBasicParsing).Content
-            Assert-Sha256 "deno.zip" (($dsum -split '\s+')[0]) "deno"
+            $dnExpect = Get-Sha256FromText $dsum
           } catch { Write-Host "  ⚠ deno 체크섬 조회 실패(검증 생략): $($_.Exception.Message)" }
+          if ($dnExpect) { Assert-Sha256 "deno.zip" $dnExpect "deno" }
+          else { Write-Host "  ⚠ deno 체크섬을 해석하지 못함(검증 생략)" }
           Expand-Archive -Path "deno.zip" -DestinationPath "deno_tmp" -Force
           Copy-Item "deno_tmp/deno.exe" "$tools/deno.exe" -Force
 
