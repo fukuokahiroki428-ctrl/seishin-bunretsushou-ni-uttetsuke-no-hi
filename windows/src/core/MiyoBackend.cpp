@@ -624,7 +624,13 @@ void MiyoBackend::pickBackupPath()
     QStringList paths, items;
 #ifdef Q_OS_MACOS
     // 1) /Volumes 의 마운트된 NAS / 외장
-    QDir d("/Volumes");
+    QDir d(
+#ifdef Q_OS_WIN
+        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
+#else
+        "/Volumes"
+#endif
+);
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
     QProcess df;
     df.start("df", {"-T", "webdav,smbfs,afpfs,nfs,fuse"});
@@ -1267,7 +1273,13 @@ void MiyoBackend::backupNow()
         }
         QString home = QDir::homePath();
         QStringList genericParents = {home, home + "/Downloads", home + "/Documents", home + "/Desktop",
-                                       "/", "/Users", "/Volumes", ""};
+                                       "/", "/Users", 
+#ifdef Q_OS_WIN
+        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
+#else
+        "/Volumes"
+#endif
+, ""};
         bool useCommonParent = !commonParent.isEmpty()
             && !genericParents.contains(commonParent)
             && commonParent.length() > home.length() + 1
@@ -3190,6 +3202,10 @@ void MiyoBackend::openBackupTerminalLog()
     QFile script(scriptPath);
     if (script.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QString nativeLog = QDir::toNativeSeparators(logPath);
+        // ★ PowerShell 작은따옴표 문자열 안의 ' 는 '' 로 이스케이프.
+        //   Windows 경로에는 작은따옴표가 들어갈 수 있고(예: C:\\Users\\O'Brien\\...),
+        //   그대로 넣으면 문자열이 조기 종료돼 스크립트가 깨지거나 뒤가 코드로 해석된다.
+        nativeLog.replace("'", "''");
         QString content;
         content += "@echo off\r\n";
         content += "chcp 65001 >nul\r\n";
@@ -3320,7 +3336,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
         QString content;
         content += "@echo off\r\n";
         content += "chcp 65001 >nul\r\n";
-        content += "title カメラ - " + platform.toUpper() + "\r\n";
+        content += "title Predormition - " + platform.toUpper() + "\r\n";
         // ★ 렉 방지 — 옛 방식은 `:loop / cls / type 전체파일 / timeout 2 / goto loop` 라
         //   로그가 길어지면 매 2초 전체 파일을 다시 그려(콘솔 full clear+redraw) CPU/GPU 부담 → 렉.
         //   PowerShell `Get-Content -Wait -Tail` 로 교체: 마지막 N줄만 띄우고 이후 신규 라인만 append
@@ -3642,6 +3658,21 @@ void MiyoBackend::notifyCollectionEnded(const QString &platform)
     if (p.isEmpty()) { QString tk = currentThreadTrackKey(); p = tk.isEmpty() ? m_currentPlatform : tk; }
     runJs(QString("if(window.onCollectionEnded)window.onCollectionEnded(%1);")
               .arg(Common::jsStringLiteral(p)));
+
+    // ★ 이 트랙이 쓰던 캡쳐 Chrome 정리 — 안 하면 병렬 수집을 돌릴 때마다 Chrome 프로세스와
+    //   프로필 폴더가 앱을 끌 때까지 계속 쌓인다(메모리·핸들·디스크 누수, 포트 고갈).
+    //   Chrome 객체는 메인 스레드에서 만들어졌으므로 정리도 메인 스레드에서 한다.
+    if (!p.isEmpty()) {
+        QMetaObject::invokeMethod(this, [this, p]() {
+            RealChromeCrawler *victim = nullptr;
+            {
+                QMutexLocker mapLock(&m_capChromeMapMutex);
+                auto it = m_captureChromesPerThread.find(p);
+                if (it != m_captureChromesPerThread.end()) { victim = it.value(); m_captureChromesPerThread.erase(it); }
+            }
+            if (victim) { victim->stop(); victim->deleteLater(); }
+        }, Qt::QueuedConnection);
+    }
 }
 
 void MiyoBackend::showLog(const QString &message)
@@ -3768,7 +3799,19 @@ void MiyoBackend::loadFormData()
 void MiyoBackend::browsePath(const QString &platform)
 {
     // ★ 시작 디렉토리 /Volumes — Finder 처럼 NAS/외장 목록부터 보임
-    QString startDir = QDir("/Volumes").exists() ? "/Volumes" : QDir::homePath();
+    QString startDir = QDir(
+#ifdef Q_OS_WIN
+        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
+#else
+        "/Volumes"
+#endif
+).exists() ? 
+#ifdef Q_OS_WIN
+        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
+#else
+        "/Volumes"
+#endif
+ : QDir::homePath();
     QString folder = QFileDialog::getExistingDirectory(m_window, "저장 경로 선택", startDir);
     if (!folder.isEmpty()) {
         runJs(QString("setPath('%1', '%2')").arg(platform, folder));
@@ -3783,7 +3826,13 @@ void MiyoBackend::setAllPathsToNas()
     QString chosenPath;
     QStringList paths, items;
 #ifdef Q_OS_MACOS
-    QDir d("/Volumes");
+    QDir d(
+#ifdef Q_OS_WIN
+        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
+#else
+        "/Volumes"
+#endif
+);
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
     QProcess df;
     df.start("df", {"-T", "webdav,smbfs,afpfs,nfs,fuse"});
@@ -3886,7 +3935,13 @@ void MiyoBackend::setStorageMode(const QString &mode)
     bool wantNetwork = (mode == "nas");
     QStringList paths, items;
 #ifdef Q_OS_MACOS
-    QDir d("/Volumes");
+    QDir d(
+#ifdef Q_OS_WIN
+        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
+#else
+        "/Volumes"
+#endif
+);
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
     QProcess df;
     df.start("df", {"-T", "webdav,smbfs,afpfs,nfs,fuse"});
@@ -4218,11 +4273,24 @@ void MiyoBackend::startCollection(const QString &configJson)
             runFanboxCollection(config);
         }
         // ★ 수집 끝 — manifest 생성 (무결성 검증 + 통계 파일)
-        //   path 가 root, 그 안의 모든 파일 walk 해서 __CHERNOBYL_MANIFEST__.json + .txt
+        //   ★ 저장 루트 전체(모든 플랫폼·유저, 수십 GB)를 매번 walk 하면 느리고,
+        //     작은 증분 수집 후에도 "80GB/17만 파일" 같은 혼란스러운 숫자가 나온다.
+        //     → 이번 수집의 대상 폴더(플랫폼/유저)로 한정. 못 찾으면 플랫폼 폴더, 그것도
+        //       없으면 루트로 폴백.
         QString plPath = config["path"].toString();
         if (plPath.startsWith(QLatin1Char('~'))) plPath.replace(0, 1, QDir::homePath());
         if (!plPath.isEmpty() && QDir(plPath).exists()) {
-            writeDownloadManifest(plPath, platformName);
+            QString manifestDir = plPath;
+            if (!platformName.isEmpty()) {
+                const QString platDir = plPath + "/" + platformName;
+                QString tgt = config["target"].toString();
+                if (tgt.isEmpty()) tgt = config["username"].toString();
+                tgt = tgt.trimmed(); tgt.remove('@');
+                const QString tgtDir = platDir + "/" + tgt;
+                if (!tgt.isEmpty() && QDir(tgtDir).exists())      manifestDir = tgtDir;
+                else if (QDir(platDir).exists())                  manifestDir = platDir;
+            }
+            writeDownloadManifest(manifestDir, platformName);
         }
         // 워커 스레드 종료 직전 trackKey 등록 해제
         if (isParallel) clearThreadTrackKey();
@@ -4614,7 +4682,13 @@ void MiyoBackend::mountWebDavInFinder()
 {
 #ifdef Q_OS_WIN
     // ★ 이 기능은 macOS 의 Finder/osascript 전용이다. Windows 에서 그대로 두면
-    //   QDir("/Volumes") 가 C:\Volumes 로 해석돼 항상 빈 목록 + osascript 부재로
+    //   QDir(
+#ifdef Q_OS_WIN
+        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
+#else
+        "/Volumes"
+#endif
+) 가 C:\Volumes 로 해석돼 항상 빈 목록 + osascript 부재로
     //   '마운트 타임아웃(60초)' 만 남고 아무 일도 일어나지 않았다.
     //   Windows 는 탐색기의 '네트워크 드라이브 연결'로 붙이는 것이 정석이라 그렇게 안내한다.
     log("Windows 에서는 탐색기에서 연결하세요 — 파일 탐색기 → 내 PC → '네트워크 드라이브 연결' → "
@@ -4653,7 +4727,13 @@ void MiyoBackend::mountWebDavInFinder()
         // 마운트 전 /Volumes 상태 스냅샷
         QStringList before;
         {
-            QDir d("/Volumes");
+            QDir d(
+#ifdef Q_OS_WIN
+        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
+#else
+        "/Volumes"
+#endif
+);
             before = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
         }
 
@@ -4666,7 +4746,13 @@ void MiyoBackend::mountWebDavInFinder()
 
         QStringList after;
         {
-            QDir d("/Volumes");
+            QDir d(
+#ifdef Q_OS_WIN
+        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
+#else
+        "/Volumes"
+#endif
+);
             after = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
         }
         // 새로 생긴 볼륨 = NAS
@@ -4732,7 +4818,13 @@ void MiyoBackend::listMountedVolumes()
     QJsonArray vols;
 #ifdef Q_OS_MACOS
     // /Volumes 의 폴더들 (시스템 볼륨 제외)
-    QDir d("/Volumes");
+    QDir d(
+#ifdef Q_OS_WIN
+        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
+#else
+        "/Volumes"
+#endif
+);
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
 
     // df로 네트워크/로컬 판정 — fstype 가 webdav, smbfs, afpfs, nfs 면 network
@@ -4809,7 +4901,13 @@ void MiyoBackend::pickMountedVolume(const QString &targetInputId)
     QStringList items;
 #ifdef Q_OS_MACOS
     // 1) /Volumes 마운트 (Apple WebDAV / SMB / AFP / NFS / 외장)
-    QDir d("/Volumes");
+    QDir d(
+#ifdef Q_OS_WIN
+        QStandardPaths::writableLocation(QStandardPaths::HomeLocation)   // Windows 엔 /Volumes 가 없다
+#else
+        "/Volumes"
+#endif
+);
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
     QProcess df;
     df.start("df", {"-T", "webdav,smbfs,afpfs,nfs,fuse"});
@@ -5957,6 +6055,13 @@ bool MiyoBackend::captureRealPageCDPLoginAware(const QString &url,
             });
         };
 
+        // ★ 죽은(연결 끊긴) 캡쳐 Chrome 인스턴스 재사용 방지 — m_ready=false 면 정리 후 재생성.
+        //   이게 없으면 첫 캡쳐 뒤 Chrome 이 한 번 끊기면 *chromePP 가 non-null 인 채 남아
+        //   start() 를 건너뛰고 → 이후 모든 항목이 "사전 navigate 실패" 로 무한 실패.
+        if (*chromePP && !(*chromePP)->isReady()) {
+            (*chromePP)->deleteLater();
+            *chromePP = nullptr;
+        }
         if (!*chromePP) {
             *chromePP = new RealChromeCrawler(this, this);
             (*chromePP)->setUseUserProfile(false);
@@ -8024,30 +8129,37 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     baseHeaders["Referer"] = "https://www.instagram.com/";
     baseHeaders["Origin"] = "https://www.instagram.com";
 
-    // ★ Cookie 우선순위:
-    //   1) config["captureCookie"] — 사용자가 [Instagram] 버튼으로 추출한 전체 cookie (UI 표시됨)
-    //      또는 직접 입력한 raw cookie
-    //   2) extractInstagramSessionSync() — 위 둘 다 없으면 즉시 Chrome 에서 자동 추출
-    //   3) UI 의 sessionid input — fallback (이게 부족하면 401)
+    // ★ Cookie — www.instagram.com 웹 API 는 sessionid 만으론 302(미인증 리다이렉트).
+    //   csrftoken + ds_user_id 가 반드시 함께 있어야 200 이 나온다.
+    //   우선순위: ① Chrome 실시간 전체 쿠키(csrftoken·ds_user_id 포함 확인)
+    //            ② 사용자 입력 captureCookie (Chrome 추출 실패 시 폴백)
+    //   Chrome 을 '먼저' 쓰는 이유: captureCookie 는 sessionid/csrftoken/ds_user_id 가
+    //   서로 다른 시점에 복사된 값(stale)일 수 있고, 섞이면 401 을 유발한다.
+    //   Chrome 추출본은 한 시점의 값이라 항상 일관된다.
+    auto cookieHas = [](const QString &c, const char *k){ return c.contains(QString(k) + "="); };
     QString userCaptureCookie = config["captureCookie"].toString();
-    if (!userCaptureCookie.isEmpty() && userCaptureCookie.contains("sessionid=")) {
-        baseHeaders["Cookie"] = userCaptureCookie;
-        log(QString("🍪 사용자 입력 cookie 사용 (%1개)").arg(userCaptureCookie.count(';') + 1),
-            "info", "instagram");
-        for (const QString &part : userCaptureCookie.split(';', Qt::SkipEmptyParts)) {
-            QString p = part.trimmed();
-            if (p.startsWith("sessionid=")) { sessionId = p.mid(10); break; }
-        }
-    } else {
-        QString preFullCookie = extractInstagramSessionSync();
-        if (!preFullCookie.isEmpty()) {
-            baseHeaders["Cookie"] = preFullCookie;
-            log(QString("🍪 Chrome 에서 인스타 쿠키 자동 추출 (%1개)").arg(preFullCookie.count(';') + 1),
+    QString chosenCookie;
+    {
+        QString full = extractInstagramSessionSync();
+        if (!full.isEmpty() && cookieHas(full, "csrftoken") && cookieHas(full, "ds_user_id")) {
+            chosenCookie = full;
+            log(QString("🍪 Chrome 전체 쿠키 사용 (%1개, 값 일관)").arg(full.count(';') + 1),
                 "info", "instagram");
-            for (const QString &part : preFullCookie.split(';', Qt::SkipEmptyParts)) {
-                QString p = part.trimmed();
-                if (p.startsWith("sessionid=")) { sessionId = p.mid(10); break; }
-            }
+        } else if (!userCaptureCookie.isEmpty() && cookieHas(userCaptureCookie, "sessionid")) {
+            chosenCookie = userCaptureCookie;
+            log(cookieHas(userCaptureCookie, "csrftoken")
+                    ? "🍪 사용자 입력 cookie 사용 (Chrome 추출 실패 폴백)"
+                    : "⚠️ cookie 에 csrftoken/ds_user_id 누락 — www API 가 거부할 수 있음 (Chrome 에서 instagram 로그인 권장)",
+                "info", "instagram");
+        }
+    }
+    if (!chosenCookie.isEmpty()) {
+        baseHeaders["Cookie"] = chosenCookie;
+        for (const QString &part : chosenCookie.split(';', Qt::SkipEmptyParts)) {
+            QString p = part.trimmed();
+            if (p.startsWith("sessionid=")) sessionId = p.mid(10);
+            // ★ csrftoken → X-CSRFToken 헤더 (POST 계열 clips/user 등에 필요)
+            else if (p.startsWith("csrftoken=")) baseHeaders["X-CSRFToken"] = p.mid(10);
         }
     }
 
@@ -9059,7 +9171,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     script += "@echo off\r\nsetlocal enabledelayedexpansion\r\nchcp 65001 >nul\r\n";
     // ★ 한글/유니코드 채널·제목 파일명 — Python(yt-dlp) UTF-8 강제 (윈도우 ANSI 코드페이지 폴백 → UnicodeError 방지)
     script += "set PYTHONUTF8=1\r\nset PYTHONIOENCODING=UTF-8\r\n";
-    script += "title カメラ - YouTube\r\n";
+    script += "title Predormition - " + plabel + "\r\n";
     // ★ exe 디렉토리를 PATH 앞에 추가 — yt-dlp 가 번들된 deno(JS 런타임)/ffmpeg 를 자동 탐지.
     //   yt-dlp 2025+ 는 YouTube 추출에 JS 런타임(deno) 필요 — 없으면 포맷 누락/실패 경고.
     //   (.bat 은 새 cmd 환경에서 실행되어 앱의 bundledProcessEnv PATH 를 못 받으므로 여기서 직접 설정)
@@ -9068,7 +9180,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     script += "set \"STOP_MARKER=" + QDir::toNativeSeparators(stopMarker) + "\"\r\n";
     script += "echo STARTED > \"%STATUS%\"\r\n";
     script += "echo =========================================\r\n";
-    script += "echo   カメラ - YouTube Download\r\n";
+    script += "echo   Predormition - " + plabel + " Download\r\n";
     script += QString("echo   총 %1개 URL\r\n").arg(urls.size());
     script += "echo =========================================\r\n";
     script += "echo.\r\nset SUCCESS=0\r\nset FAIL=0\r\n\r\n";
@@ -9108,7 +9220,13 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     }
     script += "echo =========================================\r\n";
     script += "echo   완료! 성공: !SUCCESS!, 실패: !FAIL!\r\n";
-    script += "echo   저장 경로: " + ytBaseDir + "\r\n";
+    // ★ 저장 경로 echo — cmd 특수문자 이스케이프.
+    //   사용자가 고른 폴더 이름에 & ( ) ^ % 가 들어가면 명령 구분자로 해석되어
+    //   배치가 깨지거나 의도치 않은 명령이 실행된다(위 uEcho 와 같은 처리).
+    QString dirEcho = QDir::toNativeSeparators(ytBaseDir);
+    dirEcho.replace("^", "^^").replace("&", "^&").replace("<", "^<").replace(">", "^>")
+           .replace("|", "^|").replace("(", "^(").replace(")", "^)").replace("%", "%%");
+    script += "echo   저장 경로: " + dirEcho + "\r\n";
     script += "echo =========================================\r\n";
     script += "echo DONE:%SUCCESS%:%FAIL% > \"%STATUS%\"\r\n";
     script += "del /f \"%STOP_MARKER%\" 2>nul\r\n";
@@ -9358,7 +9476,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                         Common::addExifMetadata(mediaPath,
                             uploader.isEmpty() ? "" : "@" + uploader,
                             descr.isEmpty() ? title : descr,
-                            "YouTube @" + uploader, ytUrl,
+                            plabel + " @" + uploader, ytUrl,
                             dt.isValid() ? dt.toString("yyyy:MM:dd HH:mm:ss") : "");
                         // 코멘트 = URL + 제목 + 설명(앞부분). 전체 설명은 .description 사이드카에도 저장됨.
                         QString ytComment = ytUrl;
@@ -13741,16 +13859,71 @@ void MiyoBackend::upgradePython()
             return;
         }
 
-        // 기존 환경 삭제 → 새 버전으로 교체 (다운로드 성공이 확인된 뒤에만 수행)
-        log("  기존 Python 환경 삭제 중...", "info", "settings");
-        QDir(pythonDir).removeRecursively();
+        // ★ 무중단 교체 — 기존 환경은 새 환경이 "실제로 동작하는 것"을 확인한 뒤에만 버린다.
+        //   예전 코드는 압축 해제 전에 python_env 를 지워서, tar 가 없거나(구형 Windows)
+        //   tarball 이 깨졌거나 권한이 없으면 파이썬이 통째로 사라져 전 수집 기능이 멈췄다.
+        //   지금은 staging 에 풀고 → 검증 → 성공했을 때만 교체(실패 시 원본 그대로 유지).
+        const QString stageDir = pythonDir + ".new";
+        const QString backupDir = pythonDir + ".old";
+        QDir(stageDir).removeRecursively();
+        QDir(backupDir).removeRecursively();
+        QDir().mkpath(stageDir);
 
-        // 4. 압축 해제
+        // 4. 압축 해제 (staging)
         log("  압축 해제 중...", "info", "settings");
-        QDir().mkpath(pythonDir);
         QProcess tarProc;
-        tarProc.start("tar", {"xzf", tarball, "-C", pythonDir, "--strip-components=1"});
-        tarProc.waitForFinished(120000);
+        tarProc.start("tar", {"xzf", tarball, "-C", stageDir, "--strip-components=1"});
+        if (!tarProc.waitForFinished(120000) || tarProc.exitStatus() != QProcess::NormalExit
+            || tarProc.exitCode() != 0) {
+            const QString errTxt = QString::fromUtf8(tarProc.readAllStandardError()).trimmed();
+            log(QString("  ❌ 압축 해제 실패 — 기존 Python 은 그대로 둡니다%1")
+                    .arg(errTxt.isEmpty() ? QString() : " (" + errTxt.left(200) + ")"),
+                "error", "settings");
+            QDir(stageDir).removeRecursively();
+            m_pythonBusy = false;
+            runJs("setPythonEnvBusy(false, '압축 해제 실패')");
+            return;
+        }
+
+        // 교체 전 검증 — staging 안의 python 이 실제로 실행되는지 직접 돌려본다.
+#ifdef Q_OS_WIN
+        const QString stagedPy = stageDir + "/python.exe";
+#else
+        const QString stagedPy = stageDir + "/bin/python3";
+#endif
+        bool stagedOk = QFile::exists(stagedPy);
+        if (stagedOk) {
+            QProcess chk;
+            chk.start(stagedPy, {"-c", "import sys; print(sys.version)"});
+            stagedOk = chk.waitForFinished(15000) && chk.exitStatus() == QProcess::NormalExit
+                       && chk.exitCode() == 0;
+        }
+        if (!stagedOk) {
+            log("  ❌ 새 Python 이 실행되지 않습니다 — 기존 환경을 그대로 유지합니다",
+                "error", "settings");
+            QDir(stageDir).removeRecursively();
+            m_pythonBusy = false;
+            runJs("setPythonEnvBusy(false, '설치 실패 (기존 유지)')");
+            return;
+        }
+
+        // 검증 통과 → 원자적에 가깝게 교체. 실패하면 즉시 원상복구.
+        log("  기존 Python 환경 교체 중...", "info", "settings");
+        bool hadOld = QDir(pythonDir).exists();
+        if (hadOld && !QDir().rename(pythonDir, backupDir)) {
+            // 이름 변경이 막히면(파일 사용 중 등) 지우고 진행 — 새 환경은 이미 검증됨.
+            QDir(pythonDir).removeRecursively();
+            hadOld = false;
+        }
+        if (!QDir().rename(stageDir, pythonDir)) {
+            if (hadOld) QDir().rename(backupDir, pythonDir);   // 원상복구
+            log("  ❌ 교체 실패 — 기존 환경을 되돌렸습니다", "error", "settings");
+            QDir(stageDir).removeRecursively();
+            m_pythonBusy = false;
+            runJs("setPythonEnvBusy(false, '교체 실패 (기존 복원)')");
+            return;
+        }
+        QDir(backupDir).removeRecursively();
 
         python = Common::bundledPythonPath();
         if (!QFile::exists(python)) {

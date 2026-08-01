@@ -27,6 +27,7 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
@@ -205,17 +206,28 @@ inline QStringList cleanStaleState()
     QStringList cleaned;
     const QString base = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
 
-    // Chrome 캡쳐 프로필 SingletonLock 제거 (잔존 Chrome 핸드오프-즉시종료 버그 완화)
-    const QStringList profileDirs = { base + "/chrome_capture_profile",
-                                      QDir::homePath() + "/chrome_capture_profile" };
+    // Chrome 캡쳐 프로필의 잔존 락 제거 (Chrome 이 "이미 실행 중" 으로 오인해 즉시 종료하는 문제).
+    //   ★ 스레드별 프로필(chrome_capture_profile_<key>)까지 훑는다 — 예전엔 고정 이름 2개만 봐서
+    //     실제로 쓰이는 폴더는 하나도 정리되지 않았다.
+    //   ★ 락 파일 이름은 OS 마다 다르다: 유닉스는 SingletonLock/Socket/Cookie(심볼릭 링크),
+    //     Windows 는 프로필 안의 lockfile. 양쪽 다 지운다.
+    QStringList profileDirs;
+    for (const QString &parent : {base, QDir::homePath()}) {
+        QDirIterator it(parent, {QStringLiteral("chrome_capture_profile*")},
+                        QDir::Dirs | QDir::NoDotAndDotDot);
+        while (it.hasNext()) profileDirs << it.next();
+    }
+    const QStringList locks = {QStringLiteral("SingletonLock"),
+                               QStringLiteral("SingletonSocket"),
+                               QStringLiteral("SingletonCookie"),
+                               QStringLiteral("lockfile")};
     for (const QString &d : profileDirs) {
-        if (!QDir(d).exists()) continue;
-        const QStringList locks = {QStringLiteral("SingletonLock"),
-                                   QStringLiteral("SingletonSocket"),
-                                   QStringLiteral("SingletonCookie")};
         for (const QString &f : locks) {
             const QString p = d + "/" + f;
-            if (QFile::exists(p) && QFile::remove(p)) cleaned << p;
+            // 심볼릭 링크(유닉스 Singleton*)는 exists() 가 대상 기준이라 false 일 수 있어
+            // QFileInfo(isSymLink) 로도 확인한다.
+            const QFileInfo fi(p);
+            if ((fi.exists() || fi.isSymLink()) && QFile::remove(p)) cleaned << p;
         }
     }
     // 앱 전용 temp 재생성

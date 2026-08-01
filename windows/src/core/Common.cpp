@@ -245,11 +245,23 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
     static QString exiftoolPerlCoreLib;  // ★ 번들 Perl 의 코어 @INC (자체완결 perl 사용 시)
     if (exiftoolPath.isEmpty()) {
         // 번들된 exiftool (Resources/tools/exiftool/exiftool)
+        // ★ Windows 배포본은 perl 스크립트가 아니라 단독 실행 파일(exiftool.exe)을 쓴다.
+        //   유닉스용 perl 스크립트를 먼저 집으면 perl 이 없는 PC 에서 메타데이터가 통째로 실패한다.
+#ifdef Q_OS_WIN
+        QString bundledExiftool = bundledResourcesDir() + "/tools/exiftool/exiftool.exe";
+        if (!QFile::exists(bundledExiftool))
+            bundledExiftool = QCoreApplication::applicationDirPath() + "/exiftool.exe";
+#else
         QString bundledExiftool = bundledResourcesDir() + "/tools/exiftool/exiftool";
+#endif
         qDebug() << "[Common] exiftool probe:" << bundledExiftool
                  << "exists=" << QFile::exists(bundledExiftool);
         if (QFile::exists(bundledExiftool)) {
             exiftoolPath = bundledExiftool;
+#ifdef Q_OS_WIN
+            // exiftool.exe 는 perl 을 내장한 단독 실행 파일 — perl 인터프리터/@INC 설정이 필요 없다.
+            qDebug() << "[Common] bundled exiftool.exe:" << exiftoolPath;
+#else
             exiftoolPerlLib = bundledResourcesDir() + "/tools/exiftool/lib/perl5";
             // ★ 번들 Perl 우선 (자체완결 — 시스템 perl 없어도 동작). 없으면 시스템 perl 폴백.
             QString bundledPerl = bundledResourcesDir() + "/tools/perl/bin/perl";
@@ -265,6 +277,7 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
             }
             qDebug() << "[Common] bundled exiftool:" << exiftoolPath
                      << "perl:" << exiftoolPerl << "lib:" << exiftoolPerlLib;
+#endif
         } else {
             QStringList candidates = {
 #ifdef Q_OS_WIN

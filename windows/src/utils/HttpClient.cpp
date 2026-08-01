@@ -192,6 +192,9 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
 
     QCryptographicHash hash(QCryptographicHash::Sha256);
     qint64 totalWritten = 0;
+    // ★ 디스크 쓰기 실패 추적 — NAS 연결 끊김/디스크 가득참이면 write() 가 실패하는데
+    //   반환값을 안 보면 "잘린 파일 + success=true" 가 되어 호출부가 정상 산출물로 오인한다.
+    bool writeFailed = false;
 
     QEventLoop loop;
     QTimer timer;
@@ -199,7 +202,7 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
 
     connect(reply, &QNetworkReply::readyRead, [&]() {
         QByteArray chunk = reply->readAll();
-        file.write(chunk);
+        if (file.write(chunk) != chunk.size()) writeFailed = true;
         hash.addData(chunk);
         // 첫 512바이트 캡처
         if (totalWritten < 512) {
@@ -236,7 +239,7 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
         timer.stop();
         QByteArray remaining = reply->readAll();
         if (!remaining.isEmpty()) {
-            file.write(remaining);
+            if (file.write(remaining) != remaining.size()) writeFailed = true;
             hash.addData(remaining);
             if (totalWritten < 512) {
                 int need = qMin((qint64)512 - totalWritten, (qint64)remaining.size());
@@ -249,11 +252,19 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
         result.contentLength = totalWritten;
         result.sha256 = hash.result();
         result.success = (reply->error() == QNetworkReply::NoError) && (result.statusCode >= 200 && result.statusCode < 300);
+        // ★ 서버가 알려준 크기와 실제로 받은 크기가 다르면 잘린 파일 → 실패로 처리.
+        const QVariant declared = reply->header(QNetworkRequest::ContentLengthHeader);
+        if (result.success && declared.isValid() && declared.toLongLong() > 0
+            && totalWritten != declared.toLongLong()) {
+            result.success = false;
+        }
     } else {
         reply->abort();
     }
 
+    if (!file.flush()) writeFailed = true;
     file.close();
+    if (writeFailed) result.success = false;
 
     if (!result.success || totalWritten == 0) {
         QFile::remove(filePath);

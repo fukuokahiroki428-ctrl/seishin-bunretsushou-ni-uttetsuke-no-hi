@@ -496,7 +496,7 @@ if(WIN32)
     set(BUNDLE_PY_WIN "${CMAKE_SOURCE_DIR}/scripts/bundle_python_win.bat")
     if(EXISTS "${BUNDLE_PY_WIN}")
         add_custom_command(TARGET Miyo POST_BUILD
-            COMMAND cmd /c "${BUNDLE_PY_WIN}" "${WIN_OUTPUT_DIR}"
+            COMMAND cmd /c call "${BUNDLE_PY_WIN}" "${WIN_OUTPUT_DIR}"
             COMMENT "Bundling Python for Windows"
         )
     endif()

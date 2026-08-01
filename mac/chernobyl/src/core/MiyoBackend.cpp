@@ -3307,6 +3307,21 @@ void MiyoBackend::notifyCollectionEnded(const QString &platform)
     if (p.isEmpty()) { QString tk = currentThreadTrackKey(); p = tk.isEmpty() ? m_currentPlatform : tk; }
     runJs(QString("if(window.onCollectionEnded)window.onCollectionEnded(%1);")
               .arg(Common::jsStringLiteral(p)));
+
+    // ★ 이 트랙이 쓰던 캡쳐 Chrome 정리 — 안 하면 병렬 수집을 돌릴 때마다 Chrome 프로세스와
+    //   프로필 폴더가 앱을 끌 때까지 계속 쌓인다(메모리·핸들·디스크 누수, 포트 고갈).
+    //   Chrome 객체는 메인 스레드에서 만들어졌으므로 정리도 메인 스레드에서 한다.
+    if (!p.isEmpty()) {
+        QMetaObject::invokeMethod(this, [this, p]() {
+            RealChromeCrawler *victim = nullptr;
+            {
+                QMutexLocker mapLock(&m_capChromeMapMutex);
+                auto it = m_captureChromesPerThread.find(p);
+                if (it != m_captureChromesPerThread.end()) { victim = it.value(); m_captureChromesPerThread.erase(it); }
+            }
+            if (victim) { victim->stop(); victim->deleteLater(); }
+        }, Qt::QueuedConnection);
+    }
 }
 
 void MiyoBackend::showLog(const QString &message)
