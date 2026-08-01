@@ -1516,6 +1516,14 @@ void PenBackend::enqueueWebDavUpload(const QString &localPath)
 // ═════════════════════════════════════════════════════════════════════════
 void PenBackend::mountWebDavInFinder()
 {
+#ifdef Q_OS_WIN
+    // ★ macOS 의 Finder/osascript 전용 기능이다. Windows 에서 그대로 두면 /Volumes 를
+    //   C:\Volumes 로 해석하고 osascript 가 없어 '마운트 타임아웃(60초)' 만 남았다.
+    log("Windows 에서는 탐색기에서 연결하세요 — 파일 탐색기 → 내 PC → '네트워크 드라이브 연결' → "
+        "폴더에 WebDAV 주소 입력(예: \\\\내나스@SSL\\DavWWWRoot\\공유폴더).", "info", "crawl");
+    return;
+#else
+
     if (!m_config) { log("Config 미초기화", "error", "crawl"); return; }
     QString url  = m_config->webdavUrl();
     QString user = m_config->webdavUser();
@@ -1583,6 +1591,7 @@ void PenBackend::mountWebDavInFinder()
     });
     connect(t, &QThread::finished, t, &QThread::deleteLater);
     t->start();
+#endif
 }
 
 void PenBackend::openSecurityPrefs()

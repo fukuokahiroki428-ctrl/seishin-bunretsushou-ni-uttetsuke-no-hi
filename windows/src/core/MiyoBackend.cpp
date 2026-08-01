@@ -768,9 +768,18 @@ void MiyoBackend::nasWatchdogTick()
 #else
     if (!path.startsWith("/Volumes/")) return;
 #endif
+    // 마운트 루트 계산 — 예전엔 Windows 경로에도 "/Volumes/" 길이(9)를 오프셋으로 써서
+    //   Z:\backup 처럼 '/' 가 없는 경로면 indexOf 가 -1 → 백업 폴더 전체를 마운트 루트로
+    //   오인했다(폴더가 없으면 항상 '연결 끊김' 판정).
+#ifdef Q_OS_WIN
+    //   드라이브(Z:\) 든 UNC(\\\\nas\\share) 든 OS 가 아는 실제 루트를 쓴다.
+    QString mountPoint = QStorageInfo(path).rootPath();
+    if (mountPoint.isEmpty()) mountPoint = path.left(3);   // 최후 폴백: "Z:\"
+#else
     // /Volumes/X 의 X 마운트 디렉토리 존재 + 읽기 가능 여부
     int slash = path.indexOf('/', QString("/Volumes/").length());
     QString mountPoint = slash > 0 ? path.left(slash) : path;
+#endif
     QDir d(mountPoint);
     if (d.exists() && QFileInfo(mountPoint).isReadable()) return;  // 마운트 OK
     // 끊김 — 자동 재마운트 시도
