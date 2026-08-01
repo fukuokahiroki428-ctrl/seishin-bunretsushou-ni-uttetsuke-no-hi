@@ -13,8 +13,11 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 # Qt6
-find_package(Qt6 REQUIRED COMPONENTS
+# ★ 최소 버전 명시 — 낮은 Qt 로 빌드하면 링크 단계에서야 알 수 없는 오류가 나서 원인 찾기 어렵다.
+#   6.7 은 WebEngine/WebChannel API 가 현재 코드와 맞는 하한선이다.
+find_package(Qt6 6.7 REQUIRED COMPONENTS
     Core Gui Widgets WebEngineWidgets WebChannel Network WebSockets)
+message(STATUS "Qt ${Qt6_VERSION} 사용")
 
 # QXlsx 는 Qt6::GuiPrivate(QZipReader/QZipWriter, QtCore private)를 링크한다.
 #   mac/공식 Qt 는 private 를 포함하지만, CI 의 aqt(install-qt-action) Qt 6.7.3 는 Qt 모듈
