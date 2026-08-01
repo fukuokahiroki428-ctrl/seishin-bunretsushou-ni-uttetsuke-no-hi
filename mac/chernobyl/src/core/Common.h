@@ -43,6 +43,17 @@ QString bundledToolsDir();
 QString scriptOverrideDir();                       // AI 가 고친 스크립트 저장 위치(쓰기가능)
 QString activeToolScriptPath(const QString &name); // override 있으면 그것, 없으면 번들 원본
 
+// ★ 시간이 지나면 바뀌는 외부 서비스 상수(X 의 GraphQL query ID, Bearer 토큰 등)를
+//   재빌드 없이 교체하기 위한 런타임 오버라이드.
+//     - 값은 쓰기가능 위치의 api_overrides.json 에 저장된다.
+//     - 없으면 코드에 박힌 기본값을 그대로 쓴다(동작 무변화).
+//   X 가 query ID 를 회전시키면 예전엔 앱을 다시 빌드해야 했다 — 이제 이 파일만 고치면 되고,
+//   로컬 AI(오픈클로)나 사용자가 설정 화면에서 바로 바꿀 수 있다.
+QString apiOverride(const QString &key, const QString &builtinDefault);
+bool setApiOverride(const QString &key, const QString &value);   // 빈 값이면 해당 키 삭제(기본값 복귀)
+QString apiOverridesPath();
+QString apiOverridesJson();                                       // 현재 오버라이드 전체(JSON 문자열)
+
 // ★ macOS: 앱 번들 경로(.../Chernobyl.app). 번들이 아니면 빈 문자열.
 QString appBundlePath();
 // ★ macOS: 앱 번들 재서명 — 번들 안에 파일이 추가/변경되면(모듈 설치 등) codesign 봉인이 깨져

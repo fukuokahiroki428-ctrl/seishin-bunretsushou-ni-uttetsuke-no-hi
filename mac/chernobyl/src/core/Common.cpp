@@ -6,6 +6,10 @@
 #include <QFile>
 #include <QDir>
 #include <QDirIterator>
+#include <QJsonObject>
+#include <QJsonDocument>
+#include <QMutex>
+#include <QDateTime>
 #include <QStorageInfo>
 #include <QDebug>
 #include <QCoreApplication>
@@ -446,6 +450,70 @@ QString activeToolScriptPath(const QString &name)
     const QString ov = scriptOverrideDir() + "/" + name;
     if (QFileInfo::exists(ov)) return ov;
     return bundledToolsDir() + "/" + name;
+}
+
+// ── 외부 서비스 상수 런타임 오버라이드 ────────────────────────────────────────
+//   X(트위터)의 GraphQL query ID·Bearer 토큰처럼 '언젠가 반드시 바뀌는' 값을 코드에서
+//   분리한다. 파일이 없거나 키가 없으면 코드 기본값을 그대로 쓰므로 기존 동작과 동일하다.
+QString apiOverridesPath()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/api_overrides.json";
+}
+
+static QJsonObject loadApiOverrides()
+{
+    static QMutex mu;
+    static QJsonObject cache;
+    static QDateTime cachedAt;
+    QMutexLocker lock(&mu);
+
+    const QString p = apiOverridesPath();
+    const QFileInfo fi(p);
+    if (!fi.exists()) { cache = QJsonObject(); return cache; }
+    // 파일이 바뀌었을 때만 다시 읽는다(수집 루프에서 자주 불리므로).
+    if (cachedAt.isValid() && fi.lastModified() <= cachedAt) return cache;
+
+    QFile f(p);
+    if (f.open(QIODevice::ReadOnly)) {
+        const QJsonDocument d = QJsonDocument::fromJson(f.readAll());
+        f.close();
+        if (d.isObject()) { cache = d.object(); cachedAt = fi.lastModified(); }
+    }
+    return cache;
+}
+
+QString apiOverride(const QString &key, const QString &builtinDefault)
+{
+    const QJsonObject o = loadApiOverrides();
+    const QString v = o.value(key).toString();
+    return v.isEmpty() ? builtinDefault : v;
+}
+
+bool setApiOverride(const QString &key, const QString &value)
+{
+    const QString p = apiOverridesPath();
+    QDir().mkpath(QFileInfo(p).absolutePath());
+
+    QJsonObject o;
+    { QFile f(p);
+      if (f.open(QIODevice::ReadOnly)) {
+          const QJsonDocument d = QJsonDocument::fromJson(f.readAll()); f.close();
+          if (d.isObject()) o = d.object();
+      } }
+
+    if (value.isEmpty()) o.remove(key);      // 빈 값 = 기본값으로 되돌리기
+    else                 o[key] = value;
+
+    QFile f(p);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+    f.write(QJsonDocument(o).toJson(QJsonDocument::Indented));
+    f.close();
+    return true;
+}
+
+QString apiOverridesJson()
+{
+    return QString::fromUtf8(QJsonDocument(loadApiOverrides()).toJson(QJsonDocument::Indented));
 }
 
 bool isDirWritable(const QString &dir)
