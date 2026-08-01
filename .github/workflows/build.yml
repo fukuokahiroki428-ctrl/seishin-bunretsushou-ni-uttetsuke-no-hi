@@ -80,6 +80,16 @@ jobs:
           #   표준 sha256sum : "<64hex>  파일명"
           #   deno           : PowerShell Format-List ("Hash      : <64HEX>")
           #   → 형식을 가리지 않고 첫 64자리 hex 를 해시로 본다.
+          # ★ GitHub 은 체크섬 파일을 octet-stream 으로 주기도 한다 → .Content 가 byte[] 가 되어
+          #   정규식이 통째로 실패했다(그래서 '해석 못 함'으로 조용히 검증이 생략됐다).
+          #   파일로 받아 텍스트로 읽으면 형식·인코딩과 무관하게 안전하다.
+          function Fetch-Text($url) {
+            $tmp = [System.IO.Path]::GetTempFileName()
+            try {
+              Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing -MaximumRedirection 10
+              return (Get-Content -Raw -Encoding UTF8 $tmp)
+            } finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+          }
           function Get-Sha256FromText($text) {
             $m = [regex]::Match($text, '(?i)\b[0-9a-f]{64}\b')
             if ($m.Success) { return $m.Value } else { return $null }
@@ -94,7 +104,7 @@ jobs:
           Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile "$tools/yt-dlp.exe"
           $ytExpect = $null
           try {
-            $sums = (Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS" -UseBasicParsing).Content
+            $sums = Fetch-Text "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS"
             $line = ($sums -split "`n" | Where-Object { $_ -match '(?i)\syt-dlp\.exe\s*$' } | Select-Object -First 1)
             if ($line) { $ytExpect = Get-Sha256FromText $line }
           } catch { Write-Host "  ⚠ yt-dlp 체크섬 조회 실패(검증 생략): $($_.Exception.Message)" }
@@ -182,7 +192,7 @@ jobs:
           $dnExpect = $null
           try {
             # deno 는 표준 sha256sum 이 아니라 PowerShell Format-List 형식("Hash : <HEX>")을 올린다
-            $dsum = (Invoke-WebRequest -Uri "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip.sha256sum" -UseBasicParsing).Content
+            $dsum = Fetch-Text "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip.sha256sum"
             $dnExpect = Get-Sha256FromText $dsum
           } catch { Write-Host "  ⚠ deno 체크섬 조회 실패(검증 생략): $($_.Exception.Message)" }
           if ($dnExpect) { Assert-Sha256 "deno.zip" $dnExpect "deno" }
