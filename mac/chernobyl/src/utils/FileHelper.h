@@ -17,6 +17,14 @@ void setFinderComment(const QString &filePath, const QString &comment);
 // Sanitize filename
 QString sanitizeFilename(const QString &name, int maxLength = 200);
 
+// ★ 산출물을 최종 저장 위치로 안전하게 옮긴다.
+//   QFile::rename 만 쓰면 두 경우에 실패한다 — (1) 대상이 다른 디스크(NAS·외장)일 때,
+//   (2) 같은 이름이 이미 있을 때. 실패를 확인하지 않으면 원본까지 지워 파일이 유실된다.
+//   이 함수는 대상 폴더 생성 → 기존 파일 정리 → rename 시도 → 실패 시 스트림 복사로 폴백하고,
+//   복사가 완전히 끝난 뒤에만 원본을 지운다(중간에 끊겨도 원본은 남는다).
+//   성공 true. 실패 시 err 에 사유가 담기고 원본은 그대로 보존된다.
+bool moveFileSafe(const QString &srcPath, const QString &dstPath, QString *err = nullptr);
+
 // ★ 파일명 규칙 — 기본은 '윈도우 호환'(NTFS·exFAT·윈도우 기반 NAS·SMB 에서도 저장되게
 //   : * ? " < > | \ 를 모양이 같은 전각 문자로 치환). NAS 가 순수 유닉스(ext4/Btrfs)면
 //   true 로 켜서 특수문자를 원문 그대로 보존한다.

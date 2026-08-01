@@ -9434,8 +9434,13 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
                 } else {
                     // Fallback: keep ZIP
                     QString zipName = pxFilename(pixivUserName, title, iid, dateStr, -1, "zip");
-                    QFile::rename(zipPath, userSaveDir + "/" + zipName);
-                    log(QString("GIF 변환 실패, ZIP 저장: %1").arg(zipName), "warning", "pixiv");
+                    // ★ 다른 디스크(NAS·외장)이거나 같은 이름이 있으면 rename 이 실패한다.
+                    //   예전엔 결과를 확인하지 않고 아래에서 원본(zipPath)을 지워 파일이 통째로 사라졌다.
+                    QString mvErr;
+                    if (FileHelper::moveFileSafe(zipPath, userSaveDir + "/" + zipName, &mvErr))
+                        log(QString("GIF 변환 실패, ZIP 저장: %1").arg(zipName), "warning", "pixiv");
+                    else
+                        log(QString("❌ ZIP 저장 실패(원본은 유지됨): %1 — %2").arg(zipName, mvErr), "error", "pixiv");
                 }
 
                 // Cleanup
@@ -9445,7 +9450,10 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
                 // Save as ZIP directly
                 QString zipName = pxFilename(pixivUserName, title, iid, dateStr, -1, "zip");
                 QString finalZipPath = userSaveDir + "/" + zipName;
-                QFile::rename(zipPath, finalZipPath);
+                // ★ 저장 위치가 NAS·외장이면 rename 이 실패한다 → 복사 폴백까지 해주는 안전 이동 사용
+                QString mvErr;
+                if (!FileHelper::moveFileSafe(zipPath, finalZipPath, &mvErr))
+                    log(QString("❌ ZIP 저장 실패(원본은 유지됨): %1 — %2").arg(zipName, mvErr), "error", "pixiv");
                 QString pxUrl = QString("https://www.pixiv.net/artworks/%1").arg(iid);
                 FileHelper::setFinderComment(finalZipPath, pxUrl);
                 FileHelper::applyPostMetadata(finalZipPath, dt, pxUrl);

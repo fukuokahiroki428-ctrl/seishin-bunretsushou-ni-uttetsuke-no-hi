@@ -126,6 +126,55 @@ QString sanitizeFilename(const QString &name, int maxLength)
     return result;
 }
 
+bool moveFileSafe(const QString &srcPath, const QString &dstPath, QString *err)
+{
+    auto fail = [&](const QString &m) { if (err) *err = m; return false; };
+
+    if (srcPath.isEmpty() || dstPath.isEmpty()) return fail("경로가 비었습니다");
+    if (!QFileInfo::exists(srcPath))            return fail("원본이 없습니다: " + srcPath);
+    if (QFileInfo(srcPath).canonicalFilePath() == QFileInfo(dstPath).canonicalFilePath())
+        return true;   // 같은 파일 — 할 일 없음
+
+    // 대상 폴더 준비 (NAS/외장이 마운트 해제됐으면 여기서 걸린다)
+    const QString dstDir = QFileInfo(dstPath).absolutePath();
+    if (!QDir().mkpath(dstDir)) return fail("저장 폴더를 만들 수 없습니다: " + dstDir);
+
+    // 같은 이름이 있으면 rename 이 실패하므로 먼저 치운다(덮어쓰기 의도).
+    if (QFileInfo::exists(dstPath) && !QFile::remove(dstPath))
+        return fail("기존 파일을 지울 수 없습니다: " + dstPath);
+
+    // 1) 같은 디스크면 rename 이 즉시 끝난다.
+    if (QFile::rename(srcPath, dstPath)) return true;
+
+    // 2) 디스크가 다르면(내장→NAS/외장) rename 이 실패한다 → 복사 후 원본 삭제.
+    //    ★ 복사가 끝나기 전에는 원본을 절대 지우지 않는다 — 중간에 끊겨도 원본이 남게.
+    QFile src(srcPath), dst(dstPath);
+    if (!src.open(QIODevice::ReadOnly))  return fail("원본을 열 수 없습니다: " + src.errorString());
+    if (!dst.open(QIODevice::WriteOnly)) { src.close(); return fail("대상에 쓸 수 없습니다: " + dst.errorString()); }
+
+    const qint64 total = src.size();
+    qint64 written = 0;
+    QByteArray buf;
+    while (!src.atEnd()) {
+        buf = src.read(4 * 1024 * 1024);          // 4MB 씩 — 대용량 영상도 메모리 안 먹게
+        if (buf.isEmpty()) break;
+        const qint64 w = dst.write(buf);
+        if (w != buf.size()) {                     // 디스크 가득참·연결 끊김 등
+            src.close(); dst.close(); QFile::remove(dstPath);   // 반쪽 파일은 남기지 않는다
+            return fail("복사 중 쓰기 실패(용량 부족이거나 연결이 끊겼습니다)");
+        }
+        written += w;
+    }
+    src.close();
+    if (!dst.flush()) { dst.close(); QFile::remove(dstPath); return fail("디스크에 쓰기 완료 실패"); }
+    dst.close();
+
+    if (written != total) { QFile::remove(dstPath); return fail("복사 크기가 원본과 다릅니다"); }
+
+    QFile::remove(srcPath);   // 완전히 옮겨진 것을 확인한 뒤에만 원본 제거
+    return true;
+}
+
 bool ensureDir(const QString &path)
 {
     return QDir().mkpath(path);

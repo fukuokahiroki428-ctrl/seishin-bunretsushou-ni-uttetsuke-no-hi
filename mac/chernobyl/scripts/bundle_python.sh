@@ -57,7 +57,17 @@ echo "[bundle_python] Python: $("$BUNDLED_PY" --version)"
 
 # Install packages
 echo "[bundle_python] Installing twikit, httpx, atproto, browser_cookie3..."
-"$BUNDLED_PY" -m pip install --quiet --no-cache-dir twikit httpx atproto openpyxl Pillow piexif browser_cookie3 yt-dlp 2>&1 | tail -5
+# ★ 버전 고정 — repo 루트의 requirements.txt 사용.
+#   예전엔 버전 없이 설치해서 같은 커밋을 나중에 빌드하면 다른 버전이 들어왔고,
+#   빌드는 성공하는데 수집만 조용히 깨지는 사고로 이어졌다.
+REQ="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/requirements.txt"
+if [ -f "$REQ" ]; then
+    echo "[bundle_python] requirements.txt 로 고정 설치: $REQ"
+    "$BUNDLED_PY" -m pip install --quiet --no-cache-dir -r "$REQ" 2>&1 | tail -5
+else
+    echo "[bundle_python] ⚠ requirements.txt 없음 — 버전 미고정으로 설치(재현성 없음)"
+    "$BUNDLED_PY" -m pip install --quiet --no-cache-dir twikit httpx atproto openpyxl Pillow piexif browser_cookie3 yt-dlp 2>&1 | tail -5
+fi
 
 # Verify
 echo "[bundle_python] Verifying..."

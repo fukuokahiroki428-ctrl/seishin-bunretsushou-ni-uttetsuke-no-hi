@@ -62,7 +62,15 @@ echo [bundle_python_win] Python:
 
 REM Install packages
 echo [bundle_python_win] Installing twikit, httpx, atproto, openpyxl, Pillow, piexif, bs4, websockets, lxml, m3u8, cryptography, browser_cookie3...
-"%PYTHON_DIR%\python.exe" -m pip install --quiet --no-cache-dir twikit httpx atproto openpyxl Pillow piexif beautifulsoup4 websockets lxml m3u8 cryptography browser_cookie3 2>&1
+REM ★ 버전 고정 — repo 루트의 requirements.txt 사용(재현 가능한 빌드)
+set "REQ=%~dp0..\..\requirements.txt"
+if exist "%REQ%" (
+    echo [bundle_python_win] requirements.txt 로 고정 설치: %REQ%
+    "%PYTHON_DIR%\python.exe" -m pip install --quiet --no-cache-dir -r "%REQ%" 2>&1
+) else (
+    echo [bundle_python_win] WARN requirements.txt 없음 - 버전 미고정 설치
+    "%PYTHON_DIR%\python.exe" -m pip install --quiet --no-cache-dir twikit httpx atproto openpyxl Pillow piexif beautifulsoup4 websockets lxml m3u8 cryptography browser_cookie3 2>&1
+)
 
 REM Verify packages (browser_cookie3 포함 — Instagram/Pixiv/Tumblr Chrome 쿠키 추출에 필수)
 echo [bundle_python_win] Verifying...
