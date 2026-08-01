@@ -925,9 +925,12 @@
                 <div class="nav-item" onclick="switchTab('trad')">
                     <div class="nav-icon trad">F</div> trad
                 </div>
+                <!-- naikakukai 메뉴 숨김 — 요청에 따라 선택창(사이드바)에서만 제거.
+                     기능·탭 본문·백엔드 코드는 그대로 살아 있어 switchTab('naikakukai') 로 접근 가능하다.
                 <div class="nav-item" onclick="switchTab('naikakukai')">
                     <div class="nav-icon" style="background:#7c3aed">内</div> 内閣会
                 </div>
+                -->
             </div>
             <div class="sidebar-footer">
                 <div class="nav-item" onclick="switchTab('settings')">설정</div>
@@ -3497,7 +3500,7 @@
         let tradFiles = [];
 
         // ── 캡처 콘솔 홈: 현황 대시보드 (platformStats/platformTargets 기반, 클릭 시 해당 탭으로) ──
-        var DASH_PLATS=[['twitter','T','Twitter'],['bluesky','B','Bluesky'],['youtube','Y','YouTube'],['niconico','ニ','ニコニコ'],['discord','D','Discord'],['instagram','I','Instagram'],['pixiv','P','Pixiv'],['fanbox','F','Fanbox'],['tumblr','T','Tumblr'],['spinspin','S','SpinSpin'],['asked','A','Asked'],['trad','F','trad'],['naikakukai','内','内閣会']];
+        var DASH_PLATS=[['twitter','T','Twitter'],['bluesky','B','Bluesky'],['youtube','Y','YouTube'],['niconico','ニ','ニコニコ'],['discord','D','Discord'],['instagram','I','Instagram'],['pixiv','P','Pixiv'],['fanbox','F','Fanbox'],['tumblr','T','Tumblr'],['spinspin','S','SpinSpin'],['asked','A','Asked'],['trad','F','trad']];
         function dashLed(s){ s=String(s||''); return /오류|error|fail/i.test(s)?'err':((/수집|다운로드|진행|중/.test(s)&&!/완료|대기/.test(s))?'live':'idle'); }
         function renderDashboard(){
             var K=document.getElementById('dash-kpis'), G=document.getElementById('dash-grid'); if(!K||!G) return;
