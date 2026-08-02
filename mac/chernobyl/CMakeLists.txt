@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(Miyo VERSION 1.0 LANGUAGES CXX)
+# ★ 버전 단일 출처 — 레포 루트의 VERSION 파일 하나만 고치면 exe 버전 리소스,
+#   Info.plist, 설치본 버전이 전부 따라온다. 예전엔 .iss/.rc/CMake 가 제각각이라
+#   설치본은 1.0, exe 는 3.0, 릴리즈는 3.9 로 표시돼 어느 빌드인지 알 수 없었다.
+file(READ "${CMAKE_CURRENT_LIST_DIR}/../../VERSION" PREDORMITION_VERSION)
+string(STRIP "${PREDORMITION_VERSION}" PREDORMITION_VERSION)
+project(Miyo VERSION ${PREDORMITION_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

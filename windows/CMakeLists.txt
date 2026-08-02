@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(Miyo VERSION 3.0 LANGUAGES CXX)
+# ★ 버전 단일 출처 — 레포 루트의 VERSION 파일 하나만 고치면 exe 버전 리소스,
+#   Info.plist, 설치본 버전이 전부 따라온다. 예전엔 .iss/.rc/CMake 가 제각각이라
+#   설치본은 1.0, exe 는 3.0, 릴리즈는 3.9 로 표시돼 어느 빌드인지 알 수 없었다.
+file(READ "${CMAKE_CURRENT_LIST_DIR}/../VERSION" PREDORMITION_VERSION)
+string(STRIP "${PREDORMITION_VERSION}" PREDORMITION_VERSION)
+project(Miyo VERSION ${PREDORMITION_VERSION} LANGUAGES CXX)
 
 # ★ UTF-8 소스 — MSVC 가 narrow/wide 문자열 리터럴(일본어 カメラ, 한글)을 올바르게 컴파일.
 #   이게 없으면 시스템 ACP 로 해석돼 제목/메뉴가 깨짐.
@@ -503,8 +508,18 @@ if(WIN32)
 
     # Windows RC file for icon — .rc 는 abiwa.ico 가 있을 때만 컴파일(없으면 RC2135 로 빌드 실패).
     #   아이콘 에셋이 없어도 빌드는 성공하고, 기본 아이콘으로 동작.
-    set(RC_FILE "${CMAKE_SOURCE_DIR}/resources/abiwa.rc")
-    if(EXISTS "${RC_FILE}" AND EXISTS "${APP_ICON_WIN}")
+    # ★ .rc 는 템플릿에서 생성 — 앱 이름·버전이 CMake(=VERSION 파일)와 항상 일치한다.
+    #   예전엔 .rc 를 손으로 관리해 exe 속성이 "カメラ / Chernobyl.exe / 3.0.0.0" 인
+    #   채로 배포됐다(설치본·릴리즈 버전과 불일치).
+    set(RC_TEMPLATE "${CMAKE_SOURCE_DIR}/resources/abiwa.rc.in")
+    set(RC_FILE "${CMAKE_BINARY_DIR}/abiwa.rc")
+    if(EXISTS "${RC_TEMPLATE}" AND EXISTS "${APP_ICON_WIN}")
+        # RC 의 FILEVERSION 은 쉼표 4자리(a,b,c,0) 형식이어야 한다.
+        string(REPLACE "." "," PREDORMITION_VERSION_COMMA "${PREDORMITION_VERSION}")
+        set(PREDORMITION_VERSION_COMMA "${PREDORMITION_VERSION_COMMA},0")
+        # 아이콘은 .rc 와 같은 폴더 기준으로 찾으므로 생성 위치로 복사.
+        configure_file("${APP_ICON_WIN}" "${CMAKE_BINARY_DIR}/abiwa.ico" COPYONLY)
+        configure_file("${RC_TEMPLATE}" "${RC_FILE}" @ONLY)
         target_sources(Miyo PRIVATE "${RC_FILE}")
     endif()
 

@@ -1,0 +1,34 @@
+#pragma code_page(65001)
+
+IDI_ICON1 ICON "abiwa.ico"
+
+// ★ 이 파일은 템플릿이다 — CMake 가 VERSION 파일을 읽어 abiwa.rc 를 생성한다.
+//   직접 고치지 말 것(생성본이 덮어쓴다). 버전은 레포 루트의 VERSION 하나만 고친다.
+1 VERSIONINFO
+ FILEVERSION @PREDORMITION_VERSION_COMMA@
+ PRODUCTVERSION @PREDORMITION_VERSION_COMMA@
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "Predormition"
+            VALUE "FileDescription", "Predormition"
+            VALUE "FileVersion", "@PREDORMITION_VERSION@"
+            VALUE "InternalName", "Predormition"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Predormition"
+            VALUE "OriginalFilename", "Predormition.exe"
+            VALUE "ProductName", "Predormition"
+            VALUE "ProductVersion", "@PREDORMITION_VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
