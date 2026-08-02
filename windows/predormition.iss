@@ -3,7 +3,11 @@
 ; iscc 는 repo 루트에서 호출 → 모든 상대경로는 repo 루트 기준.
 
 #define MyAppName    "Predormition"
-#define MyAppVersion "3.9.0"   ; ★ 릴리즈마다 갱신 — 설치본 버전이 영구 1.0 이면 업그레이드 판단·제어판 표시가 어긋난다
+; ★ 버전은 CI 가 레포 루트 VERSION 파일을 읽어 /DMyAppVersion=... 로 넘긴다.
+;   아래 값은 로컬에서 iscc 를 직접 돌릴 때만 쓰이는 폴백이다.
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0-local"
+#endif
 #define MyAppExeName "Predormition.exe"
 
 [Setup]

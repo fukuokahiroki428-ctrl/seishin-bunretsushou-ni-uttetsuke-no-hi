@@ -356,7 +356,23 @@ jobs:
           choco install innosetup --no-progress -y
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { $iscc = "iscc" }
-          & $iscc predormition.iss
+
+          # ★ 버전 단일 출처 — 레포 루트 VERSION 을 읽어 설치본에 넘긴다.
+          #   태그로 빌드할 때는 태그와 VERSION 이 같은지 확인한다. 다르면
+          #   "v3.9.1 릴리즈인데 설치본은 3.9.0" 같은 불일치가 그대로 배포된다.
+          $ver = (Get-Content "../VERSION" -Raw).Trim()
+          if ($ver -notmatch '^\d+\.\d+\.\d+$') { throw "VERSION 형식이 잘못됐습니다: '$ver'" }
+          $ref = "${{ github.ref }}"
+          if ($ref -like "refs/tags/v*") {
+            $tagVer = $ref -replace '^refs/tags/v', ''
+            if ($tagVer -ne $ver) {
+              throw "태그(v$tagVer)와 VERSION 파일($ver)이 다릅니다 — 릴리즈 버전 불일치이므로 중단"
+            }
+            Write-Host "  ✔ 태그 v$tagVer == VERSION $ver"
+          }
+          Write-Host "  설치본 버전: $ver"
+
+          & $iscc "/DMyAppVersion=$ver" predormition.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed (exit $LASTEXITCODE)" }
           Get-ChildItem installer_out | Format-Table Name, @{N='MB';E={[math]::Round($_.Length/1MB,1)}}
 
