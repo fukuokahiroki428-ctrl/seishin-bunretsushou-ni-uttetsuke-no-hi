@@ -55,9 +55,26 @@ make_dmg() {
         cp -R "$APP_PATH" "$STAGE_DIR/"
     else
         rsync -a --exclude "Contents/Resources/llm" "$APP_PATH" "$STAGE_DIR/"
-        # 번들에서 파일을 뺐으므로 서명 봉인이 깨진다 → 재서명(안 하면 macOS 가 앱을 죽인다)
-        codesign -f -s "$SIGN_ID" --deep "$STAGE_DIR/$(basename "$APP_PATH")" 2>/dev/null \
-            || echo "  ⚠ 재서명 실패 — 앱이 실행 안 될 수 있음"
+        # 번들에서 파일을 뺐으므로 서명 봉인이 깨진다 → 재서명(안 하면 macOS 가 앱을 죽인다).
+        # ★ 저장소의 정식 서명 스크립트를 쓴다. 손으로 `codesign --deep` 만 하면
+        #   entitlements(WebEngine JIT, 라이브러리 검증 해제)와 하드닝 런타임이 벗겨져
+        #   캡쳐 기능이 죽거나 공증이 불가능해진다.
+        # ★ 실패하면 즉시 중단한다 — 예전엔 경고 한 줄만 찍고 계속 진행해서,
+        #   실행조차 안 되는 앱이 담긴 DMG 가 "✅" 로 보고됐다.
+        local SIGNER_SH="$REPO_ROOT_D/mac/chernobyl/codesign_app.sh"
+        if [ -f "$SIGNER_SH" ]; then
+            SIGN_ID="$SIGN_ID" bash "$SIGNER_SH" "$STAGE_DIR/$(basename "$APP_PATH")" 2>&1 \
+                | grep -E "❌|✅|VERIFY|Using|서명 실패" | sed 's/^/    /'
+            if [ "${PIPESTATUS[0]}" != "0" ]; then
+                echo "  ❌ 재서명/검증 실패 — DMG 를 만들지 않습니다."
+                return 1
+            fi
+        else
+            codesign -f -s "$SIGN_ID" --deep "$STAGE_DIR/$(basename "$APP_PATH")" \
+                || { echo "  ❌ 재서명 실패"; return 1; }
+            codesign --verify --deep --strict "$STAGE_DIR/$(basename "$APP_PATH")" \
+                || { echo "  ❌ 재서명 후 검증 실패"; return 1; }
+        fi
     fi
     ln -s /Applications "$STAGE_DIR/Applications"
 
@@ -69,6 +86,13 @@ make_dmg() {
         cp "$HELPER" "$STAGE_DIR/실행이_안되면_더블클릭.command"
         chmod +x "$STAGE_DIR/실행이_안되면_더블클릭.command"
         xattr -cr "$STAGE_DIR/실행이_안되면_더블클릭.command" 2>/dev/null || true
+    fi
+
+    # 수리 도구가 entitlements 를 보존한 채 재서명할 수 있도록 정식 서명 스크립트 동봉
+    if [ -f "$REPO_ROOT_D/mac/chernobyl/codesign_app.sh" ]; then
+        cp "$REPO_ROOT_D/mac/chernobyl/codesign_app.sh" "$STAGE_DIR/codesign_app.sh"
+        cp "$REPO_ROOT_D/mac/chernobyl/predormition.entitlements" "$STAGE_DIR/" 2>/dev/null || true
+        chmod +x "$STAGE_DIR/codesign_app.sh"
     fi
 
     # ★ AI 모델 설치기 동봉 — 모델(1~9GB)은 GitHub 릴리즈 2GB 제한 때문에 DMG 에 못 넣는다.
@@ -123,7 +147,12 @@ if [ -f "$MAKE_DIST" ]; then
     bash "$MAKE_DIST" "$PEN_DIST_APP" 2>&1 \
         | grep -E "✅|⚠|homebrew|valid on disk|완료" | sed 's/^/    /' || true
 fi
-make_dmg "$PEN_DIST_APP" "팬을 잘 쓰고 싶다" "Pen"
+if [ -d "$PEN_DIST_APP" ]; then
+    make_dmg "$PEN_DIST_APP" "팬을 잘 쓰고 싶다" "Pen"
+else
+    echo ""
+    echo "ℹ Pen 은 소스가 없어 건너뜁니다 ($PEN_DIST_APP)"
+fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

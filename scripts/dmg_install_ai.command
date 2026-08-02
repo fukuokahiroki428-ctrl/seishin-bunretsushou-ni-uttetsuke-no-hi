@@ -112,6 +112,7 @@ if [ ! -x "$SRV" ]; then
         if [ -x "$SRV" ]; then echo "  ✔ 엔진 설치 완료"; else echo "  ✗ 엔진 파일을 찾지 못했습니다"; fi
     else
         echo "  ✗ 엔진 설치 실패 (인터넷 연결을 확인해 주세요)"
+        FAIL_ENGINE=1
     fi
     rm -rf "$TMP"
 else
@@ -119,7 +120,7 @@ else
 fi
 
 # ── 4) 모델 받기 (이어받기 지원) ───────────────────────────────────────────
-FAIL=0
+FAIL=${FAIL_ENGINE:-0}
 for URL in $MODELS; do
     NAME=$(basename "$URL")
     OUT="$LLM_DIR/$NAME"
@@ -130,37 +131,53 @@ for URL in $MODELS; do
     echo ""
     echo "▶ 다운로드: $NAME"
 
-    # ① 보관 릴리즈에서 통째로
-    if curl -fL --retry 3 -C - --progress-bar -o "$OUT" "$MIRROR/$NAME"; then
+    # ★ 받는 동안에는 항상 "$OUT.part" 에 쓰고, 다 받은 뒤에만 최종 이름으로 옮긴다.
+    #   예전에는 최종 이름에 바로 받아서 두 가지 문제가 있었다:
+    #     - 창을 닫거나 Ctrl-C 로 끊으면 '잘린 파일' 이 최종 이름으로 남고, 다음 실행에서
+    #       "이미 있음, 건너뜀" 으로 처리돼 손상된 모델이 설치 완료로 보고됐다.
+    #     - 실패하면 부분 파일을 지워버려서, 안내문과 달리 이어받기가 실제로는 안 됐다.
+    TMP_OUT="$OUT.part"
+
+    # ① 보관 릴리즈에서 통째로 (-C - 로 이어받기)
+    if curl -fL --retry 3 -C - --progress-bar -o "$TMP_OUT" "$MIRROR/$NAME"; then
+        mv -f "$TMP_OUT" "$OUT"
         echo "  ✔ 완료(보관본)"
         continue
     fi
-    rm -f "$OUT"
 
     # ② 보관 릴리즈의 분할본 (2GB 넘는 모델은 .partaa/.partab… 로 올려둠)
-    PARTS=""; OK=1
+    #   ★ 경로에 공백이 있어도 안전하도록 배열로 모은다(예전엔 따옴표 없는 $PARTS 라
+    #     공백 있는 경로에서 병합이 통째로 실패했다).
+    PARTS=(); OK=1
     for SFX in aa ab ac ad ae af; do
         if curl -fsIL "$MIRROR/$NAME.part$SFX" >/dev/null 2>&1; then
             echo "   조각 part$SFX 받는 중..."
-            if curl -fL --retry 3 -C - --progress-bar -o "$OUT.part$SFX" "$MIRROR/$NAME.part$SFX"; then
-                PARTS="$PARTS $OUT.part$SFX"
+            if curl -fL --retry 3 -C - --progress-bar -o "$OUT.chunk$SFX" "$MIRROR/$NAME.part$SFX"; then
+                PARTS+=("$OUT.chunk$SFX")
             else OK=0; break; fi
         else
             break
         fi
     done
-    if [ -n "$PARTS" ] && [ "$OK" = "1" ]; then
-        cat $PARTS > "$OUT" && rm -f $PARTS && { echo "  ✔ 완료(보관본 조각 합침)"; continue; }
+    if [ "${#PARTS[@]}" -gt 0 ] && [ "$OK" = "1" ]; then
+        if cat "${PARTS[@]}" > "$TMP_OUT"; then
+            rm -f "${PARTS[@]}"
+            mv -f "$TMP_OUT" "$OUT"
+            echo "  ✔ 완료(보관본 조각 합침)"
+            continue
+        fi
     fi
-    rm -f $PARTS "$OUT" 2>/dev/null
+    [ "${#PARTS[@]}" -gt 0 ] && rm -f "${PARTS[@]}"
+    rm -f "$TMP_OUT" 2>/dev/null
 
     # ③ 원 배포처(Hugging Face)
     echo "   보관본이 없어 원 배포처에서 받습니다..."
-    if curl -fL --retry 3 -C - --progress-bar -o "$OUT" "$URL"; then
+    if curl -fL --retry 3 -C - --progress-bar -o "$TMP_OUT" "$URL"; then
+        mv -f "$TMP_OUT" "$OUT"
         echo "  ✔ 완료"
     else
-        echo "  ✗ 실패 — 이 파일은 다시 실행하면 이어받습니다"
-        rm -f "$OUT"
+        # ★ 부분 파일(.part)은 남겨둔다 — 다시 실행하면 -C - 가 이어받는다.
+        echo "  ✗ 실패 — 다시 실행하면 받다 만 지점부터 이어받습니다"
         FAIL=1
     fi
 done
