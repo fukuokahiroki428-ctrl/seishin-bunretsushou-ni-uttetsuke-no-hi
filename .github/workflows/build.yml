@@ -234,6 +234,9 @@ jobs:
 
           # Qt DLL 번들 (--compiler-runtime: VC++ 런타임 DLL 동봉 → 사용자 PC 에 VC redist 없어도 실행)
           & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --no-translations --compiler-runtime --no-system-d3d-compiler "$dist/Predormition.exe"
+          # ★ 종료 코드 확인 — windeployqt 가 실패해도 조용히 지나가면 Qt DLL 이 빠진
+          #   '실행조차 안 되는' 배포본이 그대로 릴리즈된다.
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt 실패 (exit $LASTEXITCODE) — Qt 런타임이 불완전하므로 중단" }
 
           # ★ VC++ 런타임 DLL 실제 확인 — --compiler-runtime 이 vc_redist 설치본만 넣고
           #   DLL 은 안 넣는 경우가 있다. 그러면 VC redist 가 없는 깨끗한 PC 에서
@@ -307,16 +310,25 @@ jobs:
             "Predormition.exe"   = "본체 실행 파일"
             "Qt6Core.dll"        = "Qt 런타임"
             "Qt6WebEngineCore.dll" = "WebEngine(캡쳐·UI) 런타임"
+            # ★ WebEngine 은 DLL 만으론 못 뜬다 — 아래가 하나라도 빠지면 앱은 켜지지만
+            #   UI 가 백지로 나오거나 캡쳐가 통째로 죽는다(예전에 실제로 겪은 무음 실패).
+            "QtWebEngineProcess.exe" = "WebEngine 렌더러 프로세스"
             "html/index.html"    = "앱 UI"
             "yt-dlp.exe"         = "YouTube/니코동 다운로더"
             "ffmpeg.exe"         = "영상 병합/변환"
+            # ★ Twitter/Bluesky 는 이 파이썬 데몬이 없으면 수집이 아예 안 된다.
+            #   복사가 -ErrorAction SilentlyContinue 라 조용히 빠질 수 있어 게이트에 넣는다.
+            "tools/twitter_daemon.py" = "Twitter 수집 데몬"
+            "tools/bluesky_daemon.py" = "Bluesky 수집 데몬"
           }
           $missing = @()
           foreach ($k in $must.Keys) { if (-not (Test-Path "$dist/$k")) { $missing += "$k ($($must[$k]))" } }
           if ($missing.Count -gt 0) {
             throw "배포본에 필수 파일이 빠졌습니다 — 설치해도 동작하지 않으므로 중단:`n  - " + ($missing -join "`n  - ")
           }
-          $should = @{ "exiftool.exe" = "EXIF 메타데이터"; "rclone.exe" = "NAS 백업";
+          $should = @{ "resources/qtwebengine_resources.pak" = "WebEngine 리소스";
+                       "resources/icudtl.dat" = "WebEngine 유니코드 데이터";
+                       "exiftool.exe" = "EXIF 메타데이터"; "rclone.exe" = "NAS 백업";
                        "deno.exe" = "yt-dlp JS 런타임"; "fonts" = "한글 폰트";
                        "tools/singlefile_extension" = "페이지 통째 캡쳐" }
           foreach ($k in $should.Keys) {

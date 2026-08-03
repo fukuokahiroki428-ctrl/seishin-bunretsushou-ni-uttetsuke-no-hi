@@ -13,9 +13,9 @@
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>カメラ</string>
+    <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
     <key>CFBundleDisplayName</key>
-    <string>カメラ</string>
+    <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -34,6 +34,6 @@
         <true/>
     </dict>
     <key>NSAppleEventsUsageDescription</key>
-    <string>カメラ가 수집 로그를 터미널 창에 표시하기 위해 Terminal.app을 제어합니다.</string>
+    <string>${MACOSX_BUNDLE_BUNDLE_NAME}이(가) 수집 로그를 터미널 창에 표시하기 위해 Terminal.app을 제어합니다.</string>
 </dict>
 </plist>

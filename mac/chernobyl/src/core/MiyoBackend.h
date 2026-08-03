@@ -455,6 +455,11 @@ public:
     QMap<QString, RealChromeCrawler*> m_captureChromesPerThread;
     QMutex m_capChromeMapMutex;
     int m_nextCapPort = 9223;
+    // ★ trackKey → 디버그 포트 고정. 예전엔 맵에 트랙을 처음 넣을 때만 포트를 배정해서,
+    //   Chrome 이 죽어 재생성될 때 기본값 9223 으로 되돌아갔다. start() 는 그 포트를 쓰는
+    //   프로세스를 죽이므로 다른 트랙의 멀쩡한 Chrome 을 잡아버린다.
+    QMap<QString, int> m_capPortPerThread;
+    int capturePortFor(const QString &trackKey);
     // ★ 캡쳐 카운터 — N 회마다 Chrome 재시작 (메모리 누수 방지, 60+개 다운 안정성)
     QMap<QString, int> m_captureCountsPerKey;
     // RAM 제한 — 동시 실행 Chromium 1개로 제한 (메모리 우선)
