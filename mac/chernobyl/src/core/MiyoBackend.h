@@ -348,6 +348,12 @@ public:
     bool m_nasReconnectInProgress = false;
     void nasWatchdogTick();
     void silentRemountWebDav();  // prompt 없는 재마운트 시도
+    // ★ NAS 연결 유지(keep-alive) — 공유기 NAT/서버가 유휴 TCP 세션을 끊어
+    //   "마운트는 보이는데 접근하면 Broken pipe" 가 되는 것을 막는다.
+    QStringList networkMountPoints() const;   // 현재 마운트된 네트워크 볼륨(마운틴 덕 포함)
+    bool probeMountAlive(const QString &mountPoint, int timeoutMs);  // 별도 프로세스로 안전 확인
+    bool m_nasProbeInProgress = false;
+    QMap<QString, int> m_nasDeadStreak;       // 마운트별 연속 실패 횟수
 
     // ★ 무결성 검사 워커 — config["integrityCheck"]=true 일 때 enqueue.
     void enqueueIntegrityCheck(const QString &localPath, const QString &platform);
