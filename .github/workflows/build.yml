@@ -313,6 +313,11 @@ jobs:
             # ★ WebEngine 은 DLL 만으론 못 뜬다 — 아래가 하나라도 빠지면 앱은 켜지지만
             #   UI 가 백지로 나오거나 캡쳐가 통째로 죽는다(예전에 실제로 겪은 무음 실패).
             "QtWebEngineProcess.exe" = "WebEngine 렌더러 프로세스"
+            # 아래 둘은 Qt 버전에 따라 위치가 다를 수 있어 경고로 시작했으나,
+            # run 30790538482 에서 이 경로에 실제로 존재함을 확인하고 필수로 승격.
+            # 빠지면 앱은 켜지지만 UI 가 백지로 나오거나 캡쳐가 죽는다(무음 실패).
+            "resources/qtwebengine_resources.pak" = "WebEngine 리소스"
+            "resources/icudtl.dat" = "WebEngine 유니코드 데이터"
             "html/index.html"    = "앱 UI"
             "yt-dlp.exe"         = "YouTube/니코동 다운로더"
             "ffmpeg.exe"         = "영상 병합/변환"
@@ -326,9 +331,7 @@ jobs:
           if ($missing.Count -gt 0) {
             throw "배포본에 필수 파일이 빠졌습니다 — 설치해도 동작하지 않으므로 중단:`n  - " + ($missing -join "`n  - ")
           }
-          $should = @{ "resources/qtwebengine_resources.pak" = "WebEngine 리소스";
-                       "resources/icudtl.dat" = "WebEngine 유니코드 데이터";
-                       "exiftool.exe" = "EXIF 메타데이터"; "rclone.exe" = "NAS 백업";
+          $should = @{ "exiftool.exe" = "EXIF 메타데이터"; "rclone.exe" = "NAS 백업";
                        "deno.exe" = "yt-dlp JS 런타임"; "fonts" = "한글 폰트";
                        "tools/singlefile_extension" = "페이지 통째 캡쳐" }
           foreach ($k in $should.Keys) {
