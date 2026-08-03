@@ -3679,7 +3679,15 @@ void MiyoBackend::notifyCollectionEnded(const QString &platform)
             {
                 QMutexLocker mapLock(&m_capChromeMapMutex);
                 auto it = m_captureChromesPerThread.find(cleanupKey);
-                if (it != m_captureChromesPerThread.end()) { victim = it.value(); m_captureChromesPerThread.erase(it); }
+                if (it != m_captureChromesPerThread.end()) {
+                    victim = it.value();
+                    // ★ erase 하면 안 된다 — getChromePtr() 이 이 맵 노드의 '주소'를
+                    //   RealChromeCrawler** 로 넘겨주고, 진행 중인 CDP 콜백들이 그걸
+                    //   붙들고 있다. 노드를 지우면 그 포인터가 해제된 메모리를 가리켜
+                    //   병렬 수집에서 한 트랙이 끝나는 순간 앱이 죽는다.
+                    //   슬롯은 그대로 두고 값만 비운다 → 콜백들의 기존 널 가드가 받아준다.
+                    it.value() = nullptr;
+                }
             }
             if (victim) { victim->stop(); victim->deleteLater(); }
         }, Qt::QueuedConnection);
