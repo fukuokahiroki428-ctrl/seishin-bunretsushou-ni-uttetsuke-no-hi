@@ -381,6 +381,18 @@ if(APPLE)
         COMMAND bash "${CMAKE_SOURCE_DIR}/codesign_app.sh" "$<TARGET_BUNDLE_DIR:Miyo>"
         COMMENT "Codesigning entire app bundle"
     )
+
+    # ★ 서명 정합성 보증 — 위 POST_BUILD 는 '타겟이 다시 링크될 때만' 돈다.
+    #   Info.plist 는 cmake 재구성만으로도 새로 생성되므로(예: VERSION 만 변경),
+    #   그때는 링크가 없어 서명 단계가 건너뛰어지고 서명이 plist 와 어긋난 채 남는다.
+    #   → macOS 가 앱 실행을 거부한다("invalid Info.plist" / Launch failed).
+    #   항상 도는 이 타겟이 확인하고, 어긋났을 때만 다시 서명한다.
+    add_custom_target(codesign_verify ALL
+        COMMAND bash "${CMAKE_SOURCE_DIR}/verify_or_resign.sh" "$<TARGET_BUNDLE_DIR:Miyo>"
+        COMMENT "Verifying code signature (re-signs only when stale)"
+        VERBATIM
+    )
+    add_dependencies(codesign_verify Miyo)
 endif()
 
 # ═══════════════════════════════════════════

@@ -713,22 +713,106 @@ void MiyoBackend::testBackup()
 // ═════════════════════════════════════════════════════════════════════════
 // NAS watchdog — 30초마다 backupPath 마운트 체크, 끊기면 자동 재마운트
 // ═════════════════════════════════════════════════════════════════════════
+// 현재 마운트된 네트워크 볼륨 목록.
+//   ★ /Volumes 만 보면 안 된다 — 마운트 도구마다 위치가 다르다. 특히 Mountain Duck 은
+//     ~/Library/Containers/io.mountainduck/.../Volumes.noindex/ 아래에 NFS 로 마운트하므로
+//     예전 워치독(/Volumes 접두사 검사)은 이 경우 한 번도 동작하지 않았다.
+QStringList MiyoBackend::networkMountPoints() const
+{
+    QStringList out;
+    QProcess p;
+    p.start("/sbin/mount", {});
+    if (!p.waitForFinished(5000)) { p.kill(); p.waitForFinished(1000); return out; }
+    const QString txt = QString::fromUtf8(p.readAllStandardOutput());
+    // "<source> on <mountpoint> (<fstype>, ...)" 형식
+    static const QRegularExpression re(R"(^.* on (.+) \(([a-z0-9]+)[,)])",
+                                       QRegularExpression::MultilineOption);
+    auto it = re.globalMatch(txt);
+    while (it.hasNext()) {
+        const auto m = it.next();
+        const QString mp = m.captured(1).trimmed();
+        const QString fs = m.captured(2);
+        // 네트워크 파일시스템만 — 로컬 디스크(apfs/hfs)는 끊길 일이 없다.
+        if (fs == "nfs" || fs == "smbfs" || fs == "webdav" || fs == "afpfs" || fs == "ftp")
+            out << mp;
+    }
+    return out;
+}
+
+// 마운트가 '실제로 살아있는지' 확인. 겸사겸사 keep-alive 역할도 한다.
+//   ★ 반드시 별도 프로세스로 확인한다. 세션이 끊긴 네트워크 마운트에 stat() 을 걸면
+//     커널에서 무한 대기(uninterruptible)에 빠져 앱 스레드가 통째로 멈춘다.
+//     프로세스는 타임아웃 시 죽일 수 있어 앱이 함께 얼지 않는다.
+bool MiyoBackend::probeMountAlive(const QString &mountPoint, int timeoutMs)
+{
+    QProcess p;
+    p.start("/usr/bin/stat", {"-f", "%z", mountPoint});
+    if (!p.waitForFinished(timeoutMs)) {
+        p.kill();
+        p.waitForFinished(1000);
+        return false;          // 응답 없음 = 세션 죽음
+    }
+    return p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0;
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// NAS watchdog — 30초마다
+//   ① 네트워크 마운트를 가볍게 건드려 세션을 살려둔다(keep-alive).
+//      공유기 NAT 와 서버는 유휴 TCP 세션을 몇 분~수십 분 뒤 끊는다. 그러면
+//      마운트는 그대로 보이는데 접근하는 순간 Broken pipe / Read timed out 이 난다.
+//      주기적으로 아주 작은 요청을 보내면 세션이 유휴 상태가 되지 않아 끊기지 않는다.
+//   ② 그래도 죽었으면(연속 2회 실패) 사용자에게 알리고 재마운트를 시도한다.
+// ═════════════════════════════════════════════════════════════════════════
 void MiyoBackend::nasWatchdogTick()
 {
     if (!m_config) return;
     if (!m_config->nasAutoReconnect()) return;
-    // 체크 대상 — backupPath 가 NAS 경로이면 그 부모 마운트 확인
-    QString path = m_config->backupPath();
-    if (path.isEmpty() || !path.startsWith("/Volumes/")) return;
-    // /Volumes/X 의 X 마운트 디렉토리 존재 + 읽기 가능 여부
-    int slash = path.indexOf('/', QString("/Volumes/").length());
-    QString mountPoint = slash > 0 ? path.left(slash) : path;
-    QDir d(mountPoint);
-    if (d.exists() && QFileInfo(mountPoint).isReadable()) return;  // 마운트 OK
-    // 끊김 — 자동 재마운트 시도
-    if (m_nasReconnectInProgress) return;
-    log(QString("⚠ NAS 마운트 끊김 감지: %1 — 자동 재연결 시도").arg(mountPoint), "warning", "settings");
-    silentRemountWebDav();
+    if (m_nasProbeInProgress) return;        // 앞 확인이 아직 안 끝났으면 겹치지 않게
+
+    QStringList targets = networkMountPoints();
+    // 백업 경로가 네트워크 마운트가 아니어도(예: 로컬 외장) 사라짐은 감지한다.
+    const QString bp = m_config->backupPath();
+    if (bp.startsWith("/Volumes/")) {
+        const int slash = bp.indexOf('/', QString("/Volumes/").length());
+        const QString mp = slash > 0 ? bp.left(slash) : bp;
+        if (!targets.contains(mp)) targets << mp;
+    }
+    if (targets.isEmpty()) return;
+
+    m_nasProbeInProgress = true;
+    QThread *t = QThread::create([this, targets]() {
+        QStringList dead;
+        for (const QString &mp : targets)
+            if (!probeMountAlive(mp, 8000)) dead << mp;
+
+        QMetaObject::invokeMethod(this, [this, targets, dead]() {
+            m_nasProbeInProgress = false;
+            for (const QString &mp : targets) {
+                if (!dead.contains(mp)) {
+                    // 살아있음 — 이전에 끊겼다 붙었으면 알린다.
+                    if (m_nasDeadStreak.value(mp) >= 2)
+                        log(QString("✅ NAS 연결 복구됨: %1").arg(mp), "success", "settings");
+                    m_nasDeadStreak.remove(mp);
+                    continue;
+                }
+                // 일시적 지연과 진짜 끊김을 구분 — 연속 2회(=1분)부터 끊김으로 본다.
+                const int n = m_nasDeadStreak.value(mp) + 1;
+                m_nasDeadStreak[mp] = n;
+                if (n != 2) continue;        // 1회는 무시, 3회 이상은 중복 로그 방지
+                log(QString("⚠ NAS 응답 없음: %1 — 세션이 끊겼습니다").arg(mp), "warning", "settings");
+                // Mountain Duck 등 외부 도구가 만든 마운트는 우리가 되살릴 수 없다.
+                //   (그 도구 자신의 재연결에 맡기고, 사용자에게만 알린다.)
+                if (mp.contains("Volumes.noindex") || mp.contains("io.mountainduck")) {
+                    log("  → Mountain Duck 마운트입니다. 해당 앱이 재연결할 때까지 기다리거나 "
+                        "메뉴막대에서 다시 연결해 주세요.", "info", "settings");
+                    continue;
+                }
+                if (!m_nasReconnectInProgress) silentRemountWebDav();
+            }
+        }, Qt::QueuedConnection);
+    });
+    connect(t, &QThread::finished, t, &QThread::deleteLater);
+    t->start();
 }
 
 void MiyoBackend::silentRemountWebDav()
