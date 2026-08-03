@@ -136,11 +136,16 @@ for URL in $MODELS; do
     #     - 창을 닫거나 Ctrl-C 로 끊으면 '잘린 파일' 이 최종 이름으로 남고, 다음 실행에서
     #       "이미 있음, 건너뜀" 으로 처리돼 손상된 모델이 설치 완료로 보고됐다.
     #     - 실패하면 부분 파일을 지워버려서, 안내문과 달리 이어받기가 실제로는 안 됐다.
+    # ★ 받는 곳마다 임시 파일을 따로 쓴다. 예전엔 셋이 같은 .part 를 공유해서,
+    #   보관본 시도가 실패하며 그 파일을 지울 때 원 배포처에서 받다 만 것까지 같이
+    #   지워졌다 → 안내와 달리 폴백 경로는 매번 0부터 다시 받았다.
+    MIR_OUT="$OUT.mirror.part"
+    MRG_OUT="$OUT.merge.part"
     TMP_OUT="$OUT.part"
 
     # ① 보관 릴리즈에서 통째로 (-C - 로 이어받기)
-    if curl -fL --retry 3 -C - --progress-bar -o "$TMP_OUT" "$MIRROR/$NAME"; then
-        mv -f "$TMP_OUT" "$OUT"
+    if curl -fL --retry 3 -C - --progress-bar -o "$MIR_OUT" "$MIRROR/$NAME"; then
+        mv -f "$MIR_OUT" "$OUT"
         echo "  ✔ 완료(보관본)"
         continue
     fi
@@ -160,15 +165,16 @@ for URL in $MODELS; do
         fi
     done
     if [ "${#PARTS[@]}" -gt 0 ] && [ "$OK" = "1" ]; then
-        if cat "${PARTS[@]}" > "$TMP_OUT"; then
+        if cat "${PARTS[@]}" > "$MRG_OUT"; then
             rm -f "${PARTS[@]}"
-            mv -f "$TMP_OUT" "$OUT"
+            mv -f "$MRG_OUT" "$OUT"
             echo "  ✔ 완료(보관본 조각 합침)"
             continue
         fi
     fi
     [ "${#PARTS[@]}" -gt 0 ] && rm -f "${PARTS[@]}"
-    rm -f "$TMP_OUT" 2>/dev/null
+    # ★ 여기서 지우는 건 이 경로가 만든 것들뿐 — $TMP_OUT(원 배포처 이어받기용)은 건드리지 않는다.
+    rm -f "$MIR_OUT" "$MRG_OUT" 2>/dev/null
 
     # ③ 원 배포처(Hugging Face)
     echo "   보관본이 없어 원 배포처에서 받습니다..."

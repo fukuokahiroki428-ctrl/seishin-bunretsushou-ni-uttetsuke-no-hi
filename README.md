@@ -28,8 +28,8 @@
 
 | 파일 | 플랫폼 | 용량 | 설치 |
 |------|--------|------|------|
-| `Chernobyl_Setup.exe` | Windows 10/11 (x64) | ~261 MB | 더블클릭 → 설치 (관리자 권한 불필요, %LOCALAPPDATA% 에 설치) |
-| `Chernobyl.dmg` | macOS (Apple Silicon) | ~721 MB | 마운트 → Applications 로 드래그 |
+| `Predormition_Setup.exe` | Windows 10/11 (x64) | ~261 MB | 더블클릭 → 설치 (관리자 권한 불필요, %LOCALAPPDATA% 에 설치) |
+| `Predormition.dmg` | macOS (Apple Silicon) | ~721 MB | 마운트 → Applications 로 드래그 |
 
 > 📌 구 릴리스의 `Pen.dmg` 는 폐기된 독립 앱입니다 — 해당 기능은 이제 Chernobyl 안에 있습니다.
 

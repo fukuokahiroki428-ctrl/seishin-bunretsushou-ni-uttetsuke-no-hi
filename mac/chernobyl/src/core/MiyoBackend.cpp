@@ -3383,6 +3383,22 @@ void MiyoBackend::updateStats(int posts, int media, const QString &status, const
     runJs(QString("updateStats(%1, %2, '%3', '%4')").arg(posts).arg(media).arg(status, p));
 }
 
+// 트랙별 캡쳐 Chrome 디버그 포트 — 한 번 배정하면 그 트랙에는 계속 같은 포트를 준다.
+//   재생성 때 포트가 바뀌면 RealChromeCrawler::start() 가 그 포트를 점유한 다른 트랙의
+//   Chrome 을 죽여, 병렬 수집이 서로를 무너뜨린다.
+int MiyoBackend::capturePortFor(const QString &trackKey)
+{
+    if (trackKey.isEmpty()) return 9223;          // 단일 수집은 고정 포트
+    QMutexLocker mapLock(&m_capChromeMapMutex);
+    auto it = m_capPortPerThread.find(trackKey);
+    if (it != m_capPortPerThread.end()) return it.value();
+    const int port = m_nextCapPort++;
+    m_capPortPerThread[trackKey] = port;
+    if (!m_captureChromesPerThread.contains(trackKey))
+        m_captureChromesPerThread[trackKey] = nullptr;
+    return port;
+}
+
 void MiyoBackend::notifyCollectionEnded(const QString &platform)
 {
     // 수집 스레드 종료 시 호출 — JS 가 멀티 진행 여부를 보고 시작/정지 버튼을 안전하게 리셋.
@@ -3395,12 +3411,19 @@ void MiyoBackend::notifyCollectionEnded(const QString &platform)
     // ★ 이 트랙이 쓰던 캡쳐 Chrome 정리 — 안 하면 병렬 수집을 돌릴 때마다 Chrome 프로세스와
     //   프로필 폴더가 앱을 끌 때까지 계속 쌓인다(메모리·핸들·디스크 누수, 포트 고갈).
     //   Chrome 객체는 메인 스레드에서 만들어졌으므로 정리도 메인 스레드에서 한다.
-    if (!p.isEmpty()) {
-        QMetaObject::invokeMethod(this, [this, p]() {
+    // ★ 정리 키는 platform 이 아니라 trackKey 다. 병렬 수집은 Chrome 을 trackKey("twitter#0")
+    //   로 담는데 호출자(CollectionGuard)는 platform("twitter")을 넘긴다. platform 으로 찾던
+    //   예전 코드는 병렬일 때 한 번도 정리하지 못했다 — 정작 누수가 문제되는 게 병렬이다.
+    //   CollectionGuard 는 각 수집 함수의 지역 변수라 clearThreadTrackKey() 보다 먼저
+    //   소멸한다 → 이 시점에 thread-local trackKey 가 아직 살아 있다.
+    QString cleanupKey = currentThreadTrackKey();
+    if (cleanupKey.isEmpty()) cleanupKey = p;
+    if (!cleanupKey.isEmpty()) {
+        QMetaObject::invokeMethod(this, [this, cleanupKey]() {
             RealChromeCrawler *victim = nullptr;
             {
                 QMutexLocker mapLock(&m_capChromeMapMutex);
-                auto it = m_captureChromesPerThread.find(p);
+                auto it = m_captureChromesPerThread.find(cleanupKey);
                 if (it != m_captureChromesPerThread.end()) { victim = it.value(); m_captureChromesPerThread.erase(it); }
             }
             if (victim) { victim->stop(); victim->deleteLater(); }
@@ -5058,17 +5081,13 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
     QString trackKey = currentThreadTrackKey();
     RealChromeCrawler **chromePtr = nullptr;
     QMutex *chromeMutex = nullptr;
-    int debugPort = 9223;
+    const int debugPort = capturePortFor(trackKey);   // 잠금 밖에서 배정/조회
 
     if (trackKey.isEmpty()) {
         chromePtr = &m_captureChrome;
         chromeMutex = &m_captureChromeMutex;
     } else {
         QMutexLocker mapLock(&m_capChromeMapMutex);
-        if (!m_captureChromesPerThread.contains(trackKey)) {
-            m_captureChromesPerThread[trackKey] = nullptr;  // placeholder
-            debugPort = m_nextCapPort++;
-        }
         chromePtr = &m_captureChromesPerThread[trackKey];
     }
     // sequential 모드만 직렬화 잠금 (병렬은 각자 자기 Chrome)
@@ -5641,16 +5660,7 @@ bool MiyoBackend::captureRealPageCDPLoginAware(const QString &url,
     // ★ 병렬 안전 — trackKey 별 chrome 인스턴스 사용 (captureRealPageCDP 와 공유).
     //   trackKey 먼저 fetch — invokeMethod 후 메인 스레드에선 thread-local 못 읽음.
     QString trackKey = currentThreadTrackKey();
-    int reservedPort = 9223;
-    {
-        QMutexLocker mapLock(&m_capChromeMapMutex);
-        if (!trackKey.isEmpty()) {
-            if (!m_captureChromesPerThread.contains(trackKey)) {
-                m_captureChromesPerThread[trackKey] = nullptr;
-                reservedPort = m_nextCapPort++;
-            }
-        }
-    }
+    const int reservedPort = capturePortFor(trackKey);
 
     QMetaObject::invokeMethod(this, [this, url, p, loginCheckJs, cookieArr, sem, needsLogin, navOk, trackKey, reservedPort]() {
         // chrome 인스턴스 결정 — trackKey 없으면 singleton, 있으면 per-track map

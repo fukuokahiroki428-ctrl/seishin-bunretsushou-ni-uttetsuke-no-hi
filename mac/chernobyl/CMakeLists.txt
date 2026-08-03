@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.20)
 # ★ 버전 단일 출처 — 레포 루트의 VERSION 파일 하나만 고치면 exe 버전 리소스,
 #   Info.plist, 설치본 버전이 전부 따라온다. 예전엔 .iss/.rc/CMake 가 제각각이라
 #   설치본은 1.0, exe 는 3.0, 릴리즈는 3.9 로 표시돼 어느 빌드인지 알 수 없었다.
+# ★ file(READ) 는 재구성 의존성을 만들지 않는다 — VERSION 만 올리고 빌드하면
+#   옛 버전이 박힌 바이너리가 조용히 나온다. 명시적으로 의존성을 건다.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/../../VERSION")
 file(READ "${CMAKE_CURRENT_LIST_DIR}/../../VERSION" PREDORMITION_VERSION)
 string(STRIP "${PREDORMITION_VERSION}" PREDORMITION_VERSION)
 project(Miyo VERSION ${PREDORMITION_VERSION} LANGUAGES CXX)
@@ -502,14 +505,16 @@ if(WIN32)
     set(BUNDLE_PY_WIN "${CMAKE_SOURCE_DIR}/scripts/bundle_python_win.bat")
     if(EXISTS "${BUNDLE_PY_WIN}")
         add_custom_command(TARGET Miyo POST_BUILD
-            COMMAND cmd /c "${BUNDLE_PY_WIN}" "${WIN_OUTPUT_DIR}"
+            COMMAND cmd /c call "${BUNDLE_PY_WIN}" "${WIN_OUTPUT_DIR}"
             COMMENT "Bundling Python for Windows"
         )
     endif()
 
     # Windows RC file for icon
+    #   ★ 아이콘이 없으면 .rc 를 컴파일하지 않는다 — abiwa.rc 는 abiwa.ico 를 참조하는데
+    #     이 트리엔 .ico 가 없어서, 그대로 넘기면 RC2135 로 빌드가 죽는다.
     set(RC_FILE "${CMAKE_SOURCE_DIR}/resources/abiwa.rc")
-    if(EXISTS "${RC_FILE}")
+    if(EXISTS "${RC_FILE}" AND EXISTS "${CMAKE_SOURCE_DIR}/resources/abiwa.ico")
         target_sources(Miyo PRIVATE "${RC_FILE}")
     endif()
 

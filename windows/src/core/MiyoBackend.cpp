@@ -3638,6 +3638,22 @@ void MiyoBackend::updateStats(int posts, int media, const QString &status, const
     runJs(QString("updateStats(%1, %2, '%3', '%4')").arg(posts).arg(media).arg(status, p));
 }
 
+// 트랙별 캡쳐 Chrome 디버그 포트 — 한 번 배정하면 그 트랙에는 계속 같은 포트를 준다.
+//   재생성 때 포트가 바뀌면 RealChromeCrawler::start() 가 그 포트를 점유한 다른 트랙의
+//   Chrome 을 죽여, 병렬 수집이 서로를 무너뜨린다.
+int MiyoBackend::capturePortFor(const QString &trackKey)
+{
+    if (trackKey.isEmpty()) return 9223;          // 단일 수집은 고정 포트
+    QMutexLocker mapLock(&m_capChromeMapMutex);
+    auto it = m_capPortPerThread.find(trackKey);
+    if (it != m_capPortPerThread.end()) return it.value();
+    const int port = m_nextCapPort++;
+    m_capPortPerThread[trackKey] = port;
+    if (!m_captureChromesPerThread.contains(trackKey))
+        m_captureChromesPerThread[trackKey] = nullptr;
+    return port;
+}
+
 void MiyoBackend::notifyCollectionEnded(const QString &platform)
 {
     // 수집 스레드 종료 시 호출 — JS 가 멀티 진행 여부를 보고 시작/정지 버튼을 안전하게 리셋.
@@ -3650,12 +3666,19 @@ void MiyoBackend::notifyCollectionEnded(const QString &platform)
     // ★ 이 트랙이 쓰던 캡쳐 Chrome 정리 — 안 하면 병렬 수집을 돌릴 때마다 Chrome 프로세스와
     //   프로필 폴더가 앱을 끌 때까지 계속 쌓인다(메모리·핸들·디스크 누수, 포트 고갈).
     //   Chrome 객체는 메인 스레드에서 만들어졌으므로 정리도 메인 스레드에서 한다.
-    if (!p.isEmpty()) {
-        QMetaObject::invokeMethod(this, [this, p]() {
+    // ★ 정리 키는 platform 이 아니라 trackKey 다. 병렬 수집은 Chrome 을 trackKey("twitter#0")
+    //   로 담는데 호출자(CollectionGuard)는 platform("twitter")을 넘긴다. platform 으로 찾던
+    //   예전 코드는 병렬일 때 한 번도 정리하지 못했다 — 정작 누수가 문제되는 게 병렬이다.
+    //   CollectionGuard 는 각 수집 함수의 지역 변수라 clearThreadTrackKey() 보다 먼저
+    //   소멸한다 → 이 시점에 thread-local trackKey 가 아직 살아 있다.
+    QString cleanupKey = currentThreadTrackKey();
+    if (cleanupKey.isEmpty()) cleanupKey = p;
+    if (!cleanupKey.isEmpty()) {
+        QMetaObject::invokeMethod(this, [this, cleanupKey]() {
             RealChromeCrawler *victim = nullptr;
             {
                 QMutexLocker mapLock(&m_capChromeMapMutex);
-                auto it = m_captureChromesPerThread.find(p);
+                auto it = m_captureChromesPerThread.find(cleanupKey);
                 if (it != m_captureChromesPerThread.end()) { victim = it.value(); m_captureChromesPerThread.erase(it); }
             }
             if (victim) { victim->stop(); victim->deleteLater(); }
@@ -5358,17 +5381,13 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
     QString trackKey = currentThreadTrackKey();
     RealChromeCrawler **chromePtr = nullptr;
     QMutex *chromeMutex = nullptr;
-    int debugPort = 9223;
+    const int debugPort = capturePortFor(trackKey);   // 잠금 밖에서 배정/조회
 
     if (trackKey.isEmpty()) {
         chromePtr = &m_captureChrome;
         chromeMutex = &m_captureChromeMutex;
     } else {
         QMutexLocker mapLock(&m_capChromeMapMutex);
-        if (!m_captureChromesPerThread.contains(trackKey)) {
-            m_captureChromesPerThread[trackKey] = nullptr;  // placeholder
-            debugPort = m_nextCapPort++;
-        }
         chromePtr = &m_captureChromesPerThread[trackKey];
     }
     // sequential 모드만 직렬화 잠금 (병렬은 각자 자기 Chrome)
@@ -5941,16 +5960,7 @@ bool MiyoBackend::captureRealPageCDPLoginAware(const QString &url,
     // ★ 병렬 안전 — trackKey 별 chrome 인스턴스 사용 (captureRealPageCDP 와 공유).
     //   trackKey 먼저 fetch — invokeMethod 후 메인 스레드에선 thread-local 못 읽음.
     QString trackKey = currentThreadTrackKey();
-    int reservedPort = 9223;
-    {
-        QMutexLocker mapLock(&m_capChromeMapMutex);
-        if (!trackKey.isEmpty()) {
-            if (!m_captureChromesPerThread.contains(trackKey)) {
-                m_captureChromesPerThread[trackKey] = nullptr;
-                reservedPort = m_nextCapPort++;
-            }
-        }
-    }
+    const int reservedPort = capturePortFor(trackKey);
 
     QMetaObject::invokeMethod(this, [this, url, p, loginCheckJs, cookieArr, sem, needsLogin, navOk, trackKey, reservedPort]() {
         // chrome 인스턴스 결정 — trackKey 없으면 singleton, 있으면 per-track map
@@ -13857,19 +13867,33 @@ void MiyoBackend::upgradePython()
 
         // 검증 통과 → 원자적에 가깝게 교체. 실패하면 즉시 원상복구.
         log("  기존 Python 환경 교체 중...", "info", "settings");
-        bool hadOld = QDir(pythonDir).exists();
+        // ★ 절대로 '지우고 진행' 하지 않는다. 예전 코드는 rename 이 막히면(수집 중이라
+        //   python.exe/DLL 핸들이 열려 있거나 백신·인덱서가 잡고 있으면 흔하다)
+        //   기존 환경을 removeRecursively() 로 지워버렸는데, 잠긴 파일이 남아 부분 삭제로
+        //   끝나면 다음 rename 도 실패하고 → 검증까지 끝난 새 환경마저 지운 채
+        //   "기존 환경을 되돌렸습니다" 라고 보고했다. 결과는 파이썬이 통째로 사라진 상태.
+        //   지금은 이름 변경만 쓰고, 하나라도 실패하면 아무것도 파괴하지 않고 물러난다.
+        const bool hadOld = QDir(pythonDir).exists();
         if (hadOld && !QDir().rename(pythonDir, backupDir)) {
-            // 이름 변경이 막히면(파일 사용 중 등) 지우고 진행 — 새 환경은 이미 검증됨.
-            QDir(pythonDir).removeRecursively();
-            hadOld = false;
+            log("  ❌ 기존 환경이 사용 중이라 교체할 수 없습니다 — 그대로 둡니다.", "error", "settings");
+            log(QString("     수집을 모두 멈춘 뒤 다시 시도해 주세요. 받아 둔 새 환경: %1")
+                    .arg(QDir::toNativeSeparators(stageDir)), "info", "settings");
+            m_pythonBusy = false;
+            runJs("setPythonEnvBusy(false, '사용 중 — 기존 유지')");
+            return;   // stageDir 는 남겨 둔다 → 다음 시도에서 재사용/이어감
         }
         if (!QDir().rename(stageDir, pythonDir)) {
-            if (hadOld) QDir().rename(backupDir, pythonDir);   // 원상복구
-            log("  ❌ 교체 실패 — 기존 환경을 되돌렸습니다", "error", "settings");
-            QDir(stageDir).removeRecursively();
+            // 새 환경을 제자리에 못 넣었으면 반드시 기존 환경을 되돌린다.
+            if (hadOld && !QDir().rename(backupDir, pythonDir)) {
+                log(QString("  ❌ 교체 실패 + 복원 실패 — 기존 환경은 %1 에 있습니다. "
+                            "수동으로 python_env 로 이름을 바꿔 주세요.")
+                        .arg(QDir::toNativeSeparators(backupDir)), "error", "settings");
+            } else {
+                log("  ❌ 교체 실패 — 기존 환경을 되돌렸습니다", "error", "settings");
+            }
             m_pythonBusy = false;
             runJs("setPythonEnvBusy(false, '교체 실패 (기존 복원)')");
-            return;
+            return;   // stageDir 도 남겨 둔다 — 검증까지 끝난 자산을 버리지 않는다
         }
         QDir(backupDir).removeRecursively();
 

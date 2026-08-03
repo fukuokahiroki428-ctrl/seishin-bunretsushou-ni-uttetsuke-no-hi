@@ -137,9 +137,11 @@ int main(int argc, char *argv[])
         // ★ 번들 식별자(com.chernobyl.app) 기반으로 활성화 — 번들 이름(ASCII/일본어) 무관
         system("osascript -e 'tell application id \"com.chernobyl.app\" to activate' &");
 #elif defined(Q_OS_WIN)
-        // 윈도우 제목은 MainWindow 에서 "カメラ" 로 설정됨 — 여기 문자열과 반드시 일치해야 기존 창을 잡음.
-        //   (/utf-8 컴파일 플래그 덕분에 wide 리터럴 L"カメラ" 가 올바른 UTF-16 으로 들어감)
-        HWND hwnd = FindWindowW(nullptr, L"カメラ");
+        // ★ MainWindow::setWindowTitle 과 반드시 같아야 기존 창을 잡는다.
+    //   이름을 Predormition 으로 바꿀 때 여기만 빠져서, 이미 켜져 있는데 아이콘을 다시
+    //   누르면 창이 앞으로 나오지 않고 아무 일도 안 일어났다.
+        //   (/utf-8 컴파일 플래그 덕분에 wide 리터럴 L"Predormition" 가 올바른 UTF-16 으로 들어감)
+        HWND hwnd = FindWindowW(nullptr, L"Predormition");
         if (hwnd) {
             SetForegroundWindow(hwnd);
             if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
