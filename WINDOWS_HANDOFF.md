@@ -189,6 +189,14 @@ tools/twitter_daemon.py, tools/bluesky_daemon.py
   맥에서만 구현·확인했다(`mount` 파싱 기반). Windows 는 UNC/드라이브 문자 구조가 달라
   별도 구현이 필요하다. 설정에서 "NAS 자동 재연결"을 켜야 동작한다.
 - **Pixiv NAS/외장 저장 재시험 안 됨** — 계정이 없어 런타임 확인 못 함.
+- **Windows 용 AI 설치기가 없다.** 맥은 `scripts/dmg_install_ai.command` 가 모델·엔진을
+  받아 앱 안에 넣어주는데, Windows 에는 대응 스크립트가 없다. Windows 앱도
+  `llama-server.exe` 로 로컬 AI 를 쓰므로(`MiyoBackend.cpp` 의 `hasServer` 확인 지점)
+  같은 역할의 `.bat`/`.ps1` 이 필요하다. 필요한 자산은 이미 보관돼 있다:
+  - 엔진: `ai-engines-v1` 릴리즈의 `llama-engine-win-x64.zip` / `llama-engine-win-arm64.zip`
+    (안에 `llama-server.exe` 실물 확인됨, `ENGINES_SHA256.txt` 로 대조 가능)
+  - 모델: `ai-assets-v1` 릴리즈 (2GB 넘는 것은 `.partaa`/`.partab` 로 분할 — 받아서 합쳐야 함)
+  - 설치 위치는 맥과 달리 코드서명 재봉인이 불필요하므로 단순 복사로 충분하다.
 
 ---
 
