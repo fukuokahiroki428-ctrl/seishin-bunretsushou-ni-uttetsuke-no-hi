@@ -85,9 +85,18 @@ if [ ! -x "$SRV" ]; then
         arm64) PAT="macos-arm64" ;;
         *)     PAT="macos-x64"   ;;
     esac
-    ZIP_URL=$(curl -fsSL https://api.github.com/repos/ggml-org/llama.cpp/releases/latest \
-        | grep -o '"browser_download_url": *"[^"]*"' | grep "$PAT" | head -1 \
-        | sed 's/.*": *"//; s/"$//')
+    # ★ 1순위 = 우리 보관본(ai-assets-v1). 모델과 같은 원칙이다.
+    #   원 배포처(ggml-org)가 사라지거나 자산 이름이 바뀌어도 설치가 되게 하려고
+    #   엔진 바이너리를 직접 보관해 둔다. 보관본은 지금 모델과 맞물려 동작이
+    #   확인된 조합이라, 최신본보다 오히려 예측 가능하다.
+    #   보관본이 없을 때만 원 배포처의 최신 릴리즈를 찾는다.
+    ZIP_URL="$MIRROR/llama-engine-$PAT.tar.gz"
+    if ! curl -fsIL "$ZIP_URL" >/dev/null 2>&1; then
+        echo "   보관본이 없어 원 배포처에서 찾습니다..."
+        ZIP_URL=$(curl -fsSL https://api.github.com/repos/ggml-org/llama.cpp/releases/latest \
+            | grep -o '"browser_download_url": *"[^"]*"' | grep "$PAT" | head -1 \
+            | sed 's/.*": *"//; s/"$//')
+    fi
     if [ -z "$ZIP_URL" ]; then
         echo "  ✗ 엔진 다운로드 주소를 찾지 못했습니다. 인터넷 연결을 확인해 주세요."
         read -n 1 -s -r -p "아무 키나 누르면 닫힙니다..."; exit 1
