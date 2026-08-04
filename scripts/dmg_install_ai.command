@@ -63,6 +63,9 @@ CHOICE="${CHOICE:-2}"
 #   허깅페이스나 원 배포처가 사라져도 설치할 수 있도록 모델 원본을 직접 보관해 둔다.
 #   2GB 넘는 모델은 .partaa/.partab… 로 나눠 올려두고, 받은 뒤 합쳐서 쓴다.
 MIRROR="https://github.com/fukuokahiroki428-ctrl/seishin-bunretsushou-ni-uttetsuke-no-hi/releases/download/ai-assets-v1"
+# 엔진(llama-server)은 별도 보관 릴리즈. ai-assets-v1 이 immutable 이라 나중에
+# 추가할 수 없어 분리했다. macOS arm64/x64 + Windows x64/arm64 4종이 들어 있다.
+ENGINE_MIRROR="https://github.com/fukuokahiroki428-ctrl/seishin-bunretsushou-ni-uttetsuke-no-hi/releases/download/ai-engines-v1"
 
 M15="$HF/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
 M3="$HF/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
@@ -85,12 +88,12 @@ if [ ! -x "$SRV" ]; then
         arm64) PAT="macos-arm64" ;;
         *)     PAT="macos-x64"   ;;
     esac
-    # ★ 1순위 = 우리 보관본(ai-assets-v1). 모델과 같은 원칙이다.
-    #   원 배포처(ggml-org)가 사라지거나 자산 이름이 바뀌어도 설치가 되게 하려고
-    #   엔진 바이너리를 직접 보관해 둔다. 보관본은 지금 모델과 맞물려 동작이
-    #   확인된 조합이라, 최신본보다 오히려 예측 가능하다.
+    # ★ 1순위 = 우리 엔진 보관본(ai-engines-v1). 모델과 같은 원칙이다.
+    #   원 배포처(ggml-org)가 사라지거나 자산 이름 규칙이 바뀌어도 설치가 되게
+    #   엔진 바이너리를 직접 들고 있는다. 보관본은 지금 모델과 맞물려 동작이
+    #   확인된 조합이라 최신본보다 오히려 예측 가능하다.
     #   보관본이 없을 때만 원 배포처의 최신 릴리즈를 찾는다.
-    ZIP_URL="$MIRROR/llama-engine-$PAT.tar.gz"
+    ZIP_URL="$ENGINE_MIRROR/llama-engine-$PAT.tar.gz"
     if ! curl -fsIL "$ZIP_URL" >/dev/null 2>&1; then
         echo "   보관본이 없어 원 배포처에서 찾습니다..."
         ZIP_URL=$(curl -fsSL https://api.github.com/repos/ggml-org/llama.cpp/releases/latest \
