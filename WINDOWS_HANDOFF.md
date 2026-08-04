@@ -189,14 +189,16 @@ tools/twitter_daemon.py, tools/bluesky_daemon.py
   맥에서만 구현·확인했다(`mount` 파싱 기반). Windows 는 UNC/드라이브 문자 구조가 달라
   별도 구현이 필요하다. 설정에서 "NAS 자동 재연결"을 켜야 동작한다.
 - **Pixiv NAS/외장 저장 재시험 안 됨** — 계정이 없어 런타임 확인 못 함.
-- **Windows 용 AI 설치기가 없다.** 맥은 `scripts/dmg_install_ai.command` 가 모델·엔진을
-  받아 앱 안에 넣어주는데, Windows 에는 대응 스크립트가 없다. Windows 앱도
-  `llama-server.exe` 로 로컬 AI 를 쓰므로(`MiyoBackend.cpp` 의 `hasServer` 확인 지점)
-  같은 역할의 `.bat`/`.ps1` 이 필요하다. 필요한 자산은 이미 보관돼 있다:
-  - 엔진: `ai-engines-v1` 릴리즈의 `llama-engine-win-x64.zip` / `llama-engine-win-arm64.zip`
-    (안에 `llama-server.exe` 실물 확인됨, `ENGINES_SHA256.txt` 로 대조 가능)
-  - 모델: `ai-assets-v1` 릴리즈 (2GB 넘는 것은 `.partaa`/`.partab` 로 분할 — 받아서 합쳐야 함)
-  - 설치 위치는 맥과 달리 코드서명 재봉인이 불필요하므로 단순 복사로 충분하다.
+- **Windows 용 AI 설치기 — 만들었으나 실행 검증 안 됨.**
+  `scripts\AI_설치_더블클릭.bat` (런처) + `scripts\win_install_ai.ps1` (본체).
+  맥에서 구문 검사·정적 분석(PSScriptAnalyzer)·URL 접근까지는 확인했지만
+  **Windows 에서 실제로 돌려보지 않았다.** 아래를 확인해 달라:
+  - 앱 설치 후 `.bat` 더블클릭 → 앱 폴더를 찾는가 (`%LOCALAPPDATA%\Programs\Predormition`)
+  - 엔진이 `<앱>\llm\llama-server.exe` 로 들어가는가, 체크섬 검증이 통과하는가
+  - 모델 분할본(`.partaa`/`.partab`)이 올바르게 합쳐지는가 (스트림 복사로 구현)
+  - 중간에 Ctrl+C 로 끊고 다시 실행 → 처음부터가 아니라 **이어받는가**
+  - 설정 → 로컬 AI 에서 "AI 켜기" 가 동작하는가
+  - 권한 없는 위치(Program Files)에 설치했을 때 안내가 뜨는가
 
 ---
 
