@@ -371,6 +371,36 @@ if(APPLE)
         )
     endif()
 
+    # ★ Qt 프레임워크 번들링 — 반드시 codesign 앞.
+    #   이게 없으면 실행 파일이 /opt/homebrew/opt/qt*/lib/... 를 직접 참조해서,
+    #   홈브루 Qt 가 없는 맥에서는 앱이 아예 켜지지 않는다.
+    #   (v3.9.3 까지 배포한 DMG 가 실제로 그 상태였다 — 이 맥에서만 돌아갔다.)
+    #   macdeployqt 가 프레임워크를 Contents/Frameworks 로 복사하고 install name 을
+    #   @rpath 로 바꿔 준다. 서명은 우리 스크립트가 뒤에서 다시 한다(-no-strip 로
+    #   서명 훼손 방지, -always-overwrite 로 옛 사본이 남지 않게).
+    find_program(MACDEPLOYQT_BIN macdeployqt
+        HINTS "${Qt6_DIR}/../../../bin" "/opt/homebrew/bin" "/usr/local/bin")
+    if(MACDEPLOYQT_BIN)
+        add_custom_command(TARGET Miyo POST_BUILD
+            COMMAND "${MACDEPLOYQT_BIN}" "$<TARGET_BUNDLE_DIR:Miyo>"
+                    -always-overwrite -no-strip
+            COMMENT "Bundling Qt frameworks (macdeployqt)"
+        )
+    else()
+        message(WARNING "macdeployqt 를 찾지 못했습니다 — 이 빌드는 시스템 Qt 에 의존합니다(다른 맥에서 실행 불가).")
+    endif()
+
+    # ★ macdeployqt 가 못 고친 외부 경로 참조를 @rpath 로 마무리.
+    #   이 번들엔 python_env 안에 파이썬 확장(.so)이 수천 개라 macdeployqt 가
+    #   그걸 훑다 rpath 해석 오류를 내고 일부 참조를 끝까지 못 바꾼다.
+    #   그러면 프레임워크는 번들에 있는데 서로를 /opt/homebrew 로 참조해서
+    #   Homebrew 없는 맥에서 앱이 안 켜진다. 반드시 codesign 앞에서 실행한다
+    #   (install_name_tool 이 서명을 깨뜨리므로).
+    add_custom_command(TARGET Miyo POST_BUILD
+        COMMAND bash "${CMAKE_SOURCE_DIR}/fix_bundle_rpaths.sh" "$<TARGET_BUNDLE_DIR:Miyo>"
+        COMMENT "Rewriting external paths to @rpath (self-contained check)"
+    )
+
     # ★ Codesign 직전: fix_webengine_helper.sh가 만든 잘못된 심볼릭 링크 정리
     #   "Frameworks/Frameworks -> ../../../../../Frameworks" 같은 dangling symlink가
     #   codesign sealed resource verify를 깨뜨려 macOS가 SIGKILL로 앱 죽임.
