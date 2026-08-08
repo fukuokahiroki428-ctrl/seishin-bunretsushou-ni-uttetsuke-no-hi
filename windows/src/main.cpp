@@ -99,12 +99,17 @@ int main(int argc, char *argv[])
         "--num-raster-threads=2");
 
     QApplication app(argc, argv);
+    // ★ 로그 핸들러보다 반드시 먼저 설정한다. Windows 의 AppDataLocation 은
+    //   %APPDATA%/<조직명>/<앱이름> 이라, 이 두 줄 전에 첫 메시지가 찍히면 조직명이 빈 채로
+    //   경로가 계산되고, 핸들러의 static QFile 이 %APPDATA%/Predormition (Miyo 누락) 으로
+    //   프로세스 내내 고정된다. 진단 로그가 앱 데이터 폴더 밖에 쌓여, 크래시 조사 시
+    //   문서가 안내하는 경로에는 아무것도 없었다.
+    app.setApplicationName("Predormition");
+    app.setOrganizationName("Miyo");
 #ifdef Q_OS_WIN
     qInstallMessageHandler(chernobylLogHandler);
     qInfo() << "[startup] Predormition starting — exe dir:" << QCoreApplication::applicationDirPath();
 #endif
-    app.setApplicationName("Predormition");
-    app.setOrganizationName("Miyo");
 
     // ★ 앱 이름 변경(Chernobyl → Predormition) 시 사용자 데이터 자동 이전.
     //   AppDataLocation 이 ...\Miyo\Chernobyl → ...\Miyo\Predormition 로 바뀌므로,
