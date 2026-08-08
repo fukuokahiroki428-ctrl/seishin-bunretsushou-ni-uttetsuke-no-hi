@@ -637,16 +637,23 @@ static QString findBundledYtDlp()
     return QString();
 }
 
+// 사용자 폴더의 yt-dlp 경로 — 읽는 쪽(ytDlpExecutable)과 쓰는 쪽(ensureYtDlpReady)이
+// 갈라지지 않도록 한 곳에서만 만든다. Windows 는 확장자가 없으면 실행 파일이 아니다.
+static QString userYtDlpPath()
+{
+#ifdef Q_OS_WIN
+    return userToolsDir() + "/yt-dlp.exe";
+#else
+    return userToolsDir() + "/yt-dlp";
+#endif
+}
+
 QString ytDlpExecutable()
 {
     // 1) 사용자 폴더 (자동 업데이트된 최신본)
     //   ★ Windows 는 확장자가 있어야 실행 파일로 인식된다. 예전엔 확장자 없는 이름만 봐서
     //     자동 업데이트본이 있어도 항상 무시되고, ensureYtDlpReady 의 복사본도 못 쓰였다.
-#ifdef Q_OS_WIN
-    QString userBin = userToolsDir() + "/yt-dlp.exe";
-#else
-    QString userBin = userToolsDir() + "/yt-dlp";
-#endif
+    QString userBin = userYtDlpPath();
     if (QFile::exists(userBin)) {
         QFileInfo fi(userBin);
         if (fi.size() > 1000000 && fi.isExecutable()) return userBin;
@@ -665,8 +672,16 @@ QString ytDlpExecutable()
 //   4) GitHub 죽거나 변조되어도 → 번들 yt-dlp 항상 작동 보장.
 void ensureYtDlpReady(bool autoUpdate)
 {
-    QString userBin = userToolsDir() + "/yt-dlp";
+    // ★ 읽는 쪽과 반드시 같은 경로여야 한다. 여기만 확장자 없이 저장하던 탓에 Windows 에서는
+    //   번들본이 tools/yt-dlp (실행 불가) 로 복사되고, ytDlpExecutable 은 tools/yt-dlp.exe 를
+    //   찾다 못 찾아 늘 번들로 폴백했다 — 자동 업데이트본은 한 번도 쓰이지 못했다.
+    QString userBin = userYtDlpPath();
     QString bundled = findBundledYtDlp();
+
+#ifdef Q_OS_WIN
+    // 확장자 없이 저장되던 시절의 잔재 제거 — 실행되지 않으면서 18MB 를 차지한다.
+    QFile::remove(userToolsDir() + "/yt-dlp");
+#endif
 
     // 1) 사용자 폴더에 yt-dlp 없거나 너무 작으면 번들 복사 (앱과 함께 출하된 검증된 버전)
     bool needCopy = !QFile::exists(userBin) || QFileInfo(userBin).size() < 1000000;
