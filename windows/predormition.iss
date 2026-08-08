@@ -51,4 +51,11 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,Predormition}
 Type: filesandordirs; Name: "{app}\python_env"
 Type: filesandordirs; Name: "{app}\tools"
 Type: files;          Name: "{app}\*.log"
+; ★ 진단 로그의 실제 이름은 chernobyl_log.txt / predormition_log.txt — 확장자가 .txt 라
+;   위의 *.log 글롭에 걸리지 않는다. 실제로 제거 후 chernobyl_log.txt 가 남았고, 그 파일
+;   하나 때문에 아래 dirifempty 도 설치 폴더를 지우지 못했다.
+;   로그 위치는 AppData 로 옮겼지만 AppDataLocation 을 못 얻으면 설치 폴더로 폴백하므로
+;   (main.cpp 의 chernobylLogHandler) 여기서 계속 정리해야 한다. 회전본 .1 까지 포함.
+Type: files;          Name: "{app}\*_log.txt"
+Type: files;          Name: "{app}\*_log.txt.1"
 Type: dirifempty;     Name: "{app}"
