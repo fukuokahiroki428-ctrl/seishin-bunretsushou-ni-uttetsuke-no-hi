@@ -55,8 +55,9 @@ MainWindow::MainWindow(QWidget *parent)
     setWindowTitle("Predormition");
     // ★ 새 대시보드 UI 는 와이드 데스크톱 레이아웃 (사이드바 246px + 대시보드 2단 그리드 720+300px).
     //   옛 단일컬럼 시절 420px 기본값이면 내용이 세로로 찌그러짐 → 와이드 기본/최소로 조정.
-    setMinimumSize(1024, 660);
-    resize(1280, 820);
+    setMinimumSize(820, 640);
+    // ★ 기본 창 크기 — 좁으면 사이드바를 뺀 본문이 눌려 폼·로그가 다 깨진다.
+    resize(1180, 820);
 
     // ★ Frameless — 네이티브 흰 타이틀바 제거. HTML 의 다크 툴바가 곧 타이틀바.
     //   드래그/리사이즈는 JS 가 backend.winStartMove()/winStartResize() 로

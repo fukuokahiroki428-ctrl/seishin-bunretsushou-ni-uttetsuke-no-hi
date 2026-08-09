@@ -35,7 +35,7 @@
             --red: #D93848;
             --green: #1F9D61;
             --orange: #B7791F;
-            --sidebar-w: 100px;
+            --sidebar-w: 136px;   /* 100px 에선 Instagram·SpinSpin 등 6개 라벨이 잘렸다 */
             --radius: 8px;
             --radius-lg: 12px;
             --transition: 0.18s cubic-bezier(.4,0,.2,1);
@@ -57,7 +57,7 @@
         /* ── Sidebar ── */
         .sidebar {
             width: var(--sidebar-w);
-            background: var(--bg-secondary);
+            background: var(--bg);
             border-right: 1px solid var(--border-light);
             display: flex;
             flex-direction: column;
@@ -66,12 +66,15 @@
             -webkit-app-region: drag;
             user-select: none;
         }
-        .sidebar-header { padding: 52px 10px 12px; }
+        .sidebar-header {
+            height: 52px; flex: none; box-sizing: border-box;
+            border-bottom: 1px solid var(--border-light);   /* 툴바 아래선과 이어져 한 줄이 됨 */
+        }
         .sidebar-title {
             font-size: 11px; font-weight: 600; color: var(--text-tertiary);
             text-transform: uppercase; letter-spacing: 0.5px;
         }
-        .sidebar-nav { flex: 1; padding: 0 8px; -webkit-app-region: no-drag; }
+        .sidebar-nav { flex: 1; padding: 10px 8px 0; -webkit-app-region: no-drag; overflow-y: auto; }
         .nav-item {
             display: flex; align-items: center; gap: 6px;
             padding: 7px 8px; border-radius: 6px; cursor: pointer;
@@ -152,26 +155,28 @@
             font-size: 12px; border-bottom: 1px solid var(--border-light);
         }
         .batch-target-item:last-child { border-bottom: none; }
-        /* ★ 비활성 항목: 흐리게 + 취소선 */
-        .batch-target-item.disabled .bti-main .batch-account-sel,
-        .batch-target-item.disabled .bti-main .batch-target-num {
-            opacity: 0.45;
-            text-decoration: line-through;
-        }
-        /* ★ 유저명에는 취소선을 긋지 않는다 — 제외 상태여도 '누구인지'는 읽혀야 한다. */
-        .batch-target-item.disabled .bti-main .batch-target-input { opacity: 0.5; }
+        /* ★ 제외된 대상 — 번호와 드롭다운에만 취소선을 긋던 방식은 의미가 읽히지 않고
+           렌더링 오류처럼 보였다(정작 유저명은 멀쩡하니 더 그랬다).
+           행 전체를 눌러 흐리게 하고 배경을 살짝 깔아 '꺼짐'을 나타낸다.
+           체크박스는 또렷하게 남겨 다시 켜기 쉽게 한다. */
+        .batch-target-item.disabled { background: var(--bg-secondary); }
+        .batch-target-item.disabled .bti-main { opacity: 0.42; }
+        .batch-target-item.disabled .bti-enable-cb { opacity: 1; }
         .batch-target-item .bti-enable-cb {
             margin-right: 4px; cursor: pointer;
             accent-color: var(--accent);
         }
         .batch-target-item .bti-main {
             display: flex; align-items: center;
-            /* 좁은 창(≈420px)에선 한 줄에 다 못 들어간다(필요 296px > 가용 222px).
+            /* 창을 최소 폭(820px)까지 줄이면 한 줄에 다 안 들어간다.
                → 줄바꿈을 허용하되 간격을 좁혀 2줄이어도 행 높이를 낮게 유지. */
             column-gap: 6px; row-gap: 3px;
-            padding: 5px 10px;
+            padding: 4px 10px;
             flex-wrap: wrap;
         }
+        /* 대상 목록은 행이 수십 개라 밀도가 중요하다 — 이 안의 입력만 낮춘다.
+           전역 .input(34px)은 그대로 두어 다른 폼의 터치 영역은 유지. */
+        .batch-target-item .input { height: 30px; font-size: 12.5px; }
         .batch-target-num { color: var(--text-tertiary); font-size: 11px; width: 20px; flex-shrink: 0; text-align: right; }
         .batch-target-name { flex: 1; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
         /* 인라인 편집 가능한 대상 입력 */
@@ -509,7 +514,9 @@
         @media (min-width: 1000px) {
             body .tab-content.active {
                 display: grid !important;
-                grid-template-columns: minmax(0, 720px) minmax(300px, 1fr);
+                /* 로그는 최소 360px — 300px 에선 터미널 한 줄이 두세 번씩 끊겨 읽기 어려웠다.
+                   폼 쪽 상한을 700px 로 조금 낮춰 그 폭을 만들어 준다. */
+                grid-template-columns: minmax(0, 700px) minmax(360px, 1fr);
                 column-gap: 20px;
                 row-gap: 0;
                 align-items: start;
@@ -681,7 +688,7 @@
             font-family: 'NanumGothic', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
         }
         body.platform-mac .sidebar {
-            background: rgba(246,246,249,0.72);
+            background: rgba(255,255,255,0.76);
             backdrop-filter: blur(28px) saturate(180%);
             -webkit-backdrop-filter: blur(28px) saturate(180%);
             border-right: 1px solid rgba(0,0,0,0.08);
@@ -876,14 +883,12 @@
     <div class="app">
         <!-- Sidebar -->
         <div class="sidebar">
-            <div class="sidebar-header">
-                <div class="sidebar-title">Predormition</div>
-            </div>
+            <div class="sidebar-header"></div>
             <div class="sidebar-nav">
-                <div class="nav-item active dash-nav" onclick="switchTab('dashboard')">
-                    <div class="nav-icon dash-ico">▦</div> 현황
-                </div>
-                <div class="nav-item" onclick="switchTab('twitter')">
+                <!-- 현황(dashboard) 메뉴 숨김 — 요청에 따라 사이드바에서만 제거.
+                     탭 본문(#tab-dashboard)과 renderDashboard() 는 그대로 살아 있어
+                     switchTab('dashboard') 로 접근할 수 있다. -->
+                <div class="nav-item active" onclick="switchTab('twitter')">
                     <div class="nav-icon twitter">T</div> Twitter <span class="nav-badge" id="nav-badge-twitter"></span>
                 </div>
                 <div class="nav-item" onclick="switchTab('bluesky')">
@@ -908,7 +913,7 @@
                     <div class="nav-icon" style="background:#fb923c">F</div> Fanbox <span class="nav-badge" id="nav-badge-fanbox"></span>
                 </div>
                 <div class="nav-item" onclick="switchTab('tumblr')">
-                    <div class="nav-icon tumblr">T</div> Tumblr <span class="nav-badge" id="nav-badge-tumblr"></span>
+                    <div class="nav-icon tumblr">Tu</div> Tumblr <span class="nav-badge" id="nav-badge-tumblr"></span>
                 </div>
                 <div class="nav-item" onclick="switchTab('spinspin')">
                     <div class="nav-icon spinspin">S</div> SpinSpin <span class="nav-badge" id="nav-badge-spinspin"></span>
@@ -923,7 +928,7 @@
                 </div>
                 -->
                 <div class="nav-item" onclick="switchTab('trad')">
-                    <div class="nav-icon trad">F</div> trad
+                    <div class="nav-icon trad">Tr</div> trad
                 </div>
                 <!-- naikakukai 메뉴 숨김 — 요청에 따라 선택창(사이드바)에서만 제거.
                      기능·탭 본문·백엔드 코드는 그대로 살아 있어 switchTab('naikakukai') 로 접근 가능하다.
@@ -954,7 +959,7 @@
             <div class="scroll-area">
 
                 <!-- ━━ 현황 대시보드 (캡처 콘솔 홈) ━━ -->
-                <div class="tab-content active" id="tab-dashboard">
+                <div class="tab-content" id="tab-dashboard">
                     <div class="dash-kpis" id="dash-kpis"></div>
                     <div class="section">
                         <div class="section-label">채널 현황</div>
@@ -963,7 +968,7 @@
                 </div>
 
                 <!-- ━━ Twitter ━━ -->
-                <div class="tab-content" id="tab-twitter">
+                <div class="tab-content active" id="tab-twitter">
                     <div class="section">
                         <div class="section-label">대상 (여러 유저 · 유저별 계정 지정)</div>
                         <div id="twitter-target-list" class="account-list" style="display:none;"></div>
@@ -6378,7 +6383,10 @@
     /* 로그 — 항상 어두운 터미널 + 고정 팔레트 (라이트 테마에서도 가독) */
     .log-box{ background:#0B0E14 !important; color:#CBD5E1 !important; border-color:var(--border) !important; border-radius:12px !important; }
     html[data-theme="dark"] .log-box{ background:#070A0F !important; }
-    .log-box .log-time{ color:#5B6678 !important; }  .log-box .log-info{ color:#9FB0C7 !important; }
+    /* 시각은 보조 정보라 어둡게 두되, #5B6678 은 3.33:1 로 거의 안 읽혔다.
+       #75839A 는 5.03:1 로 AA 를 넘기면서 본문(#CBD5E1)과 밝기 차 2.9배를 유지해
+       '메시지가 주, 시각이 보조' 라는 위계는 그대로다. */
+    .log-box .log-time{ color:#75839A !important; }  .log-box .log-info{ color:#9FB0C7 !important; }
     .log-box .log-success{ color:#4ADE80 !important; } .log-box .log-error{ color:#F87171 !important; }
     .log-box .log-warning{ color:#FBBF24 !important; }
     /* 네이티브 컨트롤/선택/스크롤바 */
@@ -6420,31 +6428,42 @@
     <!-- ═══ Darkroom Console 리스킨 (노란색) — 기존 로직 무수정, 토큰/크롬만 override ═══ -->
     <style id="darkroom-graft">
     :root{
-      --bg:#EDE9E1 !important; --bg-secondary:#E4DFD5 !important; --bg-tertiary:#D8D1C4 !important;
-      --text:#23262B !important; --text-secondary:#5C616B !important; --text-tertiary:#8B909A !important;
-      --border:#DAD3C6 !important; --border-light:#E6E0D4 !important;
-      --accent:#CE8A11 !important; --accent-hover:#B5760B !important;
-      --accent-bg:rgba(206,138,17,.13) !important; --accent-soft:rgba(206,138,17,.13) !important;
-      --accent-ink:#2a2005; --card:#FBF9F4 !important;
+      /* 흰 배경 + 중성 회색 + 보라 강조.
+         본문 캔버스는 순백(--bg), 사이드바만 아주 옅게 눌러(--bg-secondary) 면을 가른다.
+         카드는 순백 + 실선 테두리라 흰 배경 위에서도 경계가 분명하다. */
+      --bg:#FFFFFF !important; --bg-secondary:#F6F6F8 !important; --bg-tertiary:#EDEDF1 !important;
+      /* 대비(흰 배경 기준): text 17.9:1, secondary 6.5:1, tertiary 4.9:1, 강조 4.9:1 — 전부 AA 통과.
+         이전 베이지 팔레트는 tertiary 2.65:1, 골드 강조 2.39:1 로 둘 다 크게 미달이었다. */
+      --text:#16171A !important; --text-secondary:#5A5E68 !important; --text-tertiary:#6C717B !important;
+      --border:#E4E5EA !important; --border-light:#EFEFF3 !important;
+      --accent:#6D5AE6 !important; --accent-hover:#5B48D0 !important;
+      --accent-bg:rgba(109,90,230,.10) !important; --accent-soft:rgba(109,90,230,.10) !important;
+      /* 보라 위에는 흰 글씨가 읽힌다(4.9:1). 골드 시절 쓰던 어두운 글씨는 더 이상 필요 없다. */
+      --accent-ink:#FFFFFF; --card:#FFFFFF !important;
     }
     html[data-theme="dark"]{
-      --bg:#0F1115 !important; --bg-secondary:#181B21 !important; --bg-tertiary:#21252C !important;
-      --text:#ECEAE3 !important; --text-secondary:#A0A6B0 !important; --text-tertiary:#6A707A !important;
-      --border:#2A2F38 !important; --border-light:#22262E !important;
-      --accent:#EFC03B !important; --accent-hover:#F2CB57 !important;
-      --accent-bg:rgba(239,192,59,.15) !important; --accent-soft:rgba(239,192,59,.15) !important;
-      --accent-ink:#2a2005; --card:#181B21 !important;
+      --bg:#101114 !important; --bg-secondary:#17181C !important; --bg-tertiary:#212329 !important;
+      --text:#F2F3F5 !important; --text-secondary:#A8ADB7 !important; --text-tertiary:#7C828D !important;
+      --border:#2A2D34 !important; --border-light:#23262C !important;
+      /* 어두운 배경에선 보라를 밝게 올려야 대비가 선다(#6D5AE6 는 5:1 미만). */
+      --accent:#9C8CF5 !important; --accent-hover:#B0A3F8 !important;
+      --accent-bg:rgba(156,140,245,.16) !important; --accent-soft:rgba(156,140,245,.16) !important;
+      --accent-ink:#14101F; --card:#17181C !important;
     }
-    /* 노란 강조 위에는 어두운 글씨 (버튼/활성 배지·아이콘/셀렉트) */
-    .btn-primary, .btn-primary:hover, .nav-item.active .nav-icon, .nav-item.active .nav-badge,
-    .nav-icon, .nav-badge, .select-option:hover, .select-option.selected:hover { color: var(--accent-ink) !important; }
+    /* 강조색 위 글씨 — 보라 배경에는 흰 글씨(4.9:1). 배지·아이콘은 강조색을 배경이 아니라
+       글자색으로 쓰므로 여기서 색을 강제하지 않는다(강제하면 흰 배지에 흰 글씨가 된다). */
+    .btn-primary, .btn-primary:hover { color:#FFFFFF !important; }
     /* macOS frosted 크롬 — 하드코딩 밝은색 → 테마 반응 */
     /* 사이드바·툴바·타이틀바를 같은 --bg 로 통일(이음선 제거) — 상단이 하나로 이어져 보이게 */
-    body.platform-mac .sidebar{ background: color-mix(in srgb, var(--bg) 90%, transparent) !important; border-right-color: transparent !important; }
+    /* 사이드바·툴바·상단 띠를 같은 면으로 — 셋의 배경이 같아야 상단이 하나로 이어져 보인다.
+       배경이 같아진 만큼 사이드바 오른쪽 실선은 남겨야 영역이 구분된다(예전엔 이걸
+       transparent 로 지워서, 흰 배경끼리 경계가 사라졌다). */
+    body.platform-mac .sidebar{ background: color-mix(in srgb, var(--bg) 90%, transparent) !important; border-right-color: var(--border-light) !important; }
     body.platform-mac .toolbar{ background: color-mix(in srgb, var(--bg) 90%, transparent) !important; border-bottom-color: var(--border-light) !important; }
+    body.platform-mac .sidebar-header{ background: transparent !important; border-bottom-color: var(--border-light) !important; }
     body.platform-mac .nav-item.active{ background: var(--accent-bg) !important; box-shadow:none !important; }
     /* 테마 전환(라이트/다크/자동) — 활성 버튼: 노란 배경 위 흰 글씨가 안 읽혀 어둡게+굵게 */
-    .theme-seg-btn.active{ color: var(--accent-ink) !important; font-weight:600 !important; }
+    .theme-seg-btn.active{ color:#FFFFFF !important; font-weight:600 !important; }
     /* ═══ 스테이션 레일 (콘솔 스테이지 1) — 모노 배지 + LED 상태등 ═══ */
     .sidebar-nav .nav-item{ position:relative !important; gap:9px !important; padding:7px 9px !important; border-radius:9px !important; margin-bottom:2px !important; }
     .sidebar-nav .nav-icon{ width:24px !important; height:24px !important; border-radius:7px !important; box-shadow:none !important;
@@ -6465,8 +6484,8 @@
     /* ═══ 콘솔 스테이지 2: 상단 상태바 (계기판) + 전역 활성 게이지 ═══ */
     .toolbar-title{ letter-spacing:-.2px !important; }
     .toolbar-stats{ gap:15px !important; }
-    .toolbar-stat{ font-family:ui-monospace,'SF Mono',Menlo,monospace !important; font-size:9.5px !important;
-      letter-spacing:.4px !important; text-transform:uppercase !important; color:var(--text-tertiary) !important; gap:5px !important; }
+    .toolbar-stat{ font-family:ui-monospace,'SF Mono',Menlo,monospace !important; font-size:10.5px !important;
+      letter-spacing:.3px !important; text-transform:uppercase !important; color:var(--text-tertiary) !important; gap:6px !important; }
     .toolbar-stat-value{ font-family:ui-monospace,'SF Mono',Menlo,monospace !important; font-size:14px !important;
       font-weight:600 !important; font-variant-numeric:tabular-nums !important; color:var(--text) !important; letter-spacing:0 !important; }
     .tb-global .tb-led{ width:6px !important; height:6px !important; border-radius:50% !important; display:inline-block !important;
@@ -6485,7 +6504,7 @@
     .log-box::before{ content:'라이브 로그' !important; position:sticky !important; top:0 !important; z-index:3 !important; display:block !important;
       margin:0 -10px 8px !important; padding:7px 12px !important; font-family:ui-monospace,Menlo,monospace !important;
       font-size:9px !important; letter-spacing:2px !important; text-transform:uppercase !important;
-      color:#5f6b7a !important; background:#080A0E !important; border-bottom:1px solid rgba(255,255,255,.06) !important; }
+      color:#78859A !important; background:#080A0E !important; border-bottom:1px solid rgba(255,255,255,.06) !important; }
     /* ═══ 콘솔 스테이지 4: 현황 대시보드 홈 ═══ */
     .dash-nav .nav-icon{ font-size:13px !important; }
     .dash-kpis{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:18px; }
