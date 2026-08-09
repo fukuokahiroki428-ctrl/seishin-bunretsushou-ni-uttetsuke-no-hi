@@ -150,9 +150,17 @@ inline ToolStatus checkTool(const QString &name)
     if (!p.waitForFinished(20000)) { p.kill(); st.error = "version check timeout"; return st; }
     const QString out = QString::fromUtf8(p.readAllStandardOutput()
                                           + p.readAllStandardError()).trimmed();
-    st.runs = (p.exitStatus() == QProcess::NormalExit && !out.isEmpty());
-    st.version = out.section('\n', 0, 0).left(120);
-    if (!st.runs) st.error = "abnormal exit (code " + QString::number(p.exitCode()) + ")";
+    // ★ exitStatus() 는 정상종료/크래시만 구분한다 — 종료 코드 1로 죽어도 NormalExit 이다.
+    //   코드를 같이 보지 않아, 에러를 뱉고 실패한 도구가 [OK] 로 보고되고 그 에러문이
+    //   '버전'으로 찍혔다 (한글 경로에서 perl5*.dll 을 못 찾는 Windows exiftool 이 실제 사례).
+    //   저장소의 다른 QProcess 검사들과 같은 판정식으로 맞춘다.
+    const int code = p.exitCode();
+    st.runs = (p.exitStatus() == QProcess::NormalExit && code == 0 && !out.isEmpty());
+    st.version = st.runs ? out.section('\n', 0, 0).left(120) : QString();
+    if (!st.runs)
+        st.error = QStringLiteral("abnormal exit (code %1)%2").arg(code)
+                       .arg(out.isEmpty() ? QString()
+                                          : ": " + out.section('\n', 0, 0).left(160));
     return st;
 }
 
