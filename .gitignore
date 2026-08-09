@@ -36,3 +36,11 @@ ui_*.h
 # 대용량 아트(이전 앱에서 가져옴 — 빌드 시 로컬에 위치)
 mac/Chernobyl.png
 mac/chernobyl/build-univ/
+
+# 비밀정보 — 토큰·키는 절대 저장소에 올리지 않는다.
+# 실수로 파일을 만들어도 커밋되지 않도록 미리 막아 둔다.
+.env
+.env.*
+*.token
+secrets.*
+**/discord_token*
