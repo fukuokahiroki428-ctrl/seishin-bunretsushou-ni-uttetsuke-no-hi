@@ -399,7 +399,26 @@ jobs:
           path: windows/installer_out/Predormition_Setup.exe
           retention-days: 14
 
-      # 9) GitHub Release — v* 태그 push 시 Predormition_Setup.exe 를 자산으로 올린다.
+      # 8-1) 포터블 zip — 설치 없이 압축만 풀어 쓰는 배포본.
+      #      Actions Artifact 도 같은 폴더를 zip 으로 올리지만 14일 뒤 만료되고 로그인해야
+      #      받을 수 있다. 릴리즈 자산으로도 올려 설치기를 못/안 쓰는 경우를 받쳐준다.
+      #      태그 빌드에서만 만든다 — 963MB 를 압축하는 단계라 일반 main 빌드까지 늦출 이유가 없다.
+      #      Compress-Archive 는 이 규모에서 매우 느려 러너에 있는 7z 를 쓴다.
+      - name: Build portable zip
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          # ★ 이 스텝은 defaults 에 따라 windows/ 안에서 돈다 — 경로에 windows/ 를 또 붙이지 말 것.
+          #   (릴리즈 첨부는 uses: 스텝이라 working-directory 를 무시하므로 그쪽은 windows/ 접두어가 맞다.)
+          $out = "installer_out/Predormition_Portable.zip"
+          7z a -tzip -mx=5 -bso0 -bsp0 $out ./dist/win/*
+          if ($LASTEXITCODE -ne 0) { throw "7z 압축 실패 (exit $LASTEXITCODE)" }
+          $z = Get-Item $out
+          "포터블 zip: {0:N1} MB" -f ($z.Length/1MB)
+          # 빈 껍데기가 자산으로 나가는 것을 막는다 — dist 가 비면 7z 는 성공으로 끝난다.
+          if ($z.Length -lt 100MB) { throw "포터블 zip 이 너무 작습니다($([math]::Round($z.Length/1MB,1))MB) — dist 누락 의심이므로 중단" }
+
+      # 9) GitHub Release — v* 태그 push 시 설치본과 포터블 zip 을 자산으로 올린다.
       #    ★ draft 로 만든다: 이 저장소는 '발행된 릴리즈 = immutable' 정책이라 발행 후에는
       #      자산을 추가할 수 없다. mac 은 CI 가 아니라 로컬에서 빌드·서명하므로
       #      (Predormition.dmg) 초안에 나중에 올린 뒤 함께 발행해야 두 플랫폼이 한 릴리즈에 담긴다.
@@ -408,7 +427,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: windows/installer_out/Predormition_Setup.exe
+          files: |
+            windows/installer_out/Predormition_Setup.exe
+            windows/installer_out/Predormition_Portable.zip
           generate_release_notes: true
           fail_on_unmatched_files: true
           draft: true
