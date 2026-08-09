@@ -18,14 +18,51 @@ python3 archive_ask.py "vivoさん 그림 뭐 있어?"
 python3 archive_ask.py --search "先生虐待"        # AI 없이 검색만
 ```
 
-**3) 디스코드 봇** (선택)
+**3) 디스코드** — 두 방식 중 하나
+
+**(a) 이미 쓰는 봇에 붙이기 — 권장.** 토큰을 새로 만들 필요도, 봇을 하나 더
+띄울 필요도 없다. 기존 봇 코드에 두 줄만 넣는다.
+
+```python
+from archive_cog import setup_archive
+await setup_archive(bot)              # 또는 await bot.load_extension('archive_cog')
+```
+
+봇을 켜기 전에 **누가 쓸 수 있는지** 지정한다. 이걸 안 하면 잠긴 채로 동작한다.
+
 ```bash
-export DISCORD_BOT_TOKEN='...'      # ★ 파일에 적지 말 것
+export ARCHIVE_ALLOW_USERS='당신의_디스코드_계정_ID'     # 쉼표로 여러 명
+export ARCHIVE_ALLOW_CHANNELS='채널_ID'                 # (선택) 채널도 제한
+```
+
+계정 ID 는 디스코드 설정 → 고급 → 개발자 모드를 켜고 계정 우클릭 → 'ID 복사'.
+
+**(b) 별도 봇으로 돌리기.** `archive_bot.py` 를 쓴다.
+```bash
+export DISCORD_BOT_TOKEN='...'      # ★ 파일·저장소에 적지 말 것
 python3 archive_bot.py
 ```
-디스코드에서 `@봇 질문` / `!ask 질문` / `!find 검색어` / `!status`
 
-디스코드 개발자 포털에서 **MESSAGE CONTENT INTENT** 를 켜야 봇이 메시지를 읽는다.
+어느 쪽이든 디스코드 개발자 포털에서 **MESSAGE CONTENT INTENT** 를 켜야 한다.
+
+**명령**: `!ask <질문>` · `!find <검색어>` · `!archive` (상태)
+
+## 접근 제한 — 기본이 '차단' 이다
+
+허용 계정을 지정하지 않으면 아무도 쓸 수 없다. 수집한 자료는 개인 기록이고,
+봇이 있는 서버의 누구나 보관함 전체를 조회할 수 있게 되는 쪽이 더 위험하므로
+설정을 깜빡했을 때 열리는 게 아니라 **닫히는 쪽으로** 실패하게 했다.
+허용되지 않은 사람이 부르면 조용히 무시한다(기능이 있는 줄도 모르게).
+
+## 토큰이 유출될 위험은?
+
+토큰은 '봇' 의 신분증이지 사용자의 것이 아니다. **배포물에 토큰을 넣지 않는 한
+유출이 아니다.** 이 스크립트들은 토큰을 코드에 담지 않고 환경변수로만 읽는다.
+
+- ❌ 내 토큰을 앱에 넣어 배포 → 유출. `strings` 한 줄이면 꺼내진다
+- ✅ 각자 자기 봇 토큰을 자기 PC 에서 넣음 → 배포물에 토큰이 없다
+
+색인이 각자 PC 에 있으므로 ✅ 가 구조적으로도 맞다.
 
 ## 무엇을 근거로 답하나
 
