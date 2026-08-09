@@ -751,7 +751,9 @@ QProcessEnvironment bundledProcessEnv()
     QString frameworksDir = appDir + "/../Frameworks";
     QString existing = env.value("DYLD_LIBRARY_PATH");
     env.insert("DYLD_LIBRARY_PATH", existing.isEmpty() ? frameworksDir : frameworksDir + ":" + existing);
-    QString extraPaths = appDir + ":/opt/homebrew/bin:/usr/local/bin";
+    // ★ 번들 tools 도 PATH 에 — yt-dlp/rclone 이 여기 있다. 이게 빠져 있어서
+    //   이름만으로 실행할 때 홈브루 것이 먼저 잡혔다(번들 우선 원칙 위반).
+    QString extraPaths = appDir + ":" + bundledToolsDir() + ":/opt/homebrew/bin:/usr/local/bin";
     env.insert("PATH", extraPaths + ":" + env.value("PATH"));
 #endif
 
