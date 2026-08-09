@@ -12810,15 +12810,45 @@ void MiyoBackend::getSystemInfo()
         info << "── 번들 도구 ──";
         QString appDir = QCoreApplication::applicationDirPath();
         QStringList tools = {"yt-dlp", "ffmpeg", "ffprobe"};
+        // ★ 도구는 번들 안 두 곳에 나뉘어 있다 — ffmpeg/ffprobe 는 Contents/MacOS,
+        //   yt-dlp 는 Contents/Resources/tools. 여기서 appDir 한 곳만 보는 바람에
+        //   실제로는 멀쩡히 실행되는 yt-dlp 가 "(없음)" 으로 보고됐고, 사용자는
+        //   "모듈이 안 깔렸다" 고 판단하게 됐다(같은 로그에 버전 2026.7.4 가 찍히는데도).
+        //   실행 경로를 정하는 findBundledYtDlp()/findBundledTool() 과 같은 후보를 본다.
+        const QString toolsDirB = Common::bundledToolsDir();
         for (const QString &tool : tools) {
 #ifdef Q_OS_WIN
-            QString path = appDir + "/" + tool + ".exe";
+            const QString sfx = ".exe";
 #else
-            QString path = appDir + "/" + tool;
+            const QString sfx = "";
 #endif
-            if (QFile::exists(path)) {
-                QFileInfo fi(path);
-                info << QString("  %1: %2 MB").arg(tool).arg(fi.size() / (1024.0*1024.0), 0, 'f', 1);
+            QStringList cand;
+            cand << appDir + "/" + tool + sfx
+                 << toolsDirB + "/" + tool + sfx
+                 << toolsDirB + "/" + tool + "/" + tool + sfx;   // exiftool 처럼 폴더 안에 있는 경우
+            QString found;
+            for (const QString &c : cand) {
+                if (QFileInfo(c).isFile()) { found = c; break; }
+            }
+            if (!found.isEmpty()) {
+                const QFileInfo fi(found);
+                const qint64 sz = fi.size();
+                // ★ 크기만 찍으면 오해를 부른다 — yt-dlp 는 1KB 짜리 래퍼 스크립트이고
+                //   실제 알맹이는 번들 파이썬 안의 yt_dlp 모듈(약 13MB)이다. MB 로 반올림하면
+                //   "0.0 MB" 가 되어 고장난 것처럼 보인다. 래퍼면 그렇게 밝히고,
+                //   작은 파일은 KB 로 적는다.
+                bool isWrapper = false;
+                QFile f(found);
+                if (f.open(QIODevice::ReadOnly)) { isWrapper = f.read(2) == "#!"; f.close(); }
+                const QString sizeTxt = sz < 1024*1024
+                    ? QString("%1 KB").arg(sz / 1024.0, 0, 'f', 1)
+                    : QString("%1 MB").arg(sz / (1024.0*1024.0), 0, 'f', 1);
+                if (isWrapper) {
+                    info << QString("  %1: %2 (실행 스크립트 — 실제 코드는 번들 파이썬 모듈)")
+                                .arg(tool, sizeTxt);
+                } else {
+                    info << QString("  %1: %2").arg(tool, sizeTxt);
+                }
             } else {
                 info << QString("  %1: (없음)").arg(tool);
             }
