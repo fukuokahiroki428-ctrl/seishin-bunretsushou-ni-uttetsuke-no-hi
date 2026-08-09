@@ -52,15 +52,19 @@ protected:
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle("カメラ");
-    setMinimumSize(400, 700);
-    resize(420, 850);
+    setWindowTitle("Predormition");
+    // ★ 기본 창 크기 — 폭 420px 은 사이드바(136px)를 빼면 본문이 284px 밖에 안 남아
+    //   설정 폼·로그·표가 전부 눌린다. 데스크톱 앱 기준으로 넓혔다.
+    setMinimumSize(820, 640);
+    resize(1180, 820);
 
-    // QMainWindow 배경 — 흰색 (HTML 페이지 배경과 일치).
-    //   이전: #0A0A0A (검은색) → 창 가장자리/타이틀바 주변에 검은 띠가 보임 → 사용자 불만
+    // QMainWindow 배경 — HTML 페이지 배경(--bg)과 반드시 같아야 한다.
+    //   이 색이 신호등 주변 타이틀바 띠로 그대로 보이기 때문에, 다르면 창 위쪽에
+    //   다른 색 띠가 생긴다(예전엔 주석만 '흰색' 이고 값은 베이지 #EDE9E1 이라
+    //   본문은 흰데 타이틀바만 베이지로 남아 있었다).
     setStyleSheet(R"(
         QMainWindow {
-            background-color: #EDE9E1;
+            background-color: #FFFFFF;
         }
         QDockWidget {
             background-color: #1A1A1A;
@@ -507,7 +511,9 @@ void MainWindow::applyDarkTitlebar()
 // ─────────────────────────────────────────────────────────────────────
 void MainWindow::setChromeTheme(bool dark)
 {
-    const QString bg = dark ? QStringLiteral("#0F1115") : QStringLiteral("#EDE9E1");
+    // ★ HTML 의 --bg 와 같은 값이어야 타이틀바 띠가 본문과 이어져 보인다.
+    //   (라이트 #FFFFFF / 다크 #101114 — index.html 의 darkroom-graft 토큰과 일치)
+    const QString bg = dark ? QStringLiteral("#101114") : QStringLiteral("#FFFFFF");
     setStyleSheet(QStringLiteral("QMainWindow { background-color: %1; }").arg(bg));
 #ifdef Q_OS_MACOS
     id nsView = reinterpret_cast<id>(winId());
