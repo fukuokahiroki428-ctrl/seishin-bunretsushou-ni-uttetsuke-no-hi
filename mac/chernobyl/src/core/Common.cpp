@@ -22,6 +22,10 @@
 #include <QJsonArray>
 #include <QImage>
 #include <QSet>
+#include <QVarLengthArray>
+#include <QTemporaryFile>
+#include <QTextStream>
+#include <QStringConverter>
 
 #ifdef Q_OS_WIN
 #include <sys/types.h>
@@ -197,6 +201,59 @@ void setFileTimes(const QString &filePath, const QString &timestampStr)
     }
 }
 
+// ═════════════════════════════════════════════════════════════════════════
+// ANSI 로 안전한 경로 (Windows 전용 — 맥에서는 no-op)
+// ═════════════════════════════════════════════════════════════════════════
+// exiftool.exe 는 PAR 로 묶인 perl 실행 파일이라 argv 를 시스템 ANSI 코드페이지로 받는다.
+// 경로에 그 코드페이지로 표현할 수 없는 문자가 있으면 '?' 로 뭉개져, 자기 옆의
+// exiftool_files\perl5*.dll 도 대상 파일도 찾지 못하고 종료 코드 1 로 죽는다.
+// 설치 기본 경로가 {localappdata}\Programs\Predormition 이라 Windows 사용자 이름이
+// 한글·일본어면 일반 사용자 환경에서 그대로 재현된다.
+// 맥은 argv 가 UTF-8 이라 이 문제가 없다. 두 트리를 같은 모양으로 두기 위해 함께 둔다.
+#ifdef Q_OS_WIN
+static bool ansiRepresentable(const QString &p)
+{
+    if (GetACP() == CP_UTF8) return true;   // ACP 가 UTF-8 이면 뭉개질 일이 없다
+    QVarLengthArray<wchar_t, 512> w(p.length() + 1);
+    const int len = p.toWCharArray(w.data());
+    w[len] = L'\0';
+    const int need = WideCharToMultiByte(CP_ACP, 0, w.data(), -1, nullptr, 0, nullptr, nullptr);
+    if (need <= 0) return false;
+    QVarLengthArray<char, 1024> buf(need);
+    BOOL usedDefault = FALSE;
+    const int n = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, w.data(), -1,
+                                      buf.data(), need, nullptr, &usedDefault);
+    return n > 0 && !usedDefault;   // 대체 문자가 쓰였다면 표현 불가
+}
+#endif
+
+QString ansiSafePath(const QString &path)
+{
+#ifdef Q_OS_WIN
+    if (path.isEmpty() || ansiRepresentable(path)) return path;
+
+    const QString native = QDir::toNativeSeparators(path);
+    QVarLengthArray<wchar_t, 512> w(native.length() + 1);
+    const int len = native.toWCharArray(w.data());
+    w[len] = L'\0';
+
+    const DWORD need = GetShortPathNameW(w.data(), nullptr, 0);
+    if (need == 0) return path;
+    QVarLengthArray<wchar_t, 512> shortBuf(static_cast<int>(need));
+    if (GetShortPathNameW(w.data(), shortBuf.data(), need) == 0) return path;
+
+    const QString shortPath = QString::fromWCharArray(shortBuf.data());
+    if (!ansiRepresentable(shortPath)) {
+        qWarning() << "[Common] 경로에 ANSI 로 표현 못 하는 문자가 있는데 8.3 단축 경로도 없습니다."
+                   << "exiftool 이 실패할 수 있습니다:" << path;
+        return path;
+    }
+    return shortPath;
+#else
+    return path;
+#endif
+}
+
 void addExifMetadata(const QString &imagePath, const QString &artist,
                      const QString &description, const QString &copyright,
                      const QString &comment, const QString &dateStr)
@@ -236,6 +293,9 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
             args << ("-DateTimeOriginal=" + exifDate);
         }
     }
+    // ★ 대상 파일 경로는 반드시 원본(긴 경로)을 넘긴다. 8.3 단축 경로를 넘기면
+    //   -overwrite_original 이 그 이름으로 되돌려 써서 사용자 파일이 8.3 이름으로
+    //   개명된다 (실측: 테스트이미지.jpg → 75CF~1.JPG). 아카이빙 앱에서는 자료 손상이다.
     args << imagePath;
 
     // exiftool 경로 탐색 (번들 → homebrew → system)
@@ -298,7 +358,28 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
         perlArgs.append(args);
         proc.start(exiftoolPerl, perlArgs);
     } else {
+#ifdef Q_OS_WIN
+        // ★ Windows: 인자를 UTF-8 argfile 로 넘긴다. exiftool.exe 는 argv 를 시스템 ANSI
+        //   코드페이지로 받으므로 그대로 넘기면 일본어·한글 값과 경로가 '?' 로 뭉개진다.
+        //   실행 파일 경로만 8.3 로 넘긴다(자기 exiftool_files 를 찾아야 하므로).
+        //   맥은 argv 가 UTF-8 이고 perl 경유라 이 경로를 타지 않는다.
+        QTemporaryFile argFile(QDir::tempPath() + "/predormition_exif_XXXXXX.args");
+        argFile.setAutoRemove(true);
+        if (!argFile.open()) {
+            qWarning() << "[Common] exiftool argfile 을 만들지 못했습니다 — EXIF 기록을 건너뜁니다";
+            return;
+        }
+        {
+            QTextStream ts(&argFile);
+            ts.setEncoding(QStringConverter::Utf8);
+            ts << "-charset\nfilename=UTF8\n-charset\nUTF8\n";
+            for (const QString &a : args) ts << a << "\n";
+        }
+        argFile.close();
+        proc.start(ansiSafePath(exiftoolPath), {"-@", ansiSafePath(argFile.fileName())});
+#else
         proc.start(exiftoolPath, args);
+#endif
     }
     if (!proc.waitForStarted(3000)) {
         if (exiftoolAvailable == -1) {

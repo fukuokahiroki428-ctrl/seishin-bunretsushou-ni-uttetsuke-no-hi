@@ -19,7 +19,9 @@
 // 정직한 한계: LLM 은 *진단과 조치 안내*까지만 한다. 컴파일된 C++ 를 런타임에
 // 스스로 고칠 수는 없다. 실제 자동 "수리"는 2)~3) 의 결정론적 복구 루틴이
 // 수행하고, LLM 은 복구 불가 항목의 원인 분석을 보탠다.
-// 추가 의존성 없음 — Qt Core + Network 만 사용 (앱이 이미 링크함).
+// 의존성: Qt Core + Network, 그리고 core/Common.h 의 ansiSafePath 하나.
+//   (exiftool 은 argv 를 시스템 ANSI 코드페이지로 받는다. 경로를 앱 본체와 똑같이
+//    다뤄야 "실제로는 되는데 자가진단만 [FAIL]" 같은 오경보가 안 난다.)
 // header-only (Q_OBJECT 없음) → CMakeLists 수정 불필요.
 // ═════════════════════════════════════════════════════════════════════════
 
@@ -44,6 +46,8 @@
 #include <QThread>
 #include <QTimer>
 #include <QDebug>
+
+#include "core/Common.h"   // ansiSafePath — 앱 본체와 같은 방식으로 exiftool 경로를 넘기기 위해
 
 namespace SelfRepair {
 
@@ -145,7 +149,10 @@ inline ToolStatus checkTool(const QString &name)
         p.start("/usr/bin/perl", QStringList() << st.path << versionArgs(name));
     } else
 #endif
-    p.start(st.path, versionArgs(name));
+    // ★ 앱 본체(Common::addExifMetadata)와 같은 경로 처리를 쓴다. exiftool 은 argv 를
+    //   ANSI 로 받으므로, 사용자 이름이 한글·일본어인 설치 경로에서는 8.3 단축 경로가 필요하다.
+    //   여기서만 원본 경로를 넘기면 실제 EXIF 는 써지는데 진단만 실패하는 오경보가 난다.
+    p.start(Common::ansiSafePath(st.path), versionArgs(name));
     if (!p.waitForStarted(4000)) { st.error = "failed to start: " + p.errorString(); return st; }
     if (!p.waitForFinished(20000)) { p.kill(); st.error = "version check timeout"; return st; }
     const QString out = QString::fromUtf8(p.readAllStandardOutput()
