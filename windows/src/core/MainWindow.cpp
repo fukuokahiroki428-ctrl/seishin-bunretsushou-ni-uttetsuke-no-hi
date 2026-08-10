@@ -5,6 +5,8 @@
 #include <QWebEngineSettings>
 #include <QVBoxLayout>
 #include <QMenuBar>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QAction>
 #include <QFileDialog>
 #include <QTimer>
@@ -281,6 +283,41 @@ void MainWindow::setupMenu()
     quitAction->setShortcut(QKeySequence("Ctrl+Q"));
     connect(quitAction, &QAction::triggered, this, &QMainWindow::close);
     fileMenu->addAction(quitAction);
+
+    // ── 창(Window) 메뉴 ────────────────────────────────────────────────────
+    //   ★ Windows 판은 FramelessWindowHint 라 OS 가 주는 최대화 버튼이 아예 없다.
+    //     메뉴와 단축키로 확대 경로를 만들어 둔다.
+    auto *winMenu = menubar->addMenu("창");
+
+    auto *zoomAction = new QAction("확대 / 원래대로", this);
+    zoomAction->setShortcut(QKeySequence("Ctrl+Shift+Z"));
+    connect(zoomAction, &QAction::triggered, this, [this]() {
+        if (isMaximized()) showNormal(); else showMaximized();
+    });
+    winMenu->addAction(zoomAction);
+
+    auto *fullAction = new QAction("전체화면", this);
+    fullAction->setShortcut(QKeySequence("Ctrl+Shift+F"));
+    connect(fullAction, &QAction::triggered, this, [this]() {
+        if (isFullScreen()) showNormal(); else showFullScreen();
+    });
+    winMenu->addAction(fullAction);
+
+    winMenu->addSeparator();
+
+    auto *fitAction = new QAction("화면에 맞추기", this);
+    connect(fitAction, &QAction::triggered, this, [this]() {
+        if (QScreen *sc = screen() ? screen() : QGuiApplication::primaryScreen())
+            setGeometry(sc->availableGeometry());
+    });
+    winMenu->addAction(fitAction);
+
+    auto *resetAction = new QAction("기본 크기로", this);
+    connect(resetAction, &QAction::triggered, this, [this]() {
+        showNormal();
+        resize(1180, 820);
+    });
+    winMenu->addAction(resetAction);
 
     // ★ Tools menu (anipo / AINU) 제거 — companion apps 미사용 + 번들에 포함 안 됨.
     //   소스 폴더 (485MB) 도 삭제됨. openExternalApp 함수도 같이 제거.

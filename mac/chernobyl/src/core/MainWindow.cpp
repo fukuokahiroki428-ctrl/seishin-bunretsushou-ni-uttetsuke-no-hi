@@ -5,6 +5,9 @@
 #include <QWebEngineSettings>
 #include <QVBoxLayout>
 #include <QMenuBar>
+#include <QMouseEvent>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QAction>
 #include <QFileDialog>
 #include <QTimer>
@@ -261,6 +264,46 @@ void MainWindow::setupMenu()
     connect(quitAction, &QAction::triggered, this, &QMainWindow::close);
     fileMenu->addAction(quitAction);
 
+    // ── 창(Window) 메뉴 ────────────────────────────────────────────────────
+    //   ★ 이게 없어서 창을 키울 방법이 사실상 없었다.
+    //     macOS 에서 초록 버튼은 기본이 '전체화면' 이고, '확대' 는 ⌥+클릭이나
+    //     타이틀바 더블클릭인데 — 이 앱은 타이틀바를 투명하게 만들어(FullSizeContentView)
+    //     그 자리를 웹뷰가 덮고 있어 더블클릭이 먹지 않는다.
+    //     메뉴와 단축키로 확실한 경로를 만든다.
+    auto *winMenu = menubar->addMenu("창");
+
+    auto *zoomAction = new QAction("확대 / 원래대로", this);
+    zoomAction->setShortcut(QKeySequence("Ctrl+Shift+Z"));   // mac 에선 ⌘⇧Z
+    connect(zoomAction, &QAction::triggered, this, [this]() {
+        if (isMaximized()) showNormal(); else showMaximized();
+    });
+    winMenu->addAction(zoomAction);
+
+    auto *fullAction = new QAction("전체화면", this);
+    fullAction->setShortcut(QKeySequence("Ctrl+Shift+F"));   // mac 에선 ⌘⇧F
+    connect(fullAction, &QAction::triggered, this, [this]() {
+        if (isFullScreen()) showNormal(); else showFullScreen();
+    });
+    winMenu->addAction(fullAction);
+
+    winMenu->addSeparator();
+
+    auto *fitAction = new QAction("화면에 맞추기", this);
+    connect(fitAction, &QAction::triggered, this, [this]() {
+        // 화면의 작업 영역(메뉴바·독 제외)에 꽉 채운다. 최대화가 막힌 환경에서도
+        // 확실히 커지는 경로를 하나 더 둔다.
+        if (QScreen *sc = screen() ? screen() : QGuiApplication::primaryScreen())
+            setGeometry(sc->availableGeometry());
+    });
+    winMenu->addAction(fitAction);
+
+    auto *resetAction = new QAction("기본 크기로", this);
+    connect(resetAction, &QAction::triggered, this, [this]() {
+        showNormal();
+        resize(1180, 820);
+    });
+    winMenu->addAction(resetAction);
+
     // ★ Tools menu (anipo / AINU) 제거 — companion apps 미사용 + 번들에 포함 안 됨.
     //   소스 폴더 (485MB) 도 삭제됨. openExternalApp 함수도 같이 제거.
 }
@@ -391,6 +434,22 @@ void MainWindow::releaseAwake()
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
+    // ★ 상단 띠(신호등이 있는 52px) 더블클릭 → 확대/원복.
+    //   macOS 의 기본 동작이지만, 이 앱은 타이틀바를 투명하게 만들고
+    //   (FullSizeContentView) 그 자리를 웹뷰가 덮고 있어 더블클릭이 창까지
+    //   가지 못한다. 여기서 직접 받아 처리한다.
+    if (event->type() == QEvent::MouseButtonDblClick) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::LeftButton) {
+            const QPoint inWindow = mapFromGlobal(me->globalPosition().toPoint());
+            constexpr int kTitleStrip = 52;   // index.html 의 .sidebar-header / .toolbar 높이
+            if (inWindow.y() >= 0 && inWindow.y() < kTitleStrip) {
+                if (isMaximized()) showNormal(); else showMaximized();
+                return true;
+            }
+        }
+    }
+
     if (event->type() == QEvent::DragEnter) {
         auto *e = static_cast<QDragEnterEvent *>(event);
         if (e->mimeData()->hasUrls()) {
