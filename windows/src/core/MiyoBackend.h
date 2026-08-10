@@ -61,6 +61,7 @@ public slots:
     // 로컬 AI (자가진단 LLM) — 번들 llama-server 수동 제어 (설정 탭 토글)
     void startLocalLlm(const QString &modelHint);
     void stopLocalLlm();
+    bool killLlmOnPort();   // 8737 을 문 llama-server 정리(고아 포함)
     void getLlmStatus();
     void llmChat(const QString &historyJson);       // 로컬 AI 와 대화(수리 도우미) — JS onLlmReply(text)
     void openLlmTerminal();                          // 오픈클로를 대화형 터미널 REPL 로 띄움

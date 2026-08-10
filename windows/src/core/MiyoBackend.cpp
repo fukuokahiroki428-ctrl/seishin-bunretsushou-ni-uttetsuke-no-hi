@@ -13058,8 +13058,13 @@ void MiyoBackend::startLocalLlm(const QString &modelHint)
     const QString effHint = m_llmModelHint;
     // 기본값: 힌트 없으면 '코드 특화 중 가장 큰' 모델(수리 품질↑). 없으면 첫 번째.
     QString model;
+    //   ★ 예전엔 coders.last() — 가장 큰 7B 였다. 그런데 7B 는 로딩에 49초가 걸리고
+    //     아래 대기 한도는 20초였다. 그래서 '켜도 안 켜짐' 으로 보이고, 버려진 프로세스는
+    //     로딩을 마쳐 고아로 남아 포트를 물었다(다음에 켤 때 또 꼬인다).
+    //     기본은 코드 특화 중 '가장 작은' 것으로 — 빨리 뜨는 쪽이 기본이어야 한다.
+    //     더 큰 모델은 사용자가 고르면 그때 쓴다.
     { QStringList coders; for (const QString &h : heads) if (h.contains("coder", Qt::CaseInsensitive)) coders << h;
-      coders.sort(); model = coders.isEmpty() ? heads.first() : coders.last(); }
+      coders.sort(); model = coders.isEmpty() ? heads.first() : coders.first(); }
     if (!effHint.isEmpty())
         for (const QString &h : heads) if (h.contains(effHint, Qt::CaseInsensitive)) { model = h; break; }
 
@@ -13096,14 +13101,51 @@ void MiyoBackend::startLocalLlm(const QString &modelHint)
 
 void MiyoBackend::stopLocalLlm()
 {
+    bool stopped = false;
     if (m_llmProc && m_llmProc->state() != QProcess::NotRunning) {
         m_llmProc->terminate();
         if (!m_llmProc->waitForFinished(3000)) m_llmProc->kill();
-        log("로컬 AI 를 종료했습니다.", "info", "settings");
-    } else {
-        log("로컬 AI 는 실행 중이 아닙니다.", "info", "settings");
+        stopped = true;
     }
+    // ★ 우리가 띄운 프로세스가 아니어도 정리한다. 앱을 껐다 켜면 m_llmProc 가 비어
+    //   있어서, 이전 세션이 남긴 서버가 8737 을 문 채 영원히 남았다(실제로 발생).
+    //   그 상태에선 '켜기' 가 기존 서버를 채택해 버려, 엉뚱한 모델이 물린 채로 돈다.
+    if (killLlmOnPort())
+        stopped = true;
+    log(stopped ? "로컬 AI 를 종료했습니다." : "로컬 AI 는 실행 중이 아닙니다.", "info", "settings");
     getLlmStatus();
+}
+
+// 8737 을 점유한 llama-server 를 찾아 종료한다(우리가 띄운 것이 아니어도).
+bool MiyoBackend::killLlmOnPort()
+{
+    QProcess find;
+#ifdef Q_OS_WIN
+    find.start("cmd", {"/c", "netstat -ano -p tcp | findstr :8737 | findstr LISTENING"});
+#else
+    find.start("/usr/sbin/lsof", {"-ti", "tcp:8737"});
+#endif
+    if (!find.waitForFinished(4000)) { find.kill(); return false; }
+    const QString out = QString::fromUtf8(find.readAllStandardOutput());
+    QStringList pids;
+#ifdef Q_OS_WIN
+    for (const QString &line : out.split('\n', Qt::SkipEmptyParts)) {
+        const QStringList c = line.simplified().split(' ');
+        if (!c.isEmpty() && c.last().toInt() > 0) pids << c.last();
+    }
+#else
+    for (const QString &line : out.split('\n', Qt::SkipEmptyParts))
+        if (line.trimmed().toInt() > 0) pids << line.trimmed();
+#endif
+    if (pids.isEmpty()) return false;
+    for (const QString &pid : pids) {
+#ifdef Q_OS_WIN
+        QProcess::execute("taskkill", {"/PID", pid, "/F"});
+#else
+        QProcess::execute("/bin/kill", {pid});
+#endif
+    }
+    return true;
 }
 
 // 로컬 AI 와 대화 — 수리 도우미. historyJson = [{role,content}...]. 응답은 onLlmReply(text).
