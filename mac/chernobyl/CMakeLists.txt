@@ -371,6 +371,32 @@ if(APPLE)
         )
     endif()
 
+    # ★ requirements.txt 번들 — Python 업그레이드 시 이 파일을 읽어 패키지를 다시 깐다.
+    #   없으면 코드 안 최소 목록으로 폴백하지만 버전 고정이 사라지므로 반드시 넣는다.
+    add_custom_command(TARGET Miyo POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/../../requirements.txt"
+            "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/requirements.txt"
+        COMMENT "Bundling requirements.txt"
+    )
+
+    # ★ 보관함 질의응답 스크립트 — 색인/질문/디스코드 부품.
+    #   저장소에만 있으면 배포본 사용자는 쓸 수 없다.
+    add_custom_command(TARGET Miyo POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/archive"
+        COMMENT "Bundling archive scripts"
+    )
+    foreach(_af archive_index.py archive_ask.py archive_bot.py archive_cog.py README_archive.md)
+        if(EXISTS "${CMAKE_SOURCE_DIR}/../../scripts/${_af}")
+            add_custom_command(TARGET Miyo POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_SOURCE_DIR}/../../scripts/${_af}"
+                    "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/archive/${_af}"
+            )
+        endif()
+    endforeach()
+
     # ★ Qt 프레임워크 번들링 — 반드시 codesign 앞.
     #   이게 없으면 실행 파일이 /opt/homebrew/opt/qt*/lib/... 를 직접 참조해서,
     #   홈브루 Qt 가 없는 맥에서는 앱이 아예 켜지지 않는다.

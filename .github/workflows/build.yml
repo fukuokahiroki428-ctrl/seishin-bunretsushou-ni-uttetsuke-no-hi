@@ -299,6 +299,17 @@ jobs:
             throw "python_env 가 배포본에 없습니다 — Twitter/Bluesky 수집이 불가능한 설치본이므로 중단"
           }
 
+          # ★ requirements.txt — Python 업그레이드 시 이 파일을 읽어 패키지를 다시 깐다.
+          #   없으면 코드 안 최소 목록으로 폴백하지만 버전 고정이 사라진다.
+          Copy-Item "../requirements.txt" "$dist/requirements.txt" -Force
+
+          # ★ 보관함 질의응답 스크립트 (색인·질문·디스코드 부품)
+          New-Item -ItemType Directory -Force -Path "$dist/tools/archive" | Out-Null
+          Get-ChildItem "../scripts" -Filter "archive_*.py" | ForEach-Object {
+            Copy-Item $_.FullName "$dist/tools/archive/" -Force
+          }
+          Copy-Item "../scripts/README_archive.md" "$dist/tools/archive/" -Force -ErrorAction SilentlyContinue
+
           # exiftool.exe → exe 루트 (Windows 앱은 applicationDirPath()/exiftool.exe 탐색)
           if (Test-Path "resources/tools/exiftool.exe") { Copy-Item "resources/tools/exiftool.exe" "$dist/exiftool.exe" -Force }
 
@@ -325,6 +336,9 @@ jobs:
             #   복사가 -ErrorAction SilentlyContinue 라 조용히 빠질 수 있어 게이트에 넣는다.
             "tools/twitter_daemon.py" = "Twitter 수집 데몬"
             "tools/bluesky_daemon.py" = "Bluesky 수집 데몬"
+            # ★ Python 업그레이드가 이 파일을 읽어 패키지를 다시 깐다. 빠지면 버전 고정이
+            #   사라지고 업그레이드마다 최신판을 받게 된다(고정해 둔 취지가 무너짐).
+            "requirements.txt" = "Python 패키지 목록(버전 고정)"
           }
           $missing = @()
           foreach ($k in $must.Keys) { if (-not (Test-Path "$dist/$k")) { $missing += "$k ($($must[$k]))" } }

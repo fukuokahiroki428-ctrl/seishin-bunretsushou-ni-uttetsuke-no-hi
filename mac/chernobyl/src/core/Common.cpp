@@ -818,6 +818,38 @@ QStringList pythonCandidates()
     return list;
 }
 
+// ★ 번들된 requirements.txt 를 읽어 설치할 패키지 목록을 만든다.
+//   목록을 코드에 박아 두면 requirements.txt 와 갈라지고, 실제로 갈라져 있었다
+//   (browser_cookie3·cryptography 누락 → Python 업그레이드 후 쿠키 추출이 조용히 죽음).
+//   버전 고정(==)도 그대로 살려 넘긴다 — 고정해 둔 취지가 업그레이드 때 무너지지 않게.
+//   파일을 못 찾으면 빈 목록이 아니라 최소 필수 목록을 돌려준다(전부 실패보다 낫다).
+QStringList bundledRequirements()
+{
+    QStringList out;
+    QStringList cands;
+    cands << bundledResourcesDir() + "/requirements.txt"
+          << QCoreApplication::applicationDirPath() + "/requirements.txt"
+          << QCoreApplication::applicationDirPath() + "/../requirements.txt";
+    for (const QString &c : cands) {
+        QFile f(c);
+        if (!f.exists() || !f.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
+        while (!f.atEnd()) {
+            QString line = QString::fromUtf8(f.readLine()).trimmed();
+            if (line.isEmpty() || line.startsWith('#')) continue;
+            out << line;
+        }
+        f.close();
+        if (!out.isEmpty()) {
+            qDebug() << "[Common] requirements:" << c << out.size() << "packages";
+            return out;
+        }
+    }
+    qWarning() << "[Common] requirements.txt 를 찾지 못했습니다 — 최소 목록으로 진행";
+    return {"twikit", "httpx", "atproto", "openpyxl", "Pillow", "piexif",
+            "beautifulsoup4", "websockets", "lxml", "m3u8", "yt-dlp",
+            "browser_cookie3", "cryptography"};
+}
+
 QProcessEnvironment bundledProcessEnv()
 {
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();

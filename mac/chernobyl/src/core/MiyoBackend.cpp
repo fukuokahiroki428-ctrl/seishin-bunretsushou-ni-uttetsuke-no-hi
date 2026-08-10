@@ -12506,8 +12506,12 @@ void MiyoBackend::updateModules()
             proc.waitForFinished(60000);
         }
 
-        QStringList packages = {"twikit", "httpx", "atproto", "openpyxl", "Pillow", "piexif",
-                                "beautifulsoup4", "websockets", "lxml", "m3u8", "yt-dlp"};
+        // ★ 목록을 코드에 박아 두면 requirements.txt 와 갈라진다. 실제로 갈라져 있었다 —
+        //   여기엔 browser_cookie3(쿠키 추출)·cryptography 가 빠져 있어, Python 을 한 번
+        //   업그레이드하면 Instagram 쿠키 추출이 조용히 죽었다. 버전 고정도 없어서
+        //   업그레이드마다 최신판을 받아 오던 것도 문제였다(pin 의 취지가 무너진다).
+        //   번들된 requirements.txt 를 읽어 한 곳에서만 관리한다.
+        QStringList packages = Common::bundledRequirements();
 
         int updated = 0;
         int failed = 0;
@@ -13532,8 +13536,12 @@ void MiyoBackend::upgradePython()
         pipInit.waitForFinished(60000);
 
         // 6. 패키지 재설치
-        QStringList packages = {"twikit", "httpx", "atproto", "openpyxl", "Pillow", "piexif",
-                                "beautifulsoup4", "websockets", "lxml", "m3u8", "yt-dlp"};
+        // ★ 목록을 코드에 박아 두면 requirements.txt 와 갈라진다. 실제로 갈라져 있었다 —
+        //   여기엔 browser_cookie3(쿠키 추출)·cryptography 가 빠져 있어, Python 을 한 번
+        //   업그레이드하면 Instagram 쿠키 추출이 조용히 죽었다. 버전 고정도 없어서
+        //   업그레이드마다 최신판을 받아 오던 것도 문제였다(pin 의 취지가 무너진다).
+        //   번들된 requirements.txt 를 읽어 한 곳에서만 관리한다.
+        QStringList packages = Common::bundledRequirements();
 
         log(QString("  패키지 %1개 설치 중...").arg(packages.size()), "info", "settings");
         int installed = 0, failed = 0;

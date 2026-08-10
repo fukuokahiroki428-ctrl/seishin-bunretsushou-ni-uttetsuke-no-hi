@@ -69,7 +69,10 @@ def platform_of(rel: Path) -> str:
 
 
 # ── DB ─────────────────────────────────────────────────────────────────────
+SCHEMA_VERSION = 1     # 칸을 늘리거나 바꿀 때 올린다 — 아래 migrate() 가 보고 처리한다
+
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS files (
   path TEXT PRIMARY KEY, name TEXT, ext TEXT, size INTEGER, mtime INTEGER,
   platform TEXT, kind TEXT,
@@ -111,6 +114,20 @@ def open_db(path: Path, reset: bool) -> sqlite3.Connection:
         path.unlink()
     db = sqlite3.connect(str(path))
     db.executescript(SCHEMA)
+    # ★ 스키마 판올림 — 나중에 칸(예: 비전 모델 결과)이 늘어도 옛 색인이 그냥 깨지지 않게.
+    #   판이 낮으면 여기서 ALTER 로 채우고, 감당 못 할 변경이면 다시 만들라고 알린다.
+    cur = db.execute("SELECT v FROM meta WHERE k='schema_version'").fetchone()
+    have = int(cur[0]) if cur else 0
+    if have == 0:
+        db.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('schema_version',?)",
+                   (str(SCHEMA_VERSION),))
+    elif have < SCHEMA_VERSION:
+        print(f"  색인 판올림 {have} → {SCHEMA_VERSION}")
+        db.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('schema_version',?)",
+                   (str(SCHEMA_VERSION),))
+    elif have > SCHEMA_VERSION:
+        print(f"  ⚠ 색인이 더 새 판({have})입니다. 앱을 업데이트하거나 --reset 으로 다시 만드세요.")
+    db.commit()
     # 대량 삽입 — 안전성은 유지하되(WAL) 매 삽입 fsync 는 피한다.
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA synchronous=NORMAL")
