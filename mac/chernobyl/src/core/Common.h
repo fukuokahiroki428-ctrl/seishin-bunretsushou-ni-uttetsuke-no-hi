@@ -23,6 +23,12 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
                      const QString &description, const QString &copyright,
                      const QString &comment, const QString &dateStr);
 
+// ★ ANSI 로 안전한 경로 — exiftool.exe 처럼 argv 를 시스템 ANSI 코드페이지로 받는
+//   프로그램에 경로를 넘길 때 쓴다. 표현 불가능한 문자가 있으면 8.3 단축 경로(항상 ASCII)
+//   로 바꿔 준다. 바꿀 수 없으면(8.3 이 꺼진 볼륨 등) 원본을 그대로 돌려준다.
+//   Windows 외에서는 항상 원본을 그대로 돌려준다(맥에서는 no-op).
+QString ansiSafePath(const QString &path);
+
 // Cross-platform path helpers
 // macOS: <쓰기가능 복사본>/bin/python3  (아래 activePythonEnvDir 참고)
 // Windows: <exe_dir>/python_env/python.exe
