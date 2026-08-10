@@ -12668,8 +12668,13 @@ void MiyoBackend::startLocalLlm(const QString &modelHint)
     const QString effHint = m_llmModelHint;
     // 기본값: 힌트 없으면 '코드 특화 중 가장 큰' 모델(수리 품질↑). 없으면 첫 번째.
     QString model;
+    //   ★ 예전엔 coders.last() — 가장 큰 7B 였다. 그런데 7B 는 로딩에 49초가 걸리고
+    //     아래 대기 한도는 20초였다. 그래서 '켜도 안 켜짐' 으로 보이고, 버려진 프로세스는
+    //     로딩을 마쳐 고아로 남아 포트를 물었다(다음에 켤 때 또 꼬인다).
+    //     기본은 코드 특화 중 '가장 작은' 것으로 — 빨리 뜨는 쪽이 기본이어야 한다.
+    //     더 큰 모델은 사용자가 고르면 그때 쓴다.
     { QStringList coders; for (const QString &h : heads) if (h.contains("coder", Qt::CaseInsensitive)) coders << h;
-      coders.sort(); model = coders.isEmpty() ? heads.first() : coders.last(); }
+      coders.sort(); model = coders.isEmpty() ? heads.first() : coders.first(); }
     if (!effHint.isEmpty())
         for (const QString &h : heads) if (h.contains(effHint, Qt::CaseInsensitive)) { model = h; break; }
 
@@ -12688,19 +12693,45 @@ void MiyoBackend::startLocalLlm(const QString &modelHint)
 
     // 준비될 때까지(모델 로딩) 백그라운드 폴링 후 상태 통지
     QThread *t = QThread::create([this]() {
-        for (int i = 0; i < 40; ++i) {
-            QThread::msleep(500);
-            HttpClient h;
-            if (h.get("http://127.0.0.1:8737/v1/models").isOk()) {
-                QMetaObject::invokeMethod(this, [this]() {
-                    log("✅ 로컬 AI 준비 완료 (127.0.0.1:8737) — 자가진단이 이 AI 를 사용합니다.", "success", "settings");
+        // ★ 한도 20초는 너무 짧았다 — 7B 모델은 실측 49초가 걸린다. 그 사이 앱은 실패로
+        //   보고하고, 정작 서버는 로딩을 마쳐 고아 프로세스로 남아 포트를 물었다.
+        //   넉넉히 5분까지 기다리되, 조용히 있지 말고 진행 상황을 알린다.
+        constexpr int kTickMs = 500;
+        constexpr int kMaxTicks = 600;          // 5분
+        for (int i = 0; i < kMaxTicks; ++i) {
+            QThread::msleep(kTickMs);
+            // 프로세스가 죽었으면 더 기다릴 이유가 없다 — 바로 알린다.
+            if (m_llmProc && m_llmProc->state() == QProcess::NotRunning && i > 4) {
+                const QString err = QString::fromUtf8(m_llmProc->readAllStandardError()).trimmed();
+                QMetaObject::invokeMethod(this, [this, err]() {
+                    log("❌ 로컬 AI 가 시작하자마자 종료됐습니다." +
+                        (err.isEmpty() ? QString() : QString(" — %1").arg(err.section('\n', -1).left(160))),
+                        "error", "settings");
                     getLlmStatus();
                 }, Qt::QueuedConnection);
                 return;
             }
+            HttpClient h;
+            if (h.get("http://127.0.0.1:8737/v1/models").isOk()) {
+                const int sec = (i + 1) * kTickMs / 1000;
+                QMetaObject::invokeMethod(this, [this, sec]() {
+                    log(QString("✅ 로컬 AI 준비 완료 (%1초, 127.0.0.1:8737) — 자가진단이 이 AI 를 사용합니다.").arg(sec),
+                        "success", "settings");
+                    getLlmStatus();
+                }, Qt::QueuedConnection);
+                return;
+            }
+            // 10초마다 진행 상황 — 큰 모델은 1분 가까이 걸린다. 조용하면 멈춘 줄 안다.
+            if ((i + 1) % 20 == 0) {
+                const int sec = (i + 1) * kTickMs / 1000;
+                QMetaObject::invokeMethod(this, [this, sec]() {
+                    log(QString("   모델 읽는 중... %1초 경과 (큰 모델은 1분 넘게 걸릴 수 있습니다)").arg(sec),
+                        "info", "settings");
+                }, Qt::QueuedConnection);
+            }
         }
         QMetaObject::invokeMethod(this, [this]() {
-            log("⚠️ 로컬 AI 기동 확인 실패 (모델 로딩이 느리거나 실패). 잠시 후 상태를 다시 확인하세요.", "warning", "settings");
+            log("⚠️ 로컬 AI 가 5분 안에 준비되지 않았습니다. 설정에서 더 작은 모델을 골라 보세요.", "warning", "settings");
             getLlmStatus();
         }, Qt::QueuedConnection);
     });
@@ -12710,14 +12741,51 @@ void MiyoBackend::startLocalLlm(const QString &modelHint)
 
 void MiyoBackend::stopLocalLlm()
 {
+    bool stopped = false;
     if (m_llmProc && m_llmProc->state() != QProcess::NotRunning) {
         m_llmProc->terminate();
         if (!m_llmProc->waitForFinished(3000)) m_llmProc->kill();
-        log("로컬 AI 를 종료했습니다.", "info", "settings");
-    } else {
-        log("로컬 AI 는 실행 중이 아닙니다.", "info", "settings");
+        stopped = true;
     }
+    // ★ 우리가 띄운 프로세스가 아니어도 정리한다. 앱을 껐다 켜면 m_llmProc 가 비어
+    //   있어서, 이전 세션이 남긴 서버가 8737 을 문 채 영원히 남았다(실제로 발생).
+    //   그 상태에선 '켜기' 가 기존 서버를 채택해 버려, 엉뚱한 모델이 물린 채로 돈다.
+    if (killLlmOnPort())
+        stopped = true;
+    log(stopped ? "로컬 AI 를 종료했습니다." : "로컬 AI 는 실행 중이 아닙니다.", "info", "settings");
     getLlmStatus();
+}
+
+// 8737 을 점유한 llama-server 를 찾아 종료한다(우리가 띄운 것이 아니어도).
+bool MiyoBackend::killLlmOnPort()
+{
+    QProcess find;
+#ifdef Q_OS_WIN
+    find.start("cmd", {"/c", "netstat -ano -p tcp | findstr :8737 | findstr LISTENING"});
+#else
+    find.start("/usr/sbin/lsof", {"-ti", "tcp:8737"});
+#endif
+    if (!find.waitForFinished(4000)) { find.kill(); return false; }
+    const QString out = QString::fromUtf8(find.readAllStandardOutput());
+    QStringList pids;
+#ifdef Q_OS_WIN
+    for (const QString &line : out.split('\n', Qt::SkipEmptyParts)) {
+        const QStringList c = line.simplified().split(' ');
+        if (!c.isEmpty() && c.last().toInt() > 0) pids << c.last();
+    }
+#else
+    for (const QString &line : out.split('\n', Qt::SkipEmptyParts))
+        if (line.trimmed().toInt() > 0) pids << line.trimmed();
+#endif
+    if (pids.isEmpty()) return false;
+    for (const QString &pid : pids) {
+#ifdef Q_OS_WIN
+        QProcess::execute("taskkill", {"/PID", pid, "/F"});
+#else
+        QProcess::execute("/bin/kill", {pid});
+#endif
+    }
+    return true;
 }
 
 static QString webSearchSnippets(const QString &apiKey, const QString &query);  // 전방 선언(정의는 아래)
