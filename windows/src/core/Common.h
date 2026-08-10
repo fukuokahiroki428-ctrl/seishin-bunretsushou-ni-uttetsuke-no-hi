@@ -102,6 +102,8 @@ QString checkFileIntegrity(const QString &filePath);
 // macOS: Contents/Resources/
 // Windows: <exe_dir>/
 QString bundledResourcesDir();
+QStringList bundledRequirements();   // 번들 requirements.txt 의 패키지 목록(버전 고정 포함)
+
 
 // Get list of Python candidates (bundled first, then system fallbacks)
 QStringList pythonCandidates();
