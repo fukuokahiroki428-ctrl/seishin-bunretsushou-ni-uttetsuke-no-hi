@@ -78,6 +78,17 @@ static QString curlQuote(const QString &s)
     return o;
 }
 
+// ★ SFTP 지원 — URL 이 sftp:// 로 시작하면 WebDAV 가 아니라 SSH 파일 전송으로 동작한다.
+//   curl 이 libssh2 로 sftp 를 지원한다(번들 curl: Protocols ... scp sftp).
+//   WebDAV 와 다른 점 세 가지만 갈라주면 나머지 흐름은 그대로 쓴다.
+//     1) 폴더 생성이 MKCOL 이 아니다 → --ftp-create-dirs 로 curl 이 중간 폴더를 만든다
+//     2) HTTP 상태코드가 없다 → 성공 판정을 curl 종료코드로만 한다
+//     3) 실패해도 소용없는 경우가 HTTP 코드가 아니라 curl 코드로 온다(67 로그인 거부 등)
+static bool isSftpUrl(const QString &url)
+{
+    return url.startsWith(QLatin1String("sftp://"), Qt::CaseInsensitive);
+}
+
 // curl 실행 — 자격증명은 명령줄(-u)이 아니라 stdin 설정으로 넘긴다.
 //   -u 로 넘기면 같은 PC 의 다른 프로세스가 `ps` 로 NAS 비밀번호를 그대로 볼 수 있다.
 //   반환: curl 종료코드. httpCode 에 HTTP 상태코드(없으면 0).
@@ -114,16 +125,23 @@ int WebDavUploader::runCurl(const QStringList &args, bool insecure, int *httpCod
 }
 
 // 보안 연결 우선 — 자체서명 인증서(curl 60)면 1회만 경고하고 이후 그 호스트는 insecure 로.
+//   ★ SFTP 도 같은 60 으로 온다. curl 은 SSH 호스트키를 known_hosts 로 검증하는데,
+//     NAS 를 처음 붙이면 등록돼 있지 않아 실패한다. 같은 폴백을 타되 경고 문구만 갈라준다.
 int WebDavUploader::curlWithTlsFallback(const QStringList &args, int *httpCode, QString *output)
 {
     if (m_insecureOk.load())
         return runCurl(args, true, httpCode, output);
 
     int rc = runCurl(args, false, httpCode, output);
-    if (rc == 60 || rc == 51) {   // 60: 인증서 검증 실패, 51: 호스트명 불일치
+    if (rc == 60 || rc == 51) {   // 60: 인증서/호스트키 검증 실패, 51: 호스트명 불일치
+        bool sftp; { QMutexLocker lock(&m_mutex); sftp = isSftpUrl(m_baseUrl); }
         if (!m_warnedInsecure.exchange(true))
-            emit logMessage("[WebDAV] 인증서를 검증할 수 없습니다(자체서명 NAS로 보임) — "
-                            "이 연결은 암호화는 되지만 서버 신원 확인 없이 진행합니다.", "warning");
+            emit logMessage(sftp
+                ? QStringLiteral("[SFTP] 서버의 SSH 호스트키를 확인할 수 없습니다"
+                                 "(known_hosts 에 없는 NAS로 보임) — 전송은 암호화되지만 "
+                                 "서버 신원 확인 없이 진행합니다.")
+                : QStringLiteral("[WebDAV] 인증서를 검증할 수 없습니다(자체서명 NAS로 보임) — "
+                                 "이 연결은 암호화는 되지만 서버 신원 확인 없이 진행합니다."), "warning");
         m_insecureOk.store(true);
         rc = runCurl(args, true, httpCode, output);
     }
@@ -190,53 +208,83 @@ void WebDavUploader::workerLoop()
                 QUrl::toPercentEncoding(p.normalized(QString::NormalizationForm_C)));
         const QString remoteUrl = base + "/" + encoded.join('/');
 
+        const bool sftp = isSftpUrl(base);
+
         // 부모 폴더 생성(MKCOL) — 시놀로지 등은 중간 폴더를 자동 생성하지 않는다.
         //   ★ 이미 만든 폴더는 건너뛴다. 예전엔 파일마다 전부 다시 MKCOL 해서
         //     같은 폴더에 100개 올리면 수백 번 왕복했다.
-        QString cur = base;
-        for (int i = 0; i < encoded.size() - 1; ++i) {
-            cur += "/" + encoded[i];
-            { QMutexLocker lock(&m_mutex); if (m_madeDirs.contains(cur)) continue; }
-            int code = 0;
-            curlWithTlsFallback({"-X", "MKCOL", "--max-time", "15", cur}, &code, nullptr);
-            // 201=생성, 405=이미 있음 → 둘 다 성공으로 보고 캐시
-            if (code == 201 || code == 405 || code == 301 || code == 200) {
-                QMutexLocker lock(&m_mutex); m_madeDirs.insert(cur);
+        //   ★ SFTP 에는 MKCOL 이 없다. 아래 업로드에서 --ftp-create-dirs 로 curl 이
+        //     중간 폴더를 만들므로 이 왕복 자체가 필요 없다.
+        if (!sftp) {
+            QString cur = base;
+            for (int i = 0; i < encoded.size() - 1; ++i) {
+                cur += "/" + encoded[i];
+                { QMutexLocker lock(&m_mutex); if (m_madeDirs.contains(cur)) continue; }
+                int code = 0;
+                curlWithTlsFallback({"-X", "MKCOL", "--max-time", "15", cur}, &code, nullptr);
+                // 201=생성, 405=이미 있음 → 둘 다 성공으로 보고 캐시
+                if (code == 201 || code == 405 || code == 301 || code == 200) {
+                    QMutexLocker lock(&m_mutex); m_madeDirs.insert(cur);
+                }
             }
         }
 
         // PUT 업로드 — 일시적 장애(네트워크 순단·5xx)면 재시도.
         //   예전엔 한 번 실패하면 그대로 버려서 파일이 조용히 유실됐다.
         bool ok = false; int code = 0; QString out; int rc = 0;
+        QStringList putArgs = {"-T", path, "--max-time", "600"};
+        //   ★ SFTP: 중간 폴더를 curl 이 만들게 한다(WebDAV 의 MKCOL 을 대신한다).
+        if (sftp) putArgs << "--ftp-create-dirs";
+        putArgs << remoteUrl;
         for (int attempt = 1; attempt <= 3 && !m_stop.load(); ++attempt) {
-            rc = curlWithTlsFallback({"-T", path, "--max-time", "600", remoteUrl}, &code, &out);
-            ok = (rc == 0 && (code == 200 || code == 201 || code == 204));
+            rc = curlWithTlsFallback(putArgs, &code, &out);
+            //   ★ SFTP 에는 HTTP 상태코드가 없다(code 는 늘 0) → 종료코드로만 판정한다.
+            ok = sftp ? (rc == 0)
+                      : (rc == 0 && (code == 200 || code == 201 || code == 204));
             if (ok) break;
             // 인증/권한/경로 문제는 재시도해도 소용없다 → 즉시 중단
-            if (code == 401 || code == 403 || code == 404 || code == 409 || code == 507) break;
+            //   SFTP 는 curl 종료코드로 온다: 67 로그인 거부, 9 접근 거부, 78 파일 없음
+            if (sftp) { if (rc == 67 || rc == 9 || rc == 78) break; }
+            else if (code == 401 || code == 403 || code == 404 || code == 409 || code == 507) break;
             if (attempt < 3) {
-                emit logMessage(QString("[WebDAV] %1 실패(HTTP %2) — %3초 후 재시도 %4/3")
-                                    .arg(fi.fileName()).arg(code).arg(attempt * 3).arg(attempt + 1), "info");
+                emit logMessage(QString("[%1] %2 실패(%3) — %4초 후 재시도 %5/3")
+                                    .arg(sftp ? "SFTP" : "WebDAV", fi.fileName(),
+                                         sftp ? QString("curl %1").arg(rc) : QString("HTTP %1").arg(code))
+                                    .arg(attempt * 3).arg(attempt + 1), "info");
                 for (int s = 0; s < attempt * 3 * 5 && !m_stop.load(); ++s) QThread::msleep(200);
             }
         }
 
+        const QString proto = sftp ? QStringLiteral("SFTP") : QStringLiteral("WebDAV");
         if (ok) {
             m_uploadedCount++;
-            emit logMessage(QString("[WebDAV] ✓ %1").arg(fi.fileName()), "success");
+            emit logMessage(QString("[%1] ✓ %2").arg(proto, fi.fileName()), "success");
         } else {
             m_failedCount++;
             QString why;
-            switch (code) {
-                case 401: why = "인증 실패 — 사용자/비밀번호 확인"; break;
-                case 403: why = "권한 없음 — NAS 폴더 쓰기 권한 확인"; break;
-                case 404: why = "경로 없음 — WebDAV base URL 확인"; break;
-                case 409: why = "상위 폴더 없음(MKCOL 실패)"; break;
-                case 507: why = "NAS 저장공간 부족"; break;
-                case 0:   why = (rc == -2 ? "타임아웃" : QString("연결 실패(curl %1)").arg(rc)); break;
-                default:  why = QString("HTTP %1").arg(code);
+            if (sftp) {
+                // SFTP 는 HTTP 코드가 없다 — curl 종료코드로 원인을 가른다.
+                switch (rc) {
+                    case 67: why = "인증 실패 — 사용자/비밀번호(또는 SSH 키) 확인"; break;
+                    case 9:  why = "권한 없음 — NAS 폴더 쓰기 권한 확인"; break;
+                    case 78: why = "경로 없음 — sftp:// URL 의 경로 확인"; break;
+                    case 7:  why = "연결 실패 — 호스트·포트 확인(기본 22)"; break;
+                    case 28: why = "타임아웃"; break;
+                    case -2: why = "타임아웃"; break;
+                    default: why = QString("전송 실패(curl %1)").arg(rc);
+                }
+            } else {
+                switch (code) {
+                    case 401: why = "인증 실패 — 사용자/비밀번호 확인"; break;
+                    case 403: why = "권한 없음 — NAS 폴더 쓰기 권한 확인"; break;
+                    case 404: why = "경로 없음 — WebDAV base URL 확인"; break;
+                    case 409: why = "상위 폴더 없음(MKCOL 실패)"; break;
+                    case 507: why = "NAS 저장공간 부족"; break;
+                    case 0:   why = (rc == -2 ? "타임아웃" : QString("연결 실패(curl %1)").arg(rc)); break;
+                    default:  why = QString("HTTP %1").arg(code);
+                }
             }
-            emit logMessage(QString("[WebDAV] ✗ %1 — %2").arg(fi.fileName(), why), "warning");
+            emit logMessage(QString("[%1] ✗ %2 — %3").arg(proto, fi.fileName(), why), "warning");
         }
     }
 }
