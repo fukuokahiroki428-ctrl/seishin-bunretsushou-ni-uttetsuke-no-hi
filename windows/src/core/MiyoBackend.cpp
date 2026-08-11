@@ -867,9 +867,27 @@ void MiyoBackend::runRcloneBackup(const QStringList &srcDirs, const QString &des
     QString user = m_config->webdavUser();
     QString pass = m_config->webdavPass();
     if (url.isEmpty() || user.isEmpty() || pass.isEmpty()) {
-        log("❌ WebDAV 자격증명 없음 — 설정 → WebDAV 자동 업로드 카드에 URL/사용자명/비번 입력 후 [저장] 누르세요", "error", "settings");
-        runJs("alert('❌ rclone 백업 위해 WebDAV 자격증명 필요\\n\\n설정 → WebDAV 자동 업로드 카드\\n  • URL: https://your-nas.com/path\\n  • 사용자명\\n  • 비밀번호\\n\\n입력 후 [저장] 누르고 다시 시도');");
+        log("❌ NAS 자격증명 없음 — 설정 → NAS 자동 업로드 카드에 URL/사용자명/비번 입력 후 [저장] 누르세요", "error", "settings");
+        runJs("alert('❌ rclone 백업 위해 NAS 자격증명 필요\\n\\n설정 → NAS 자동 업로드 카드\\n"
+              "  • URL: https://your-nas.com/path  (WebDAV)\\n"
+              "         또는 sftp://your-nas.com:22/volume1/backup  (SFTP)\\n"
+              "  • 사용자명\\n  • 비밀번호\\n\\n입력 후 [저장] 누르고 다시 시도');");
         return;
+    }
+
+    // ★ SFTP 지원 — URL 이 sftp:// 면 rclone 을 sftp 백엔드로 설정한다.
+    //   번들 rclone 이 sftp 를 기본 지원한다(rclone help backends → "sftp  SSH/SFTP").
+    //   WebDAV 는 url 하나에 경로까지 들어가지만 sftp 설정에는 host/port 만 들어간다.
+    //   그래서 URL 의 경로는 설정이 아니라 remote 스펙 앞에 붙여야 한다.
+    //     https://nas/dav        → abiwa_nas:<destSubPath>/<plat>
+    //     sftp://nas:22/vol1/bak → abiwa_nas:/vol1/bak/<destSubPath>/<plat>
+    const QUrl nasUrl(url);
+    const bool useSftp = nasUrl.scheme().compare(QLatin1String("sftp"), Qt::CaseInsensitive) == 0;
+    QString remotePrefix;
+    if (useSftp) {
+        QString p = nasUrl.path();
+        while (p.endsWith('/')) p.chop(1);
+        if (!p.isEmpty()) remotePrefix = p + "/";
     }
 
     QString tempBase = Common::resolveTempBase(m_config->tempDir());
@@ -895,14 +913,27 @@ void MiyoBackend::runRcloneBackup(const QStringList &srcDirs, const QString &des
             log(QString("❌ rclone conf 생성 실패: %1").arg(confPath), "error", "settings");
             return;
         }
-        QString conf = QString(
-            "[abiwa_nas]\n"
-            "type = webdav\n"
-            "url = %1\n"
-            "vendor = other\n"
-            "user = %2\n"
-            "pass = %3\n"
-        ).arg(url, user, obscuredPass);
+        QString conf;
+        if (useSftp) {
+            conf = QString(
+                "[abiwa_nas]\n"
+                "type = sftp\n"
+                "host = %1\n"
+                "user = %2\n"
+                "pass = %3\n"
+            ).arg(nasUrl.host(), user, obscuredPass);
+            // 포트를 안 적었으면 22 를 쓴다. 아래 원격 백업(abiwa_remote) 의 sftp 설정과 같은 형태다.
+            conf += QString("port = %1\n").arg(nasUrl.port() > 0 ? nasUrl.port() : 22);
+        } else {
+            conf = QString(
+                "[abiwa_nas]\n"
+                "type = webdav\n"
+                "url = %1\n"
+                "vendor = other\n"
+                "user = %2\n"
+                "pass = %3\n"
+            ).arg(url, user, obscuredPass);
+        }
         cf.write(conf.toUtf8());
         cf.close();
         QFile::setPermissions(confPath, QFile::ReadOwner | QFile::WriteOwner);  // 600
@@ -911,13 +942,14 @@ void MiyoBackend::runRcloneBackup(const QStringList &srcDirs, const QString &des
     log(QString("📦 rclone 백업 시작 — %1 폴더 → %2:%3").arg(srcDirs.size()).arg(url, destSubPath), "info", "settings");
 
     // 3) 각 src 폴더별 rclone copy 호출 (각각 자기 sub-folder 로)
-    QThread *t = QThread::create([this, srcDirs, destSubPath, rclonePath, confPath]() {
+    QThread *t = QThread::create([this, srcDirs, destSubPath, rclonePath, confPath, remotePrefix]() {
         m_backupTerminalActive = true;
         m_backupStartMs = QDateTime::currentMSecsSinceEpoch();
         for (const QString &src : srcDirs) {
             if (!m_backupTerminalActive.load()) break;
             QString platName = QFileInfo(src).fileName();
-            QString remote = QString("abiwa_nas:%1/%2").arg(destSubPath, platName);
+            // remotePrefix 는 sftp 일 때만 채워진다(WebDAV 는 url 에 경로가 이미 들어있음).
+            QString remote = QString("abiwa_nas:%1%2/%3").arg(remotePrefix, destSubPath, platName);
             writeTerminalLog(QString("\033[1;34m[rclone] %1 → %2\033[0m").arg(src, remote), "backup");
 
             QProcess rc;
