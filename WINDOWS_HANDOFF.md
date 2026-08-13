@@ -214,3 +214,37 @@ tools/twitter_daemon.py, tools/bluesky_daemon.py
 - **"성공했다"는 로그를 믿지 말 것.** DMG 스크립트가 재서명 실패를 경고 한 줄로 삼키고
   "✅ 완료"를 찍고 있었다. Mountain Duck 도 로컬 캐시에 쓴 것을 100% 진행률로 보여준다.
   검증은 **서버 응답이나 실제 산출물**로 한다.
+
+## 이번에 추가된 것 (윈도우에서도 확인 필요)
+
+### 산출물 보관함
+- 백엔드 슬롯: `archiveStatus` / `archiveIndex` / `archiveIndexCancel` / `archiveAsk`
+- UI: 설정 탭, `nt-group` 구조에 맞춰 넣음 (`arc-pill`, `arc-q`, `arc-ask-btn` …)
+- 스크립트는 `resources/tools/archive/` 에 실려야 한다. 없으면 패널이
+  "스크립트 없음" 을 띄운다.
+- **DB 경로**: 파이썬 `archive_ask.default_db()` 와 C++ `archiveDbPath()` 가
+  같은 자리를 가리켜야 한다. 윈도우는 `%APPDATA%/Miyo/Predormition/`.
+  어긋나면 색인은 되는데 질의만 "없습니다" 가 되어 원인을 찾기 어렵다.
+- QtSql 을 쓰지 않았다 — 건수는 번들 파이썬 `sqlite3` 로 센다.
+  (Qt6::Sql 을 쓰면 QSQLITE 플러그인 배포가 딸려오고, 빠지면 조용히 0건이 된다.)
+
+### NAS SFTP
+- 주소 스킴이 방식을 정한다: `https://` → WebDAV(curl), `sftp://` → SFTP(rclone).
+- 윈도우 rclone 위치는 `resources/tools/rclone.exe` — 없으면 SFTP 가 통째로 안 된다.
+- `--contimeout` 을 반드시 준다. `--timeout` 은 전송이 멎었을 때의 한도라
+  접속이 막힌 주소에는 듣지 않는다(맥에서 10분 넘게 매달리는 것을 확인).
+- `netstat -ano | findstr :8737` + `taskkill` 로 고아 llama-server 를 정리하는
+  경로가 들어갔다 — 윈도우에서 실제로 도는지 확인할 것.
+
+### 설정 파일 권한
+- `QFile::setPermissions(ReadOwner|WriteOwner)` 를 넣었지만 **윈도우에서는
+  NTFS ACL 로 옮겨지지 않는다.** 그쪽은 사용자 프로필 폴더 보호에 기대는
+  상태다. 제대로 하려면 DPAPI(CryptProtectData) 로 비밀번호만 따로 감싸야 한다.
+  — 아직 안 했다.
+
+## 이번에 겪은 사고 (되풀이하지 말 것)
+
+`pkill -f "MacOS/Predormition"` 같은 패턴은 **codesign 프로세스도 함께 죽인다.**
+codesign 의 명령줄에 앱 경로가 들어가기 때문이다. 서명 중에 죽이면 dylib 이
+손상되고(이번에 16개), 앱은 조용히 안 뜬다. 프로세스를 정리할 때는
+`pgrep -lf` 로 무엇이 잡히는지 먼저 보고 죽여야 한다.
