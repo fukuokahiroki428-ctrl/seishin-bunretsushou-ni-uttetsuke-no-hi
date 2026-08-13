@@ -867,9 +867,27 @@ void MiyoBackend::runRcloneBackup(const QStringList &srcDirs, const QString &des
     QString user = m_config->webdavUser();
     QString pass = m_config->webdavPass();
     if (url.isEmpty() || user.isEmpty() || pass.isEmpty()) {
-        log("❌ WebDAV 자격증명 없음 — 설정 → WebDAV 자동 업로드 카드에 URL/사용자명/비번 입력 후 [저장] 누르세요", "error", "settings");
-        runJs("alert('❌ rclone 백업 위해 WebDAV 자격증명 필요\\n\\n설정 → WebDAV 자동 업로드 카드\\n  • URL: https://your-nas.com/path\\n  • 사용자명\\n  • 비밀번호\\n\\n입력 후 [저장] 누르고 다시 시도');");
+        log("❌ NAS 자격증명 없음 — 설정 → NAS 자동 업로드 카드에 URL/사용자명/비번 입력 후 [저장] 누르세요", "error", "settings");
+        runJs("alert('❌ rclone 백업 위해 NAS 자격증명 필요\\n\\n설정 → NAS 자동 업로드 카드\\n"
+              "  • URL: https://your-nas.com/path  (WebDAV)\\n"
+              "         또는 sftp://your-nas.com:22/volume1/backup  (SFTP)\\n"
+              "  • 사용자명\\n  • 비밀번호\\n\\n입력 후 [저장] 누르고 다시 시도');");
         return;
+    }
+
+    // ★ SFTP 지원 — URL 이 sftp:// 면 rclone 을 sftp 백엔드로 설정한다.
+    //   번들 rclone 이 sftp 를 기본 지원한다(rclone help backends → "sftp  SSH/SFTP").
+    //   WebDAV 는 url 하나에 경로까지 들어가지만 sftp 설정에는 host/port 만 들어간다.
+    //   그래서 URL 의 경로는 설정이 아니라 remote 스펙 앞에 붙여야 한다.
+    //     https://nas/dav        → abiwa_nas:<destSubPath>/<plat>
+    //     sftp://nas:22/vol1/bak → abiwa_nas:/vol1/bak/<destSubPath>/<plat>
+    const QUrl nasUrl(url);
+    const bool useSftp = nasUrl.scheme().compare(QLatin1String("sftp"), Qt::CaseInsensitive) == 0;
+    QString remotePrefix;
+    if (useSftp) {
+        QString p = nasUrl.path();
+        while (p.endsWith('/')) p.chop(1);
+        if (!p.isEmpty()) remotePrefix = p + "/";
     }
 
     QString tempBase = Common::resolveTempBase(m_config->tempDir());
@@ -895,20 +913,17 @@ void MiyoBackend::runRcloneBackup(const QStringList &srcDirs, const QString &des
             log(QString("❌ rclone conf 생성 실패: %1").arg(confPath), "error", "settings");
             return;
         }
-        // ★ 프로토콜은 URL 스킴이 정한다 (sftp:// 면 SFTP, 그 외는 WebDAV).
-        //   설정 항목을 따로 두지 않는 편이, 나중에 항목끼리 어긋날 일이 없어 오래 간다.
         QString conf;
-        if (url.trimmed().startsWith("sftp://", Qt::CaseInsensitive)) {
-            const QUrl u(url);
+        if (useSftp) {
             conf = QString(
                 "[abiwa_nas]\n"
                 "type = sftp\n"
                 "host = %1\n"
-                "port = %2\n"
-                "user = %3\n"
-                "pass = %4\n"
-                "known_hosts_file =\n"     // 호스트키를 물어보면 그 자리에서 멈춘다
-            ).arg(u.host()).arg(u.port(22)).arg(user, obscuredPass);
+                "user = %2\n"
+                "pass = %3\n"
+            ).arg(nasUrl.host(), user, obscuredPass);
+            // 포트를 안 적었으면 22 를 쓴다. 아래 원격 백업(abiwa_remote) 의 sftp 설정과 같은 형태다.
+            conf += QString("port = %1\n").arg(nasUrl.port() > 0 ? nasUrl.port() : 22);
         } else {
             conf = QString(
                 "[abiwa_nas]\n"
@@ -927,25 +942,14 @@ void MiyoBackend::runRcloneBackup(const QStringList &srcDirs, const QString &des
     log(QString("📦 rclone 백업 시작 — %1 폴더 → %2:%3").arg(srcDirs.size()).arg(url, destSubPath), "info", "settings");
 
     // 3) 각 src 폴더별 rclone copy 호출 (각각 자기 sub-folder 로)
-    // ★ WebDAV 는 conf 의 url 에 경로가 들어 있어 원격 루트가 곧 그 폴더다.
-    //   SFTP 는 다르다 — 원격 루트가 서버의 홈 디렉터리라, URL 에 적은 경로를
-    //   여기서 앞에 붙여 주지 않으면 파일이 엉뚱하게 홈 밑으로 쏟아진다.
-    QString remoteBase;
-    if (url.trimmed().startsWith("sftp://", Qt::CaseInsensitive)) {
-        remoteBase = QUrl(url).path();
-        while (remoteBase.startsWith('/')) remoteBase = remoteBase.mid(1);
-        while (remoteBase.endsWith('/'))   remoteBase.chop(1);
-    }
-
-    QThread *t = QThread::create([this, srcDirs, destSubPath, rclonePath, confPath, remoteBase]() {
+    QThread *t = QThread::create([this, srcDirs, destSubPath, rclonePath, confPath, remotePrefix]() {
         m_backupTerminalActive = true;
         m_backupStartMs = QDateTime::currentMSecsSinceEpoch();
         for (const QString &src : srcDirs) {
             if (!m_backupTerminalActive.load()) break;
             QString platName = QFileInfo(src).fileName();
-            QString remote = remoteBase.isEmpty()
-                    ? QString("abiwa_nas:%1/%2").arg(destSubPath, platName)
-                    : QString("abiwa_nas:%1/%2/%3").arg(remoteBase, destSubPath, platName);
+            // remotePrefix 는 sftp 일 때만 채워진다(WebDAV 는 url 에 경로가 이미 들어있음).
+            QString remote = QString("abiwa_nas:%1%2/%3").arg(remotePrefix, destSubPath, platName);
             writeTerminalLog(QString("\033[1;34m[rclone] %1 → %2\033[0m").arg(src, remote), "backup");
 
             QProcess rc;
@@ -4727,7 +4731,9 @@ void MiyoBackend::testWebDavConnection()
         log("WebDAV URL 미설정", "warning", "settings");
         return;
     }
-    // ── SFTP 는 전혀 다른 방식으로 확인한다(rclone lsd). curl 은 sftp 를 못 한다.
+    // ── SFTP 는 rclone lsd 로 확인한다.
+    //   (업로드는 curl 로 하지만, 확인은 '그 경로가 실제로 있는지' 까지 봐야 한다.
+    //    curl 로는 붙었는지 정도만 알 수 있어, 경로가 틀려도 성공으로 보이던 전례가 있다.)
     if (url.startsWith("sftp://", Qt::CaseInsensitive)) {
         testSftpConnection(url, user, pass);
         return;
