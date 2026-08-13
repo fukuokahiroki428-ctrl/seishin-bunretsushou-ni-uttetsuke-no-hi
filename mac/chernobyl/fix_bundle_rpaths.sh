@@ -40,8 +40,13 @@ while IFS= read -r f; do
     # ① 자기 자신의 install name(LC_ID_DYLIB) — 이건 -change 가 아니라 -id 로 바꾼다.
     #   otool -L 의 첫 항목이 이것이라, 구분하지 않으면 영원히 안 고쳐진다.
     #   (실행 파일은 ID 가 없어 otool -D 결과가 비어 있다.)
+    #   @executable_path/../Frameworks/X 형태의 ID 도 함께 정리한다. 실행 시점에는
+    #   '참조' 쪽 load command 만 쓰이므로 ID 가 남아도 당장은 돌지만, 남겨 두면
+    #   아래 최종 검사에 걸리고 이 번들을 링크하는 쪽에 그 경로가 그대로 박힌다.
     selfid="$(otool -D "$f" 2>/dev/null | tail -n +2)"
-    if [ -n "$selfid" ] && { [ "${selfid#/opt/homebrew}" != "$selfid" ] || [ "${selfid#/usr/local/opt}" != "$selfid" ]; }; then
+    if [ -n "$selfid" ] && { [ "${selfid#/opt/homebrew}" != "$selfid" ] \
+            || [ "${selfid#/usr/local/opt}" != "$selfid" ] \
+            || [ "${selfid#@executable_path/../Frameworks/}" != "$selfid" ]; }; then
         if newid="$(locate_in_bundle "$(basename "$selfid")")"; then
             install_name_tool -id "$newid" "$f" 2>/dev/null && fixed=$((fixed + 1))
         fi
@@ -58,6 +63,27 @@ while IFS= read -r f; do
             missing=$((missing + 1))
         fi
     done < <(otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}' | grep '^/opt/homebrew\|^/usr/local/opt')
+
+    # ③ @executable_path/../Frameworks/... → @rpath/...
+    #
+    #   macdeployqt 는 라이브러리 참조를 @executable_path/../Frameworks/X 로 바꾼다.
+    #   메인 실행부에서는 맞다(Contents/MacOS → Contents/Frameworks).
+    #   그런데 WebEngine 렌더러는 별도 프로세스이고, 그쪽에서 @executable_path 는
+    #     .../Helpers/QtWebEngineProcess.app/Contents/MacOS
+    #   라서 자기 앱 안의 없는 Frameworks 를 가리킨다. 그러면 렌더러가 ICU 를 못 찾고
+    #   죽고, 창은 뜨는데 화면이 통째로 비어 버린다(실제로 발생했다 — dyld:
+    #   "Library not loaded: @executable_path/../Frameworks/libicui18n.78.dylib").
+    #
+    #   @rpath 로 바꾸면 둘 다 풀린다. 메인 실행부에는 @executable_path/../Frameworks
+    #   가, 헬퍼에는 @loader_path/../../../../../../../ 가 이미 LC_RPATH 로 들어 있어
+    #   각자 같은 Contents/Frameworks 에 닿는다.
+    while IFS= read -r ref; do
+        [ "$ref" = "$selfid" ] && continue
+        base="$(basename "$ref")"
+        if newref="$(locate_in_bundle "$base")"; then
+            install_name_tool -change "$ref" "$newref" "$f" 2>/dev/null && fixed=$((fixed + 1))
+        fi
+    done < <(otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}' | grep '^@executable_path/\.\./Frameworks/')
 done < <(find "$APP/Contents/MacOS" "$FW" -type f 2>/dev/null)
 
 echo "[rpath] 참조 수정 $fixed 건, 번들 누락 $missing 건"
@@ -67,11 +93,11 @@ remain=0
 while IFS= read -r f; do
     file "$f" 2>/dev/null | grep -q "Mach-O" || continue
     otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}' \
-        | grep -q '^/opt/homebrew\|^/usr/local/opt' && remain=$((remain + 1))
+        | grep -q '^/opt/homebrew\|^/usr/local/opt\|^@executable_path/\.\./Frameworks/' && remain=$((remain + 1))
 done < <(find "$APP/Contents/MacOS" "$FW" -type f 2>/dev/null)
 
 if [ "$remain" -gt 0 ]; then
-    echo "[rpath] ❌ 아직 외부 의존이 남은 파일 $remain 개 — 다른 맥에서 실행되지 않습니다."
+    echo "[rpath] ❌ 아직 못 고친 참조가 남은 파일 $remain 개 — 다른 맥에서 안 뜨거나 화면이 빈 채로 뜹니다."
     exit 1
 fi
 echo "[rpath] ✅ 실행부·프레임워크 외부 의존 없음 (자립형)"
