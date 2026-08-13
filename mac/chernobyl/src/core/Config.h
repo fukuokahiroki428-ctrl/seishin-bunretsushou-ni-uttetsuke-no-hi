@@ -72,6 +72,10 @@ public:
     QString webdavUser() const { return m_webdavUser; }
     QString webdavPass() const { return m_webdavPass; }
     bool webdavEnabled() const { return m_webdavEnabled; }
+    // SFTP 전용 — SSH 개인키 파일 경로. 채워 두면 비밀번호 대신 이 키로 붙는다.
+    // 비밀번호를 아예 저장하지 않아도 되는 길이라, 가능하면 이쪽을 쓰는 편이 낫다.
+    QString sftpKeyFile() const { return m_sftpKeyFile; }
+    void setSftpKeyFile(const QString &p) { m_sftpKeyFile = p; }
     void setWebdavUrl(const QString &u) { m_webdavUrl = u; }
     void setWebdavUser(const QString &u) { m_webdavUser = u; }
     void setWebdavPass(const QString &p) { m_webdavPass = p; }
@@ -124,6 +128,7 @@ private:
     QString m_webdavUser;
     QString m_webdavPass;
     bool m_webdavEnabled = false;
+    QString m_sftpKeyFile;
     QString m_storageMode;  // "local" / "nas" / "external"
     QString m_storageRoot;  // /Volumes/X (mode != local 일 때)
     bool m_backupEnabled = false;

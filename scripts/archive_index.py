@@ -28,6 +28,19 @@
 import argparse, json, os, sqlite3, subprocess, sys, time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from archive_ask import default_db
+except ImportError:      # 단독으로 떼어 쓸 때를 위한 대비
+    def default_db() -> Path:
+        if sys.platform == 'darwin':
+            base = Path.home() / 'Library/Application Support'
+        elif os.name == 'nt':
+            base = Path(os.environ.get('APPDATA') or (Path.home() / 'AppData/Roaming'))
+        else:
+            base = Path(os.environ.get('XDG_DATA_HOME') or (Path.home() / '.local/share'))
+        return base / 'Miyo/Predormition/archive_index.db'
+
 IMG_EXT = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff', '.avif'}
 VID_EXT = {'.mp4', '.webm', '.mkv', '.mov', '.m4v', '.avi'}
 TXT_EXT = {'.txt', '.json', '.html', '.htm', '.md', '.description', '.vtt', '.srt'}
@@ -221,8 +234,9 @@ def kind_of(ext: str) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('root', help='산출물 폴더')
-    ap.add_argument('--db', default=str(Path.home() /
-                    'Library/Application Support/Miyo/Predormition/archive_index.db'))
+    # DB 경로 규칙은 archive_ask.py 한 곳에만 둔다 — 양쪽이 어긋나면
+    # 색인은 만들어지는데 질의는 "없습니다" 가 되는, 찾기 어려운 고장이 난다.
+    ap.add_argument('--db', default=str(default_db()))
     ap.add_argument('--limit', type=int, default=0, help='이 개수만 처리(시험용)')
     ap.add_argument('--reset', action='store_true', help='색인을 새로 만든다')
     args = ap.parse_args()
