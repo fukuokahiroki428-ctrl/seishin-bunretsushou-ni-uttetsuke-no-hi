@@ -2410,6 +2410,37 @@
                     </div>
 
                     <div class="section">
+                        <div class="section-label">산출물 보관함 — 모아둔 자료에 물어보기</div>
+                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:9px;">
+                            수집해 둔 파일(이미지 EXIF의 작가·제목·원본 URL, 엑셀 목록, 설명글)을 한 번 색인해 두면,
+                            <b>"vivoさん 그림 뭐 있어?"</b> 처럼 물어볼 수 있습니다. 답에는 <b>근거 파일</b>이 함께 나옵니다.
+                        </p>
+                        <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">
+                            <span id="arc-pill" style="font-size:11.5px;font-weight:700;padding:4px 11px;border-radius:20px;background:var(--bg-tertiary);color:var(--text-secondary);">확인 중…</span>
+                            <input type="text" class="input" id="arc-root" placeholder="산출물 폴더 경로" style="flex:1;min-width:200px;height:34px;font-size:12px;">
+                            <button class="btn btn-primary btn-sm" id="arc-index-btn" onclick="archiveIndex()">색인 만들기</button>
+                            <button class="btn btn-secondary btn-sm" id="arc-cancel-btn" onclick="archiveCancel()" style="display:none;">중단</button>
+                        </div>
+                        <div id="arc-progress" style="display:none;margin-top:8px;font-size:11px;color:var(--text-tertiary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;max-height:76px;overflow-y:auto;background:var(--bg-secondary);border-radius:8px;padding:8px 10px;"></div>
+                        <p style="font-size:10.5px;color:var(--text-tertiary);margin-top:7px;line-height:1.45;">
+                            처음 한 번은 오래 걸립니다(수만 건이면 수십 분). 두 번째부터는 <b>바뀐 것만</b> 합니다.
+                            중단해도 거기까지는 남고, 다시 시작하면 이어서 합니다.
+                        </p>
+
+                        <div style="margin-top:13px;border:1px solid var(--border-light);border-radius:10px;overflow:hidden;">
+                            <div id="arc-log" style="height:210px;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:9px;background:var(--bg-secondary);"></div>
+                            <div style="display:flex;gap:8px;align-items:center;padding:10px;border-top:1px solid var(--border-light);">
+                                <input type="text" class="input" id="arc-q" placeholder="예) vivoさん 그림 뭐 있어?  /  先生虐待 관련 자료 찾아줘" onkeydown="if(event.key==='Enter')archiveAsk()" style="flex:1;">
+                                <button class="btn btn-primary btn-sm" id="arc-ask-btn" onclick="archiveAsk()">묻기</button>
+                            </div>
+                        </div>
+                        <p style="font-size:10.5px;color:var(--text-tertiary);margin-top:7px;line-height:1.45;">
+                            그림 <b>내용</b>은 못 봅니다 — 번들 AI 가 글자만 읽습니다. 파일명·EXIF·엑셀처럼
+                            <b>글자로 남은 것</b>이 근거가 됩니다. ("빨간 옷 입은 사람" 같은 질문은 아직 안 됩니다)
+                        </p>
+                    </div>
+
+                    <div class="section">
                         <div class="section-label">모듈 / 라이브러리 업데이트</div>
                         <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
                             번들 Python 패키지를 최신 버전으로 업데이트합니다 (twikit, httpx, atproto, yt-dlp 등).
@@ -2499,13 +2530,19 @@
                     </div>
 
                     <div class="section">
-                        <div class="section-label">WebDAV 자동 업로드 (NAS — Synology 등)</div>
+                        <div class="section-label">NAS 자동 업로드 — WebDAV / SFTP (Synology 등)</div>
                         <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
-                            캡쳐/다운로드 완료된 파일을 자동으로 NAS의 WebDAV 폴더로 업로드. 로컬 + NAS 양쪽 보관.
+                            캡쳐/다운로드 완료된 파일을 자동으로 NAS 로 업로드합니다. 로컬 + NAS 양쪽 보관.
+                            <br><b>주소 앞부분이 방식을 정합니다</b> — <code>https://</code> 면 WebDAV, <code>sftp://</code> 면 SFTP.
+                            <br>SFTP 예) <code>sftp://내나스:22/volume1/공유폴더</code> · NAS 제어판에서 SSH/SFTP 를 먼저 켜 두세요.
                         </p>
                         <div class="field" style="margin-bottom:6px;">
-                            <label class="field-label">WebDAV URL</label>
-                            <input type="text" class="input" id="settings-webdav-url" placeholder="https://nas.synology.me:5006/공유폴더">
+                            <label class="field-label">주소 (WebDAV https:// 또는 SFTP sftp://)</label>
+                            <input type="text" class="input" id="settings-webdav-url" placeholder="https://나스:5006/공유폴더  또는  sftp://나스:22/volume1/공유폴더">
+                        </div>
+                        <div class="field" style="margin-bottom:6px;">
+                            <label class="field-label">SSH 개인키 파일 <span style="font-weight:400;color:var(--text-tertiary);">· SFTP 전용 · 선택</span></label>
+                            <input type="text" class="input" id="settings-sftp-key" placeholder="~/.ssh/id_ed25519 — 채우면 비밀번호 대신 이 키로 접속">
                         </div>
                         <div class="input-row" style="margin-bottom:6px;">
                             <div class="field" style="flex:1;">
@@ -3563,7 +3600,7 @@
             const names = {dashboard:'현황 대시보드',twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',niconico:'ニコニコ',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',naikakukai:'内閣会',crawl:'経済産業省',settings:'설정'};
             document.getElementById('toolbar-title').textContent = names[tab] || tab;
             // Load system info when switching to settings
-            if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); if (backend && backend.getLlmStatus) backend.getLlmStatus(); if (window.loadScriptState) loadScriptState(); }
+            if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); if (backend && backend.getLlmStatus) backend.getLlmStatus(); if (window.loadScriptState) loadScriptState(); if (window.archiveRefresh) archiveRefresh(); }
             if (tab === 'dashboard' && window.renderDashboard) renderDashboard();   // 캡처 콘솔 홈
             // 해당 플랫폼의 저장된 stats 복원
             const s = platformStats[tab] || {posts:0, media:0, status:'대기'};
@@ -3722,6 +3759,8 @@
                     if (un && typeof config.webdavUser === 'string') un.value = config.webdavUser;
                     if (p  && typeof config.webdavPass === 'string') p.value  = config.webdavPass;
                     if (en && typeof config.webdavEnabled === 'boolean') en.checked = config.webdavEnabled;
+                    const kf = document.getElementById('settings-sftp-key');
+                    if (kf && typeof config.sftpKeyFile === 'string') kf.value = config.sftpKeyFile;
                 }
                 // 백업 설정 복원
                 {
@@ -3841,12 +3880,15 @@
 
         // ── WebDAV 설정 ──
         function saveWebDavConfig() {
-            if (!backend || !backend.setWebDavConfig) return;
+            if (!backend) return;
             const url  = document.getElementById('settings-webdav-url').value.trim();
             const user = document.getElementById('settings-webdav-user').value.trim();
             const pass = document.getElementById('settings-webdav-pass').value;
             const en   = document.getElementById('settings-webdav-enabled').checked;
-            backend.setWebDavConfig(url, user, pass, en);
+            const kf   = (document.getElementById('settings-sftp-key') || {}).value || '';
+            // 새 앱은 setNasConfig(키 파일까지) 를 쓴다. 예전 함수도 남겨 둬 옛 화면과 섞여도 동작한다.
+            if (backend.setNasConfig) backend.setNasConfig(url, user, pass, kf.trim(), en);
+            else if (backend.setWebDavConfig) backend.setWebDavConfig(url, user, pass, en);
         }
         // ★ 자동 업로드 토글 즉시 반영 — 사용자가 체크박스만 만져도 즉시 저장
         //   (이전엔 "저장" 버튼 안 누르면 적용 안 됐었음 → 끈 줄 알았는데 계속 업로드 되는 버그)
@@ -5217,6 +5259,123 @@
             const el = document.getElementById('system-info-box');
             if (el) el.textContent = text.replace(/\\n/g, '\n');
         }
+
+        // ── 산출물 보관함 (색인 + 질의) ──────────────────────────────────────
+        let _arcBusy = false;
+
+        function archiveRefresh() { if (backend && backend.archiveStatus) backend.archiveStatus(); }
+
+        function onArchiveStatus(s) {
+            const pill = document.getElementById('arc-pill');
+            const root = document.getElementById('arc-root');
+            const idxb = document.getElementById('arc-index-btn');
+            const canb = document.getElementById('arc-cancel-btn');
+            if (!pill) return;
+            _arcBusy = !!s.busy;
+
+            if (root && !root.value && s.root) root.value = s.root;
+
+            if (!s.script) {
+                pill.textContent = '스크립트 없음';
+                pill.style.background = 'var(--danger-bg,#fdecec)'; pill.style.color = 'var(--danger,#c0392b)';
+            } else if (s.busy) {
+                pill.textContent = '색인 중…';
+                pill.style.background = 'var(--accent)'; pill.style.color = '#fff';
+            } else if (!s.exists || !s.files) {
+                pill.textContent = '색인 없음';
+                pill.style.background = 'var(--bg-tertiary)'; pill.style.color = 'var(--text-secondary)';
+            } else {
+                pill.textContent = Number(s.files).toLocaleString() + '건 · ' + s.dbSize + 'MB';
+                pill.style.background = 'var(--success-bg,#e8f6ee)'; pill.style.color = 'var(--success,#1e8e4e)';
+            }
+            if (idxb) { idxb.disabled = s.busy; idxb.textContent = (s.exists && s.files) ? '색인 갱신' : '색인 만들기'; }
+            if (canb) canb.style.display = s.busy ? '' : 'none';
+            const pg = document.getElementById('arc-progress');
+            if (pg && !s.busy && !pg.textContent) pg.style.display = 'none';
+        }
+
+        function archiveIndex() {
+            const root = document.getElementById('arc-root');
+            const pg = document.getElementById('arc-progress');
+            if (pg) { pg.textContent = ''; pg.style.display = ''; }
+            if (backend && backend.archiveIndex) backend.archiveIndex(root ? root.value.trim() : '');
+        }
+
+        function archiveCancel() { if (backend && backend.archiveIndexCancel) backend.archiveIndexCancel(); }
+
+        function onArchiveProgress(arr) {
+            const pg = document.getElementById('arc-progress');
+            if (!pg) return;
+            pg.style.display = '';
+            // 진행 줄("색인 3,120/50,000 …")은 덮어쓴다 — 안 그러면 수천 줄이 쌓인다.
+            const line = arr[0];
+            const lines = pg.textContent ? pg.textContent.split('\n') : [];
+            if (lines.length && /^색인 [\d,]+\//.test(lines[lines.length - 1]) && /^색인 [\d,]+\//.test(line))
+                lines[lines.length - 1] = line;
+            else lines.push(line);
+            pg.textContent = lines.slice(-40).join('\n');
+            pg.scrollTop = pg.scrollHeight;
+        }
+
+        function _arcBubble(who, html) {
+            const box = document.getElementById('arc-log');
+            if (!box) return null;
+            const d = document.createElement('div');
+            const mine = who === 'me';
+            d.style.cssText = 'max-width:88%;padding:9px 12px;border-radius:12px;font-size:12.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word;'
+                + (mine ? 'align-self:flex-end;background:var(--accent);color:#fff;'
+                        : 'align-self:flex-start;background:var(--bg-primary);border:1px solid var(--border-light);color:var(--text-primary);');
+            d.innerHTML = html;
+            box.appendChild(d); box.scrollTop = box.scrollHeight;
+            return d;
+        }
+
+        function _esc(s) {
+            return String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        }
+
+        let _arcPending = null;
+
+        function archiveAsk() {
+            const inp = document.getElementById('arc-q');
+            const q = inp ? inp.value.trim() : '';
+            if (!q || _arcPending) return;
+            inp.value = '';
+            _arcBubble('me', _esc(q));
+            _arcPending = _arcBubble('ai', '<span style="color:var(--text-tertiary)">자료를 찾는 중…</span>');
+            const btn = document.getElementById('arc-ask-btn');
+            if (btn) { btn.disabled = true; btn.textContent = '찾는 중'; }
+            if (backend && backend.archiveAsk) backend.archiveAsk(q);
+        }
+
+        function onArchiveAnswer(r) {
+            const btn = document.getElementById('arc-ask-btn');
+            if (btn) { btn.disabled = false; btn.textContent = '묻기'; }
+            const bubble = _arcPending; _arcPending = null;
+            if (!bubble) return;
+            if (!r || r.ok === false) {
+                bubble.innerHTML = '<span style="color:var(--danger,#c0392b)">' + _esc((r && r.error) || '실패') + '</span>';
+                return;
+            }
+            let html = _esc(r.answer || '');
+            if (r.noai) html = '<span style="color:var(--warning,#b8860b)">' + html + '</span>';
+            if (r.sources && r.sources.length) {
+                html += '<div style="margin-top:9px;padding-top:8px;border-top:1px solid var(--border-light);font-size:11px;color:var(--text-tertiary);">근거</div>';
+                r.sources.forEach((s, i) => {
+                    let t = '<div style="font-size:11px;margin-top:3px;color:var(--text-secondary)">'
+                          + '[' + (i + 1) + '] ' + _esc(s.name);
+                    if (s.artist || s.title) t += '<br><span style="color:var(--text-tertiary)">&nbsp;&nbsp;&nbsp;'
+                          + _esc(s.artist) + (s.title ? ' — ' + _esc(s.title).slice(0, 60) : '') + '</span>';
+                    if (s.url) t += '<br><span style="color:var(--accent);font-size:10.5px">&nbsp;&nbsp;&nbsp;' + _esc(s.url) + '</span>';
+                    html += t + '</div>';
+                });
+            }
+            bubble.innerHTML = html;
+            const box = document.getElementById('arc-log');
+            if (box) box.scrollTop = box.scrollHeight;
+        }
+
         // ── 로컬 AI (자가진단 LLM) 제어 ──
         function startLocalLlm() {
             if (!backend) return;

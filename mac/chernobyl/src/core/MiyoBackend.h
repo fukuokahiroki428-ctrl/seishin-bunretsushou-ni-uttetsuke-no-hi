@@ -67,6 +67,12 @@ public slots:
     void setWindowChrome(bool dark);                 // 웹 테마 토글 → 네이티브 창 색/외관 동기화(타이틀바 띠 숨김)
     void setLlmModel(const QString &hint);           // 드롭다운 선택 모델 기억 (자동기동 경로가 이걸 사용)
     void autoRepair();                               // AI 가 자가진단→수리동작을 스스로 판단해 자동 실행
+
+    // ── 산출물 보관함 (수집해 둔 파일을 색인해 두고 질문으로 찾는다) ──────────
+    void archiveStatus();                            // JS onArchiveStatus(json) — 색인 규모·AI 상태
+    void archiveIndex(const QString &root);          // 색인 만들기/갱신 (증분). 진행은 onArchiveProgress
+    void archiveIndexCancel();                       // 진행 중인 색인 중단
+    void archiveAsk(const QString &question);        // 질문 → JS onArchiveAnswer(json)
     void setSearchKey(const QString &key);           // 웹 검색 API 키(Brave) 저장 — 읽기전용 인터넷 검색용
     void setLlmUseWeb(bool on);                       // AI 답변 시 웹 검색 참고 on/off (읽기전용)
     void getScriptSource(const QString &name);       // 편집가능 스크립트 원문 → JS onScriptSource
@@ -170,7 +176,12 @@ public slots:
 
     // ★ WebDAV NAS 업로드 (Synology 등)
     Q_INVOKABLE void setWebDavConfig(const QString &url, const QString &user, const QString &pass, bool enabled);
+    // NAS 업로드 설정 — 주소가 https:// 면 WebDAV, sftp:// 면 SFTP.
+    Q_INVOKABLE void setNasConfig(const QString &url, const QString &user, const QString &pass,
+                                  const QString &keyFile, bool enabled);
     Q_INVOKABLE void testWebDavConnection();
+    // SFTP 연결 확인(rclone). UI 슬롯이 아니라 위에서 스킴을 보고 갈라져 불린다.
+    void testSftpConnection(const QString &url, const QString &user, const QString &pass);
     // NAS 파일시스템이 유닉스(ext4/Btrfs)면 true — 특수문자 원문 보존.
     // false(기본)면 윈도우 호환(전각 치환)으로 NTFS·exFAT·윈도우 NAS 에서도 저장된다.
     Q_INVOKABLE void setUnixFilenames(bool on);
@@ -261,6 +272,7 @@ private:
     std::atomic<bool> m_pythonBusy{false};    // Python 환경 작업 중 (업그레이드/복구/업데이트 동시 방지)
     QProcess *m_llmProc = nullptr;            // 설정에서 켠 번들 로컬 LLM(llama-server) 프로세스
     QString m_llmModelHint;                   // 드롭다운에서 고른 모델(부분일치). 자동기동 시 이 모델을 씀.
+    QProcess *m_archiveProc = nullptr;        // 산출물 색인 진행 중인 프로세스(중단용)
     std::atomic<bool> m_autoRepairBusy{false};// AI 자동 수리 중복 실행 방지
     QString m_searchKey;                      // 웹 검색 API 키(Brave). 없으면 검색 비활성.
     std::atomic<bool> m_llmUseWeb{false};     // AI 답변 시 웹 검색 참고 여부(읽기전용)

@@ -111,12 +111,21 @@ void Config::save(const QString &filePath)
     QJsonDocument doc(toJson());
     QByteArray bytes = doc.toJson(QJsonDocument::Indented);
 
+    // ★ 이 파일에는 NAS 비밀번호·쿠키·토큰이 들어간다. 기본 권한(0644)이면
+    //   같은 기기의 다른 계정이나 아무 프로세스나 그대로 읽을 수 있다.
+    //   본인만 읽고 쓰게 0600 으로 조인다. (윈도우에서는 ReadOwner/WriteOwner 가
+    //   NTFS ACL 로 옮겨지지 않으므로, 그쪽은 사용자 프로필 폴더의 보호에 기댄다.)
+    auto lockDown = [](const QString &p) {
+        QFile::setPermissions(p, QFile::ReadOwner | QFile::WriteOwner);
+    };
+
     // ★ 주 위치 저장 (앱 내부)
     {
         QFile file(path);
         if (file.open(QIODevice::WriteOnly)) {
             file.write(bytes);
             file.close();
+            lockDown(path);
         } else {
             qDebug() << "Cannot write config:" << path;
         }
@@ -130,6 +139,7 @@ void Config::save(const QString &filePath)
         if (bf.open(QIODevice::WriteOnly)) {
             bf.write(bytes);
             bf.close();
+            lockDown(backup);   // 백업본도 똑같이 — 한쪽만 조이면 의미가 없다
         }
     }
 }
@@ -189,6 +199,7 @@ QJsonObject Config::toJson() const
     if (!m_webdavUrl.isEmpty())  root["webdavUrl"]  = m_webdavUrl;
     if (!m_webdavUser.isEmpty()) root["webdavUser"] = m_webdavUser;
     if (!m_webdavPass.isEmpty()) root["webdavPass"] = m_webdavPass;
+    if (!m_sftpKeyFile.isEmpty()) root["sftpKeyFile"] = m_sftpKeyFile;
     root["webdavEnabled"] = m_webdavEnabled;
     if (!m_storageMode.isEmpty()) root["storageMode"] = m_storageMode;
     if (!m_storageRoot.isEmpty()) root["storageRoot"] = m_storageRoot;
@@ -222,6 +233,7 @@ void Config::fromJson(const QJsonObject &obj)
     if (obj.contains("webdavUrl"))      m_webdavUrl  = obj["webdavUrl"].toString();
     if (obj.contains("webdavUser"))     m_webdavUser = obj["webdavUser"].toString();
     if (obj.contains("webdavPass"))     m_webdavPass = obj["webdavPass"].toString();
+    if (obj.contains("sftpKeyFile"))    m_sftpKeyFile = obj["sftpKeyFile"].toString();
     if (obj.contains("webdavEnabled"))  m_webdavEnabled = obj["webdavEnabled"].toBool();
     if (obj.contains("storageMode"))    m_storageMode = obj["storageMode"].toString();
     if (obj.contains("storageRoot"))    m_storageRoot = obj["storageRoot"].toString();

@@ -914,14 +914,30 @@ void MiyoBackend::runRcloneBackup(const QStringList &srcDirs, const QString &des
             log(QString("❌ rclone conf 생성 실패: %1").arg(confPath), "error", "settings");
             return;
         }
-        QString conf = QString(
-            "[abiwa_nas]\n"
-            "type = webdav\n"
-            "url = %1\n"
-            "vendor = other\n"
-            "user = %2\n"
-            "pass = %3\n"
-        ).arg(url, user, obscuredPass);
+        // ★ 프로토콜은 URL 스킴이 정한다 (sftp:// 면 SFTP, 그 외는 WebDAV).
+        //   설정 항목을 따로 두지 않는 편이, 나중에 항목끼리 어긋날 일이 없어 오래 간다.
+        QString conf;
+        if (url.trimmed().startsWith("sftp://", Qt::CaseInsensitive)) {
+            const QUrl u(url);
+            conf = QString(
+                "[abiwa_nas]\n"
+                "type = sftp\n"
+                "host = %1\n"
+                "port = %2\n"
+                "user = %3\n"
+                "pass = %4\n"
+                "known_hosts_file =\n"     // 호스트키를 물어보면 그 자리에서 멈춘다
+            ).arg(u.host()).arg(u.port(22)).arg(user, obscuredPass);
+        } else {
+            conf = QString(
+                "[abiwa_nas]\n"
+                "type = webdav\n"
+                "url = %1\n"
+                "vendor = other\n"
+                "user = %2\n"
+                "pass = %3\n"
+            ).arg(url, user, obscuredPass);
+        }
         cf.write(conf.toUtf8());
         cf.close();
         QFile::setPermissions(confPath, QFile::ReadOwner | QFile::WriteOwner);  // 600
@@ -930,13 +946,25 @@ void MiyoBackend::runRcloneBackup(const QStringList &srcDirs, const QString &des
     log(QString("📦 rclone 백업 시작 — %1 폴더 → %2:%3").arg(srcDirs.size()).arg(url, destSubPath), "info", "settings");
 
     // 3) 각 src 폴더별 rclone copy 호출 (각각 자기 sub-folder 로)
-    QThread *t = QThread::create([this, srcDirs, destSubPath, rclonePath, confPath]() {
+    // ★ WebDAV 는 conf 의 url 에 경로가 들어 있어 원격 루트가 곧 그 폴더다.
+    //   SFTP 는 다르다 — 원격 루트가 서버의 홈 디렉터리라, URL 에 적은 경로를
+    //   여기서 앞에 붙여 주지 않으면 파일이 엉뚱하게 홈 밑으로 쏟아진다.
+    QString remoteBase;
+    if (url.trimmed().startsWith("sftp://", Qt::CaseInsensitive)) {
+        remoteBase = QUrl(url).path();
+        while (remoteBase.startsWith('/')) remoteBase = remoteBase.mid(1);
+        while (remoteBase.endsWith('/'))   remoteBase.chop(1);
+    }
+
+    QThread *t = QThread::create([this, srcDirs, destSubPath, rclonePath, confPath, remoteBase]() {
         m_backupTerminalActive = true;
         m_backupStartMs = QDateTime::currentMSecsSinceEpoch();
         for (const QString &src : srcDirs) {
             if (!m_backupTerminalActive.load()) break;
             QString platName = QFileInfo(src).fileName();
-            QString remote = QString("abiwa_nas:%1/%2").arg(destSubPath, platName);
+            QString remote = remoteBase.isEmpty()
+                    ? QString("abiwa_nas:%1/%2").arg(destSubPath, platName)
+                    : QString("abiwa_nas:%1/%2/%3").arg(remoteBase, destSubPath, platName);
             writeTerminalLog(QString("\033[1;34m[rclone] %1 → %2\033[0m").arg(src, remote), "backup");
 
             QProcess rc;
@@ -3474,6 +3502,7 @@ void MiyoBackend::loadConfig()
 
     // WebDAV 설정 복원
     if (m_webdav) {
+        m_webdav->setSftpKeyFile(m_config->sftpKeyFile());
         m_webdav->setConfig(m_config->webdavUrl(), m_config->webdavUser(), m_config->webdavPass(),
                             m_config->tempDir(), m_config->webdavEnabled());
     }
@@ -4288,15 +4317,31 @@ void MiyoBackend::killZombieChromes()
 // ═════════════════════════════════════════════════════════════════════════
 void MiyoBackend::setWebDavConfig(const QString &url, const QString &user, const QString &pass, bool enabled)
 {
+    setNasConfig(url, user, pass, m_config->sftpKeyFile(), enabled);
+}
+
+// NAS 업로드 설정 — WebDAV(https://) 와 SFTP(sftp://) 를 주소 하나로 받는다.
+void MiyoBackend::setNasConfig(const QString &url, const QString &user, const QString &pass,
+                               const QString &keyFile, bool enabled)
+{
     m_config->setWebdavUrl(url);
     m_config->setWebdavUser(user);
     m_config->setWebdavPass(pass);
+    m_config->setSftpKeyFile(keyFile);
     m_config->setWebdavEnabled(enabled);
     m_config->save();
     if (m_webdav) {
+        m_webdav->setSftpKeyFile(keyFile);
         m_webdav->setConfig(url, user, pass, m_config->tempDir(), enabled);
     }
-    log(QString("WebDAV 설정 저장: %1 (활성화=%2)").arg(url).arg(enabled ? "ON" : "OFF"), "success", "settings");
+    const bool sftp = url.startsWith("sftp://", Qt::CaseInsensitive);
+    if (sftp && !keyFile.isEmpty() && !QFile::exists(keyFile))
+        log(QString("⚠ SSH 키 파일이 없습니다: %1 — 비밀번호로 시도합니다.").arg(keyFile),
+            "warning", "settings");
+    log(QString("%1 설정 저장: %2 (활성화=%3%4)")
+            .arg(sftp ? "SFTP" : "WebDAV", url, enabled ? "ON" : "OFF",
+                 (sftp && !keyFile.isEmpty()) ? ", SSH 키 사용" : ""),
+        "success", "settings");
 }
 
 void MiyoBackend::setApiOverride(const QString &key, const QString &value)
@@ -4338,6 +4383,95 @@ void MiyoBackend::setUnixFilenames(bool on)
              "(NTFS·exFAT·윈도우 기반 NAS 에서도 안전).", "info", "settings");
 }
 
+
+// SFTP 연결 확인 — 번들 rclone 으로 원격 폴더를 실제로 읽어 본다.
+//   "붙기만" 확인하지 않고 경로까지 읽는 이유: WebDAV 쪽에서 OPTIONS 로 확인했다가
+//   경로가 틀려도 성공이라 해놓고 업로드가 전부 실패한 전례가 있다.
+void MiyoBackend::testSftpConnection(const QString &url, const QString &user, const QString &pass)
+{
+    QString rclone = QCoreApplication::applicationDirPath() + "/../Resources/tools/rclone";
+#ifdef Q_OS_WIN
+    rclone = QCoreApplication::applicationDirPath() + "/resources/tools/rclone.exe";
+#endif
+    if (!QFile::exists(rclone)) {
+        log("❌ 번들 rclone 이 없어 SFTP 를 확인할 수 없습니다.", "error", "settings");
+        return;
+    }
+    const QUrl u(url);
+    if (u.host().isEmpty()) {
+        log("❌ SFTP 주소에 호스트가 없습니다 (예: sftp://내나스:22/volume1/공유폴더)", "error", "settings");
+        return;
+    }
+    log(QString("SFTP 연결 테스트: %1:%2%3").arg(u.host()).arg(u.port(22)).arg(u.path()),
+        "info", "settings");
+
+    QThread *t = QThread::create([this, rclone, u, user, pass]() {
+        QString obscured;
+        if (!pass.isEmpty()) {
+            QProcess obs; obs.start(rclone, {"obscure", pass}); obs.waitForFinished(5000);
+            obscured = QString::fromUtf8(obs.readAllStandardOutput()).trimmed();
+        }
+        const QString conf = QDir::tempPath() + "/predormition_sftp_test.conf";
+        { QFile f(conf);
+          if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+              QMetaObject::invokeMethod(this, [this]() {
+                  log("❌ 임시 설정 파일을 만들지 못했습니다.", "error", "settings"); }, Qt::QueuedConnection);
+              return;
+          }
+          QString c = QString("[t]\ntype = sftp\nhost = %1\nport = %2\nuser = %3\n")
+                          .arg(u.host()).arg(u.port(22)).arg(user);
+          const QString key = m_config->sftpKeyFile();
+        if (!key.isEmpty() && QFile::exists(key)) c += "key_file = " + key + "\n";
+        else if (!obscured.isEmpty())             c += "pass = " + obscured + "\n";
+        else                                      c += "key_use_agent = true\n";
+          c += "known_hosts_file =\n";
+          f.write(c.toUtf8()); f.close();
+          QFile::setPermissions(conf, QFile::ReadOwner | QFile::WriteOwner); }
+
+        QString path = u.path();
+        while (path.startsWith('/')) path = path.mid(1);
+
+        QProcess p;
+        p.setProcessChannelMode(QProcess::MergedChannels);
+        // --contimeout 이 없으면 접속 단계에서 무한정 매달린다(--timeout 은 전송용이다).
+        p.start(rclone, {"lsd", QString("t:%1").arg(path), "--config", conf,
+                         "--contimeout", "12s", "--timeout", "15s",
+                         "--retries", "1", "--low-level-retries", "1",
+                         "--log-level", "ERROR"});
+        bool started = p.waitForStarted(5000);
+        if (started && !p.waitForFinished(40000)) p.kill();
+        const int code = started ? p.exitCode() : -1;
+        const QString out = QString::fromUtf8(p.readAll()).trimmed();
+        QFile::remove(conf);
+
+        QMetaObject::invokeMethod(this, [this, code, out, path]() {
+            if (code == 0) {
+                log(QString("✅ SFTP 연결 성공 — 원격 경로 '%1' 을 읽었습니다.").arg(path),
+                    "success", "settings");
+                return;
+            }
+            // rclone 이 실제로 내는 문구에 맞춘 안내. 못 알아본 것은 원문을 그대로
+            // 보여 준다 — 억지로 뭉뚱그리면 진짜 원인이 가려진다.
+            const QString raw = out.section('\n', -1).trimmed();
+            QString why = raw.left(200);
+            if (raw.contains("i/o timeout", Qt::CaseInsensitive) || raw.contains("no route to host", Qt::CaseInsensitive))
+                why = "주소에 닿지 못했습니다 — 호스트/포트가 맞는지, NAS 가 켜져 있는지 확인하세요";
+            else if (raw.contains("connection refused", Qt::CaseInsensitive))
+                why = "연결 거부 — NAS 제어판에서 SSH/SFTP 를 켰는지, 포트가 맞는지 확인하세요";
+            else if (raw.contains("unable to authenticate", Qt::CaseInsensitive)
+                     || raw.contains("auth", Qt::CaseInsensitive) || raw.contains("password", Qt::CaseInsensitive))
+                why = "인증 실패 — 사용자/비밀번호를 확인하세요 (NAS 계정에 SFTP 권한도 있어야 합니다)";
+            else if (raw.contains("no such file", Qt::CaseInsensitive) || raw.contains("not found", Qt::CaseInsensitive))
+                why = "원격 경로가 없습니다 — 주소의 폴더 경로를 확인하세요 (예: /volume1/공유폴더)";
+            else if (raw.isEmpty())
+                why = QString("rclone 종료코드 %1").arg(code);
+            log(QString("❌ SFTP 연결 실패 — %1").arg(why), "error", "settings");
+        }, Qt::QueuedConnection);
+    });
+    connect(t, &QThread::finished, t, &QThread::deleteLater);
+    t->start();
+}
+
 void MiyoBackend::testWebDavConnection()
 {
     QString url  = m_config->webdavUrl();
@@ -4347,8 +4481,15 @@ void MiyoBackend::testWebDavConnection()
         log("WebDAV URL 미설정", "warning", "settings");
         return;
     }
+    // ── SFTP 는 전혀 다른 방식으로 확인한다(rclone lsd). curl 은 sftp 를 못 한다.
+    if (url.startsWith("sftp://", Qt::CaseInsensitive)) {
+        testSftpConnection(url, user, pass);
+        return;
+    }
     if (!url.startsWith("http://", Qt::CaseInsensitive) && !url.startsWith("https://", Qt::CaseInsensitive)) {
-        log("❌ WebDAV URL 은 http:// 또는 https:// 로 시작해야 합니다 (예: https://내나스:5006/webdav/공유폴더)",
+        log("❌ 주소는 https:// (WebDAV) 또는 sftp:// (SFTP) 로 시작해야 합니다.\n"
+            "   WebDAV 예) https://내나스:5006/webdav/공유폴더\n"
+            "   SFTP  예) sftp://내나스:22/volume1/공유폴더",
             "error", "settings");
         return;
     }
@@ -12684,8 +12825,11 @@ void MiyoBackend::startLocalLlm(const QString &modelHint)
         QFileDevice::ReadGroup | QFileDevice::ExeGroup | QFileDevice::ReadOther | QFileDevice::ExeOther);
     m_llmProc = new QProcess(this);
     m_llmProc->setProgram(server);
+    //   -c 는 AI 가 한 번에 기억하는 분량이다. 4096 은 보관함 질의(자료 수십 건을
+    //   함께 넘긴다)에 모자랐다 — 넘친 만큼 앞쪽 지시문이 잘려 나가, 무엇을 하라고
+    //   했는지 모르는 채 번호만 나열하는 답이 나왔다. 8192 로 늘린다.
     m_llmProc->setArguments({"-m", dir + "/" + model, "--port", "8737",
-                             "--host", "127.0.0.1", "-c", "4096"});
+                             "--host", "127.0.0.1", "-c", "8192"});
     m_llmProc->setWorkingDirectory(dir);
     connect(m_llmProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int, QProcess::ExitStatus) { getLlmStatus(); });
@@ -13255,6 +13399,201 @@ static QString webSearchSnippets(const QString &apiKey, const QString &query)
 //   refreshAllTokens)만 부른다 — 임의 코드 실행/파일 편집은 하지 않는다(안전).
 //   ※ python 계열 3동작은 m_pythonBusy 를 공유(배타) → 최대 1개만, 토큰갱신은 병행.
 // ═════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+//  산출물 보관함 — 수집해 둔 파일을 색인해 두고, 질문으로 찾아 AI 가 답한다.
+//
+//  왜 앱 안에 넣나:
+//    색인기·질의기는 파이썬 스크립트로 이미 번들에 실려 있었지만 앱에서 부르는
+//    곳이 없었다. 터미널을 열어 직접 돌리지 않는 한 쓸 방법이 없었다는 뜻이다.
+//
+//  설계:
+//    무거운 일(수만 건 훑기, 모델 호출)은 전부 파이썬 쪽에 있고 여기서는 프로세스를
+//    띄우고 출력을 UI 로 흘려보내기만 한다. 그래야 스크립트만 고쳐도 동작이 바뀐다
+//    (앱을 다시 빌드하지 않아도 된다 — 오래 유지하는 데 이 편이 낫다).
+// ═══════════════════════════════════════════════════════════════════════════
+
+// 번들에 실린 보관함 스크립트를 찾는다. 개발 중(빌드 폴더 밖)에도 되게 저장소도 본다.
+static QString archiveScriptPath(const QString &name)
+{
+    const QStringList cands = {
+        Common::bundledResourcesDir() + "/tools/archive/" + name,
+        Common::bundledResourcesDir() + "/../../../../scripts/" + name,   // 개발 트리
+        QCoreApplication::applicationDirPath() + "/scripts/" + name,      // 윈도우 배포
+        QCoreApplication::applicationDirPath() + "/tools/archive/" + name,
+    };
+    for (const QString &c : cands)
+        if (QFileInfo::exists(c)) return QFileInfo(c).canonicalFilePath();
+    return QString();
+}
+
+// 색인 DB 위치 — 파이썬 쪽 default_db() 와 반드시 같아야 한다.
+// (어긋나면 색인은 만들어지는데 질의는 "없습니다" 가 되는, 원인 찾기 어려운 고장이 난다.)
+static QString archiveDbPath()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+           + "/archive_index.db";
+}
+
+void MiyoBackend::archiveStatus()
+{
+    QJsonObject o;
+    const QString db = archiveDbPath();
+    QFileInfo fi(db);
+    o["db"] = db;
+    o["exists"] = fi.exists();
+    o["dbSize"] = fi.exists() ? QString::number(fi.size() / 1024.0 / 1024.0, 'f', 1) : QString("0");
+    o["busy"] = (m_archiveProc && m_archiveProc->state() != QProcess::NotRunning);
+    o["script"] = !archiveScriptPath("archive_index.py").isEmpty();
+    o["root"] = m_config ? m_config->tempDir() : QString();
+
+    HttpClient h; h.setTimeout(3);
+    o["ai"] = h.get("http://127.0.0.1:8737/v1/models").isOk();
+
+    // 몇 건이 들어 있나.
+    //   ★ QtSql 을 쓰지 않는다. 그러려면 Qt6::Sql 링크에 더해 QSQLITE 플러그인을
+    //     맥·윈도우 양쪽 배포에 얹어야 하고, 그게 빠지면 아무 말 없이 0 건으로 보인다.
+    //     번들 파이썬에는 sqlite3 가 항상 들어 있으므로 그쪽에 물어보는 편이 안전하다.
+    if (!fi.exists()) {
+        o["files"] = 0; o["withMeta"] = 0;
+        runJs(QString("onArchiveStatus(%1)").arg(
+            QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))));
+        return;
+    }
+    auto *cnt = new QProcess(this);
+    cnt->setProcessEnvironment(Common::bundledProcessEnv());
+    connect(cnt, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, cnt, o](int, QProcess::ExitStatus) mutable {
+        const QStringList parts = QString::fromUtf8(cnt->readAllStandardOutput()).trimmed().split(' ');
+        cnt->deleteLater();
+        o["files"]    = parts.size() > 0 ? parts[0].toInt() : 0;
+        o["withMeta"] = parts.size() > 1 ? parts[1].toInt() : 0;
+        runJs(QString("onArchiveStatus(%1)").arg(
+            QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))));
+    });
+    cnt->setProgram(Common::bundledPythonPath());
+    cnt->setArguments({"-c",
+        "import sqlite3,sys\n"
+        "try:\n"
+        "    d=sqlite3.connect('file:%1?mode=ro',uri=True)\n"
+        "    a=d.execute('SELECT COUNT(*) FROM files').fetchone()[0]\n"
+        "    b=d.execute(\"SELECT COUNT(*) FROM files WHERE artist<>'' OR title<>''\").fetchone()[0]\n"
+        "    print(a,b)\n"
+        "except Exception:\n"
+        "    print(0,0)\n"});
+    // 경로에 따옴표가 들어갈 일은 없지만, 코드에 문자열을 끼워 넣는 자리라 한 번 막아 둔다.
+    QStringList a = cnt->arguments();
+    a[1] = a[1].arg(QString(db).replace('\'', ""));
+    cnt->setArguments(a);
+    cnt->start();
+}
+
+void MiyoBackend::archiveIndex(const QString &root)
+{
+    if (m_archiveProc && m_archiveProc->state() != QProcess::NotRunning) {
+        log("색인이 이미 진행 중입니다.", "warning", "settings");
+        return;
+    }
+    const QString script = archiveScriptPath("archive_index.py");
+    if (script.isEmpty()) {
+        log("❌ 색인 스크립트를 찾을 수 없습니다 (번들 손상).", "error", "settings");
+        archiveStatus(); return;
+    }
+    QString dir = root.trimmed();
+    if (dir.isEmpty() && m_config) dir = m_config->tempDir();
+    if (dir.isEmpty() || !QDir(dir).exists()) {
+        log(QString("❌ 산출물 폴더가 없습니다: %1").arg(dir.isEmpty() ? "(지정 안 됨)" : dir),
+            "error", "settings");
+        archiveStatus(); return;
+    }
+
+    // DB 폴더가 없으면 파이썬이 만들지만, 미리 만들어 두면 실패 원인이 하나 줄어든다.
+    QDir().mkpath(QFileInfo(archiveDbPath()).absolutePath());
+
+    auto *p = new QProcess(this);
+    m_archiveProc = p;
+    QProcessEnvironment env = Common::bundledProcessEnv();
+    env.insert("PYTHONUNBUFFERED", "1");      // 없으면 진행 표시가 끝나서야 한꺼번에 나온다
+    env.insert("PYTHONIOENCODING", "utf-8");
+    p->setProcessEnvironment(env);
+    p->setProcessChannelMode(QProcess::MergedChannels);
+
+    connect(p, &QProcess::readyRead, this, [this, p]() {
+        const QString chunk = QString::fromUtf8(p->readAll());
+        // 색인기는 진행 표시에 \r 을 쓴다 — 줄로 쪼개 마지막 것만 올린다.
+        for (QString line : chunk.split(QRegularExpression("[\r\n]"), Qt::SkipEmptyParts)) {
+            line = line.trimmed();
+            if (line.isEmpty()) continue;
+            runJs(QString("onArchiveProgress(%1)").arg(QString::fromUtf8(
+                QJsonDocument(QJsonArray{line}).toJson(QJsonDocument::Compact))));
+        }
+    });
+    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, p](int code, QProcess::ExitStatus st) {
+        if (st == QProcess::CrashExit)
+            log("색인이 중단됐습니다.", "warning", "settings");
+        else if (code != 0)
+            log(QString("색인이 오류로 끝났습니다 (코드 %1).").arg(code), "error", "settings");
+        else
+            log("✅ 색인 완료 — 이제 질문할 수 있습니다.", "success", "settings");
+        if (m_archiveProc == p) m_archiveProc = nullptr;
+        p->deleteLater();
+        archiveStatus();
+    });
+
+    log(QString("산출물 색인 시작: %1").arg(dir), "info", "settings");
+    p->setProgram(Common::bundledPythonPath());
+    p->setArguments({script, dir, "--db", archiveDbPath()});
+    p->start();
+    archiveStatus();
+}
+
+void MiyoBackend::archiveIndexCancel()
+{
+    if (!m_archiveProc || m_archiveProc->state() == QProcess::NotRunning) {
+        log("진행 중인 색인이 없습니다.", "info", "settings");
+        return;
+    }
+    // terminate 로 먼저 부탁한다 — 색인기는 배치마다 커밋하므로 여기까지는 남고,
+    // 다시 돌리면 이어서 한다(처음부터 다시 하지 않는다).
+    m_archiveProc->terminate();
+    if (!m_archiveProc->waitForFinished(4000)) m_archiveProc->kill();
+    log("색인을 중단했습니다. 다시 시작하면 이어서 합니다.", "info", "settings");
+}
+
+void MiyoBackend::archiveAsk(const QString &question)
+{
+    const QString q = question.trimmed();
+    if (q.isEmpty()) return;
+    const QString script = archiveScriptPath("archive_ask.py");
+    if (script.isEmpty()) {
+        runJs("onArchiveAnswer({\"ok\":false,\"error\":\"질의 스크립트를 찾을 수 없습니다(번들 손상).\"})");
+        return;
+    }
+
+    auto *p = new QProcess(this);
+    QProcessEnvironment env = Common::bundledProcessEnv();
+    env.insert("PYTHONIOENCODING", "utf-8");
+    p->setProcessEnvironment(env);
+    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, p](int, QProcess::ExitStatus) {
+        const QString out = QString::fromUtf8(p->readAllStandardOutput()).trimmed();
+        const QString err = QString::fromUtf8(p->readAllStandardError()).trimmed();
+        p->deleteLater();
+        // 스크립트는 JSON 한 줄을 낸다. 그게 아니면(예: 파이썬이 죽음) 원문을 그대로 보여
+        // 무슨 일이 났는지 감추지 않는다.
+        if (out.startsWith('{')) { runJs(QString("onArchiveAnswer(%1)").arg(out)); return; }
+        QJsonObject o;
+        o["ok"] = false;
+        o["error"] = out.isEmpty() ? (err.isEmpty() ? QString("응답이 없습니다.") : err.left(600))
+                                   : out.left(600);
+        runJs(QString("onArchiveAnswer(%1)").arg(
+            QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))));
+    });
+    p->setProgram(Common::bundledPythonPath());
+    p->setArguments({script, q, "--json", "--db", archiveDbPath()});
+    p->start();
+}
+
 void MiyoBackend::autoRepair()
 {
     if (m_autoRepairBusy.exchange(true)) {
