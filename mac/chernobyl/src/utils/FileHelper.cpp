@@ -141,8 +141,19 @@ bool moveFileSafe(const QString &srcPath, const QString &dstPath, QString *err)
 
     if (srcPath.isEmpty() || dstPath.isEmpty()) return fail("경로가 비었습니다");
     if (!QFileInfo::exists(srcPath))            return fail("원본이 없습니다: " + srcPath);
-    if (QFileInfo(srcPath).canonicalFilePath() == QFileInfo(dstPath).canonicalFilePath())
-        return true;   // 같은 파일 — 할 일 없음
+
+    // 같은 파일을 가리키는지 본다(심볼릭 링크·유니코드 정규화 차이까지 흡수된다).
+    //   ★ canonicalFilePath() 는 '해석할 수 없는 경로' 에 빈 문자열을 준다. 예전엔 그걸
+    //     그대로 비교해서, 대상이 아직 없고 원본도 읽을 수 없는 상황(권한 없음·마운트 끊김)
+    //     에서 양쪽이 다 빈 값이 되어 '같은 파일이니 할 일 없음' 으로 참을 돌려줬다.
+    //     부르는 쪽은 옮겨진 줄 알고 원본을 지우기도 한다 — 아무 말 없이 파일이 사라지는
+    //     길이었다. 둘 다 실제로 해석됐을 때만 같다고 판단한다.
+    {
+        const QString cs = QFileInfo(srcPath).canonicalFilePath();
+        const QString cd = QFileInfo(dstPath).canonicalFilePath();
+        if (!cs.isEmpty() && !cd.isEmpty() && cs == cd)
+            return true;   // 같은 파일 — 할 일 없음
+    }
 
     // 대상 폴더 준비 (NAS/외장이 마운트 해제됐으면 여기서 걸린다)
     const QString dstDir = QFileInfo(dstPath).absolutePath();
@@ -188,6 +199,13 @@ bool moveFileSafe(const QString &srcPath, const QString &dstPath, QString *err)
     dst.close();
 
     if (written != total) { QFile::remove(dstPath); return fail("복사 크기가 원본과 다릅니다"); }
+
+    // ★ 원본을 지우기 전에 대상이 '우리가 부르는 이름' 으로 실제로 보이는지 확인한다.
+    //   대소문자를 구분하는 볼륨(이 사용자의 외장이 Case-sensitive APFS 다)이나 유니코드
+    //   정규화가 다른 파일시스템에서는, 쓰기는 성공했는데 그 이름으로는 안 보이는 일이 있다.
+    //   그때 원본을 지우면 파일을 잃는다.
+    if (!QFileInfo::exists(dstPath))
+        return fail("옮긴 파일이 대상 경로에 보이지 않습니다(원본은 그대로 둡니다): " + dstPath);
 
     QFile::remove(srcPath);   // 완전히 옮겨진 것을 확인한 뒤에만 원본 제거
     return true;
