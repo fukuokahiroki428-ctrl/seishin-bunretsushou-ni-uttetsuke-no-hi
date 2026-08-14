@@ -218,10 +218,18 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
         // AppData = ~/Library/Application Support/Miyo/Chernobyl (현재)
         //   → 부모 ~/Library/Application Support/Miyo 안에 옛 チェルノブイリ dir
         QDir parentDir(QFileInfo(appDataParent).absolutePath());
-        QStringList legacy = {"チェルノブイリ", "カメラ"};
+        QStringList legacy = {"チェルノブイリ", "カメラ", "Chernobyl"};
         qint64 freedLegacy = 0;
         for (const QString &name : legacy) {
             QString p = parentDir.absoluteFilePath(name);
+            // ★ 설정이 아직 그 안에 있으면 지우지 않는다.
+            //   Config::load 가 이름이 바뀐 옛 폴더에서 설정을 되살려 오는데, 여기서 먼저
+            //   지워 버리면 되살릴 것이 없어진다(계정·쿠키·NAS 설정이 통째로 날아간다).
+            //   순서에 기대지 않고, 설정이 남아 있는 폴더는 아예 건드리지 않는다.
+            if (QFile::exists(p + "/miyo_config.json")) {
+                log(QString("옛 폴더에 설정이 남아 있어 두었습니다: %1").arg(name), "info", "settings");
+                continue;
+            }
             if (QDir(p).exists()) {
                 QDirIterator it(p, QDir::Files, QDirIterator::Subdirectories);
                 while (it.hasNext()) freedLegacy += QFileInfo(it.next()).size();

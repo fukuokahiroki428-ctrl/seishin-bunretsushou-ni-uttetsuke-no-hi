@@ -1350,6 +1350,7 @@
                             <label class="option-item"><input type="checkbox" id="niconico-metadata" checked> 메타데이터</label>
                             <label class="option-item"><input type="checkbox" id="niconico-thumb"> 썸네일</label>
                             <label class="option-item"><input type="checkbox" id="niconico-comments"> 댓글</label>
+                            <label class="option-item" title="영상 페이지를 보이는 그대로 HTML 한 장으로 저장합니다. 영상이 내려가도 화면은 남습니다. 다운로드가 끝난 뒤에 진행합니다."><input type="checkbox" id="niconico-real-capture"> 진짜 페이지 캡쳐</label>
                             <label class="option-item"><input type="checkbox" id="niconico-cookies"> Chrome 쿠키 (로그인 필요 영상)</label>
                         </div>
                     </div>
@@ -4385,7 +4386,8 @@
                 metadata:document.getElementById('niconico-metadata').checked,
                 thumb:document.getElementById('niconico-thumb').checked,
                 comments:document.getElementById('niconico-comments').checked,
-                browserCookies:document.getElementById('niconico-cookies').checked
+                browserCookies:document.getElementById('niconico-cookies').checked,
+                realCapture:!!(document.getElementById('niconico-real-capture')||{}).checked
             };
             setRunning('niconico', true);
             clearLog('niconico');

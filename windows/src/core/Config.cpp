@@ -1,4 +1,5 @@
 #include "Config.h"
+#include <algorithm>
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
@@ -75,6 +76,31 @@ void Config::load(const QString &filePath)
         // 옛 ABIWA 시절 경로들
         candidates << QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/ABIWA/miyo_config.json";
         candidates << QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/ABIWA/miyo_config.json";
+
+        // ★ 앱 이름이 바뀐 뒤의 옛 폴더 — 이게 없어서 이름을 바꿀 때마다 설정이 통째로
+        //   버려졌다. 이 앱만 해도 カメラ → チェルノブイリ → Chernobyl → Predormition
+        //   으로 네 번 바뀌었다. AppDataLocation 은 .../Miyo/<앱이름> 이라, 이름이 바뀌면
+        //   폴더도 바뀌어 계정·쿠키·NAS 설정·플랫폼 목록이 한 번에 사라진 것처럼 보인다.
+        //
+        //   이름을 목록에 박아 두면 '다음 번' 이름 변경 때 또 같은 일이 난다. 그래서
+        //   형제 폴더를 훑어 miyo_config.json 이 있는 것을 찾고, 그 중 가장 최근에 쓰인
+        //   것을 가져온다 — 앞으로 이름이 또 바뀌어도 이어진다.
+        {
+            const QString mine = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+            QDir siblings(QFileInfo(mine).absolutePath());   // .../Miyo
+            QFileInfoList found;
+            const auto dirs = siblings.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+            for (const QFileInfo &d : dirs) {
+                if (d.absoluteFilePath() == QFileInfo(mine).absoluteFilePath()) continue;  // 내 폴더
+                const QFileInfo cfg(d.absoluteFilePath() + "/miyo_config.json");
+                if (cfg.exists() && cfg.size() > 0) found << cfg;
+            }
+            std::sort(found.begin(), found.end(), [](const QFileInfo &a, const QFileInfo &b) {
+                return a.lastModified() > b.lastModified();   // 최근에 쓰던 것부터
+            });
+            for (const QFileInfo &f : found) candidates << f.absoluteFilePath();
+        }
+
         for (const QString &oldPath : candidates) {
             if (QFile::exists(oldPath)) {
                 QFile::copy(oldPath, m_configPath);

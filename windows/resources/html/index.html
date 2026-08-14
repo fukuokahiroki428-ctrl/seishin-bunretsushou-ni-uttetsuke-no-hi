@@ -1696,6 +1696,7 @@
                                     <label class="nt-check"><input type="checkbox" id="niconico-thumb"> 썸네일</label>
                                     <label class="nt-check"><input type="checkbox" id="niconico-metadata" checked> 메타데이터</label>
                                     <label class="nt-check"><input type="checkbox" id="niconico-comments"> 댓글 수집</label>
+                                    <label class="nt-check" title="영상 페이지를 보이는 그대로 HTML 한 장으로 저장합니다. 영상이 내려가도 화면은 남습니다."><input type="checkbox" id="niconico-real-capture"> 진짜 페이지 캡쳐</label>
                                 </div>
                                 <div style="margin-top:9px;color:var(--muted);font-size:12px;">로그인 영상은 앱 폴더에 <b>niconico_cookies.txt</b>(브라우저 확장으로 내보낸 Netscape 쿠키)를 두면 자동 사용됩니다.</div>
                             </div></div>
@@ -5135,7 +5136,8 @@
                 quality:document.getElementById('niconico-quality').value,
                 thumb:document.getElementById('niconico-thumb').checked,
                 metadata:document.getElementById('niconico-metadata').checked,
-                comments:document.getElementById('niconico-comments').checked
+                comments:document.getElementById('niconico-comments').checked,
+                realCapture:!!(document.getElementById('niconico-real-capture')||{}).checked
             };
             setRunning('niconico', true);
             clearLog('niconico');
