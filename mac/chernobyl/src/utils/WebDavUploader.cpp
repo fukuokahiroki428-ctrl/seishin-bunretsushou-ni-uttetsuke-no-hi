@@ -1,5 +1,6 @@
 #include "WebDavUploader.h"
 #include <QCoreApplication>
+#include <QFile>
 #include <QProcess>
 #include <QFileInfo>
 #include <QUrl>
@@ -283,9 +284,21 @@ void WebDavUploader::workerLoop()
         if (!fi.exists()) continue;
 
         // 로컬 경로 → remote URL 매핑 (localBase prefix 제거)
-        QString base, relPath = path;
+        // ★ Windows 경로 규칙 대응 — 구분자('\\' vs '/')와 대소문자가 달라도 같은 폴더다.
+        //   비교 전에 '/' 로 통일하고, Windows 에선 대소문자를 무시한다. 또 경계가 '/' 인지
+        //   확인해 "…/Photo" 가 "…/PhotoBackup" 에 잘못 매칭되는 것을 막는다.
+        QString base, relPath = QDir::fromNativeSeparators(path);
         { QMutexLocker lock(&m_mutex); base = m_baseUrl;
-          if (!m_localBase.isEmpty() && relPath.startsWith(m_localBase)) relPath = relPath.mid(m_localBase.length());
+          QString lb = QDir::fromNativeSeparators(m_localBase);
+          while (lb.endsWith('/')) lb.chop(1);
+#ifdef Q_OS_WIN
+          const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
+#else
+          const Qt::CaseSensitivity cs = Qt::CaseSensitive;
+#endif
+          if (!lb.isEmpty() && relPath.startsWith(lb, cs)
+              && (relPath.length() == lb.length() || relPath.at(lb.length()) == QLatin1Char('/')))
+              relPath = relPath.mid(lb.length());
           else relPath = "/" + fi.fileName(); }
         while (relPath.startsWith('/')) relPath = relPath.mid(1);
 
