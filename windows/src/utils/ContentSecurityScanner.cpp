@@ -1,8 +1,10 @@
 #include "ContentSecurityScanner.h"
+#include "FileHelper.h"
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
 #include <QDateTime>
+#include <QDebug>
 
 // ── JS 악성코드 패턴 정의 ──
 
@@ -173,13 +175,21 @@ bool ContentSecurityScanner::quarantineFile(const QString &filePath, const QStri
     }
 
     // 파일 이동
-    bool moved = QFile::rename(filePath, destPath);
-    if (!moved) {
-        QFile::copy(filePath, destPath);
-        QFile::remove(filePath);
+    //   ★ 예전엔 이랬다:
+    //         if (!QFile::rename(...)) { QFile::copy(...); QFile::remove(filePath); }
+    //         ... return true;
+    //     복사 결과를 보지 않고 원본을 지웠고, 무슨 일이 있어도 성공이라고 답했다.
+    //     다른 디스크로 옮기다 용량이 모자라거나(외장·NAS), 대상 파일시스템이 그 이름을
+    //     못 받거나, 권한이 없으면 — 복사는 실패하는데 원본은 지워져서 파일이 사라졌다.
+    //     그러고도 '격리했다' 고 보고하니 사라진 줄도 몰랐다.
+    //     moveFileSafe 는 다 옮겨진 것을 확인한 뒤에만 원본을 지우고, 실패하면 원본을 남긴다.
+    QString mvErr;
+    if (!FileHelper::moveFileSafe(filePath, destPath, &mvErr)) {
+        qWarning() << "[격리] 이동 실패(원본은 그대로 둡니다):" << filePath << mvErr;
+        return false;
     }
 
-    // 보고서 생성
+    // 보고서 생성 — 실제로 옮겨졌을 때만 남긴다(안 옮겨졌는데 보고서만 있으면 더 헷갈린다).
     QFile report(destPath + ".report.txt");
     if (report.open(QIODevice::WriteOnly)) {
         report.write(QString("Quarantined: %1\nOriginal: %2\nDate: %3\n")

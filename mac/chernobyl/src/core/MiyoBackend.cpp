@@ -9111,6 +9111,40 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
             log("Path: " + path, "info", platform);
             updateStats(success, fail, "Done", platform);
 
+            // ── 진짜 페이지 캡쳐(SingleFile) ────────────────────────────────
+            //   yt-dlp 는 영상·썸네일·자막·설명·info.json 은 받아 오지만 '보고 있던 화면'
+            //   자체는 남기지 않는다. 제목·설명 서식, 화면에 보이던 댓글, 추천 영상,
+            //   채널 배지 같은 것은 나중에 영상이 내려가면 어디에서도 되살릴 수 없다.
+            //   다른 플랫폼(트위터·픽시브·인스타·블스카이…)은 전부 이 캡쳐를 하는데
+            //   유튜브·니코동만 빠져 있었다 — 그래서 붙인다.
+            //
+            //   ★ 캡쳐는 다운로드가 끝난 뒤에 한다. 브라우저와 yt-dlp 가 동시에 같은
+            //     영상을 때리면 봇 차단에 걸리기 쉽다.
+            if (config["realCapture"].toBool(false) && !urls.isEmpty()) {
+                const QString capturesDir = FileHelper::typeFolder(ytBaseDir, "captures");
+                int capOk = 0, capFail = 0;
+                for (const QString &u : urls) {
+                    if (!m_isRunning.value(platform, false)) break;   // 사용자가 중지를 눌렀다
+                    // 파일 이름은 영상 ID 로 — 제목은 나중에 바뀌지만 ID 는 안 바뀐다.
+                    QString vid;
+                    {
+                        static const QRegularExpression kId(
+                            "(?:v=|youtu\\.be/|/shorts/|/watch/|sm|so)([A-Za-z0-9_-]{6,})");
+                        const auto m = kId.match(u);
+                        vid = m.hasMatch() ? m.captured(1) : QString();
+                    }
+                    if (vid.isEmpty()) vid = QString::number(qHash(u), 16);
+                    if (captureRealPageCDPLoginAware(u, capturesDir, vid, QString(), platform, 9000))
+                        ++capOk;
+                    else
+                        ++capFail;
+                }
+                if (capOk || capFail)
+                    log(QString("페이지 캡쳐: 성공 %1, 실패 %2 → %3")
+                            .arg(capOk).arg(capFail).arg(capturesDir),
+                        capFail ? "warning" : "success", platform);
+            }
+
             // ── Post-processing: _complete 미러 + Excel 생성 ──
             QDirIterator it(ytTypeDir, {"*.info.json"}, QDir::Files, QDirIterator::Subdirectories);
             QJsonArray rows;

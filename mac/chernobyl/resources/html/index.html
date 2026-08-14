@@ -1295,6 +1295,7 @@
                             <label class="option-item"><input type="checkbox" id="youtube-playlist"> 재생목록</label>
                             <label class="option-item"><input type="checkbox" id="youtube-sponsor"> SponsorBlock</label>
                             <label class="option-item"><input type="checkbox" id="youtube-comments"> 댓글 (상위 300)</label>
+                            <label class="option-item" title="영상 페이지를 보이는 그대로 HTML 한 장으로 저장합니다(제목·설명 서식·화면의 댓글·추천 영상). 영상이 내려가도 화면은 남습니다. 다운로드가 끝난 뒤에 진행합니다."><input type="checkbox" id="youtube-real-capture"> 진짜 페이지 캡쳐</label>
                         </div>
                     </div>
                     <div class="section">
@@ -4360,7 +4361,8 @@
                 metadata:document.getElementById('youtube-metadata').checked,
                 playlist:document.getElementById('youtube-playlist').checked,
                 sponsor:document.getElementById('youtube-sponsor').checked,
-                comments:document.getElementById('youtube-comments').checked
+                comments:document.getElementById('youtube-comments').checked,
+                realCapture:!!(document.getElementById('youtube-real-capture')||{}).checked
             };
             setRunning('youtube', true);
             clearLog('youtube'); setYoutubeProgress(0);
@@ -5609,7 +5611,7 @@
             'bsky-target','bsky-path','bsky-type','bsky-mode','bsky-since','bsky-until',
             'bsky-query','bsky-count','bsky-media','bsky-excel','bsky-replies','bsky-reposts','bsky-comments','bsky-real-capture',
             'bsky-method','bsky-ratelimit-mins','bsky-ratelimit-wait','bsky-cookie',
-            'youtube-path','youtube-quality','youtube-type','youtube-subs','youtube-thumb','youtube-metadata','youtube-playlist','youtube-sponsor','youtube-comments',
+            'youtube-path','youtube-quality','youtube-type','youtube-subs','youtube-thumb','youtube-metadata','youtube-playlist','youtube-sponsor','youtube-comments','youtube-real-capture',
             'discord-server','discord-channel','discord-type','discord-count','discord-delay','discord-media','discord-excel','discord-profiles','discord-path',
             'discord-method',
             'instagram-target','instagram-count','instagram-delay',
