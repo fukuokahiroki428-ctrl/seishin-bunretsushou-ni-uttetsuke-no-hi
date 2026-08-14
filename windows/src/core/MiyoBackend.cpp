@@ -13157,16 +13157,116 @@ static QStringList bundledLlmModelHeads()
     return heads;
 }
 
+// ═════════════════════════════════════════════════════════════════════════
+//  AI 대상 — 로컬(번들 llama-server) / 온라인(OpenAI 호환 API)
+// ═════════════════════════════════════════════════════════════════════════
+//  이 앱의 LLM 배선은 이미 OpenAI 호환(/v1/models, /v1/chat/completions)이다.
+//  그래서 온라인은 제공자별 코드 없이 기준 URL·키·모델 세 값이면 붙는다
+//  (OpenAI, OpenRouter, Groq, DeepSeek, 사내 게이트웨이 …).
+//
+//  ★ 대상은 반드시 이 세 함수로만 정한다. 예전엔 "http://127.0.0.1:8737" 이
+//    16곳에 흩어져 있었고, 그중 하나만 빠뜨리면 "대화는 온라인인데 상태 표시는
+//    로컬" 같은 어긋남이 조용히 생긴다.
+QString MiyoBackend::llmBase() const
+{
+    if (m_config && m_config->aiOnline()) {
+        QString b = m_config->aiBaseUrl().trimmed();
+        while (b.endsWith('/')) b.chop(1);
+        // 사용자가 ".../v1" 까지 적어도 되게 — 호출부에서 /v1 을 다시 붙이므로 여기서 뗀다.
+        if (b.endsWith("/v1")) b.chop(3);
+        if (!b.isEmpty()) return b;
+    }
+    return QStringLiteral("http://127.0.0.1:8737");
+}
+
+QMap<QString, QString> MiyoBackend::llmHeaders() const
+{
+    QMap<QString, QString> h;
+    if (m_config && m_config->aiOnline()) {
+        const QString k = m_config->aiApiKey().trimmed();
+        if (!k.isEmpty()) h["Authorization"] = "Bearer " + k;
+    }
+    return h;   // 로컬 서버는 인증이 없다
+}
+
+QString MiyoBackend::llmOnlineModel() const
+{
+    if (m_config && m_config->aiOnline()) return m_config->aiModel().trimmed();
+    return QString();
+}
+
+void MiyoBackend::setAiMode(const QString &mode)
+{
+    if (!m_config) return;
+    const QString m = (mode == "online") ? "online" : "local";
+    m_config->setAiMode(m);
+    m_config->save();
+    log(m == "online" ? "AI 를 온라인(API)으로 바꿨습니다." : "AI 를 로컬(이 컴퓨터)로 바꿨습니다.",
+        "info", "settings");
+    getLlmStatus();
+}
+
+void MiyoBackend::setAiOnlineConfig(const QString &baseUrl, const QString &apiKey, const QString &model)
+{
+    if (!m_config) return;
+    m_config->setAiBaseUrl(baseUrl.trimmed());
+    // 키는 사용자가 붙여넣은 그대로 저장한다. 로그에는 절대 남기지 않는다.
+    m_config->setAiApiKey(apiKey.trimmed());
+    m_config->setAiModel(model.trimmed());
+    m_config->save();
+    log("온라인 AI 설정을 저장했습니다.", "success", "settings");
+}
+
+void MiyoBackend::getAiConfig()
+{
+    if (!m_config) return;
+    QJsonObject o;
+    o["mode"]    = m_config->aiMode();
+    o["baseUrl"] = m_config->aiBaseUrl();
+    o["model"]   = m_config->aiModel();
+    // ★ 키 자체는 절대 UI 로 돌려보내지 않는다. 저장돼 있는지 여부만 알린다.
+    o["hasKey"]  = !m_config->aiApiKey().trimmed().isEmpty();
+    runJs(QString("if(window.onAiConfig)onAiConfig(%1)")
+              .arg(QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))));
+}
+
+void MiyoBackend::testAiOnline()
+{
+    if (!m_config) return;
+    if (!m_config->aiOnline()) { runJs("if(window.onAiTestResult)onAiTestResult(false,'온라인 모드가 아닙니다')"); return; }
+    if (m_config->aiBaseUrl().trimmed().isEmpty()) { runJs("if(window.onAiTestResult)onAiTestResult(false,'기준 URL 을 입력하세요')"); return; }
+    if (m_config->aiApiKey().trimmed().isEmpty())  { runJs("if(window.onAiTestResult)onAiTestResult(false,'API 키를 입력하세요')"); return; }
+
+    HttpClient h; h.setTimeout(10000);
+    HttpResponse r = h.get(llmBase() + "/v1/models", llmHeaders());
+    const bool ok = r.isOk();
+    // 실패 사유에 키가 섞여 나가지 않도록 상태코드만 보여 준다.
+    const QString msg = ok ? QStringLiteral("연결 성공")
+                           : QString("연결 실패 (HTTP %1) — URL·키를 확인하세요").arg(r.statusCode);
+    runJs(QString("if(window.onAiTestResult)onAiTestResult(%1,'%2')")
+              .arg(ok ? "true" : "false", msg));
+}
+
 void MiyoBackend::getLlmStatus()
 {
     const QString dir = Common::bundledResourcesDir() + "/llm";
+    const bool online = (m_config && m_config->aiOnline());
     QJsonObject o;
-    o["hasServer"] = QFile::exists(dir + "/llama-server.exe");
-    bool running = (m_llmProc && m_llmProc->state() != QProcess::NotRunning);
-    if (!running) {
-        // m_llmProc 가 없어도 8737 에 서버가 떠 있으면(자동기동/직접실행/이전 세션 잔류) 실행중으로 본다.
-        HttpClient h; h.setTimeout(600);
-        running = h.get("http://127.0.0.1:8737/v1/models").isOk();
+    o["mode"] = online ? "online" : "local";
+    // 온라인일 땐 번들 엔진 유무가 의미 없다 — 켜기/끄기 버튼도 숨겨야 하므로 알려 준다.
+    o["hasServer"] = online ? true : QFile::exists(dir + "/llama-server.exe");
+    bool running;
+    if (online) {
+        // 온라인은 '띄우고 끄는' 대상이 아니다. 응답하면 준비된 것으로 본다.
+        HttpClient h; h.setTimeout(4000);
+        running = h.get(llmBase() + "/v1/models", llmHeaders()).isOk();
+    } else {
+        running = (m_llmProc && m_llmProc->state() != QProcess::NotRunning);
+        if (!running) {
+            // m_llmProc 가 없어도 8737 에 서버가 떠 있으면(자동기동/직접실행/이전 세션 잔류) 실행중으로 본다.
+            HttpClient h; h.setTimeout(600);
+            running = h.get(llmBase() + "/v1/models", llmHeaders()).isOk();
+        }
     }
     o["running"] = running;
     QJsonArray ms;
@@ -13186,7 +13286,7 @@ void MiyoBackend::startLocalLlm(const QString &modelHint)
     // 이미 8737 포트에 서버가 떠 있으면(자동기동/직접실행/이전 세션 잔류) 중복 기동하지 않고 채택.
     //  — 중복 기동은 포트 충돌로 즉시 종료돼 '켜자마자 꺼짐'처럼 보였다.
     { HttpClient h; h.setTimeout(600);
-      if (h.get("http://127.0.0.1:8737/v1/models").isOk()) {
+      if (h.get(llmBase() + "/v1/models", llmHeaders()).isOk()) {
           log("로컬 AI 가 이미 실행 중입니다(기존 서버 사용).", "info", "settings");
           getLlmStatus();
           return;
@@ -13232,7 +13332,7 @@ void MiyoBackend::startLocalLlm(const QString &modelHint)
         for (int i = 0; i < 40; ++i) {
             QThread::msleep(500);
             HttpClient h;
-            if (h.get("http://127.0.0.1:8737/v1/models").isOk()) {
+            if (h.get(llmBase() + "/v1/models", llmHeaders()).isOk()) {
                 QMetaObject::invokeMethod(this, [this]() {
                     log("✅ 로컬 AI 준비 완료 (127.0.0.1:8737) — 자가진단이 이 AI 를 사용합니다.", "success", "settings");
                     getLlmStatus();
@@ -13336,9 +13436,9 @@ void MiyoBackend::llmChat(const QString &historyJson)
         }
 
         HttpClient probe;
-        if (!probe.get("http://127.0.0.1:8737/v1/models").isOk()) {
+        if (!probe.get(llmBase() + "/v1/models", llmHeaders()).isOk()) {
             QMetaObject::invokeMethod(this, [this]() { log("AI 가 꺼져 있어 기동합니다...", "info", "settings"); startLocalLlm(m_llmModelHint); }, Qt::QueuedConnection);
-            for (int i = 0; i < 50; ++i) { QThread::msleep(500); HttpClient h; if (h.get("http://127.0.0.1:8737/v1/models").isOk()) break; }
+            for (int i = 0; i < 50; ++i) { QThread::msleep(500); HttpClient h; if (h.get(llmBase() + "/v1/models", llmHeaders()).isOk()) break; }
         }
         QString report;
         {
@@ -13370,9 +13470,10 @@ void MiyoBackend::llmChat(const QString &historyJson)
                     {"content", QString("아래는 방금 웹에서 찾은 참고 자료다(읽기전용 검색 결과). 관련 있으면 활용해 "
                                         "답하고 출처 URL 을 자연스럽게 곁들여도 좋아. 무관하면 무시해.\n\n%1").arg(web)}});
         }
-        QJsonObject body{{"model", "default"}, {"messages", messages}, {"temperature", 0.7}, {"max_tokens", 600}};
+        QJsonObject body{{"model", llmOnlineModel().isEmpty() ? QStringLiteral("default") : llmOnlineModel()},
+                         {"messages", messages}, {"temperature", 0.7}, {"max_tokens", 600}};
         HttpClient http;
-        HttpResponse r = http.postJson("http://127.0.0.1:8737/v1/chat/completions", body);
+        HttpResponse r = http.postJson(llmBase() + "/v1/chat/completions", body, llmHeaders());
         QString reply;
         if (r.isOk())
             reply = r.json().value("choices").toArray().first().toObject()
@@ -13392,6 +13493,9 @@ void MiyoBackend::llmChat(const QString &historyJson)
 // openLlmTerminal — 오픈클로(로컬 LLM)를 Terminal.app 대화형 REPL 로 띄운다.
 //   기존 openTerminalLog 는 로그를 tail 하는 '단방향' 뷰어였다. 이건 사용자가
 //   직접 타이핑해 로컬 AI 와 대화하는 '양방향' 셸 (127.0.0.1:8737 /v1/chat).
+//   ★ 이 터미널은 로컬 전용이다. 온라인 API 로 붙이려면 생성되는 파이썬 스크립트에
+//     API 키를 적어 임시 파일로 떨궈야 하는데, 키를 디스크에 남기지 않는 편이 낫다.
+//     온라인 모드에서 대화는 앱 안의 AI 카드를 쓰면 된다.
 //   REPL 은 stdlib(json/urllib/sys/os) 만 쓰는 python 클라이언트 → 번들/시스템
 //   python 아무거나 실행 가능. 서버가 꺼져 있으면 먼저 기동하고 REPL 이 폴링 대기.
 // ═════════════════════════════════════════════════════════════════════════
@@ -13678,11 +13782,11 @@ QString MiyoBackend::aiRewriteScriptSync(const QString &name, const QString &pro
         "문제를 해결한 '완전한 파일 전체'를 출력하라. 반드시 파일 전체를 그대로 출력하고(잘림 금지), "
         "설명·주석 인사말·코드펜스(```) 없이 순수 파이썬 코드만 출력하라. 기존 동작은 최대한 보존하라.\n\n"
         "[문제]\n%2\n\n[현재 소스]\n%3").arg(name, problem.isEmpty() ? QStringLiteral("(자동 진단)") : problem, src);
-    QJsonObject body{{"model", "default"},
+    QJsonObject body{{"model", llmOnlineModel().isEmpty() ? QStringLiteral("default") : llmOnlineModel()},
         {"messages", QJsonArray{QJsonObject{{"role", "system"}, {"content", sys}}}},
         {"temperature", 0.2}, {"max_tokens", 4000}};
     HttpClient http;
-    HttpResponse r = http.postJson("http://127.0.0.1:8737/v1/chat/completions", body);
+    HttpResponse r = http.postJson(llmBase() + "/v1/chat/completions", body, llmHeaders());
     QString out;
     if (r.isOk())
         out = r.json().value("choices").toArray().first().toObject()
@@ -13700,7 +13804,7 @@ void MiyoBackend::aiFixScript(const QString &name, const QString &problem)
     log(QString("🤖 오픈클로가 %1 을(를) 읽고 수정안을 만드는 중...").arg(name), "info", "settings");
 
     QThread *t = QThread::create([this, name, problem]() {
-        const QString base = "http://127.0.0.1:8737";
+        const QString base = llmBase();
         HttpClient probe;
         if (!probe.get(base + "/v1/models").isOk()) {
             QMetaObject::invokeMethod(this, [this]() { startLocalLlm(m_llmModelHint); }, Qt::QueuedConnection);
@@ -13801,7 +13905,7 @@ void MiyoBackend::archiveStatus()
     o["root"] = m_config ? m_config->tempDir() : QString();
 
     HttpClient h; h.setTimeout(3);
-    o["ai"] = h.get("http://127.0.0.1:8737/v1/models").isOk();
+    o["ai"] = h.get(llmBase() + "/v1/models", llmHeaders()).isOk();
 
     // 몇 건이 들어 있나.
     //   ★ QtSql 을 쓰지 않는다. 그러려면 Qt6::Sql 링크에 더해 QSQLITE 플러그인을
@@ -13954,7 +14058,7 @@ void MiyoBackend::autoRepair()
         log("AI 자동 수리가 이미 진행 중입니다.", "warning", "settings");
         return;
     }
-    const QString base = "http://127.0.0.1:8737";
+    const QString base = llmBase();
 
     QThread *t = QThread::create([this, base]() {
         auto say = [this](const QString &phase, const QString &msg) {
@@ -14034,7 +14138,7 @@ void MiyoBackend::autoRepair()
         QJsonArray messages;
         messages.append(QJsonObject{{"role", "system"}, {"content", sys}});
         messages.append(QJsonObject{{"role", "user"}, {"content", "위 자가진단에 맞는 수리 동작을 JSON 으로 결정하라."}});
-        QJsonObject body{{"model", "default"}, {"messages", messages}, {"temperature", 0.1}, {"max_tokens", 300}};
+        QJsonObject body{{"model", llmOnlineModel().isEmpty() ? QStringLiteral("default") : llmOnlineModel()}, {"messages", messages}, {"temperature", 0.1}, {"max_tokens", 300}};
 
         HttpClient http;
         HttpResponse r = http.postJson(base + "/v1/chat/completions", body);

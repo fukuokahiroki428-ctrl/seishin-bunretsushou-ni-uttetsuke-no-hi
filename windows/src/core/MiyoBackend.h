@@ -64,6 +64,12 @@ public slots:
     bool killLlmOnPort();   // 8737 을 문 llama-server 정리(고아 포함)
     void getLlmStatus();
     void llmChat(const QString &historyJson);       // 로컬 AI 와 대화(수리 도우미) — JS onLlmReply(text)
+    // ── AI 방식(로컬/온라인) 설정 — 설정 화면에서 부른다 ────────────────────
+    //   온라인은 OpenAI 호환 API 면 무엇이든 붙는다(제공자별 코드 없음).
+    void setAiMode(const QString &mode);                                  // "local" / "online"
+    void setAiOnlineConfig(const QString &baseUrl, const QString &apiKey, const QString &model);
+    void getAiConfig();                                                    // JS onAiConfig(json)
+    void testAiOnline();                                                   // 연결 시험 → JS onAiTestResult(ok, msg)
     void openLlmTerminal();                          // 오픈클로를 대화형 터미널 REPL 로 띄움
     void setLlmModel(const QString &hint);           // 드롭다운 선택 모델 기억 (자동기동 경로가 이걸 사용)
     void autoRepair();                               // AI 가 자가진단→수리동작을 스스로 판단해 자동 실행
@@ -284,6 +290,13 @@ private:
     std::atomic<bool> m_tradCancelled{false};
     std::atomic<bool> m_pythonBusy{false};    // Python 환경 작업 중 (업그레이드/복구/업데이트 동시 방지)
     QProcess *m_llmProc = nullptr;            // 설정에서 켠 번들 로컬 LLM(llama-server) 프로세스
+    // ── AI 대상(로컬/온라인)을 한 곳에서 정한다 ────────────────────────────
+    //   예전엔 "http://127.0.0.1:8737" 이 16곳에 흩어져 있었다. 온라인을 넣으면서
+    //   그중 하나만 빠뜨리면 "대화는 온라인인데 상태 표시는 로컬" 같은 어긋남이 난다.
+    QString llmBase() const;                        // 기준 URL (뒤에 /v1/... 을 붙여 쓴다)
+    QMap<QString, QString> llmHeaders() const;      // 온라인이면 Authorization, 로컬이면 빔
+    QString llmOnlineModel() const;                 // 온라인에서 쓸 모델명(로컬이면 빈 문자열)
+
     QString m_llmModelHint;                   // 드롭다운에서 고른 모델(부분일치). 자동기동 시 이 모델을 씀.
     QProcess *m_archiveProc = nullptr;        // 산출물 색인 진행 중인 프로세스(중단용)
     std::atomic<bool> m_autoRepairBusy{false};// AI 자동 수리 중복 실행 방지
