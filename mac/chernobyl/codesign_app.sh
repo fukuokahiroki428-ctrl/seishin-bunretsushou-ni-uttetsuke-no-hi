@@ -46,6 +46,23 @@ fi
 # 실행 코드/번들용(하드닝 런타임 포함). nested 라이브러리에도 적용해도 무해.
 sign_rt() { codesign "${SIGN_FLAGS[@]}" "${RUNTIME_FLAGS[@]}" "$@"; }
 
+# ★ 예전에는 모든 서명 호출이 `2>/dev/null || true` 였다. 어디서 실패했는지 알 길이
+#   없었고, 마지막 --deep 검증만 "깨졌다" 고 말해 원인을 손으로 찾아야 했다
+#   (실제로 파일 54개가 서명이 안 된 채 남아 있었는데 로그에는 아무것도 없었다).
+#   이제는 세고, 처음 몇 건은 이유까지 보여 준다.
+#   ★ 실패 개수를 변수에 세면 안 된다. 아래 서명 루프들은
+#       find ... | while read ...   /   while read ... < <(...)
+#     형태라 서브셸에서 돌고, 서브셸에서 올린 변수는 밖으로 나오지 않는다
+#     (그래서 처음엔 늘 0 으로 나왔다). 파일에 적어야 밖에서 셀 수 있다.
+SIGN_FAIL_LOG="$(mktemp -t predormition_sign)"
+trap 'rm -f "$SIGN_FAIL_LOG"' EXIT
+try_sign() {
+    local out target="${*: -1}"
+    if out="$(sign_rt "$@" 2>&1)"; then return 0; fi
+    printf '%s\t%s\n' "$target" "$(echo "$out" | tail -1)" >> "$SIGN_FAIL_LOG"
+    return 1
+}
+
 echo "[codesign] Signing $APP ..."
 
 # 0. 기존 _CodeSignature 제거
@@ -74,39 +91,54 @@ done
 # 2. 모든 Mach-O 바이너리를 개별 서명(가장 안쪽 먼저)
 find "$APP" -type f -print0 2>/dev/null | while IFS= read -r -d $'\0' f; do
     if file "$f" 2>/dev/null | grep -q "Mach-O"; then
-        sign_rt "$f" 2>/dev/null || true
+        try_sign "$f" || true
     fi
 done
 echo "[codesign] All Mach-O binaries signed"
 
 # 3. Qt 프레임워크
 find "$APP/Contents/Frameworks" -maxdepth 1 -name "*.framework" -type d 2>/dev/null | while IFS= read -r fw; do
-    sign_rt "$fw" 2>/dev/null || true
+    try_sign "$fw" || true
 done
 echo "[codesign] Qt frameworks signed"
 
 # 4. WebEngine 헬퍼(.app)
 find "$APP" -name "QtWebEngineProcess.app" -type d 2>/dev/null | while IFS= read -r helper; do
-    sign_rt "$helper" 2>/dev/null || true
+    try_sign "$helper" || true
 done
 echo "[codesign] WebEngine helper signed"
 
 # 5. Python 프레임워크
 find "$APP" -path "*/Python.framework" -not -path "*/Versions/*" -type d 2>/dev/null | while IFS= read -r pfw; do
-    sign_rt "$pfw" 2>/dev/null || true
+    try_sign "$pfw" || true
 done
 
 # 6. companion app(있을 때만 — 실패해도 진행)
 find "$APP/Contents/Resources" -maxdepth 1 -name "*.app" -type d 2>/dev/null | while IFS= read -r capp; do
-    sign_rt "$capp" 2>/dev/null || true
+    try_sign "$capp" || true
     echo "[codesign] Signed companion: $(basename "$capp") (may have warnings)"
 done
 
 # 7. Contents/MacOS 의 실행 파일(yt-dlp/ffmpeg/ffprobe/main exe 등)
 find "$APP/Contents/MacOS" -type f -print0 2>/dev/null | while IFS= read -r -d $'\0' f; do
-    file "$f" 2>/dev/null | grep -q "Mach-O" && { sign_rt "$f" 2>/dev/null || true; }
+    file "$f" 2>/dev/null | grep -q "Mach-O" && { try_sign "$f" || true; }
 done
 echo "[codesign] Main executables signed"
+
+# 7.5 개별 서명 결과 보고 — 예전엔 전부 2>/dev/null 로 삼켜서, 마지막 --deep 검증이
+#     "깨졌다" 고만 말했고 어디가 문제인지는 손으로 찾아야 했다(파일 54개가 서명이
+#     안 된 채 남아 있었는데 로그에는 아무것도 없었다).
+if [ -s "$SIGN_FAIL_LOG" ]; then
+    nfail=$(wc -l < "$SIGN_FAIL_LOG" | tr -d ' ')
+    echo "[codesign] ⚠ 개별 서명 실패 ${nfail} 건 — 아래 검증에서 걸릴 수 있습니다:"
+    head -5 "$SIGN_FAIL_LOG" | while IFS=$'\t' read -r f why; do
+        echo "[codesign]    ${f#$APP/}"
+        echo "[codesign]      $why"
+    done
+    [ "$nfail" -gt 5 ] && echo "[codesign]    … 외 $((nfail - 5)) 건"
+else
+    echo "[codesign] 개별 서명 실패 없음"
+fi
 
 # 8. ★ 메인 번들 — 반드시 성공해야 함(실패 시 즉시 중단).
 #    일본어/유니코드 앱 이름의 NFC/NFD 충돌 회피: 부모 dir 로 cd 후 상대 경로 사용.

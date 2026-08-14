@@ -2,6 +2,28 @@
 set -e
 cd "$(dirname "$0")"
 
+# ═══ 빌드 잠금 ═══════════════════════════════════════════════════════════
+#  같은 build/ 에서 빌드를 두 개 겹쳐 돌리면 서로의 산출물을 지운다.
+#  make/ninja 는 링크 전에 대상 파일을 지우므로, 뒤에 시작한 쪽이 앞선 쪽이 막
+#  만들어 둔 실행 파일을 없애 버린다. 그러면 빌드는 '성공' 이라고 하는데
+#  Contents/MacOS 에 실행 파일이 없어 앱이 조용히 안 뜬다(실제로 두 번 겪었다).
+#
+#  mkdir 은 원자적이라 잠금으로 쓸 수 있다(flock 은 맥 기본에 없다).
+LOCK="build/.build.lock"
+mkdir -p build
+if ! mkdir "$LOCK" 2>/dev/null; then
+    OWNER="$(cat "$LOCK/pid" 2>/dev/null || echo '?')"
+    if [ "$OWNER" != "?" ] && kill -0 "$OWNER" 2>/dev/null; then
+        echo "❌ 이미 빌드가 돌고 있습니다 (PID $OWNER). 끝난 뒤에 다시 실행하세요."
+        echo "   강제로 풀려면:  rm -rf '$PWD/$LOCK'"
+        exit 1
+    fi
+    echo "⚠ 남아 있던 잠금을 정리합니다(PID $OWNER 는 이미 없음)."
+    rm -rf "$LOCK"; mkdir "$LOCK"
+fi
+echo $$ > "$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT INT TERM
+
 echo "=== Building ==="
 cmake --build build --target Miyo
 
