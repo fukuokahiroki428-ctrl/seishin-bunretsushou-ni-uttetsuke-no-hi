@@ -25,6 +25,41 @@ function Exit-Script([int]$code = 0) {
     exit $code
 }
 
+# ── SHA256 목록 받기 ───────────────────────────────────────────────────────
+#   ★ GitHub 릴리즈 자산은 Content-Type 이 application/octet-stream 이라
+#     PowerShell 5.1 의 Invoke-WebRequest 가 .Content 를 Byte[] 로 준다.
+#     이걸 문자열로 알고 -split/-match 하면 전부 빗나가고, 예외도 안 나서
+#     검증 블록이 조용히 통째로 건너뛰어진다(실측 확인). 반드시 디코드해서 쓴다.
+function Get-Sha256Map([string]$url) {
+    try {
+        $raw = (Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 30).Content
+        if ($raw -is [byte[]]) { $raw = [Text.Encoding]::UTF8.GetString($raw) }
+        $map = @{}
+        foreach ($ln in ($raw -split "`r?`n")) {
+            # "<해시>  <파일명>" 또는 "<해시> *<파일명>"
+            if ($ln -match '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$') { $map[$Matches[2]] = $Matches[1].ToLower() }
+        }
+        if ($map.Count -eq 0) { return $null }
+        return $map
+    } catch { return $null }
+}
+
+# 받은 파일을 목록과 대조한다. 목록에 없으면(원 배포처에서 받은 경우 등) 통과시킨다.
+#   불일치면 파일을 지운다 — 남겨두면 다음 실행에서 "이미 있음" 으로 건너뛰어
+#   손상된 파일이 영구히 자리를 차지한다.
+function Confirm-Sha256([string]$path, [string]$name, $map, [string]$label) {
+    if (-not $map) { Write-Host "  ⚠ $label 체크섬 목록을 얻지 못했습니다 — 검증 생략"; return $true }
+    if (-not $map.ContainsKey($name)) { Write-Host "  ⚠ $label 체크섬 목록에 $name 이(가) 없습니다 — 검증 생략"; return $true }
+    Write-Host '  · 무결성 확인 중...'
+    $got = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+    if ($got -eq $map[$name]) { Write-Host '  ✔ 체크섬 확인'; return $true }
+    Write-Host "  ✗ 체크섬 불일치 — 받은 파일이 손상됐습니다. 지우고 중단합니다."
+    Write-Host "     기대: $($map[$name])"
+    Write-Host "     실제: $got"
+    Remove-Item $path -Force -ErrorAction SilentlyContinue
+    return $false
+}
+
 Write-Host ''
 Write-Host '════════════════════════════════════════════'
 Write-Host "  $AppName — 로컬 AI(오픈클로) 설치"
@@ -41,11 +76,27 @@ if (-not $curl) {
 }
 
 # ── 1) 앱 찾기 ─────────────────────────────────────────────────────────────
-$candidates = @(
+#   ★ 설치 폴더는 사용자가 바꿀 수 있다(predormition.iss 의 DisableDirPage=auto).
+#     기본 위치만 뒤지면 "앱이 깔려 있는데 먼저 설치하라" 는 말을 듣게 된다(실측).
+#     Inno Setup 이 남긴 InstallLocation 을 1순위로 본다.
+$fromRegistry = @()
+foreach ($root in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+                    'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+                    'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')) {
+    Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {
+        $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+        if ($p -and $p.DisplayName -like "$AppName*" -and $p.InstallLocation) {
+            $fromRegistry += $p.InstallLocation.TrimEnd('\')
+        }
+    }
+}
+
+$candidates = $fromRegistry + @(
     (Join-Path $env:LOCALAPPDATA "Programs\$AppName"),
     (Join-Path ${env:ProgramFiles} $AppName),
     (Join-Path ${env:ProgramFiles(x86)} $AppName),
-    $PSScriptRoot
+    $PSScriptRoot,
+    (Split-Path -Parent $PSScriptRoot)   # scripts\ 안에서 실행된 경우
 )
 $appDir = $null
 foreach ($c in $candidates) {
@@ -53,6 +104,8 @@ foreach ($c in $candidates) {
 }
 if (-not $appDir) {
     Write-Host "먼저 $AppName 을 설치한 뒤 이 파일을 다시 실행해 주세요."
+    Write-Host '설치돼 있는데도 이 메시지가 나오면, 이 파일을 앱 폴더'
+    Write-Host "($AppName.exe 가 있는 곳) 안에 두고 다시 실행해 주세요."
     Write-Host '(설치본: Predormition_Setup.exe)'
     Exit-Script 1
 }
@@ -135,20 +188,10 @@ if (-not (Test-Path $srv)) {
     }
 
     # 무결성 대조 — 보관본일 때만(체크섬 파일이 같은 릴리즈에 있다).
-    try {
-        $sums = (Invoke-WebRequest "$EngineMirror/ENGINES_SHA256.txt" -UseBasicParsing).Content
-        $line = ($sums -split "`n" | Where-Object { $_ -match [regex]::Escape($engineName) } | Select-Object -First 1)
-        if ($line -and $line -match '([0-9a-fA-F]{64})') {
-            $expect = $Matches[1].ToLower()
-            $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-            if ($expect -ne $got) {
-                Write-Host "  ✗ 엔진 체크섬 불일치 — 받은 파일이 손상됐습니다."
-                Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
-                Exit-Script 1
-            }
-            Write-Host '  ✔ 엔진 체크섬 확인'
-        }
-    } catch { Write-Host '  ⚠ 엔진 체크섬을 조회하지 못했습니다(검증 생략)' }
+    if (-not (Confirm-Sha256 $zip $engineName (Get-Sha256Map "$EngineMirror/ENGINES_SHA256.txt") '엔진')) {
+        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        Exit-Script 1
+    }
 
     Expand-Archive -Path $zip -DestinationPath (Join-Path $tmp 'x') -Force
     # 압축 구조가 배포처마다 달라 이름으로 찾는다.
@@ -172,6 +215,10 @@ if (-not (Test-Path $srv)) {
 # ★ 받는 곳마다 임시 파일을 따로 쓴다. 하나가 실패하며 지울 때 다른 경로가
 #   받다 만 것까지 지워지면 이어받기가 매번 처음부터 되기 때문이다.
 $fail = $false
+# ★ 모델도 무결성을 확인한다. 최대 3.8GB 를 받으면서 지금까지 아무 대조도 하지
+#   않았다 — 조각을 이어붙이는 경로가 있어 중간에 하나만 어긋나도 조용히 깨진
+#   모델이 만들어진다. 목록은 한 번만 받아 재사용한다.
+$modelSums = Get-Sha256Map "$ModelMirror/MODELS_SHA256.txt"
 foreach ($name in $models) {
     $out = Join-Path $llmDir $name
     if (Test-Path $out) { Write-Host "▶ $name — 이미 있음, 건너뜀"; continue }
@@ -186,6 +233,7 @@ foreach ($name in $models) {
     & curl.exe -fL --retry 3 -C - --progress-bar -o $mirTmp "$ModelMirror/$name"
     if ($LASTEXITCODE -eq 0 -and (Test-Path $mirTmp)) {
         Move-Item $mirTmp $out -Force
+        if (-not (Confirm-Sha256 $out $name $modelSums '모델')) { $fail = $true; continue }
         Write-Host '  ✔ 완료(보관본)'
         continue
     }
@@ -214,6 +262,8 @@ foreach ($name in $models) {
             $fs.Close()
             $parts | ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
             Move-Item $mrgTmp $out -Force
+            # 조각을 이어붙인 경로라 여기가 특히 중요하다 — 하나만 어긋나도 파일은 만들어진다.
+            if (-not (Confirm-Sha256 $out $name $modelSums '모델')) { $fail = $true; continue }
             Write-Host '  ✔ 완료(보관본 조각 합침)'
             continue
         } catch {
@@ -230,6 +280,8 @@ foreach ($name in $models) {
     & curl.exe -fL --retry 3 -C - --progress-bar -o $hfTmp "$HF/$repo/resolve/main/$name"
     if ($LASTEXITCODE -eq 0 -and (Test-Path $hfTmp)) {
         Move-Item $hfTmp $out -Force
+        # 원 배포처에서 받은 것도 보관본과 같은 파일이면 목록에 있다. 없으면 검증을 건너뛴다.
+        if (-not (Confirm-Sha256 $out $name $modelSums '모델')) { $fail = $true; continue }
         Write-Host '  ✔ 완료'
     } else {
         # 부분 파일은 남겨둔다 — 다시 실행하면 -C - 가 이어받는다.
