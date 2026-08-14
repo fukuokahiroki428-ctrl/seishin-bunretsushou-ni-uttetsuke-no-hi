@@ -131,6 +131,32 @@ QSemaphore* MiyoBackend::platformSem(const QString &platform)
 // Forward declaration — 정의는 upgradePython() 앞에
 static QStringList diagnosePythonEnv(const QString &python);
 
+#ifdef Q_OS_WIN
+// ★ taskkill 에는 '명령줄로 거르는' 필터가 없다.
+//   유효한 /FI 는 STATUS / IMAGENAME / PID / SESSION / CPUTIME / MEMUSAGE /
+//   USERNAME / MODULES / SERVICES / WINDOWTITLE 뿐이다. "COMMANDLINE eq ..." 를 주면
+//   taskkill 이 "ERROR: The search filter cannot be recognized." 로 거부하고
+//   아무것도 죽이지 않는다(실측: 종료코드 1).
+//
+//   맥의 `pkill -f` 를 그대로 옮기면서 생긴 문제다. 그래서 캡쳐용 Chrome 과 tail 창이
+//   한 번도 정리되지 않고 세션마다 쌓였다 — 죽는 줄 알았지만 한 번도 안 죽었다.
+//
+//   필터를 빼면 안 된다. `taskkill /F /IM chrome.exe` 는 사용자가 쓰던 브라우저까지
+//   전부 죽인다. 명령줄을 실제로 보고 해당 PID 만 골라 죽여야 한다.
+static void killByCommandLine(const QString &imageName, const QString &needle)
+{
+    // 작은따옴표는 PowerShell 문자열을 깨뜨린다 — 들어올 일이 없지만 막아 둔다.
+    QString img = imageName; img.remove('\'');
+    QString pat = needle;    pat.remove('\'');
+    const QString ps = QString(
+        "Get-CimInstance Win32_Process -Filter \"Name='%1'\" -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.CommandLine -like '*%2*' } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }")
+        .arg(img, pat);
+    QProcess::execute("powershell", {"-NoProfile", "-NonInteractive", "-Command", ps});
+}
+#endif
+
 // ───────────────────────────────────────────────────────────
 // ★ Frameless 창 컨트롤 — m_window(MainWindow*) 를 통해 네이티브 창 조작.
 //   JS 커스텀 타이틀바(최소화/최대화/닫기 버튼 + 드래그/리사이즈)에서 호출.
@@ -195,13 +221,11 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     QProcess::execute("/usr/bin/pkill", {"-f", "miyo_.*_tail.command"});
     QProcess::execute("/usr/bin/pkill", {"-f", "miyo_backup_tail.command"});
 #elif defined(Q_OS_WIN)
-    QProcess::execute("taskkill", {"/F", "/IM", "chrome.exe", "/FI",
-                                    "COMMANDLINE eq *chrome_capture_profile*"});
+    killByCommandLine("chrome.exe", "chrome_capture_profile");
     QProcess::execute("taskkill", {"/F", "/IM", "Chrome for Testing.exe"});
     QProcess::execute("taskkill", {"/F", "/IM", "chrome_crashpad_handler.exe"});
     // 옛 tail script 청소
-    QProcess::execute("taskkill", {"/F", "/IM", "cmd.exe", "/FI",
-                                    "COMMANDLINE eq *miyo_*_tail.bat*"});
+    killByCommandLine("cmd.exe", "miyo_");
 #endif
 
     // ★ Chrome capture profile cache 자동 정리 (로그인 cookie는 보존)
@@ -4447,8 +4471,7 @@ void MiyoBackend::stopCollection(const QString &platformName)
 #ifdef Q_OS_MACOS
             QProcess::execute("/usr/bin/pkill", {"-f", "miyo_" + platformName + "_tail.command"});
 #elif defined(Q_OS_WIN)
-            QProcess::execute("taskkill", {"/F", "/IM", "cmd.exe", "/FI",
-                                            "COMMANDLINE eq *miyo_" + platformName + "_tail.bat*"});
+            killByCommandLine("cmd.exe", "miyo_" + platformName + "_tail.bat");
 #endif
         });
     }
@@ -4556,8 +4579,7 @@ void MiyoBackend::killZombieChromes()
         if (QProcess::execute("/usr/bin/pkill", {"-9", "-f", absPath}) == 0) killed++;
     }
 #elif defined(Q_OS_WIN)
-    QProcess::execute("taskkill", {"/F", "/IM", "chrome.exe", "/FI",
-                                    "COMMANDLINE eq *chrome_capture_profile*"});
+    killByCommandLine("chrome.exe", "chrome_capture_profile");
     QProcess::execute("taskkill", {"/F", "/IM", "Chrome for Testing.exe"});
     QProcess::execute("taskkill", {"/F", "/IM", "chrome_crashpad_handler.exe"});
 #endif
