@@ -81,6 +81,20 @@ public:
     void setWebdavPass(const QString &p) { m_webdavPass = p; }
     void setWebdavEnabled(bool b) { m_webdavEnabled = b; }
 
+    // ── AI 방식 — "local"(번들 llama-server) / "online"(OpenAI 호환 API) ──────
+    //   온라인은 제공자별 코드를 두지 않는다. 이 앱의 LLM 배선이 이미 OpenAI 호환
+    //   (/v1/models, /v1/chat/completions)이라 기준 URL·키·모델 세 값이면 붙는다.
+    //   OpenAI, OpenRouter, Groq, DeepSeek, 사내 게이트웨이 모두 같은 방식이다.
+    QString aiMode() const { return m_aiMode.isEmpty() ? "local" : m_aiMode; }
+    bool aiOnline() const { return aiMode() == "online"; }
+    QString aiBaseUrl() const { return m_aiBaseUrl; }   // 예: https://api.openai.com/v1 (끝의 /v1 유무 무관)
+    QString aiApiKey() const { return m_aiApiKey; }
+    QString aiModel() const { return m_aiModel; }
+    void setAiMode(const QString &m) { m_aiMode = m; }
+    void setAiBaseUrl(const QString &u) { m_aiBaseUrl = u; }
+    void setAiApiKey(const QString &k) { m_aiApiKey = k; }
+    void setAiModel(const QString &m) { m_aiModel = m; }
+
     // ★ 저장 모드 — "local" / "nas" / "external"
     QString storageMode() const { return m_storageMode.isEmpty() ? "local" : m_storageMode; }
     QString storageRoot() const { return m_storageRoot; }
@@ -129,6 +143,10 @@ private:
     QString m_webdavPass;
     bool m_webdavEnabled = false;
     QString m_sftpKeyFile;
+    QString m_aiMode;       // "local" / "online"
+    QString m_aiBaseUrl;
+    QString m_aiApiKey;
+    QString m_aiModel;
     QString m_storageMode;  // "local" / "nas" / "external"
     QString m_storageRoot;  // /Volumes/X (mode != local 일 때)
     bool m_backupEnabled = false;
