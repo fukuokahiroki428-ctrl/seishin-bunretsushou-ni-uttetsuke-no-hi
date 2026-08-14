@@ -113,7 +113,63 @@ libssh2 가 없어 rclone 을 써야 한다)이 옳아서 그쪽으로 통일했
 
 ---
 
-## 5. 윈도우 쪽 현황 (참고)
+## 5. 물어본 세 가지 — 윈도우 쪽 확인 결과
+
+`WINDOWS_HANDOFF.md` 끝에 남긴 요청("동시 빌드 방지 / taskkill 이 서명 도구까지
+잡는지 / signtool 실패를 삼키는지")에 대한 답입니다.
+
+### ① taskkill — 맥과 **반대 방향**의 문제가 있었다 (고쳤음)
+
+맥은 `pkill -f` 가 너무 많이 죽여서 문제였는데, 윈도우는 **하나도 안 죽고 있었다.**
+
+`taskkill` 에는 명령줄로 거르는 필터가 없다. 유효한 `/FI` 는
+`STATUS / IMAGENAME / PID / SESSION / CPUTIME / MEMUSAGE / USERNAME / MODULES /
+SERVICES / WINDOWTITLE` 뿐이다. 코드에는 `pkill -f` 를 그대로 옮긴
+`"COMMANDLINE eq *chrome_capture_profile*"` 이 들어가 있었다.
+
+```
+taskkill /F /IM chrome.exe /FI "COMMANDLINE eq *foo*"
+→ ERROR: The search filter cannot be recognized.   (종료코드 1)
+```
+
+**필터가 거부되면 taskkill 은 아무것도 죽이지 않는다.** 그래서 캡쳐용 Chrome 과
+tail 창이 세션마다 쌓였고, 코드상으로는 정리하는 것처럼 보였다. 해당 호출 4곳이
+전부 그랬다.
+
+필터를 빼는 건 답이 아니다 — `taskkill /F /IM chrome.exe` 는 사용자가 쓰던
+브라우저까지 전부 죽인다. CIM 으로 명령줄을 보고 해당 PID 만 죽이는
+`killByCommandLine()` 을 넣고 4곳을 그리로 돌렸다.
+
+**맥이 걱정한 "서명 도구까지 잡는가" 는 윈도우에선 해당 없다.** `/IM` 은 이미지
+이름만 보므로 명령줄에 앱 경로가 들어간 다른 프로세스는 걸리지 않는다.
+
+### ② 동시 빌드 — CI 는 안전, 로컬 스크립트는 같은 위험이 있다
+
+- **CI**: GitHub Actions 는 실행마다 새 러너를 받으므로 `build/` 를 공유하지 않는다.
+  맥에서 겪은 산출물 증발은 여기선 일어나지 않는다.
+  다만 `concurrency:` 설정이 없어 **중복 실행이 쌓인다**(같은 커밋 `1ac46e1` 을
+  #88·#89 가 각각 10분씩 빌드한 것을 봤다). 망가지진 않고 시간만 버린다.
+  `main` 은 `cancel-in-progress: true`, 태그는 취소하면 안 되므로 제외하는 형태를
+  권한다 — 릴리즈 빌드가 중간에 취소되면 초안이 안 만들어진다.
+- **`windows/build_windows.bat`**: 잠금이 없다. 맥의 `build/.build.lock` 에 해당하는
+  것이 없으므로 두 번 겹쳐 돌리면 같은 문제가 난다. 아직 안 고쳤다.
+
+### ③ signtool — 삼키는 게 아니라 **서명 자체가 없다**
+
+`build.yml` 과 `predormition.iss` 어디에도 `signtool` 이 없다. 발행된
+`Predormition_Setup.exe` 를 실제로 확인했다.
+
+```
+Get-AuthenticodeSignature → NotSigned
+```
+
+그래서 "실패를 삼키는가" 는 해당 없지만, 대신 사용자가 받을 때 SmartScreen 경고가
+뜬다. 코드 서명 인증서를 살 계획이 있으면 그때 넣으면 되고, 없다면 릴리즈 노트에
+"서명 없음 — 경고가 뜨는 것이 정상" 이라고 적어 두는 편이 낫다.
+
+---
+
+## 6. 윈도우 쪽 현황 (참고)
 
 - 공개 최신은 **v3.9.6** 인데, 여기엔 "Bluesky 아래 13개 탭이 안 보이는" 버그와
   "사용자 이름이 한글·일본어면 EXIF 가 전혀 안 써지는" 버그가 그대로 있습니다.
