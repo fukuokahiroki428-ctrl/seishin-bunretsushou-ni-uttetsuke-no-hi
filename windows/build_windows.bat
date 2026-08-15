@@ -42,6 +42,28 @@ echo [INFO] Qt: %QT_DIR%
 
 REM ─── 빌드 디렉토리 ───────────────────────────────────────────────
 if not exist build_win mkdir build_win
+
+REM ─── 동시 빌드 잠금 ─────────────────────────────────────────────
+REM   make/ninja 는 링크 전에 대상을 지운다. 두 빌드가 같은 build_win 을 쓰면
+REM   뒤에 시작한 쪽이 앞선 쪽의 실행 파일을 없앤다. 빌드는 "성공" 이라 하는데
+REM   exe 만 사라져 앱이 아무 말 없이 안 뜬다. 맥 쪽에서 하루를 잡아먹은 그 문제다
+REM   (build.sh 의 build/.build.lock 과 같은 목적).
+REM
+REM   mkdir 은 이미 있으면 실패한다 — 배치에서 원자적으로 쓸 수 있는 몇 안 되는 수단이다.
+REM   ※ 배치에는 자기 PID 를 확실히 알 방법이 없다(tasklist 로 cmd.exe 를 찾는 것은
+REM     자기 자신이라는 보장이 없다). 그래서 맥처럼 '죽은 잠금 자동 정리' 는 하지 않고,
+REM     막고 치우는 법을 알려 준다. 잘못 지워 두 빌드가 겹치는 것보다 낫다.
+set "LOCK_DIR=build_win\.build.lock"
+mkdir "%LOCK_DIR%" 2>nul
+if errorlevel 1 (
+    echo [ERROR] 다른 빌드가 이미 돌고 있습니다.
+    echo         겹쳐 돌리면 뒤에 시작한 쪽이 앞선 쪽의 exe 를 지웁니다.
+    echo         빌드가 안 돌고 있는데도 이 메시지가 나오면 ^(비정상 종료 뒤^)
+    echo         아래를 지우고 다시 실행하세요:
+    echo             rmdir /S /Q "%~dp0%LOCK_DIR%"
+    exit /b 1
+)
+
 cd build_win
 
 REM ─── Configure (MinGW 우선, 실패 시 Ninja/MSVC) ────────────────
@@ -64,6 +86,7 @@ cmake -G "%GENERATOR%" ^
 if %errorlevel% neq 0 (
     echo [ERROR] CMake configure 실패
     cd ..
+    rmdir /S /Q "%LOCK_DIR%" 2>nul
     exit /b 1
 )
 
@@ -72,6 +95,7 @@ REM ─── Build ────────────────────
 if %errorlevel% neq 0 (
     echo [ERROR] 빌드 실패
     cd ..
+    rmdir /S /Q "%LOCK_DIR%" 2>nul
     exit /b 1
 )
 
@@ -139,5 +163,8 @@ if not exist "%DIST_DIR%\yt-dlp.exe"  echo    - yt-dlp.exe  (https://github.com/
 if not exist "%DIST_DIR%\ffmpeg.exe"  echo    - ffmpeg.exe  (https://www.gyan.dev/ffmpeg/builds/)
 if not exist "%DIST_DIR%\ffprobe.exe" echo    - ffprobe.exe (위와 동일 패키지)
 echo.
+
+REM 동시 빌드 잠금 해제
+rmdir /S /Q "%LOCK_DIR%" 2>nul
 
 endlocal

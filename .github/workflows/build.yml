@@ -11,7 +11,17 @@ on:
       runner:
         description: '빌드 러너 (windows-2022 은퇴 시 windows-2025 등으로 바꿔 재시도)'
         required: false
-        default: 'windows-2022' 
+        default: 'windows-2022'
+
+# ★ 같은 ref 를 겹쳐 빌드하지 않는다.
+#   러너는 실행마다 새것이라 맥에서 겪은 '산출물 증발' 은 여기서 안 나지만,
+#   연달아 push 하면 이미 낡은 커밋을 10분씩 계속 빌드한다(같은 커밋 1ac46e1 을
+#   #88·#89 가 각각 빌드한 적이 있다).
+#   ★ 태그는 취소하지 않는다 — 릴리즈 빌드가 중간에 끊기면 초안이 안 만들어지고,
+#     이 저장소는 불변 릴리즈라 뒤늦게 자산을 붙일 수도 없다.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 # ★ Node.js 20 deprecation 대응 — JS 액션(checkout/upload-artifact/msvc-dev-cmd)을
 #   Node 24 로 강제 실행 → "Node.js 20 actions are deprecated" 경고 제거 + 6/2 강제전환 대비.
