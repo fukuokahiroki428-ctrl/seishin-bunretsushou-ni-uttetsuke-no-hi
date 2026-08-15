@@ -66,31 +66,10 @@ MainWindow::MainWindow(QWidget *parent)
     //   QWindow::startSystemMove()/startSystemResize() 를 호출 → 네이티브 스냅·이동 유지.
     setWindowFlag(Qt::FramelessWindowHint);
 
-    // QMainWindow 배경 — 흰색 (HTML 페이지 배경과 일치).
-    //   이전: #0A0A0A (검은색) → 창 가장자리/타이틀바 주변에 검은 띠가 보임 → 사용자 불만
-    setStyleSheet(R"(
-        QMainWindow {
-            background-color: #ffffff;
-        }
-        QDockWidget {
-            background-color: #1A1A1A;
-            color: #FFFFFF;
-            font-size: 12px;
-        }
-        QDockWidget::title {
-            background-color: #252525;
-            padding: 8px;
-            font-weight: bold;
-        }
-        QTextEdit {
-            background-color: #0A0A0A;
-            color: #D4D4D4;
-            border: none;
-            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
-            font-size: 11px;
-            padding: 10px;
-        }
-    )");
+    // QMainWindow 배경 — HTML 페이지 배경(--bg)과 일치시킨다.
+    //   ★ 예전엔 흰색으로 고정이었다. 어두운 테마를 골라도 창 배경은 흰색이라
+    //     가장자리·리사이즈 중에 흰 섬광이 보였다. 이제 테마를 따라간다.
+    setChromeTheme(false);
 
     // Central widget
     auto *central = new QWidget(this);
@@ -187,6 +166,36 @@ MainWindow::MainWindow(QWidget *parent)
     // ★ 앱 시작 시 sleep 방지 어설션 자동 활성 — collection 안 돌고 있어도 항상 활성
     //   lid close 시 sleep 막는 데 최대 효과. (Apple 정책상 100% 보장은 외부 모니터 필요)
     QTimer::singleShot(500, this, &MainWindow::holdAwake);
+}
+
+// 창 배경을 테마에 맞춘다 — UI 가 backend.setWindowChrome(dark) 로 부른다.
+//   ★ 맥처럼 setStyleSheet 로 통째로 갈아끼우면 도크·터미널 규칙까지 날아간다.
+//     배경 규칙만 앞에 붙이고 나머지는 그대로 유지한다.
+void MainWindow::setChromeTheme(bool dark)
+{
+    // HTML 의 --bg 와 같은 값이어야 창 가장자리가 본문과 이어져 보인다.
+    const QString bg = dark ? QStringLiteral("#101114") : QStringLiteral("#FFFFFF");
+    setStyleSheet(QStringLiteral("QMainWindow { background-color: %1; }").arg(bg) + R"(
+
+        QDockWidget {
+            background-color: #1A1A1A;
+            color: #FFFFFF;
+            font-size: 12px;
+        }
+        QDockWidget::title {
+            background-color: #252525;
+            padding: 8px;
+            font-weight: bold;
+        }
+        QTextEdit {
+            background-color: #0A0A0A;
+            color: #D4D4D4;
+            border: none;
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-size: 11px;
+            padding: 10px;
+        }
+    )");
 }
 
 QMenu *MainWindow::createDockMenu()

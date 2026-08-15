@@ -342,22 +342,27 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     // Browser view signals → JS UI updates
     auto *bv = m_window->browserView();
     if (bv) {
+        // ★ 이 블록은 지금 실행되지 않는다 — MainWindow 가 m_browserView 를 nullptr 로만
+        //   두고 어디서도 만들지 않기 때문에 위 if (bv) 로 못 들어간다(양쪽 트리 확인).
+        //   그래도 아래 세 호출은 다른 34곳처럼 if(window.…) 로 감쌌다. 받는 JS 함수가
+        //   양쪽 HTML 어디에도 없어서, 나중에 뷰를 만드는 순간 ReferenceError 가 난다.
+        //   주소 표시줄 UI 를 만들 생각이 없다면 이 연결 자체를 지우는 편이 낫다.
         connect(bv, &QWebEngineView::urlChanged, this, [this](const QUrl &url) {
             QString escaped = url.toString();
             escaped.replace("'", "\\'");
-            runJs(QString("updateBrowserUrl('%1')").arg(escaped));
+            runJs(QString("if(window.updateBrowserUrl)updateBrowserUrl('%1')").arg(escaped));
         });
         connect(bv, &QWebEngineView::titleChanged, this, [this](const QString &title) {
             QString escaped = title;
             escaped.replace("'", "\\'");
-            runJs(QString("updateBrowserTitle('%1')").arg(escaped));
+            runJs(QString("if(window.updateBrowserTitle)updateBrowserTitle('%1')").arg(escaped));
         });
         // loadProgress 디바운싱 — 매 5% 또는 완료(100%) 때만 업데이트
         connect(bv, &QWebEngineView::loadProgress, this, [this](int pct) {
             static int lastPct = -1;
             if (pct == 100 || pct == 0 || (pct - lastPct) >= 5) {
                 lastPct = pct;
-                runJs(QString("updateBrowserLoading(%1)").arg(pct));
+                runJs(QString("if(window.updateBrowserLoading)updateBrowserLoading(%1)").arg(pct));
             }
         });
     }
@@ -13829,6 +13834,15 @@ if __name__ == "__main__":
 }
 
 // 드롭다운에서 모델을 바꾸면 호출 — 이후 자동기동(터미널/채팅/자동수리)이 이 모델을 쓴다.
+// 웹 테마 토글 → 네이티브 창 색 동기화.
+//   UI 는 예전부터 backend.setWindowChrome(dark) 를 불렀는데 슬롯이 없어 아무 일도
+//   일어나지 않았다(try/catch 로 감싸 있어 오류도 안 났다). 그래서 어두운 테마에서도
+//   창 배경이 흰색으로 남아 가장자리에 흰 섬광이 보였다.
+void MiyoBackend::setWindowChrome(bool dark)
+{
+    if (m_window) m_window->setChromeTheme(dark);
+}
+
 void MiyoBackend::setLlmModel(const QString &hint)
 {
     m_llmModelHint = hint;

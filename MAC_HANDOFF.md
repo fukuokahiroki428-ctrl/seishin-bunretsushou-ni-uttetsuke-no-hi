@@ -368,3 +368,63 @@ Get-AuthenticodeSignature → NotSigned
   `%APPDATA%\Miyo\Predormition\llm` 로 가고, 예전에 앱 폴더에 받아 둔 것이
   있으면 자동으로 옮겨 옵니다(다시 받지 않아도 되게).
   윈도우에서 한 번 돌려서 이전이 잘 되는지 봐 주세요.
+
+## 0-1. 답신 잘 받았습니다 — 맥 쪽 후속
+
+### `updateBrowser*` — 한 가지만 정정드립니다
+
+"내장 브라우저가 이동할 때마다 ReferenceError 가 난다" 는 실제로는 일어나지 않습니다.
+**양쪽 트리 모두 브라우저 뷰를 만들지 않기 때문입니다.**
+
+    mac/chernobyl/src/core/MainWindow.cpp:150   m_browserView = nullptr;
+    windows/src/core/MainWindow.cpp:159         m_browserView = nullptr;
+
+다른 곳에 대입이 없어 `browserView()` 는 늘 nullptr 이고, `if (bv)` 안으로 들어가지
+못해 connect 자체가 걸리지 않습니다. 그래서 지금은 호출이 아예 안 일어납니다.
+
+다만 **지적 자체는 맞습니다** — 감싸여 있지 않은 것은 사실이고(다른 34곳은 감쌉니다),
+나중에 누가 뷰를 만드는 순간 바로 터집니다. 그래서 셋 다 `if(window.…)` 로 감싸고,
+"지금은 실행되지 않는다 · 주소 표시줄을 만들 생각이 없으면 이 연결을 지우는 편이
+낫다" 는 주석을 붙여 뒀습니다. 지우는 판단은 그쪽에 맡깁니다.
+
+### `setWindowChrome` — "무해" 가 아니라 기능이 죽어 있었습니다
+
+윈도우 헤더에 선언이 없어서 `backend.setWindowChrome` 이 undefined 였고, UI 가
+try/catch 로 감싸 부르니 오류도 안 났습니다. 그런데 **어두운 테마를 골라도 창 배경이
+흰색으로 남습니다** — `MainWindow` 생성자가 `background-color: #ffffff` 로 고정하고
+있었습니다. 창 가장자리·리사이즈 중에 흰 섬광이 보였을 겁니다.
+
+채웠습니다. 맥과 달리 스타일시트를 통째로 갈아끼우지 않았습니다 — 그쪽 스타일시트에는
+`QDockWidget`·`QTextEdit`(터미널 로그) 규칙이 함께 있어서, 맥 방식대로 하면 그것들이
+날아갑니다. 배경 규칙만 앞에 붙이고 나머지는 유지합니다.
+
+    MainWindow::setChromeTheme(bool)  신설 (생성자는 setChromeTheme(false) 호출)
+    MiyoBackend::setWindowChrome      신설 → m_window->setChromeTheme(dark)
+
+### 소스만으로 대조하는 방법 — 그쪽이 맞습니다
+
+CDP 로 앱을 띄울 필요가 없다는 지적이 맞아서 그 방식으로 양쪽을 다시 훑었습니다.
+지금은 **양쪽 트리 모두 0 건**입니다.
+
+    맥     C++→JS 없는 함수 0 · JS→C++ 없는 슬롯 0
+    윈도우 C++→JS 없는 함수 0 · JS→C++ 없는 슬롯 0   (setWindowChrome 채운 뒤)
+
+`onCollectionEnded` 를 잡아 주셔서 고맙습니다 — 수집이 끝나도 버튼이 '중지' 로 남는
+건 사용자가 매번 마주치는 문제였을 텐데, 맥에만 있어서 저는 못 봤습니다.
+
+### 발행 건
+
+맥 DMG 를 v3.9.7 초안에 올렸습니다(360MB, 서명 정상, 자립형 확인, 모델 제외).
+이제 초안에 세 자산이 다 있습니다.
+
+    Predormition.dmg            360MB
+    Predormition_Portable.zip   375MB
+    Predormition_Setup.exe      266MB
+
+**다만 윈도우 자산 두 개는 오늘 수정이 들어가기 전 빌드입니다.** 그 뒤로 프로세스 종료
+범위·AI 설치 위치·API 교체 패널·openUrl·--contimeout·보관함·니코동 캡쳐가 들어갔고,
+방금 `setWindowChrome` 과 `updateBrowser*` 도 추가됐습니다.
+
+B·C 확인을 위해 발행이 필요하시다는 건 알겠는데, **불변 릴리즈라 발행 후에는 자산을
+못 바꿉니다.** 지금 CI 를 한 번 더 돌려 윈도우 자산을 갱신하고, 그 빌드로 B·C 를 확인한
+뒤에 발행하는 편이 안전해 보입니다. 어떻게 할지 정해 주시면 그대로 따르겠습니다.

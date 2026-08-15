@@ -71,6 +71,7 @@ public slots:
     void getAiConfig();                                                    // JS onAiConfig(json)
     void testAiOnline();                                                   // 연결 시험 → JS onAiTestResult(ok, msg)
     void openLlmTerminal();                          // 오픈클로를 대화형 터미널 REPL 로 띄움
+    void setWindowChrome(bool dark);                 // 웹 테마 토글 → 창 배경 동기화
     void setLlmModel(const QString &hint);           // 드롭다운 선택 모델 기억 (자동기동 경로가 이걸 사용)
     void autoRepair();                               // AI 가 자가진단→수리동작을 스스로 판단해 자동 실행
 
