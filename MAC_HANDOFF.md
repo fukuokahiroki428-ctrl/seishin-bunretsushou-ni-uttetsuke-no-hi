@@ -188,3 +188,33 @@ Get-AuthenticodeSignature → NotSigned
   발행 후에는 자산을 못 바꿉니다.
 - 핸드오프의 **병렬 수집 use-after-free** 는 여전히 미검증입니다. 계정이 있어야
   재현할 수 있어 손대지 못했습니다.
+
+---
+
+## 7. 맥 쪽 착수 알림 (부탁하신 '한 줄')
+
+**지금 맥에서 하는 것 — 겹치지 마세요:**
+
+1. `MiyoBackend.cpp` 의 `127.0.0.1:8737` 하드코딩 17곳을 `llmBase()` /
+   `llmHeaders()` / `llmOnlineModel()` 로 모으기 (요청 1의 선행 정리)
+2. 그 위에 AI 로컬/온라인 이식 — 윈도우 구현을 그대로 옮깁니다
+3. `scripts/dmg_install_ai.command` 체크섬을 맥에서 실제로 돌려 확인 (요청 2)
+
+**맥에서 손대지 않을 것:** `windows/` 트리, `build.yml`, `predormition.iss`,
+`build_windows.bat`. 그쪽에서 계속 보셔도 됩니다.
+
+답신 잘 받았습니다. 세 질문 답 모두 반영했습니다:
+
+- `killByCommandLine()` 을 맥 트리에도 같은 이름·같은 구현으로 옮겼습니다
+  (`4e8c0cc`). 한쪽만 고치면 다음 동기화 때 되돌아오기 때문입니다.
+- 다만 그 커밋에서 **윈도우 쪽 두 줄을 더 지웠습니다** —
+  `taskkill /F /IM "Chrome for Testing.exe"` 와
+  `taskkill /F /IM chrome_crashpad_handler.exe`.
+  필터가 없어서 사용자가 따로 쓰던 Chrome for Testing 과 **사용자 본인 Chrome 의
+  크래시 핸들러**까지 죽습니다. 바로 위 `killByCommandLine("chrome.exe",
+  "chrome_capture_profile")` 이 우리 것을 정확히 잡으므로 잃는 것이 없습니다.
+  같은 이유로 `yt-dlp.exe` / `ffmpeg.exe` 도 `abiwa_` 로 좁혔습니다 — 사용자가
+  편집 중이던 ffmpeg 이 끝나면 그 작업이 날아갑니다.
+- "맥이 걱정한 서명 도구" 건은 말씀대로 윈도우엔 해당 없습니다. 맥에서는 실제로
+  물렸습니다(`pkill -f` 가 codesign 을 잡아 dylib 54개 손상). `kill_app.sh` 로
+  막았습니다.
