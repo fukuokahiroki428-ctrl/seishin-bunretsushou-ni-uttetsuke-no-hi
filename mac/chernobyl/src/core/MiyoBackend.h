@@ -75,6 +75,7 @@ public slots:
     void getLlmStatus();                            // JS onLlmStatus(json) 로 상태·모델목록 통지
     void llmChat(const QString &historyJson);       // 로컬 AI 와 대화(수리 도우미) — JS onLlmReply(text)
     void openLlmTerminal();                          // 오픈클로를 Terminal.app 대화형 REPL 로 띄움
+    void winStartMove();                             // 상단 띠 드래그 → 창 이동(네이티브 스냅 유지)
     void setWindowChrome(bool dark);                 // 웹 테마 토글 → 네이티브 창 색/외관 동기화(타이틀바 띠 숨김)
     void setLlmModel(const QString &hint);           // 드롭다운 선택 모델 기억 (자동기동 경로가 이걸 사용)
     void autoRepair();                               // AI 가 자가진단→수리동작을 스스로 판단해 자동 실행
