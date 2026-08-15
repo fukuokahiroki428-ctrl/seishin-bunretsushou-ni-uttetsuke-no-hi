@@ -1,4 +1,5 @@
 #include "MiyoBackend.h"
+#include <QWindow>
 #include "MainWindow.h"
 #include "Config.h"
 #include "utils/WebDavUploader.h"
@@ -13639,6 +13640,20 @@ if __name__ == "__main__":
 }
 
 // 웹의 테마 토글(라이트/다크)에서 호출 — 네이티브 창 크롬을 앱 상단색과 맞춰 흰 띠 숨김.
+// 창 끌어서 옮기기 — 상단 띠를 끌면 JS 가 이걸 부른다.
+//
+//   ★ 맥은 타이틀바를 투명하게(FullSizeContentView + titlebarAppearsTransparent)
+//     만들고 그 자리를 웹뷰가 덮는다. 그래서 '끌 수 있는 네이티브 영역' 이 없고,
+//     창을 마우스로 옮길 방법이 아예 없었다(사용자 신고). 더블클릭은 eventFilter 로
+//     이미 우회하고 있었는데 이동은 빠져 있었다.
+//   startSystemMove() 는 OS 의 이동 루프를 그대로 쓴다 — 스냅·다중 모니터·
+//   Mission Control 이 네이티브와 똑같이 동작한다.
+void MiyoBackend::winStartMove()
+{
+    if (m_window && m_window->windowHandle())
+        m_window->windowHandle()->startSystemMove();
+}
+
 void MiyoBackend::setWindowChrome(bool dark)
 {
     if (m_window) m_window->setChromeTheme(dark);

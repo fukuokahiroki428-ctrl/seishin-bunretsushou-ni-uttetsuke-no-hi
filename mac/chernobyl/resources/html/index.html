@@ -5624,6 +5624,46 @@
             var p = document.getElementById('llm-status-pill');
             if (p && /확인|꺼짐|중지|없음/.test(p.textContent)) { p.textContent = '기동 중…'; p.style.background = 'var(--accent-bg)'; p.style.color = 'var(--accent)'; }
         }
+        // ── 상단 띠를 끌어서 창 옮기기 ─────────────────────────────────────────
+        //   ★ 맥은 타이틀바를 투명하게 만들고 그 자리를 웹뷰가 덮는다. 그래서 '끌 수
+        //     있는 네이티브 영역' 이 없어 창을 마우스로 옮길 수 없었다.
+        //     끌 만한 곳(사이드바 상단 띠 · 툴바)에서 5px 이상 끌면 OS 이동 루프를 시작한다.
+        //   ★ mousedown 즉시 시작하면 안 된다 — OS 이동 루프가 더블클릭을 먹어버려
+        //     '더블클릭으로 최대화' 가 죽는다. 5px 문턱을 두면 둘 다 산다.
+        (function () {
+            function isInteractive(t) {
+                return t && t.closest && t.closest(
+                    'button, input, select, textarea, a, [onclick], [contenteditable], .nav-item, label');
+            }
+            var __drag = null;
+            function dragStart(ev) {
+                if (ev.button !== 0) return;
+                if (isInteractive(ev.target)) return;
+                __drag = { x: ev.clientX, y: ev.clientY };
+            }
+            document.addEventListener('mousemove', function (ev) {
+                if (!__drag) return;
+                if (!ev.buttons) { __drag = null; return; }
+                var dx = ev.clientX - __drag.x, dy = ev.clientY - __drag.y;
+                if (dx * dx + dy * dy > 25) {          // 5px 이상 = 진짜 드래그
+                    __drag = null;
+                    if (window.backend && backend.winStartMove) backend.winStartMove();
+                }
+            });
+            document.addEventListener('mouseup', function () { __drag = null; });
+            function attach() {
+                document.querySelectorAll('.sidebar-header, .toolbar').forEach(function (el) {
+                    if (el.__dragBound) return;
+                    el.__dragBound = true;
+                    el.style.cursor = 'default';
+                    el.addEventListener('mousedown', dragStart);
+                });
+            }
+            if (document.readyState === 'loading')
+                document.addEventListener('DOMContentLoaded', attach);
+            else attach();
+        })();
+
         // ── AI 방식 — 로컬(번들 엔진) / 온라인(OpenAI 호환 API) ──────────────
         function setAiMode(mode) {
             applyAiMode(mode);
