@@ -305,3 +305,188 @@ capture chrome 정리와 옛 터미널 창 정리가 한 번도 동작한 적이
   (wmic 은 최신 윈도우에서 빠졌으므로 안 쓴다). 자기 자신은 절대 안 죽인다.
   맥은 `pkill -f` 의 패턴을 좁혔다 — 우리 것은 명령줄에 `chrome_capture_profile`
   이나 `abiwa_` 가 들어 있으므로 그것으로만 고른다.
+
+---
+
+# 윈도우에서 확인해 주세요 (맥 → 윈도우, `cd82016` 기준)
+
+맥에서 작업하면서 **윈도우 트리도 함께 고쳤습니다.** 맥에서는 실제로 돌려 확인했지만
+윈도우에서는 컴파일조차 못 해 봤습니다. 아래는 그쪽에서 실제로 봐 주셔야 하는 것들만
+추린 것입니다. **왜 그렇게 고쳤는지**까지 적었으니, 판단이 다르면 되돌리셔도 됩니다.
+
+순서는 "안 되면 바로 티나는 것" → "조용히 잘못되는 것" 입니다.
+
+## A. 먼저 빌드가 되는지
+
+맥에서 고친 것이 윈도우 컴파일을 깨뜨릴 수 있는 지점입니다.
+
+| 파일 | 무엇 |
+|---|---|
+| `MiyoBackend.h/.cpp` | `openUrl` · `llmDir()` · `llmInstallDir()` 추가 |
+| `Config.h/.cpp` | `aiMode`/`aiBaseUrl`/`aiApiKey`/`aiModel` (그쪽에서 온 것) + `sftpKeyFile` |
+| `WebDavUploader.h/.cpp` | `setSftpKeyFile` (curl `--key`) |
+| `ContentSecurityScanner.cpp` | `FileHelper::moveFileSafe` 사용 → `FileHelper.h` include 필요 |
+| `index.html` | API 교체 패널 · 보관함 패널 · 니코동/유튜브 캡쳐 토글 |
+
+`QDesktopServices` include 를 `MiyoBackend.cpp` 에 넣었습니다. 이미 있으면 중복은 아닙니다
+(가드를 걸었습니다).
+
+## B. 실제로 눌러 봐 주세요 (기능)
+
+### B-1. 툼블러 안내의 링크
+
+설정이 아니라 **툼블러 탭 → API 등록 안내**에 있는 링크 두 개입니다.
+
+- 예전: `backend.openUrl(...)` 을 부르는데 슬롯이 없어 **눌러도 아무 일이 없었습니다.**
+  오류도 안 납니다.
+- 지금: 슬롯을 넣었습니다. `http`/`https` 만 엽니다.
+- **확인**: 링크를 눌러 기본 브라우저가 뜨는지.
+
+### B-2. API 주소 교체 패널 (설정 탭, 새로 만든 것)
+
+이게 이번 작업에서 제일 큰 건입니다.
+
+- `setApiOverride` / `getApiOverrides` / `openApiOverridesFile` 슬롯은 **원래 있었는데
+  화면이 없었습니다.** `TwitterCollector::apiUrl()` 이 실제로 이 값을 읽습니다.
+  즉 트위터가 GraphQL 주소를 바꾸면(예고 없이 바꿉니다) **앱을 다시 빌드하는 것
+  말고는 방법이 없었습니다.**
+- **확인**:
+  1. 설정 탭 → "API 주소 교체" 패널이 보이는지 (`nt-group` 구조로 넣었습니다)
+  2. 키 `twitter.userTweets`, 값 아무거나 넣고 저장 →
+     `%APPDATA%\Miyo\Predormition\api_overrides.json` 에 기록되는지
+  3. 아래 목록에 `twitter.userTweets → <값>` 으로 보이는지
+     ★ 맥에서는 여기가 `19 → T` 처럼 깨졌습니다. `apiOverridesJson()` 이 객체가 아니라
+       **JSON 문자열**을 주는데 UI 가 객체로 다뤄서였습니다. 풀어 쓰게 고쳤는데,
+       윈도우에서도 같은 화면이 나오는지 봐 주세요.
+  4. 값을 비우고 저장 → 파일이 `{}` 로 돌아가는지
+
+### B-3. 니코동 "진짜 페이지 캡쳐" 토글
+
+- 유튜브·니코동은 같은 `runYoutubeDownload` 를 씁니다. 캡쳐 코드는 거기 넣었는데
+  **니코동 화면에만 토글이 없어서 설정이 안 넘어가 영영 안 돌았습니다.**
+- **확인**: 니코동 탭에 토글이 보이고, 켜고 받으면
+  `<플랫폼>\captures\<영상ID>.html` 이 생기는지.
+
+### B-4. 보관함 패널 (설정 탭)
+
+- **DB 경로가 맥·윈도우에서 같은 곳을 가리켜야 합니다.**
+  파이썬 `archive_ask.default_db()` 와 C++ `archiveDbPath()` 둘 다
+  `%APPDATA%\Miyo\Predormition\archive_index.db` 를 봐야 합니다.
+  어긋나면 색인은 만들어지는데 질의만 "없습니다" 가 되어 원인을 찾기 어렵습니다.
+- `resources/tools/archive/*.py` 4개가 배포에 실리는지도 봐 주세요.
+  안 실리면 패널이 "스크립트 없음" 을 띄웁니다.
+
+## C. 조용히 잘못되는 것 (여기가 중요합니다)
+
+### C-1. AI 설치 위치를 바꿨습니다 — `win_install_ai.ps1`
+
+**맥에서 실제로 사고가 났습니다.** 모델 5.7GB 가 앱 번들 안에만 있어서, 번들을 새로
+만드는 과정에서 통째로 사라졌습니다. 그리고 앱은 'AI 켜기' 를 누를 때까지 아무 말도
+하지 않았습니다.
+
+- 앱: `llmDir()` 이 `%APPDATA%\Miyo\<앱>\llm` 을 **먼저** 보고, 없으면 앱 폴더를 봅니다.
+- 설치기: 같은 자리에 넣습니다. **예전에 앱 폴더(`<exe>\llm`)에 받아 둔 것이 있으면
+  자동으로 옮겨 옵니다** — 이미 받은 사람이 9.3GB 를 다시 받지 않게.
+- **확인**: 앱 폴더에 `llm\` 이 있는 상태에서 설치기를 돌려, `Move-Item` 이 성공하고
+  다시 받지 않는지. (권한 문제로 실패하면 메시지가 나오게 해 뒀습니다)
+- 안내 문구도 바꿨습니다. 예전엔 "번들 llama-server 가 없습니다 (배포 패키징 시
+  bundle_llm 로 탑재)" — 사용자가 할 수 있는 게 없는 말이었습니다.
+
+### C-2. 프로세스를 이름으로 죽이던 곳
+
+`killByCommandLine()` 은 그쪽 것을 그대로 씁니다. 다만 **호출부를 더 좁혔습니다.**
+
+    지웠음:  taskkill /F /IM "Chrome for Testing.exe"
+             taskkill /F /IM chrome_crashpad_handler.exe
+    좁혔음:  taskkill /F /IM yt-dlp.exe   →  killByCommandLine("yt-dlp.exe", "abiwa_")
+             taskkill /F /IM ffmpeg.exe   →  killByCommandLine("ffmpeg.exe", "abiwa_")
+
+이유: 필터가 없으면 **사용자가 따로 쓰던 것까지 죽습니다.** 특히
+`chrome_crashpad_handler.exe` 는 사용자 본인 Chrome 의 것이고, `ffmpeg.exe` 는 편집
+중이던 작업일 수 있습니다.
+
+- **확인**: 사용자 Chrome 을 띄워 둔 채 앱을 시작해도 그 Chrome 이 살아 있는지.
+  그리고 캡쳐 Chrome 정리는 여전히 되는지(둘 다 되어야 맞습니다).
+- 맥에서는 `-c 8192` 로 늘린 것과 별개로, `abiwa_` 로 좁힌 뒤에도 우리 yt-dlp 가
+  제대로 죽는지 확인했습니다. 윈도우는 임시 폴더 이름이 같은지 봐 주세요
+  (`Common::resolveTempBase(...) + "/abiwa_" + platform`).
+
+### C-3. 설정이 앱 이름 변경을 견디는지
+
+`Config::load` 가 `.../Miyo/*` 형제 폴더를 훑어 `miyo_config.json` 이 있는 것 중
+**가장 최근 것**을 가져옵니다. 이름을 목록에 박으면 다음 변경 때 또 깨지기 때문입니다.
+
+함께: 시작 시 옛 폴더를 지우는 정리 코드가 **설정이 남아 있는 폴더는 건드리지 않게**
+했습니다(순서에 기대지 않게).
+
+- **확인**: `%APPDATA%\Miyo\Chernobyl\miyo_config.json` 을 만들어 두고
+  `Predormition` 쪽을 지운 뒤 앱을 켜면 되살아나는지. 맥에서는 확인했습니다.
+
+### C-4. 파일 이동이 실패했는데 성공이라 하던 곳
+
+`ContentSecurityScanner::quarantineFile` 이 이랬습니다:
+
+    if (!QFile::rename(...)) { QFile::copy(...); QFile::remove(filePath); }
+    ... return true;
+
+복사 결과를 보지 않고 원본을 지웠고, 무슨 일이 있어도 성공이라 답했습니다. 다른
+디스크로 옮기다 용량이 모자라거나 권한이 없으면 **파일이 사라졌습니다.**
+`FileHelper::moveFileSafe` 로 바꿨습니다(다 옮겨진 것을 확인한 뒤에만 원본 삭제).
+
+`moveFileSafe` 자체에도 구멍이 둘 있어 막았습니다 — 경로를 해석 못 할 때 "같은
+파일이니 할 일 없음" 으로 **성공을 반환**하던 것, 원본 삭제 전 대상 확인이 없던 것.
+
+### C-5. 폰트 — 윈도우는 원래 맞았습니다 (참고만)
+
+맥 HTML 이 `qrc:///fonts/…` 를 쓰고 있었는데, 페이지가 `file://` 로 열려 크로미움이
+교차 출처로 막고 있었습니다. **한글 폰트가 한 번도 실린 적이 없었습니다**(맥은 시스템
+폰트로 가려져 안 보였습니다).
+
+윈도우 HTML 은 이미 `../fonts/…` 였습니다. 배포도 `dist\win\html` 옆에
+`dist\win\fonts` 라 맞습니다. **맥만 갈라져 있던 것**이라 맥을 윈도우에 맞췄습니다.
+
+## D. 이건 판단을 여쭙습니다 — 원격 백업
+
+`startRemoteBackup` / `stopRemoteBackup` / `pickRemoteBackupSrc` 가 **윈도우 트리에만**
+있습니다. 맥에는 없습니다(맥 백업은 NAS 마운트 경유 `enqueueBackup` 뿐).
+
+그쪽 주석에 "전 플랫폼(Windows 포함)" 이라 적혀 있는 걸 보면 원래 양쪽에 넣을 생각이
+었던 것 같은데, 맥에 안 왔습니다. 마운트 없이 WebDAV/FTP/SFTP/S3 로 직접 올리는 기능
+이라 맥에서도 쓸모가 큽니다.
+
+**맥으로 옮길까요, 아니면 그쪽에서 옮기시겠습니까?** 겹치면 또 반나절이 날아가니
+먼저 정하고 시작하겠습니다.
+
+## E. 이번에 쓴 점검 방법 (윈도우에서도 그대로 됩니다)
+
+"조용히 죽어 있는 것" 은 눈으로 못 찾습니다. 양방향으로 대조하면 나옵니다.
+앱을 CDP 로 띄우고(`--remote-debugging-port`) 아래를 실행하면 됩니다.
+
+```js
+// ① UI 가 부르는 backend.<슬롯> 중 실제로 없는 것
+const called = new Set();
+for (const s of document.scripts)
+  for (const m of (s.textContent||'').matchAll(/backend\.([A-Za-z_]\w*)\s*\(/g)) called.add(m[1]);
+for (const m of document.documentElement.innerHTML.matchAll(/backend\.([A-Za-z_]\w*)\s*\(/g)) called.add(m[1]);
+[...called].filter(k => typeof backend[k] !== 'function');
+
+// ② 백엔드가 runJs 로 부르는 JS 함수 중 실제로 없는 것
+//    (이름 목록은 소스에서 runJs("...(" 를 뽑아 넣는다)
+names.filter(n => typeof window[n] !== 'function');
+```
+
+맥에서 이걸로 4개를 찾았습니다(`openUrl`, `openExternalApp`, `onApiOverrides`,
+`updateBrowser*`). 윈도우 트리는 화면 구조가 달라 **다른 것이 나올 수 있습니다.**
+
+## F. 맥 쪽 점검 결과 (참고 — 문제 없던 것)
+
+    번들 도구 8개 전부 실행 (yt-dlp 2026.07.04 · ffmpeg 6.0 · exiftool 13.59 ·
+                              rclone 1.74.4 · python 3.14.3 · llama 10256 …)
+    파이썬 패키지 14개 버전 일치 + import 성공
+    자립형 — 외부(Homebrew) 의존 남은 파일 0개
+    버전 단일화 — VERSION 3.9.7 = Info.plist = 최신 태그
+    설정·모델이 앱 밖 · 설정 권한 0600
+
+윈도우에서 대응되는 것: 배포에 도구가 다 실리는지, `python_env` 가 MAX_PATH 게이트를
+통과하는지, `%APPDATA%` 쪽 설정 파일 권한(NTFS ACL 은 `QFile::setPermissions` 로
+안 바뀝니다 — 그쪽은 사용자 프로필 보호에 기대는 상태입니다. DPAPI 가 남은 일입니다).
