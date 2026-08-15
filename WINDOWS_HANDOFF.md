@@ -275,5 +275,33 @@ codesign 의 명령줄에 앱 경로가 들어가기 때문이다. 서명 중에
       (집계를 셸 변수로 하면 안 된다 — 서명 루프가 `find | while` 형태라 서브셸에서
        돌고 변수가 밖으로 나오지 않아 늘 0 이 된다. 실제로 그렇게 한 번 틀렸다.)
 
-윈도우 쪽에도 같은 성격의 위험이 있는지 확인할 것: 동시 빌드 방지, 프로세스 종료 시
-`taskkill /IM` 이 서명 도구까지 잡지 않는지, signtool 실패를 삼키지 않는지.
+### 윈도우 쪽도 확인해서 고쳤다 (남은 확인 항목 아님)
+
+- **signtool**: 윈도우 빌드는 코드 서명을 하지 않는다 → ③은 해당 없음.
+- **`taskkill /IM` 무차별 종료**: 해당됐다. 아래 참고.
+- **동시 빌드**: 로컬 빌드 스크립트가 없고 CI(`build.yml`)로 돈다 →
+  로컬에서 `cmake --build` 를 직접 두 번 돌리면 맥과 똑같이 깨진다.
+  윈도우용 빌드 스크립트를 만들 때 `build.sh` 처럼 잠금을 넣을 것.
+
+## 프로세스를 이름으로 죽이면 안 된다 (양쪽 다 고침)
+
+**`taskkill /FI "COMMANDLINE eq ..."` 는 동작하지 않는다.** taskkill 에 COMMANDLINE
+필터는 없다(STATUS/IMAGENAME/PID/SESSION/CPUTIME/MEMUSAGE/USERNAME/MODULES/
+SERVICES/WINDOWTITLE 뿐). 지정하면 "잘못된 필터" 로 **아무것도 죽지 않는다** —
+capture chrome 정리와 옛 터미널 창 정리가 한 번도 동작한 적이 없었다는 뜻이다.
+
+동시에, 필터 없는 쪽은 **너무 많이** 죽였다:
+
+    taskkill /F /IM "Chrome for Testing.exe"        ← 사용자가 쓰던 것도
+    taskkill /F /IM chrome_crashpad_handler.exe     ← 사용자 본인 Chrome 의 것도
+    taskkill /F /IM yt-dlp.exe / ffmpeg.exe         ← 사용자가 따로 돌리던 작업도
+
+맥도 같았다: `pkill -9 -f "Chrome for Testing"`, `pkill -9 -f chrome_crashpad_handler`,
+`pkill -f yt-dlp`. 주석에 "별도 설치 안 했으면 안전" 이라고 적혀 있었는데, 그건
+설치했으면 남의 창을 닫는다는 뜻이다.
+
+→ `killWindowsByCommandLine(needle)` 을 두었다. PowerShell 의 `Get-CimInstance
+  Win32_Process` 로 **명령줄에 그 문자열이 든 PID 만** 골라 그 PID 만 죽인다
+  (wmic 은 최신 윈도우에서 빠졌으므로 안 쓴다). 자기 자신은 절대 안 죽인다.
+  맥은 `pkill -f` 의 패턴을 좁혔다 — 우리 것은 명령줄에 `chrome_capture_profile`
+  이나 `abiwa_` 가 들어 있으므로 그것으로만 고른다.

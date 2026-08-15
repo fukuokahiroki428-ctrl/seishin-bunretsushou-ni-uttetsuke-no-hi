@@ -130,6 +130,27 @@ QSemaphore* MiyoBackend::platformSem(const QString &platform)
 // Forward declaration — 정의는 upgradePython() 앞에
 static QStringList diagnosePythonEnv(const QString &python);
 
+#ifdef Q_OS_WIN
+// 명령줄에 needle 이 든 프로세스만 골라 종료한다(이미지 이름으로 먼저 좁힌다).
+//
+//   taskkill /IM <이름> 은 그 이름의 프로세스를 전부 죽인다 — 사용자가 따로 쓰던
+//   같은 프로그램까지 함께 죽는다. taskkill 에는 명령줄 필터가 없다
+//   (COMMANDLINE 은 존재하지 않는 필터라, 주면 아무것도 안 죽는다).
+//   wmic 은 최신 윈도우에서 빠졌으므로 쓰지 않는다.
+static void killByCommandLine(const QString &imageName, const QString &needle)
+{
+    // 작은따옴표는 PowerShell 문자열을 깨뜨린다 — 들어올 일이 없지만 막아 둔다.
+    QString img = imageName; img.remove('\'');
+    QString pat = needle;    pat.remove('\'');
+    const QString ps = QString(
+        "Get-CimInstance Win32_Process -Filter \"Name='%1'\" -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.CommandLine -like '*%2*' } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }")
+        .arg(img, pat);
+    QProcess::execute("powershell", {"-NoProfile", "-NonInteractive", "-Command", ps});
+}
+#endif
+
 MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     : QObject(parent)
     , m_window(window)
@@ -148,21 +169,25 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     //     2) Chrome for Testing (앱 내부 번들 Chromium)
     //     3) chrome_crashpad_handler (Chromium crashpad)
 #ifdef Q_OS_MACOS
+    // ★ 반드시 '우리가 띄운 것' 만 죽인다.
+    //   예전엔 "Chrome for Testing" 과 "chrome_crashpad_handler" 를 이름만 보고
+    //   죽였다. 그러면 사용자가 따로 쓰고 있던 Chrome for Testing 도, 사용자
+    //   본인 Chrome 의 크래시 핸들러도 함께 죽는다 — 남의 창을 닫는 셈이다.
+    //   우리 인스턴스는 명령줄에 chrome_capture_profile(전용 프로필 경로)이
+    //   들어 있으므로, 그것으로만 고른다.
     QProcess::execute("/usr/bin/pkill", {"-f", "chrome_capture_profile"});
-    QProcess::execute("/usr/bin/pkill", {"-9", "-f", "Chrome for Testing"});
-    QProcess::execute("/usr/bin/pkill", {"-9", "-f", "chrome_crashpad_handler"});
+    QThread::msleep(300);                                    // 얌전히 끝날 틈
+    QProcess::execute("/usr/bin/pkill", {"-9", "-f", "chrome_capture_profile"});
     // ★ 앱 시작 시 이전 세션의 좀비 tail script process 청소 (Terminal window 중복 방지)
     //   사용자가 본 "터미널 2개 떠요" 의 원인 — 옛 tail.command process 가 안 죽고 남아서.
     QProcess::execute("/usr/bin/pkill", {"-f", "miyo_.*_tail.command"});
     QProcess::execute("/usr/bin/pkill", {"-f", "miyo_backup_tail.command"});
 #elif defined(Q_OS_WIN)
-    QProcess::execute("taskkill", {"/F", "/IM", "chrome.exe", "/FI",
-                                    "COMMANDLINE eq *chrome_capture_profile*"});
-    QProcess::execute("taskkill", {"/F", "/IM", "Chrome for Testing.exe"});
-    QProcess::execute("taskkill", {"/F", "/IM", "chrome_crashpad_handler.exe"});
+    // COMMANDLINE 은 taskkill 에 없는 필터라 아무것도 안 죽었고, 나머지 둘은 필터가 없어
+    // 사용자가 쓰던 Chrome for Testing·본인 Chrome 의 크래시 핸들러까지 죽였다.
+    killByCommandLine("chrome.exe", "chrome_capture_profile");
     // 옛 tail script 청소
-    QProcess::execute("taskkill", {"/F", "/IM", "cmd.exe", "/FI",
-                                    "COMMANDLINE eq *miyo_*_tail.bat*"});
+    killByCommandLine("cmd.exe", "miyo_");
 #endif
 
     // ★ Chrome capture profile cache 자동 정리 (로그인 cookie는 보존)
@@ -4197,8 +4222,9 @@ void MiyoBackend::stopCollection(const QString &platformName)
 #ifdef Q_OS_MACOS
             QProcess::execute("/usr/bin/pkill", {"-f", "miyo_" + platformName + "_tail.command"});
 #elif defined(Q_OS_WIN)
-            QProcess::execute("taskkill", {"/F", "/IM", "cmd.exe", "/FI",
-                                            "COMMANDLINE eq *miyo_" + platformName + "_tail.bat*"});
+            // COMMANDLINE 은 taskkill 에 없는 필터라 아무것도 안 죽었다(그래서 옛 터미널
+            // 창이 계속 남았다). 명령줄로 PID 를 골라 그것만 죽인다.
+            killByCommandLine("cmd.exe", "miyo_" + platformName + "_tail.bat");
 #endif
         });
     }
@@ -4293,10 +4319,12 @@ void MiyoBackend::killZombieChromes()
 #ifdef Q_OS_MACOS
     // 패턴 1: 우리 capture profile 사용하는 chrome
     if (QProcess::execute("/usr/bin/pkill", {"-f", "chrome_capture_profile"}) == 0) killed++;
-    // 패턴 2: 앱 번들 안 Chromium (Chrome for Testing) — main + helper + crashpad
-    //   사용자 시스템에 Chrome for Testing 별도 설치 안 했으면 안전
-    if (QProcess::execute("/usr/bin/pkill", {"-9", "-f", "Chrome for Testing"}) == 0) killed++;
-    if (QProcess::execute("/usr/bin/pkill", {"-9", "-f", "chrome_crashpad_handler"}) == 0) killed++;
+    // ★ 예전엔 여기서 "Chrome for Testing" 과 "chrome_crashpad_handler" 를 이름만 보고
+    //   죽였다. 주석에도 "별도 설치 안 했으면 안전" 이라고 적혀 있었는데, 그 말은
+    //   설치했으면 남의 창을 닫는다는 뜻이다. 사용자 본인 Chrome 의 크래시 핸들러도
+    //   같은 이름이라 함께 죽는다.
+    //   아래 '패턴 3' 이 앱 번들 절대 경로로 우리 Chromium 을 정확히 잡으므로,
+    //   이름만 보는 두 줄은 지웠다. 잃는 것이 없다.
     // 패턴 3: 앱 번들 경로 기준 — 절대 경로로 우리 거 확실하게
     QString appDir = QCoreApplication::applicationDirPath();
     QString chromiumPath = appDir + "/../Resources/chromium";
@@ -4306,10 +4334,9 @@ void MiyoBackend::killZombieChromes()
         if (QProcess::execute("/usr/bin/pkill", {"-9", "-f", absPath}) == 0) killed++;
     }
 #elif defined(Q_OS_WIN)
-    QProcess::execute("taskkill", {"/F", "/IM", "chrome.exe", "/FI",
-                                    "COMMANDLINE eq *chrome_capture_profile*"});
-    QProcess::execute("taskkill", {"/F", "/IM", "Chrome for Testing.exe"});
-    QProcess::execute("taskkill", {"/F", "/IM", "chrome_crashpad_handler.exe"});
+    // COMMANDLINE 은 taskkill 에 없는 필터라 아무것도 안 죽었고, 나머지 둘은 필터가 없어
+    // 사용자가 쓰던 Chrome for Testing·본인 Chrome 의 크래시 핸들러까지 죽였다.
+    killByCommandLine("chrome.exe", "chrome_capture_profile");
 #endif
     log(QString("좀비 정리 완료 — capture chrome + 앱 내부 Chromium + helper/crashpad").arg(killed),
         "success", "settings");
@@ -4962,12 +4989,14 @@ void MiyoBackend::stopYoutube()
     // ── yt-dlp 프로세스 직접 kill (즉시 중단) ──
 #ifdef Q_OS_WIN
     // Windows: taskkill로 yt-dlp, ffmpeg 즉시 종료
-    QProcess::execute("taskkill", {"/F", "/IM", "yt-dlp.exe"});
-    QProcess::execute("taskkill", {"/F", "/IM", "ffmpeg.exe"});
+    killByCommandLine("yt-dlp.exe", "abiwa_");
+    killByCommandLine("ffmpeg.exe", "abiwa_");
 #else
     // macOS/Linux: pkill로 yt-dlp, ffmpeg 즉시 종료
-    QProcess::execute("pkill", {"-f", "yt-dlp"});
-    QProcess::execute("pkill", {"-f", "ffmpeg.*abiwa_tmp"});
+    // ★ "yt-dlp" 만으로 고르면 사용자가 터미널에서 따로 돌리던 것까지 끝난다.
+    //   우리 것은 명령줄에 앱 임시 폴더(abiwa_)가 들어 있으므로 그것으로만 고른다.
+    QProcess::execute("pkill", {"-f", "yt-dlp.*abiwa_"});
+    QProcess::execute("pkill", {"-f", "ffmpeg.*abiwa_"});
     // 다운로드 스크립트도 종료
     QProcess::execute("pkill", {"-f", "miyo_yt_download.command"});
 #endif
