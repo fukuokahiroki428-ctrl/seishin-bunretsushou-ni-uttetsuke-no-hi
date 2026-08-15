@@ -25,6 +25,7 @@ public:
 
     QWebEngineView *webView() const { return m_webView; }
     QWebEngineView *browserView() const { return m_browserView; }
+    void setChromeTheme(bool dark);   // 창 배경을 HTML 테마(--bg)에 맞춘다
     MiyoBackend *backend() const { return m_backend; }
 
     // Sleep prevention for background downloads
