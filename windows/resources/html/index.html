@@ -4368,6 +4368,23 @@
             // Crawl 탭이 아닌 곳으로 전환 시 브라우저 창 숨기지 않음 (별도 창이므로)
         }
 
+        // ★ 수집이 끝났을 때 시작/정지 버튼을 되돌린다.
+        //   C++ 의 notifyCollectionEnded 가 runJs 로 부르는데, 윈도우 트리에만 이 함수가
+        //   없었다. 호출부가 if(window.onCollectionEnded) 로 감싸여 있어 오류도 안 나고
+        //   그냥 아무 일도 일어나지 않았다 — 수집이 끝나도 버튼이 '중지' 인 채로 남는다.
+        //   맥 트리에는 있던 것을 그대로 가져왔다.
+        //   ※ 병렬 수집에서는 트랙 하나가 끝나도 다른 트랙이 돌 수 있으므로,
+        //     같은 플랫폼의 트랙이 전부 끝났을 때만 되돌린다.
+        window.onCollectionEnded = function(platform) {
+            let basePlat = platform || currentPlatform;
+            const hashIdx = basePlat.indexOf('#');
+            if (hashIdx > 0) basePlat = basePlat.substring(0, hashIdx);
+            if (basePlat === 'bsky') basePlat = 'bluesky';
+            const m = _multis[basePlat];
+            const stillRunning = m && Object.values(m.states).some(s => s === 'running' || s === 'pending');
+            if (!stillRunning) setRunning(basePlat, false);
+        };
+
         // ── Button State ──
         function setRunning(platform, running) {
             const startBtn = document.getElementById(platform + '-start-btn');
