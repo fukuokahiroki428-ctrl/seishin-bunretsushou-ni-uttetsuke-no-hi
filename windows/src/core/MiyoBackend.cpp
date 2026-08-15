@@ -996,6 +996,8 @@ void MiyoBackend::runRcloneBackup(const QStringList &srcDirs, const QString &des
                  << "--config" << confPath
                  << "--transfers" << "8"
                  << "--multi-thread-streams" << "4"
+                 // ★ 접속 한도 — 없으면 닿지 않는 주소에서 무한정 매달린다(--timeout 은 전송용).
+                 << "--contimeout" << "20s"
                  << "--progress" << "--stats" << "2s" << "--stats-one-line"
                  << "--retries" << "5"
                  << "--low-level-retries" << "10"
@@ -1154,6 +1156,11 @@ void MiyoBackend::startRemoteBackup(const QString &configJson)
         args << "copy" << srcPath << remoteDest
              << "--config" << confPath
              << "--transfers" << "4"
+             // ★ --contimeout 이 없으면 '접속 단계' 에서 무한정 매달린다.
+             //   --timeout 은 전송이 멎었을 때의 한도라 닿지 않는 주소에는 듣지 않는다
+             //   (실측: 없는 IP 로 10분 넘게 매달렸고, --contimeout 을 주니 10초에 끝났다).
+             //   주소를 잘못 적었을 때 사용자가 몇 분씩 기다리지 않게 한다.
+             << "--contimeout" << "20s"
              << "--progress" << "--stats" << "2s" << "--stats-one-line"
              << "--retries" << "5" << "--low-level-retries" << "10"
              << "--exclude" << ".abiwa_**" << "--exclude" << ".DS_Store"

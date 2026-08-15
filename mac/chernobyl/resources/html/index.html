@@ -2595,6 +2595,70 @@
                     </div>
 
                     <div class="section">
+                        <div class="section-label">원격 백업 — 마운트 없이 바로 올리기</div>
+                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:9px;">
+                            NAS 를 마운트하지 않고 <b>주소로 바로 업로드</b>합니다 — WebDAV(HTTPS) · FTP · SFTP · S3.
+                            <b>이어올리기</b>: 이미 올라간 같은 파일은 건너뛰고, 끊긴 전송은 이어서 보냅니다.
+                        </p>
+                        <div class="field" style="margin-bottom:6px;">
+                            <label class="field-label">종류</label>
+                            <select class="input" id="rbk-type" onchange="onRemoteBackupTypeChange()" style="max-width:220px;height:34px;">
+                                <option value="webdav">WebDAV / HTTPS</option>
+                                <option value="ftp">FTP</option>
+                                <option value="sftp">SFTP (SSH)</option>
+                                <option value="s3">S3 (AWS / 호환)</option>
+                            </select>
+                        </div>
+                        <div class="field rbk-f rbk-webdav" style="margin-bottom:6px;">
+                            <label class="field-label">주소</label>
+                            <input type="text" class="input" id="rbk-url" placeholder="https://nas.example.com/dav">
+                        </div>
+                        <div class="input-row rbk-f rbk-host" style="margin-bottom:6px;display:none;">
+                            <div class="field" style="flex:2;"><label class="field-label">호스트</label>
+                                <input type="text" class="input" id="rbk-host" placeholder="ftp.example.com"></div>
+                            <div class="field" style="flex:1;"><label class="field-label">포트</label>
+                                <input type="text" class="input" id="rbk-port" placeholder="21 / 22"></div>
+                        </div>
+                        <div class="input-row rbk-f rbk-cred" style="margin-bottom:6px;">
+                            <div class="field" style="flex:1;"><label class="field-label">사용자</label>
+                                <input type="text" class="input" id="rbk-user" placeholder="username"></div>
+                            <div class="field" style="flex:1;"><label class="field-label">비밀번호</label>
+                                <input type="password" class="input" id="rbk-pass" placeholder="password"></div>
+                        </div>
+                        <div class="rbk-f rbk-s3" style="display:none;margin-bottom:6px;">
+                            <div class="input-row" style="margin-bottom:6px;">
+                                <div class="field" style="flex:1;"><label class="field-label">버킷</label>
+                                    <input type="text" class="input" id="rbk-bucket" placeholder="my-bucket"></div>
+                                <div class="field" style="flex:1;"><label class="field-label">리전</label>
+                                    <input type="text" class="input" id="rbk-region" placeholder="us-east-1"></div>
+                            </div>
+                            <div class="input-row" style="margin-bottom:6px;">
+                                <div class="field" style="flex:1;"><label class="field-label">Access Key</label>
+                                    <input type="text" class="input" id="rbk-akey" placeholder="AKIA..."></div>
+                                <div class="field" style="flex:1;"><label class="field-label">Secret Key</label>
+                                    <input type="password" class="input" id="rbk-secret" placeholder="secret"></div>
+                            </div>
+                            <div class="field"><label class="field-label">Endpoint <span style="font-weight:400;color:var(--text-tertiary);">· S3 호환 — 비우면 AWS</span></label>
+                                <input type="text" class="input" id="rbk-endpoint" placeholder="https://s3.wasabisys.com (선택)"></div>
+                        </div>
+                        <div class="field" style="margin-bottom:6px;">
+                            <label class="field-label">소스 폴더 <span style="font-weight:400;color:var(--text-tertiary);">· 업로드할 로컬 폴더</span></label>
+                            <div style="display:flex;gap:8px;">
+                                <input type="text" class="input" id="rbk-src" placeholder="(미설정 — [폴더 선택])" readonly style="flex:1;">
+                                <button class="btn btn-secondary btn-sm" onclick="pickRemoteBackupSrcUi()">폴더 선택</button>
+                            </div>
+                        </div>
+                        <div class="field" style="margin-bottom:8px;">
+                            <label class="field-label">원격 경로 <span style="font-weight:400;color:var(--text-tertiary);">· 비우면 루트</span></label>
+                            <input type="text" class="input" id="rbk-dest" placeholder="backup/camera">
+                        </div>
+                        <div style="display:flex;gap:8px;">
+                            <button class="btn btn-primary btn-sm" id="rbk-go-btn" onclick="startRemoteBackupUi()">지금 업로드</button>
+                            <button class="btn btn-secondary btn-sm" onclick="stopRemoteBackupUi()">중지</button>
+                        </div>
+                    </div>
+
+                    <div class="section">
                         <div class="section-label">NAS 자동 업로드 — WebDAV / SFTP (Synology 등)</div>
                         <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
                             캡쳐/다운로드 완료된 파일을 자동으로 NAS 로 업로드합니다. 로컬 + NAS 양쪽 보관.
@@ -5325,6 +5389,51 @@
             const el = document.getElementById('system-info-box');
             if (el) el.textContent = text.replace(/\\n/g, '\n');
         }
+
+    // ───────── 원격 백업 업로드 (WebDAV/HTTPS · FTP · SFTP · S3 — 이어올리기) ─────────
+    function onRemoteBackupTypeChange() {
+        var t = (document.getElementById('rbk-type') || {}).value || 'webdav';
+        function show(sel, on){ document.querySelectorAll(sel).forEach(function(e){ e.style.display = on ? '' : 'none'; }); }
+        show('.rbk-webdav', t === 'webdav');
+        show('.rbk-host',   t === 'ftp' || t === 'sftp');
+        show('.rbk-cred',   t !== 's3');     // user/pass: webdav/ftp/sftp
+        show('.rbk-s3',     t === 's3');
+        var pe = document.getElementById('rbk-port'); if (pe) pe.placeholder = (t === 'sftp') ? '22' : '21';
+    }
+    function pickRemoteBackupSrcUi() {
+        if (backend && backend.pickRemoteBackupSrc) backend.pickRemoteBackupSrc();
+    }
+    function setRemoteBackupBusy(busy) {
+        var b = document.getElementById('rbk-go-btn');
+        if (b) { b.disabled = !!busy; b.textContent = busy ? '⏳ 업로드 중…' : '지금 업로드'; }
+    }
+    function startRemoteBackupUi() {
+        if (!backend || !backend.startRemoteBackup) { alert('백엔드 미연결'); return; }
+        var v = function(id){ var e = document.getElementById(id); return e ? e.value.trim() : ''; };
+        var type = v('rbk-type') || 'webdav';
+        var src = v('rbk-src');
+        if (!src) { alert('업로드할 [소스 폴더] 를 선택하세요.'); return; }
+        var cfg = { type: type, srcPath: src, destPath: v('rbk-dest') };
+        if (type === 'webdav') {
+            cfg.url = v('rbk-url'); cfg.user = v('rbk-user'); cfg.pass = v('rbk-pass');
+            if (!cfg.url) { alert('WebDAV URL 을 입력하세요.'); return; }
+        } else if (type === 'ftp' || type === 'sftp') {
+            cfg.host = v('rbk-host'); cfg.port = v('rbk-port'); cfg.user = v('rbk-user'); cfg.pass = v('rbk-pass');
+            if (!cfg.host) { alert('호스트를 입력하세요.'); return; }
+        } else if (type === 's3') {
+            cfg.bucket = v('rbk-bucket'); cfg.region = v('rbk-region');
+            cfg.accessKey = v('rbk-akey'); cfg.secret = v('rbk-secret'); cfg.endpoint = v('rbk-endpoint');
+            if (!cfg.bucket) { alert('S3 버킷명을 입력하세요.'); return; }
+        }
+        setRemoteBackupBusy(true);
+        switchTab('settings');
+        appendLog('원격 백업 업로드 시작 (' + type.toUpperCase() + ') — 이어올리기 적용', 'info', 'settings');
+        backend.startRemoteBackup(JSON.stringify(cfg));
+    }
+    function stopRemoteBackupUi() {
+        if (backend && backend.stopRemoteBackup) backend.stopRemoteBackup();
+        setRemoteBackupBusy(false);
+    }
 
         // ── API 주소 교체 — 플랫폼이 내부 API 를 바꿔도 재빌드 없이 고친다 ──────
         function saveApiOverride() {
