@@ -63,6 +63,12 @@ public slots:
     QMap<QString, QString> llmHeaders() const;       // 온라인일 때만 Authorization
     QString llmOnlineModel() const;                  // 온라인일 때 사용자가 고른 모델명
 
+    // AI 방식 — 로컬(번들) / 온라인(OpenAI 호환 API)
+    void setAiMode(const QString &mode);                                  // "local" | "online"
+    void setAiOnlineConfig(const QString &baseUrl, const QString &apiKey, const QString &model);
+    void getAiConfig();                                                   // JS onAiConfig(json) — 키는 안 보낸다
+    void testAiOnline();                                                  // JS onAiTestResult(ok, msg)
+
     void startLocalLlm(const QString &modelHint);  // 번들 모델 기동 (modelHint=파일 부분일치)
     void stopLocalLlm();
     bool killLlmOnPort();   // 8737 을 문 llama-server 정리(고아 포함)                            // 우리가 띄운 서버 종료
