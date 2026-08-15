@@ -226,6 +226,10 @@ QJsonObject Config::toJson() const
     if (!m_webdavUser.isEmpty()) root["webdavUser"] = m_webdavUser;
     if (!m_webdavPass.isEmpty()) root["webdavPass"] = m_webdavPass;
     if (!m_sftpKeyFile.isEmpty()) root["sftpKeyFile"] = m_sftpKeyFile;
+    if (!m_aiMode.isEmpty())    root["aiMode"]    = m_aiMode;
+    if (!m_aiBaseUrl.isEmpty()) root["aiBaseUrl"] = m_aiBaseUrl;
+    if (!m_aiApiKey.isEmpty())  root["aiApiKey"]  = m_aiApiKey;
+    if (!m_aiModel.isEmpty())   root["aiModel"]   = m_aiModel;
     root["webdavEnabled"] = m_webdavEnabled;
     if (!m_storageMode.isEmpty()) root["storageMode"] = m_storageMode;
     if (!m_storageRoot.isEmpty()) root["storageRoot"] = m_storageRoot;
@@ -260,6 +264,10 @@ void Config::fromJson(const QJsonObject &obj)
     if (obj.contains("webdavUser"))     m_webdavUser = obj["webdavUser"].toString();
     if (obj.contains("webdavPass"))     m_webdavPass = obj["webdavPass"].toString();
     if (obj.contains("sftpKeyFile"))    m_sftpKeyFile = obj["sftpKeyFile"].toString();
+    if (obj.contains("aiMode"))         m_aiMode    = obj["aiMode"].toString();
+    if (obj.contains("aiBaseUrl"))      m_aiBaseUrl = obj["aiBaseUrl"].toString();
+    if (obj.contains("aiApiKey"))       m_aiApiKey  = obj["aiApiKey"].toString();
+    if (obj.contains("aiModel"))        m_aiModel   = obj["aiModel"].toString();
     if (obj.contains("webdavEnabled"))  m_webdavEnabled = obj["webdavEnabled"].toBool();
     if (obj.contains("storageMode"))    m_storageMode = obj["storageMode"].toString();
     if (obj.contains("storageRoot"))    m_storageRoot = obj["storageRoot"].toString();

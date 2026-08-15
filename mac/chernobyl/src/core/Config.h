@@ -72,6 +72,19 @@ public:
     QString webdavUser() const { return m_webdavUser; }
     QString webdavPass() const { return m_webdavPass; }
     bool webdavEnabled() const { return m_webdavEnabled; }
+    // ── AI 대상 — 로컬(번들 llama-server) / 온라인(OpenAI 호환 API) ──────
+    //   윈도우 트리와 같은 이름·같은 뜻으로 둔다(두 트리가 갈라지면 설정 파일이
+    //   서로 안 맞아, 한쪽에서 켠 온라인이 다른 쪽에서 무시된다).
+    QString aiMode() const { return m_aiMode.isEmpty() ? "local" : m_aiMode; }
+    bool aiOnline() const { return aiMode() == "online"; }
+    QString aiBaseUrl() const { return m_aiBaseUrl; }   // 예: https://api.openai.com/v1 (끝의 /v1 유무 무관)
+    QString aiApiKey() const { return m_aiApiKey; }
+    QString aiModel() const { return m_aiModel; }
+    void setAiMode(const QString &m) { m_aiMode = m; }
+    void setAiBaseUrl(const QString &u) { m_aiBaseUrl = u; }
+    void setAiApiKey(const QString &k) { m_aiApiKey = k; }
+    void setAiModel(const QString &m) { m_aiModel = m; }
+
     // SFTP 전용 — SSH 개인키 파일 경로. 채워 두면 비밀번호 대신 이 키로 붙는다.
     // 비밀번호를 아예 저장하지 않아도 되는 길이라, 가능하면 이쪽을 쓰는 편이 낫다.
     QString sftpKeyFile() const { return m_sftpKeyFile; }
@@ -129,6 +142,10 @@ private:
     QString m_webdavPass;
     bool m_webdavEnabled = false;
     QString m_sftpKeyFile;
+    QString m_aiMode;       // "local" / "online"
+    QString m_aiBaseUrl;
+    QString m_aiApiKey;
+    QString m_aiModel;
     QString m_storageMode;  // "local" / "nas" / "external"
     QString m_storageRoot;  // /Volumes/X (mode != local 일 때)
     bool m_backupEnabled = false;

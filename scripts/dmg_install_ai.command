@@ -37,12 +37,32 @@ if [ -z "$APP" ]; then
 fi
 echo "앱 위치: $APP"
 
-# 설치 위치에 쓸 수 있는지 (관리자 권한 없이 되는지) 확인
-LLM_DIR="$APP/Contents/Resources/llm"
+# ★ 앱 안에 넣지 않는다.
+#   모델은 5GB 가 넘는데, 앱 안에 두면 앱을 새로 깔거나 지웠다 다시 넣을 때마다
+#   함께 사라져 그때마다 5GB 를 다시 받아야 한다(실제로 그렇게 날렸다).
+#   서명한 번들에 나중에 파일을 넣는 것이라 서명 봉인도 깨진다.
+#   사용자 데이터 폴더에 두면 앱을 몇 번을 다시 깔아도 남는다.
+#   (앱은 이 위치를 먼저 보고, 없으면 번들 안을 본다.)
+LLM_DIR="$HOME/Library/Application Support/Miyo/$APP_NAME/llm"
+echo "설치 위치: $LLM_DIR"
+echo "  (앱을 다시 설치해도 지워지지 않는 자리입니다)"
+
+# 예전 판이 앱 안에 넣어 둔 것이 있으면 옮겨 온다 — 다시 받지 않아도 되게.
+OLD_LLM="$APP/Contents/Resources/llm"
+if [ -d "$OLD_LLM" ] && [ -n "$(ls -A "$OLD_LLM" 2>/dev/null)" ] && [ ! -d "$LLM_DIR" ]; then
+    echo "예전에 앱 안에 설치된 AI 를 새 자리로 옮깁니다..."
+    mkdir -p "$(dirname "$LLM_DIR")"
+    if mv "$OLD_LLM" "$LLM_DIR" 2>/dev/null; then
+        echo "  옮겼습니다 — 다시 받지 않아도 됩니다."
+    else
+        cp -R "$OLD_LLM" "$LLM_DIR" && rm -rf "$OLD_LLM" \
+            && echo "  옮겼습니다 — 다시 받지 않아도 됩니다."
+    fi
+fi
+
 if ! mkdir -p "$LLM_DIR" 2>/dev/null; then
     echo ""
-    echo "앱 폴더에 쓸 권한이 없습니다. $APP_NAME.app 을 사용자 폴더"
-    echo "(~/Applications)로 옮긴 뒤 다시 실행해 주세요."
+    echo "설치 폴더를 만들 수 없습니다: $LLM_DIR"
     echo ""
     read -n 1 -s -r -p "아무 키나 누르면 닫힙니다..."
     exit 1

@@ -58,6 +58,11 @@ public slots:
     void loadFormData();
 
     // 로컬 AI (자가진단 LLM) — 번들 llama-server 수동 제어 (설정 탭 토글)
+    // AI 대상을 정하는 세 함수 — 8737 을 직접 쓰지 말고 반드시 이것을 쓴다.
+    QString llmBase() const;                         // 로컬이면 127.0.0.1:8737, 온라인이면 사용자 기준 URL
+    QMap<QString, QString> llmHeaders() const;       // 온라인일 때만 Authorization
+    QString llmOnlineModel() const;                  // 온라인일 때 사용자가 고른 모델명
+
     void startLocalLlm(const QString &modelHint);  // 번들 모델 기동 (modelHint=파일 부분일치)
     void stopLocalLlm();
     bool killLlmOnPort();   // 8737 을 문 llama-server 정리(고아 포함)                            // 우리가 띄운 서버 종료
