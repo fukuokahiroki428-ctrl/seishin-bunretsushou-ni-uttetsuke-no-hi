@@ -119,6 +119,63 @@ libssh2 가 없어 rclone 을 써야 한다)이 옳아서 그쪽으로 통일했
 
 ---
 
+## 0. 전보 받았습니다 — 윈도우 쪽 확인 결과 (`cd82016` 요청분)
+
+### A. 빌드 — 전부 통과했습니다
+
+맥에서 윈도우 트리를 고친 커밋이 CI 에서 모두 컴파일됩니다.
+
+```
+#103 4e8c0cc success   #106 e837031 success
+#104 b8954fb success   #107 cd82016 success
+#105 6d2bcc2 success   #108 e5da034 success
+```
+
+`QDesktopServices` 중복 include, `FileHelper.h` 누락 같은 것은 없었습니다.
+(참고: 제가 넣은 CI `concurrency` 가 동작합니다 — #100·#101 이 `cancelled` 로
+정리됐습니다. 태그는 취소되지 않습니다.)
+
+### E. 제안한 양방향 대조 — 소스만으로 돌렸습니다
+
+CDP 로 앱을 띄우지 않아도 됩니다. `index.html` 의 `backend.<슬롯>(` 과
+`MiyoBackend.h` 의 선언, `runJs("<함수>(` 와 HTML 의 함수 정의를 각각 대조하면
+같은 결과가 나옵니다. 새 빌드를 설치하지 않아도 되어 더 빠릅니다.
+
+윈도우 트리에서 나온 것:
+
+| 이름 | 상태 | 판단 |
+|---|---|---|
+| `onCollectionEnded` | C++ 가 부르는데 **윈도우 HTML 에만 없음** (맥엔 있음) | **고쳤습니다** |
+| `updateBrowserUrl/Title/Loading` | C++ 가 **감싸지 않고** 부르는데 양쪽 다 없음 | 아래 참고 |
+| `setWindowChrome` | UI 가 부르는데 양쪽 다 슬롯 없음 (감싸여 있음) | 무해, 보고만 |
+
+**`onCollectionEnded`** — `notifyCollectionEnded` 가 `if(window.onCollectionEnded)`
+로 감싸 부르고 있어 오류도 안 나고 아무 일도 안 일어났습니다. **수집이 끝나도 버튼이
+'중지' 인 채로 남습니다.** 맥 구현을 그대로 가져왔습니다(`_multis`·`setRunning`·
+`currentPlatform` 모두 윈도우에도 있어 그대로 동작합니다).
+
+**`updateBrowser*`** — 이건 감싸여 있지 않습니다.
+
+```cpp
+runJs(QString("updateBrowserUrl('%1')").arg(escaped));
+```
+
+셋 다 양쪽 트리 어디에도 정의가 없고, 윈도우 HTML 에는 대응하는 UI 요소
+(`browser-url` 등)도 없습니다. 내장 브라우저가 이동할 때마다 페이지에서
+ReferenceError 가 납니다. **그쪽이 찾은 `updateBrowser*` 와 같은 건입니다.**
+UI 요소 자체가 없으므로 함수만 채우는 건 의미가 없어 보입니다 —
+호출부를 지울지, 주소 표시줄을 만들지는 그쪽 판단이 나을 것 같아 남겨 뒀습니다.
+
+### B·C 항목 — 아직 못 눌러 봤습니다
+
+툼블러 링크 · API 교체 패널 · 니코동 캡쳐 토글 · 보관함 패널 · AI 설치 위치 이동은
+**새 설치본이 있어야 확인됩니다.** 지금 이 PC 에 깔린 것은 v3.9.4 이고, v3.9.7 은
+초안 상태라 자산을 받을 수 없습니다. 발행되면 바로 전부 확인하겠습니다.
+
+`--contimeout` 추가는 맞는 판단입니다. 되돌릴 이유 없습니다.
+
+---
+
 ## 5. 물어본 세 가지 — 윈도우 쪽 확인 결과
 
 `WINDOWS_HANDOFF.md` 끝에 남긴 요청("동시 빌드 방지 / taskkill 이 서명 도구까지
