@@ -12860,13 +12860,23 @@ static QStringList bundledLlmModelHeads()
 void MiyoBackend::getLlmStatus()
 {
     const QString dir = llmDir();
+    const bool online = (m_config && m_config->aiOnline());
     QJsonObject o;
-    o["hasServer"] = QFile::exists(dir + "/llama-server");
-    bool running = (m_llmProc && m_llmProc->state() != QProcess::NotRunning);
-    if (!running) {
-        // m_llmProc 가 없어도 8737 에 서버가 떠 있으면(자동기동/직접실행/이전 세션 잔류) 실행중으로 본다.
-        HttpClient h; h.setTimeout(600);
+    o["mode"] = online ? "online" : "local";
+    // 온라인일 땐 번들 엔진 유무가 의미 없다 — 켜기/끄기 버튼도 숨겨야 하므로 알려 준다.
+    o["hasServer"] = online ? true : QFile::exists(dir + "/llama-server");
+    bool running;
+    if (online) {
+        // 온라인은 '띄우고 끄는' 대상이 아니다. 응답하면 준비된 것으로 본다.
+        HttpClient h; h.setTimeout(4000);
         running = h.get(llmBase() + "/v1/models", llmHeaders()).isOk();
+    } else {
+        running = (m_llmProc && m_llmProc->state() != QProcess::NotRunning);
+        if (!running) {
+            // m_llmProc 가 없어도 8737 에 서버가 떠 있으면(자동기동/직접실행/이전 세션 잔류) 실행중으로 본다.
+            HttpClient h; h.setTimeout(600);
+            running = h.get(llmBase() + "/v1/models", llmHeaders()).isOk();
+        }
     }
     o["running"] = running;
     QJsonArray ms;
@@ -12912,6 +12922,58 @@ QString MiyoBackend::llmOnlineModel() const
 {
     if (m_config && m_config->aiOnline()) return m_config->aiModel().trimmed();
     return QString();
+}
+
+void MiyoBackend::setAiMode(const QString &mode)
+{
+    if (!m_config) return;
+    const QString m = (mode == "online") ? "online" : "local";
+    m_config->setAiMode(m);
+    m_config->save();
+    log(m == "online" ? "AI 를 온라인(API)으로 바꿨습니다." : "AI 를 로컬(이 컴퓨터)로 바꿨습니다.",
+        "info", "settings");
+    getLlmStatus();
+}
+
+void MiyoBackend::setAiOnlineConfig(const QString &baseUrl, const QString &apiKey, const QString &model)
+{
+    if (!m_config) return;
+    m_config->setAiBaseUrl(baseUrl.trimmed());
+    // 키는 사용자가 붙여넣은 그대로 저장한다. 로그에는 절대 남기지 않는다.
+    m_config->setAiApiKey(apiKey.trimmed());
+    m_config->setAiModel(model.trimmed());
+    m_config->save();
+    log("온라인 AI 설정을 저장했습니다.", "success", "settings");
+}
+
+void MiyoBackend::getAiConfig()
+{
+    if (!m_config) return;
+    QJsonObject o;
+    o["mode"]    = m_config->aiMode();
+    o["baseUrl"] = m_config->aiBaseUrl();
+    o["model"]   = m_config->aiModel();
+    // ★ 키 자체는 절대 UI 로 돌려보내지 않는다. 저장돼 있는지 여부만 알린다.
+    o["hasKey"]  = !m_config->aiApiKey().trimmed().isEmpty();
+    runJs(QString("if(window.onAiConfig)onAiConfig(%1)")
+              .arg(QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))));
+}
+
+void MiyoBackend::testAiOnline()
+{
+    if (!m_config) return;
+    if (!m_config->aiOnline()) { runJs("if(window.onAiTestResult)onAiTestResult(false,'온라인 모드가 아닙니다')"); return; }
+    if (m_config->aiBaseUrl().trimmed().isEmpty()) { runJs("if(window.onAiTestResult)onAiTestResult(false,'기준 URL 을 입력하세요')"); return; }
+    if (m_config->aiApiKey().trimmed().isEmpty())  { runJs("if(window.onAiTestResult)onAiTestResult(false,'API 키를 입력하세요')"); return; }
+
+    HttpClient h; h.setTimeout(10000);
+    HttpResponse r = h.get(llmBase() + "/v1/models", llmHeaders());
+    const bool ok = r.isOk();
+    // 실패 사유에 키가 섞여 나가지 않도록 상태코드만 보여 준다.
+    const QString msg = ok ? QStringLiteral("연결 성공")
+                           : QString("연결 실패 (HTTP %1) — URL·키를 확인하세요").arg(r.statusCode);
+    runJs(QString("if(window.onAiTestResult)onAiTestResult(%1,'%2')")
+              .arg(ok ? "true" : "false", msg));
 }
 
 void MiyoBackend::startLocalLlm(const QString &modelHint)

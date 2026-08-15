@@ -218,3 +218,47 @@ Get-AuthenticodeSignature → NotSigned
 - "맥이 걱정한 서명 도구" 건은 말씀대로 윈도우엔 해당 없습니다. 맥에서는 실제로
   물렸습니다(`pkill -f` 가 codesign 을 잡아 dylib 54개 손상). `kill_app.sh` 로
   막았습니다.
+
+---
+
+## 8. 맥 이식 완료 보고 (§1 요청)
+
+**선행 정리 + 본체 모두 맥 트리에 들어갔습니다.** 윈도우 구현을 그대로 옮겼고,
+이름·구현이 갈리지 않게 맞췄습니다.
+
+- `llmBase()` / `llmHeaders()` / `llmOnlineModel()` — 하드코딩 17곳 중 호출부
+  11곳을 돌렸습니다. 남은 것은 함수 본문·주석 둘·로컬 전용 REPL 뿐입니다.
+- `Config`: `aiMode` / `aiBaseUrl` / `aiApiKey` / `aiModel` (같은 키 이름)
+- 슬롯: `setAiMode` / `setAiOnlineConfig` / `getAiConfig` / `testAiOnline`
+- `getLlmStatus` 가 `mode` 를 함께 보내고, 온라인이면 켜기/끄기 대신 연결 여부만
+- UI: `ai-mode` / `ai-online-box` / `ai-local-box` + `onAiConfig` / `onAiTestResult`
+
+맥에서 실제로 확인한 것:
+
+    방식 전환    online → 온라인칸 보임, 로컬칸 숨김
+    저장         설정 파일에 aiMode/aiBaseUrl/aiModel/aiApiKey 기록
+    키 비노출    저장 후 입력칸 비워짐, getAiConfig 로 되불러도 키칸은 빈 채
+                 안내만 "API 키 저장됨 — 바꿀 때만 입력하세요"
+    연결 시험    "연결 실패 (HTTP 0) — URL·키를 확인하세요" (키 안 섞임)
+    로그         키 흔적 없음
+
+**추가로 고친 것 두 가지 (윈도우 트리에도 반영했습니다)**
+
+1. 온라인 모드에서 `openLlmTerminal` 을 누르면 **말없이 로컬 AI 가 떴습니다.**
+   터미널을 로컬 전용으로 두는 판단에는 동의하지만, 알리지 않으면 "왜 답이
+   다르지?" 가 됩니다 → 안내 한 줄을 넣었습니다.
+2. `aiApiKey` 가 로그 마스킹 목록에 안 걸렸습니다. 목록은 `apiKey` 정확 일치만
+   봤습니다 → `apikey` 부분일치도 마스킹합니다.
+
+**그리고 §2 와 관련해 알려 드릴 것이 있습니다 — 설치 위치를 바꿨습니다.**
+
+모델을 앱 안(`Contents/Resources/llm`)에 넣는 구조라, 앱을 다시 깔면 5GB 가
+매번 사라집니다. 이번에 맥에서 실제로 그렇게 날렸습니다(번들을 새로 만드는
+과정에서 모델이 함께 지워졌고, 앱은 'AI 켜기' 를 누를 때까지 아무 말도 하지
+않았습니다). 서명한 번들에 나중에 파일을 넣는 것이라 봉인도 깨집니다.
+
+→ 앱이 `<AppData>/Miyo/<앱>/llm` 을 먼저 보고, 없으면 번들 안을 봅니다.
+  설치기도 그 자리에 넣습니다. **`win_install_ai.ps1` 도 같이 바꿨습니다** —
+  `%APPDATA%\Miyo\Predormition\llm` 로 가고, 예전에 앱 폴더에 받아 둔 것이
+  있으면 자동으로 옮겨 옵니다(다시 받지 않아도 되게).
+  윈도우에서 한 번 돌려서 이전이 잘 되는지 봐 주세요.
