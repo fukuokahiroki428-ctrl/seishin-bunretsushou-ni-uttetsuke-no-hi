@@ -234,6 +234,10 @@ public slots:
     Q_INVOKABLE void resyncAllFoldersToBackup();
     // ★ 지금 백업 — 백업 toggle off 여도 1회성 즉시 전체 백업.
     //   경로 미설정 시 자동으로 pickBackupPath() 띄움 (사용자 선택 후 진행).
+    // 원격 백업 — 마운트 없이 URL 로 직접 업로드(WebDAV/FTP/SFTP/S3). 이어올리기 내장.
+    Q_INVOKABLE void startRemoteBackup(const QString &configJson);
+    Q_INVOKABLE void stopRemoteBackup();
+    Q_INVOKABLE void pickRemoteBackupSrc();  // 소스 폴더 선택 → rbk-src 필드 채움
     Q_INVOKABLE void backupNow();
     // ★ 백업 중지 — 진행 중인 모든 워커 즉시 중단 (다음 파일 pick 안 함 + 활성 cp 강제 kill)
     Q_INVOKABLE void stopBackup();
