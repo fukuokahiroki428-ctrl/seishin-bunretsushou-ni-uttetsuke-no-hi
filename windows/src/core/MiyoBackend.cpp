@@ -195,6 +195,7 @@ void MiyoBackend::winStartResize(int edges)
     m_window->windowHandle()->startSystemResize(e);
 }
 
+
 MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     : QObject(parent)
     , m_window(window)
@@ -222,8 +223,12 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     QProcess::execute("/usr/bin/pkill", {"-f", "miyo_backup_tail.command"});
 #elif defined(Q_OS_WIN)
     killByCommandLine("chrome.exe", "chrome_capture_profile");
-    QProcess::execute("taskkill", {"/F", "/IM", "Chrome for Testing.exe"});
-    QProcess::execute("taskkill", {"/F", "/IM", "chrome_crashpad_handler.exe"});
+    // ★ 여기 있던 두 줄은 지웠다:
+    //     taskkill /F /IM "Chrome for Testing.exe"
+    //     taskkill /F /IM chrome_crashpad_handler.exe
+    //   필터가 없어서 사용자가 따로 쓰던 Chrome for Testing 도, 사용자 본인 Chrome 의
+    //   크래시 핸들러도 함께 죽었다. 우리 인스턴스는 명령줄에 chrome_capture_profile
+    //   이 들어 있으므로 위 한 줄로 충분하다.
     // 옛 tail script 청소
     killByCommandLine("cmd.exe", "miyo_");
 #endif
@@ -4471,6 +4476,8 @@ void MiyoBackend::stopCollection(const QString &platformName)
 #ifdef Q_OS_MACOS
             QProcess::execute("/usr/bin/pkill", {"-f", "miyo_" + platformName + "_tail.command"});
 #elif defined(Q_OS_WIN)
+            // COMMANDLINE 은 taskkill 에 없는 필터라 아무것도 안 죽었다(그래서 옛 터미널 창이
+            // 계속 남았다). 명령줄로 PID 를 골라 그것만 죽인다.
             killByCommandLine("cmd.exe", "miyo_" + platformName + "_tail.bat");
 #endif
         });
@@ -4579,9 +4586,9 @@ void MiyoBackend::killZombieChromes()
         if (QProcess::execute("/usr/bin/pkill", {"-9", "-f", absPath}) == 0) killed++;
     }
 #elif defined(Q_OS_WIN)
+    // COMMANDLINE 은 taskkill 에 없는 필터라 아무것도 안 죽었고, 나머지 둘은 필터가
+    // 없어 사용자가 쓰던 Chrome for Testing·본인 Chrome 의 크래시 핸들러까지 죽였다.
     killByCommandLine("chrome.exe", "chrome_capture_profile");
-    QProcess::execute("taskkill", {"/F", "/IM", "Chrome for Testing.exe"});
-    QProcess::execute("taskkill", {"/F", "/IM", "chrome_crashpad_handler.exe"});
 #endif
     log(QString("좀비 정리 완료 — capture chrome + 앱 내부 Chromium + helper/crashpad").arg(killed),
         "success", "settings");
@@ -5272,13 +5279,17 @@ void MiyoBackend::stopYoutube()
 
     // ── yt-dlp 프로세스 직접 kill (즉시 중단) ──
 #ifdef Q_OS_WIN
-    // Windows: taskkill로 yt-dlp, ffmpeg 즉시 종료
-    QProcess::execute("taskkill", {"/F", "/IM", "yt-dlp.exe"});
-    QProcess::execute("taskkill", {"/F", "/IM", "ffmpeg.exe"});
+    // ★ 이름만으로 죽이면 사용자가 따로 돌리고 있던 yt-dlp·ffmpeg 까지 끝난다
+    //   (영상 편집 중이었다면 그 작업이 날아간다). 우리 것은 명령줄에 앱 임시
+    //   폴더(abiwa_) 가 들어 있으므로 그것으로만 고른다.
+    killByCommandLine("yt-dlp.exe", "abiwa_");
+    killByCommandLine("ffmpeg.exe", "abiwa_");
 #else
     // macOS/Linux: pkill로 yt-dlp, ffmpeg 즉시 종료
-    QProcess::execute("pkill", {"-f", "yt-dlp"});
-    QProcess::execute("pkill", {"-f", "ffmpeg.*abiwa_tmp"});
+    // ★ "yt-dlp" 만으로 고르면 사용자가 터미널에서 따로 돌리던 것까지 끝난다.
+    //   우리 것은 명령줄에 앱 임시 폴더(abiwa_)가 들어 있으므로 그것으로만 고른다.
+    QProcess::execute("pkill", {"-f", "yt-dlp.*abiwa_"});
+    QProcess::execute("pkill", {"-f", "ffmpeg.*abiwa_"});
     // 다운로드 스크립트도 종료
     QProcess::execute("pkill", {"-f", "miyo_yt_download.command"});
 #endif
@@ -5327,11 +5338,14 @@ void MiyoBackend::stopNiconico()
     QFile stopFile(tempDir + "/miyo_yt_status.txt.stop");
     if (stopFile.open(QIODevice::WriteOnly)) { stopFile.write("STOP"); stopFile.close(); }
 #ifdef Q_OS_WIN
-    QProcess::execute("taskkill", {"/F", "/IM", "yt-dlp.exe"});
-    QProcess::execute("taskkill", {"/F", "/IM", "ffmpeg.exe"});
+    // ★ 이름만으로 죽이면 사용자가 따로 돌리던 yt-dlp·ffmpeg 까지 끝난다.
+    //   우리 것은 명령줄에 앱 임시 폴더(abiwa_)가 들어 있으므로 그것으로만 고른다.
+    killByCommandLine("yt-dlp.exe", "abiwa_");
+    killByCommandLine("ffmpeg.exe", "abiwa_");
 #else
-    QProcess::execute("pkill", {"-f", "yt-dlp"});
-    QProcess::execute("pkill", {"-f", "ffmpeg.*abiwa_tmp"});
+    // 맥도 같은 이유로 우리 임시 폴더를 쓰는 것만 고른다.
+    QProcess::execute("pkill", {"-f", "yt-dlp.*abiwa_"});
+    QProcess::execute("pkill", {"-f", "ffmpeg.*abiwa_"});
 #endif
     QString statusFile = tempDir + "/miyo_yt_status.txt";
     QFile sf(statusFile);
