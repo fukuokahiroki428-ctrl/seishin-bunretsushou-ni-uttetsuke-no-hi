@@ -2275,7 +2275,7 @@ void MiyoBackend::logCollectionOptions(const QJsonObject &config, const QString 
     // 2) String / Number 입력값 (sessionId / token 류는 마스킹)
     QStringList kvs;
     const QStringList sensitiveKeys = {"sessionId","auth_token","ct0","cookie","captureCookie","extraCookie",
-                                        "token","apiKey","password","webdavPass","pixivExtraCookie"};
+                                        "token","apiKey","aiApiKey","password","webdavPass","pixivExtraCookie"};
     for (auto it = config.constBegin(); it != config.constEnd(); ++it) {
         if (it.value().isBool()) continue;
         if (it.value().isObject() || it.value().isArray()) continue;
@@ -2286,7 +2286,8 @@ void MiyoBackend::logCollectionOptions(const QJsonObject &config, const QString 
         if (v.isEmpty()) continue;
         // 마스킹
         if (sensitiveKeys.contains(k) || k.contains("token", Qt::CaseInsensitive)
-            || k.contains("password", Qt::CaseInsensitive) || k.contains("secret", Qt::CaseInsensitive)) {
+            || k.contains("password", Qt::CaseInsensitive) || k.contains("secret", Qt::CaseInsensitive)
+            || k.contains("apikey", Qt::CaseInsensitive)) {
             if (v.length() > 8) v = v.left(4) + "...***";
             else v = "***";
         }
@@ -13217,9 +13218,33 @@ static QStringList diagnosePythonEnv(const QString &python)
 // ═════════════════════════════════════════════════════════════════════════
 // 로컬 AI (자가진단 LLM) — 번들 llama-server 수동 제어 (설정 탭 토글)
 // ═════════════════════════════════════════════════════════════════════════
+// AI 엔진·모델이 있는 폴더를 찾는다.
+//
+//   ★ 예전엔 앱 번들 안(Contents/Resources/llm)만 봤다. 그런데 모델은 5GB 가 넘고
+//     설치기가 번들 안에 넣는다 — 즉 앱을 새로 깔거나 지웠다 다시 넣으면 그때마다
+//     통째로 사라져 5GB 를 다시 받아야 했다(실제로 겪었다).
+//     게다가 서명한 번들에 나중에 파일을 넣는 것이라 서명 봉인도 깨진다.
+//
+//   그래서 사용자 데이터 폴더를 먼저 본다. 거기 있으면 앱을 몇 번을 다시 깔아도
+//   남는다. 번들 안은 '함께 배포된 경우' 를 위해 뒤에 본다.
+static QString llmDir()
+{
+    const QString userLlm = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/llm";
+    if (QDir(userLlm).exists()
+        && !QDir(userLlm).entryList(QStringList() << "*.gguf", QDir::Files).isEmpty())
+        return userLlm;
+    return Common::bundledResourcesDir() + "/llm";
+}
+
+// 새로 설치할 곳 — 항상 사용자 데이터 폴더. 앱을 다시 깔아도 남는다.
+static QString llmInstallDir()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/llm";
+}
+
 static QStringList bundledLlmModelHeads()
 {
-    QDir dir(Common::bundledResourcesDir() + "/llm");
+    QDir dir(llmDir());
     const QStringList all = dir.entryList(QStringList() << "*.gguf", QDir::Files, QDir::Name);
     QStringList heads;
     for (const QString &g : all) {
@@ -13327,7 +13352,7 @@ void MiyoBackend::testAiOnline()
 
 void MiyoBackend::getLlmStatus()
 {
-    const QString dir = Common::bundledResourcesDir() + "/llm";
+    const QString dir = llmDir();
     const bool online = (m_config && m_config->aiOnline());
     QJsonObject o;
     o["mode"] = online ? "online" : "local";
@@ -13369,10 +13394,16 @@ void MiyoBackend::startLocalLlm(const QString &modelHint)
           getLlmStatus();
           return;
       } }
-    const QString dir = Common::bundledResourcesDir() + "/llm";
+    const QString dir = llmDir();
     const QString server = dir + "/llama-server.exe";
     if (!QFile::exists(server)) {
-        log("❌ 번들 llama-server 가 없습니다. (배포 패키징 시 bundle_llm 로 탑재)", "error", "settings");
+        // 원인만 말하면 사용자는 무엇을 해야 할지 모른다 — 할 일을 적는다.
+        log(QString("❌ AI 엔진이 설치돼 있지 않습니다.\n"
+                    "   설치 위치: %1\n"
+                    "   'AI_설치_더블클릭.bat' 을 실행하면 엔진과 모델을 받습니다.\n"
+                    "   (한 번 설치하면 앱을 다시 깔아도 지워지지 않는 자리에 들어갑니다)")
+                .arg(llmInstallDir()),
+            "error", "settings");
         getLlmStatus();
         return;
     }
@@ -13579,6 +13610,15 @@ void MiyoBackend::llmChat(const QString &historyJson)
 // ═════════════════════════════════════════════════════════════════════════
 void MiyoBackend::openLlmTerminal()
 {
+    // ★ 이 터미널은 로컬 전용이다. 온라인(API)으로 쓰고 있어도 여기서는 번들 로컬
+    //   AI 가 뜬다 — 온라인으로 붙이려면 생성되는 파이썬 스크립트에 API 키를 적어
+    //   임시 파일로 떨궈야 하는데, 키를 디스크에 남기지 않는 편이 낫다고 봤다.
+    //   말없이 다른 AI 와 대화하게 두면 "왜 답이 다르지?" 가 되므로 분명히 알린다.
+    if (m_config && m_config->aiOnline())
+        log("ℹ 터미널은 로컬 AI 전용입니다 — 지금 설정은 온라인(API)이지만, 여기서는 "
+            "이 컴퓨터의 번들 AI 가 뜹니다. 온라인 AI 와 대화하려면 위의 대화창을 쓰세요.",
+            "info", "settings");
+
     // 1) 서버가 꺼져 있으면 먼저 기동 (REPL 이 준비될 때까지 폴링하므로 논블로킹)
     if (!(m_llmProc && m_llmProc->state() != QProcess::NotRunning)) {
         log("🖥 오픈클로 터미널 — AI 서버를 기동합니다 (모델 로딩에 수 초 소요)...", "info", "settings");

@@ -111,11 +111,34 @@ if (-not $appDir) {
 }
 Write-Host "앱 위치: $appDir"
 
-$llmDir = Join-Path $appDir 'llm'
+# ★ 앱 안에 넣지 않는다.
+#   모델은 5GB 가 넘는데, 앱 폴더에 두면 앱을 새로 깔거나 지웠다 다시 넣을 때마다
+#   함께 사라져 그때마다 5GB 를 다시 받아야 한다(맥에서 실제로 그렇게 날렸다).
+#   사용자 데이터 폴더에 두면 앱을 몇 번을 다시 깔아도 남는다.
+#   (앱은 이 위치를 먼저 보고, 없으면 앱 폴더를 본다.)
+$llmDir = Join-Path $env:APPDATA (Join-Path 'Miyo' (Join-Path $AppName 'llm'))
+Write-Host "설치 위치: $llmDir"
+Write-Host '  (앱을 다시 설치해도 지워지지 않는 자리입니다)'
+
+# 예전 판이 앱 폴더에 넣어 둔 것이 있으면 옮겨 온다 — 다시 받지 않아도 되게.
+$oldLlm = Join-Path $appDir 'llm'
+if ((Test-Path $oldLlm) -and -not (Test-Path $llmDir)) {
+    if ((Get-ChildItem $oldLlm -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0) {
+        Write-Host '예전에 앱 폴더에 설치된 AI 를 새 자리로 옮깁니다...'
+        try {
+            New-Item -ItemType Directory -Force -Path (Split-Path $llmDir -Parent) | Out-Null
+            Move-Item $oldLlm $llmDir -ErrorAction Stop
+            Write-Host '  옮겼습니다 — 다시 받지 않아도 됩니다.'
+        } catch {
+            Write-Host "  옮기지 못했습니다: $($_.Exception.Message)"
+        }
+    }
+}
+
 try { New-Item -ItemType Directory -Force -Path $llmDir -ErrorAction Stop | Out-Null }
 catch {
     Write-Host ''
-    Write-Host '앱 폴더에 쓸 권한이 없습니다.'
+    Write-Host "설치 폴더를 만들 수 없습니다: $llmDir"
     Write-Host '이 파일을 마우스 오른쪽 → "관리자 권한으로 실행" 으로 다시 실행해 주세요.'
     Exit-Script 1
 }
