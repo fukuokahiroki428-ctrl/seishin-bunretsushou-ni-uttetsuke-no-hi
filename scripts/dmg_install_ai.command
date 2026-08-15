@@ -67,6 +67,48 @@ MIRROR="https://github.com/fukuokahiroki428-ctrl/seishin-bunretsushou-ni-uttetsu
 # 추가할 수 없어 분리했다. macOS arm64/x64 + Windows x64/arm64 4종이 들어 있다.
 ENGINE_MIRROR="https://github.com/fukuokahiroki428-ctrl/seishin-bunretsushou-ni-uttetsuke-no-hi/releases/download/ai-engines-v1"
 
+# ── 무결성 대조 ────────────────────────────────────────────────────────────
+#   보관 릴리즈에 ENGINES_SHA256.txt / MODELS_SHA256.txt 가 같이 올라와 있는데
+#   지금까지 한 번도 쓰지 않았다. 엔진과 모델(최대 3.8GB)을 아무 대조 없이 설치했다.
+#   특히 모델은 .partaa/.partab 를 이어붙이는 경로가 있어, 조각 하나만 어긋나도
+#   파일은 만들어지고 앱은 깨진 모델을 로드한다.
+#
+#   목록에 없는 이름(원 배포처에서 받은 경우 등)은 검증을 건너뛰고 통과시킨다.
+#   불일치면 파일을 지운다 — 남기면 다음 실행에서 "이미 있음" 으로 건너뛰어
+#   손상본이 영구히 자리를 차지한다.
+#
+#   목록은 한 번만 받아 재사용한다.
+SUMS_CACHE=$(mktemp -d)
+trap 'rm -rf "$SUMS_CACHE"' EXIT
+
+fetch_sums() {   # fetch_sums <목록URL> → 캐시 파일 경로를 출력
+    local url="$1"
+    local f="$SUMS_CACHE/$(echo "$url" | tr -c 'A-Za-z0-9' '_')"
+    [ -s "$f" ] || curl -fsSL "$url" -o "$f" 2>/dev/null || :
+    printf '%s' "$f"
+}
+
+verify_sha256() {   # verify_sha256 <파일> <목록상의이름> <목록URL> <라벨>
+    local path="$1" name="$2" listurl="$3" label="$4"
+    local list want got
+    list=$(fetch_sums "$listurl")
+    [ -s "$list" ] || { echo "  ⚠ $label 체크섬 목록을 받지 못했습니다 — 검증 생략"; return 0; }
+    # "<해시>  <이름>" 또는 "<해시> *<이름>"
+    want=$(awk -v n="$name" '{ f=$2; sub(/^\*/,"",f); if (f==n) { print $1; exit } }' "$list")
+    if [ -z "$want" ]; then
+        echo "  ⚠ $label 체크섬 목록에 $name 이(가) 없습니다 — 검증 생략"
+        return 0
+    fi
+    echo "  · 무결성 확인 중..."
+    got=$(shasum -a 256 "$path" 2>/dev/null | awk '{print $1}')
+    if [ "$want" = "$got" ]; then echo "  ✔ 체크섬 확인"; return 0; fi
+    echo "  ✗ 체크섬 불일치 — 받은 파일이 손상됐습니다. 지웁니다."
+    echo "     기대: $want"
+    echo "     실제: $got"
+    rm -f "$path"
+    return 1
+}
+
 M15="$HF/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
 M3="$HF/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
 MC3="$HF/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/qwen2.5-coder-3b-instruct-q4_k_m.gguf"
@@ -93,9 +135,12 @@ if [ ! -x "$SRV" ]; then
     #   엔진 바이너리를 직접 들고 있는다. 보관본은 지금 모델과 맞물려 동작이
     #   확인된 조합이라 최신본보다 오히려 예측 가능하다.
     #   보관본이 없을 때만 원 배포처의 최신 릴리즈를 찾는다.
-    ZIP_URL="$ENGINE_MIRROR/llama-engine-$PAT.tar.gz"
+    ENGINE_NAME="llama-engine-$PAT.tar.gz"
+    ENGINE_FROM_MIRROR=1
+    ZIP_URL="$ENGINE_MIRROR/$ENGINE_NAME"
     if ! curl -fsIL "$ZIP_URL" >/dev/null 2>&1; then
         echo "   보관본이 없어 원 배포처에서 찾습니다..."
+        ENGINE_FROM_MIRROR=0
         ZIP_URL=$(curl -fsSL https://api.github.com/repos/ggml-org/llama.cpp/releases/latest \
             | grep -o '"browser_download_url": *"[^"]*"' | grep "$PAT" | head -1 \
             | sed 's/.*": *"//; s/"$//')
@@ -108,6 +153,13 @@ if [ ! -x "$SRV" ]; then
     ARCHIVE="$TMP/llama_archive"
     OK=0
     if curl -fL --retry 3 -o "$ARCHIVE" "$ZIP_URL"; then
+        # 보관본에서 받았을 때만 대조한다 — 원 배포처 파일은 목록에 없다.
+        if [ "$ENGINE_FROM_MIRROR" = "1" ] \
+           && ! verify_sha256 "$ARCHIVE" "$ENGINE_NAME" "$ENGINE_MIRROR/ENGINES_SHA256.txt" "엔진"; then
+            echo "  ✗ 엔진 무결성 확인 실패 — 설치를 중단합니다."
+            rm -rf "$TMP"
+            read -n 1 -s -r -p "아무 키나 누르면 닫힙니다..."; exit 1
+        fi
         mkdir -p "$TMP/x"
         # ★ mac/linux 자산은 .tar.gz, windows 는 .zip — 확장자로 분기(unzip 으로 tar.gz 를 풀면 실패).
         case "$ZIP_URL" in
@@ -158,6 +210,7 @@ for URL in $MODELS; do
     # ① 보관 릴리즈에서 통째로 (-C - 로 이어받기)
     if curl -fL --retry 3 -C - --progress-bar -o "$MIR_OUT" "$MIRROR/$NAME"; then
         mv -f "$MIR_OUT" "$OUT"
+        if ! verify_sha256 "$OUT" "$NAME" "$MIRROR/MODELS_SHA256.txt" "모델"; then FAIL=1; continue; fi
         echo "  ✔ 완료(보관본)"
         continue
     fi
@@ -180,6 +233,8 @@ for URL in $MODELS; do
         if cat "${PARTS[@]}" > "$MRG_OUT"; then
             rm -f "${PARTS[@]}"
             mv -f "$MRG_OUT" "$OUT"
+            # 조각을 이어붙인 경로라 여기가 특히 중요하다 — 하나만 어긋나도 파일은 만들어진다.
+            if ! verify_sha256 "$OUT" "$NAME" "$MIRROR/MODELS_SHA256.txt" "모델"; then FAIL=1; continue; fi
             echo "  ✔ 완료(보관본 조각 합침)"
             continue
         fi
@@ -192,6 +247,8 @@ for URL in $MODELS; do
     echo "   보관본이 없어 원 배포처에서 받습니다..."
     if curl -fL --retry 3 -C - --progress-bar -o "$TMP_OUT" "$URL"; then
         mv -f "$TMP_OUT" "$OUT"
+        # 원 배포처 파일도 보관본과 같으면 목록에 있다. 없으면 검증을 건너뛴다.
+        if ! verify_sha256 "$OUT" "$NAME" "$MIRROR/MODELS_SHA256.txt" "모델"; then FAIL=1; continue; fi
         echo "  ✔ 완료"
     else
         # ★ 부분 파일(.part)은 남겨둔다 — 다시 실행하면 -C - 가 이어받는다.
