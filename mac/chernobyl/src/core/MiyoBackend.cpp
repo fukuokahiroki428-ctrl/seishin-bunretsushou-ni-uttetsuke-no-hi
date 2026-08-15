@@ -4703,6 +4703,22 @@ void MiyoBackend::mountWebDavInFinder()
     t->start();
 }
 
+// 안내문의 링크를 기본 브라우저로 연다.
+//   ★ UI 는 backend.openUrl(...) 을 부르고 있었는데 슬롯이 없어서 아무 일도 일어나지
+//     않았다(툼블러 OAuth 안내의 링크 두 개). 오류도 안 뜨니 "링크가 죽었다" 로만 보인다.
+//   http/https 만 연다 — 번들 HTML 이라 위험할 일은 없지만, file:// 같은 다른 스킴을
+//   여는 통로를 만들어 둘 이유도 없다.
+void MiyoBackend::openUrl(const QString &url)
+{
+    const QUrl u(url.trimmed());
+    const QString sc = u.scheme().toLower();
+    if (!u.isValid() || (sc != "http" && sc != "https")) {
+        log(QString("열 수 없는 주소입니다: %1").arg(url.left(80)), "warning", "settings");
+        return;
+    }
+    QDesktopServices::openUrl(u);
+}
+
 void MiyoBackend::openSecurityPrefs()
 {
 #ifdef Q_OS_MACOS

@@ -3082,6 +3082,31 @@
                     </div>
 
                     <div class="nt-group">
+                        <h3>API 주소 교체 · 재빌드 없이 고치기</h3>
+                        <div class="nt-card">
+                            <div class="nt-hint">
+                                트위터 같은 곳은 예고 없이 내부 API 주소(GraphQL ID)를 바꿉니다. 그러면 수집이 갑자기 안 됩니다.
+                                여기서 값을 넣으면 <b>다음 수집부터 바로</b> 적용됩니다. 비워서 저장하면 코드 기본값으로 돌아갑니다.
+                            </div>
+                            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:9px;">
+                                <input type="text" class="nt-input" id="api-ov-key" placeholder="키 — 예: twitter.userTweets" style="flex:0 0 250px;height:32px;" list="api-ov-keys">
+                                <datalist id="api-ov-keys">
+                                    <option value="twitter.searchTimeline"></option>
+                                    <option value="twitter.userByScreenName"></option>
+                                    <option value="twitter.userTweets"></option>
+                                </datalist>
+                                <input type="text" class="nt-input" id="api-ov-val" placeholder="새 주소 (비우면 기본값으로 되돌림)" style="flex:1;min-width:200px;height:32px;">
+                                <button class="nt-btn primary sm" onclick="saveApiOverride()">저장</button>
+                                <button class="nt-btn ghost sm" onclick="if(backend&&backend.openApiOverridesFile)backend.openApiOverridesFile()">파일 열기</button>
+                            </div>
+                            <div id="api-ov-list" style="margin-top:9px;font-size:11.5px;color:var(--muted);"></div>
+                            <div class="nt-hint" style="margin-top:7px;">
+                                새 주소는 브라우저 개발자도구(F12) → 네트워크에서 해당 요청의 URL 을 그대로 복사해 넣으면 됩니다.
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="nt-group">
                         <h3>모듈 / 라이브러리 업데이트</h3>
                         <div class="nt-card">
                             <div class="nt-hint">
@@ -4330,7 +4355,7 @@
             const names = {dashboard:'대시보드',twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',niconico:'ニコニコ',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',naikakukai:'内閣会',crawl:'Capture',settings:'설정'};
             document.getElementById('toolbar-title').textContent = names[tab] || tab;
             // Load system info when switching to settings
-            if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); if (backend && backend.getAiConfig) backend.getAiConfig(); if (backend && backend.getLlmStatus) backend.getLlmStatus(); if (window.loadScriptState) loadScriptState(); if (window.archiveRefresh) archiveRefresh(); }
+            if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); if (backend && backend.getAiConfig) backend.getAiConfig(); if (backend && backend.getLlmStatus) backend.getLlmStatus(); if (window.loadScriptState) loadScriptState(); if (window.archiveRefresh) archiveRefresh(); if (backend && backend.getApiOverrides) backend.getApiOverrides(); }
             // 해당 플랫폼의 저장된 stats 복원
             const s = platformStats[tab] || {posts:0, media:0, status:'대기'};
             document.getElementById('stat-posts').textContent = s.posts;
@@ -4972,7 +4997,6 @@
         };
         function setPath(p,path) { const id=pathIdMap[p]||(p+'-path'); const el=document.getElementById(id); if(el) el.value=path; }
         function openFolder(p) { const id=pathIdMap[p]||(p+'-path'); const el=document.getElementById(id); if(backend) backend.openFolder(el?el.value:'~/Downloads'); }
-        function openExternalApp(app) { if (backend) backend.openExternalApp(app); }
         function pasteToField(id) { if (backend) backend.pasteToField(id); }
         function browseFolder(p) { if (backend) backend.browsePath(p); }
 
@@ -6035,6 +6059,37 @@
             const el = document.getElementById('system-info-box');
             if (el) el.textContent = text.replace(/\\n/g, '\n');
         }
+        // ── API 주소 교체 — 플랫폼이 내부 API 를 바꿔도 재빌드 없이 고친다 ──────
+        function saveApiOverride() {
+            var k = (document.getElementById('api-ov-key') || {}).value || '';
+            var v = (document.getElementById('api-ov-val') || {}).value || '';
+            if (!k.trim()) { alert('키를 입력하세요 (예: twitter.userTweets)'); return; }
+            if (backend && backend.setApiOverride) backend.setApiOverride(k.trim(), v.trim());
+            if (backend && backend.getApiOverrides) backend.getApiOverrides();
+        }
+        function onApiOverrides(arr) {
+            var box = document.getElementById('api-ov-list');
+            if (!box) return;
+            // ★ 백엔드의 apiOverridesJson() 은 '객체' 가 아니라 'JSON 문자열' 을 준다.
+            //   그대로 Object.keys 하면 문자열의 글자 인덱스가 키가 되어
+            //   "19 → T" 같은 쓰레기가 찍힌다(실제로 그랬다). 문자열이면 풀어서 쓴다.
+            var raw = (arr && arr[0]) || {}, path = (arr && arr[1]) || '';
+            var obj = raw;
+            if (typeof raw === 'string') {
+                try { obj = JSON.parse(raw) || {}; } catch (e) { obj = {}; }
+            }
+            var keys = Object.keys(obj).filter(function (k) { return k !== '_note'; });
+            if (!keys.length) {
+                box.innerHTML = '<span style="color:var(--text-tertiary)">교체된 값이 없습니다 — 전부 코드 기본값을 씁니다.</span>';
+                return;
+            }
+            var html = keys.map(function (k) {
+                return '<div style="margin-top:3px;"><b>' + _esc(k) + '</b> → <span style="color:var(--accent)">'
+                     + _esc(String(obj[k])).slice(0, 90) + '</span></div>';
+            }).join('');
+            box.innerHTML = html + '<div style="margin-top:6px;color:var(--text-tertiary);font-size:10.5px;">' + _esc(path) + '</div>';
+        }
+
         // ── 산출물 보관함 (색인 + 질의) ──────────────────────────────────────
         let _arcBusy = false;
 
