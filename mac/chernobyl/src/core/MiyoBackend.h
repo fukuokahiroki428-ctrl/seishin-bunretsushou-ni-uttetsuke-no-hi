@@ -208,6 +208,7 @@ public slots:
     //   저장 경로를 그 폴더로 지정해 두면 다운로드가 NAS 로 직행.
     //   사용자에게 권한 거부 없음 (Finder 가 OS 차원에서 처리).
     Q_INVOKABLE void mountWebDavInFinder();
+    Q_INVOKABLE void openUrl(const QString &url);   // 안내문 링크 → 기본 브라우저 (http/https 만)
     Q_INVOKABLE void openSecurityPrefs();  // 권한 거부 시 시스템 설정 열기
 
     // ★ 마운트된 볼륨 목록 — JS UI에 NAS/외장 드롭다운 옵션 채움
