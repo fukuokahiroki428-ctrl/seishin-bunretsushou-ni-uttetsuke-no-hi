@@ -430,11 +430,23 @@ QString userPythonEnvDir()
 // 심볼릭 링크/실행권한 보존이 필요(standalone python 은 symlink 포함) → cp -a 로 복사.
 static bool copyTreePreserving(const QString &src, const QString &dst)
 {
+#ifdef Q_OS_WIN
+    // robocopy 는 윈도우에 기본 탑재라 별도 의존성이 없고, 깊은 경로와 많은 파일에 강하다.
+    //   ★ 종료 코드가 특이하다 — 0~7 이 성공(1=복사함, 2=여분 있음, …), 8 이상이 실패다.
+    //     0 이 아니면 실패로 보면 정상 복사를 실패로 오인한다.
+    QProcess rc;
+    rc.start("robocopy", {QDir::toNativeSeparators(src), QDir::toNativeSeparators(dst),
+                          "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/R:1", "/W:1"});
+    if (!rc.waitForStarted(5000)) return false;
+    if (!rc.waitForFinished(600000)) { rc.kill(); rc.waitForFinished(2000); return false; }
+    return rc.exitStatus() == QProcess::NormalExit && rc.exitCode() < 8;
+#else
     QProcess cp;
     cp.start("/bin/cp", {"-a", src, dst});
     if (!cp.waitForStarted(5000)) return false;
     if (!cp.waitForFinished(180000)) { cp.kill(); cp.waitForFinished(2000); return false; }
     return cp.exitStatus() == QProcess::NormalExit && cp.exitCode() == 0;
+#endif
 }
 
 // 외부 python_env 가 '완전한지' 검증 — bin/python3 는 있는데 핵심 패키지(twikit)가 빠진
@@ -442,6 +454,11 @@ static bool copyTreePreserving(const QString &src, const QString &dst)
 // python 실행 없이 site-packages/twikit 디렉토리 존재로 판단(빠름).
 static bool pythonEnvHasCorePackages(const QString &envDir)
 {
+    // ★ 윈도우 배치는 유닉스와 다르다 — <env>\Lib\site-packages\twikit 로 python3.x 층이 없다.
+    //   유닉스 모양(lib/python3*/site-packages)만 보던 탓에 윈도우에서는 멀쩡한 env 를 두고도
+    //   언제나 false 를 돌려줬다. 지금은 맥 전용 경로에서만 불려서 드러나지 않았을 뿐이다.
+    if (QFileInfo::exists(envDir + "/Lib/site-packages/twikit"))
+        return true;
     QDir libDir(envDir + "/lib");
     const QStringList pyDirs = libDir.entryList(QStringList() << "python3*", QDir::Dirs | QDir::NoDotAndDotDot);
     for (const QString &pd : pyDirs) {
@@ -499,8 +516,47 @@ QString activePythonEnvDir()
     QDir(tmp).removeRecursively();
     qWarning() << "[Common] python_env seed failed — using read-only bundle (upgrade disabled)";
     return bundled;   // 복사 실패 → 읽기전용 번들 (upgrade/repair 가 거부함)
+#elif defined(Q_OS_WIN)
+    // ★ 앱 안(번들) 우선 — 기본 설치 위치는 {localappdata}\Programs\Predormition 이고
+    //   PrivilegesRequired=lowest 라 앱 폴더가 쓰기 가능하다. 그때는 예전처럼 그대로 쓴다.
+    //   문제는 그렇지 않은 경우다 — 포터블 zip 을 읽기전용 위치에 풀거나, 관리자가
+    //   Program Files 에 넣었거나, 폴더 권한이 잠긴 경우. 예전 코드는 쓰기 가능 여부를
+    //   보지도 않고 앱 안 경로를 돌려줘서, pip 설치·패키지 복구가 조용히 실패했다.
+    //   맥은 진작 이 갈래를 갖고 있었다(거기선 codesign 봉인 때문). 같은 모양으로 맞춘다.
+    static QMutex seedMutex;
+    const QString ext     = userPythonEnvDir();
+    const QString extPy   = ext + "/python.exe";
+    const QString bundled = bundledResourcesDir() + "/python_env";
+    const bool bundleReady = QFile::exists(bundled + "/python.exe") && pythonEnvHasCorePackages(bundled);
+
+    if (bundleReady && isDirWritable(bundled))
+        return bundled;
+
+    // 외부본이 있으면 쓰되, 핵심 패키지(twikit)까지 있어야 한다 — 깨진 복사본은 재시드 대상.
+    if (QFile::exists(extPy) && (pythonEnvHasCorePackages(ext) || !bundleReady))
+        return ext;
+
+    QMutexLocker lock(&seedMutex);
+    if (QFile::exists(extPy) && (pythonEnvHasCorePackages(ext) || !bundleReady))
+        return ext;          // 락 대기 중 다른 스레드가 끝냈을 수 있음
+    if (!bundleReady)
+        return ext;          // 번들에도 온전한 env 가 없음 → 복구 대상 경로를 돌려준다
+
+    QDir().mkpath(QFileInfo(ext).absolutePath());
+    const QString tmp = ext + ".seeding";
+    QDir(tmp).removeRecursively();
+    if (copyTreePreserving(bundled, tmp) && QFile::exists(tmp + "/python.exe")) {
+        QDir(ext).removeRecursively();
+        if (QDir().rename(tmp, ext) && QFile::exists(extPy)) {
+            qDebug() << "[Common] python_env seeded to writable location:" << ext;
+            return ext;
+        }
+    }
+    QDir(tmp).removeRecursively();
+    qWarning() << "[Common] python_env seed failed — using read-only bundle (upgrade disabled)";
+    return bundled;
 #else
-    // Windows/Linux: 서명 seal 없음 → 설치 위치의 python_env 그대로.
+    // Linux: 서명 seal 없음 → 설치 위치의 python_env 그대로.
     return bundledResourcesDir() + "/python_env";
 #endif
 }
