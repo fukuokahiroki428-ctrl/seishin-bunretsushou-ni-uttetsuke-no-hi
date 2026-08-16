@@ -44,3 +44,4 @@ mac/chernobyl/build-univ/
 *.token
 secrets.*
 **/discord_token*
+__pycache__/
