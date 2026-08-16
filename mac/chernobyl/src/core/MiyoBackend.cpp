@@ -4349,13 +4349,22 @@ void MiyoBackend::startCollection(const QString &configJson)
             closeTerminalLog(trackKey);
             m_collectionThreads.remove(trackKey);
             // ★ 이 트랙의 캡쳐용 Chrome 창 자동 닫기 — 수집/다운로드 끝났으니 더 안 씀.
+            //   ★ take() 하면 안 된다 — 노드를 지우는 것이라 notifyCollectionEnded 에서
+            //     erase 를 없앤 것과 같은 이유로 위험하다. getChromePtr() 이 이 맵 노드의
+            //     '주소' 를 넘겨주고 진행 중인 CDP 콜백들이 그걸 붙들고 있는데, 바로 아래
+            //     stop() 이 그 콜백들을 취소가 아니라 강제 호출한다. 노드가 사라진 뒤
+            //     깨어난 콜백은 해제된 메모리를 역참조한다.
+            //     슬롯은 남기고 값만 비운다. 잠금은 풀고 나서 정리한다.
+            RealChromeCrawler *cc = nullptr;
             {
                 QMutexLocker mapLock(&m_capChromeMapMutex);
-                if (m_captureChromesPerThread.contains(trackKey)) {
-                    RealChromeCrawler *cc = m_captureChromesPerThread.take(trackKey);
-                    if (cc) { cc->stop(); cc->deleteLater(); }
+                auto it = m_captureChromesPerThread.find(trackKey);
+                if (it != m_captureChromesPerThread.end()) {
+                    cc = it.value();
+                    it.value() = nullptr;
                 }
             }
+            if (cc) { cc->stop(); cc->deleteLater(); }
             // 모든 수집이 끝났으면 절전 해제 + 남은 캡쳐 Chrome(단일/잔여) 전부 닫기
             if (m_collectionThreads.isEmpty()) {
                 if (m_window) m_window->releaseAwake();
