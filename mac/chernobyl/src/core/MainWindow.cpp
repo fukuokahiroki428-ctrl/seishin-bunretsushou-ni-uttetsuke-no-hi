@@ -59,8 +59,8 @@ MainWindow::MainWindow(QWidget *parent)
     //   (CODENAME 이 비어 있으면 이름만 — 빌드 설정이 없어도 깨지지 않게)
     {
         const QString codename = QStringLiteral(PREDORMITION_CODENAME);
-        setWindowTitle(codename.isEmpty() ? QStringLiteral("Predormition")
-                                          : QStringLiteral("Predormition — ") + codename);
+        const QString appName = QStringLiteral(APP_NAME_DISPLAY);
+        setWindowTitle(codename.isEmpty() ? appName : appName + QStringLiteral(" — ") + codename);
     }
     // ★ 기본 창 크기 — 폭 420px 은 사이드바(136px)를 빼면 본문이 284px 밖에 안 남아
     //   설정 폼·로그·표가 전부 눌린다. 데스크톱 앱 기준으로 넓혔다.

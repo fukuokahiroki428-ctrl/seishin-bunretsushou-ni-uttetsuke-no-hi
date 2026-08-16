@@ -13,7 +13,10 @@
 # ═══════════════════════════════════════════════════════════════════════════
 set -uo pipefail
 
-APP_NAME="Predormition"
+# ★ 앱 파일명. DMG 안의 .app 을 찾아 자동으로 맞춘다 — 이름이 바뀌어도 따라가게.
+#   (예전엔 "Predormition" 이 박혀 있어서 이름이 바뀌면 앱을 못 찾았다)
+APP_NAME="$(basename "$(ls -d "$(cd "$(dirname "$0")" && pwd)"/*.app 2>/dev/null | head -1)" .app 2>/dev/null)"
+[ -z "$APP_NAME" ] && APP_NAME="Hanishiki"
 HF="https://huggingface.co/Qwen"
 
 echo ""

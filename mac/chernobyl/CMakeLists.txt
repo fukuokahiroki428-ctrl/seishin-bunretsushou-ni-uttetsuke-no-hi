@@ -192,22 +192,38 @@ endif()
 
 if(APPLE)
     # App name / icon / identifier — override with -DAPP_NAME="..." -DAPP_ICON="..." -DAPP_ID="..."
+    #
+    #   ★ 파일명(APP_NAME)은 ASCII 로 둔다 — GitHub 릴리즈 자산 이름이 ASCII 만 받고,
+    #     .app 이름에 비ASCII 가 들어가면 codesign 이 NFC/NFD 로 어긋나 실패한다
+    #     (codesign_app.sh 가 이미 그 문제를 우회하고 있다).
+    #     사용자에게 보이는 이름은 APP_DISPLAY_NAME 이 맡는다 — Finder·Dock·메뉴에
+    #     이것이 뜬다(CFBundleDisplayName).
     if(NOT APP_NAME)
-        set(APP_NAME "Predormition")
+        set(APP_NAME "Hanishiki")
+    endif()
+    if(NOT APP_DISPLAY_NAME)
+        set(APP_DISPLAY_NAME "ハンイシキ")
     endif()
     if(NOT APP_ICON)
-        set(APP_ICON "chernobyl.icns")
+        set(APP_ICON "app.icns")
     endif()
     if(NOT APP_ID)
         set(APP_ID "com.miyo.app")
     endif()
+
+    # ★ 앱 이름을 코드에 박지 않는다 — 지금까지 main.cpp·백엔드·설치기에 각각
+    #   "Predormition" 이 흩어져 있어서, 이름을 바꿀 때마다 일부만 따라오고
+    #   나머지는 옛 이름을 가리켰다(데이터 폴더가 갈라지는 원인).
+    target_compile_definitions(Miyo PRIVATE
+        APP_NAME_ASCII="${APP_NAME}"
+        APP_NAME_DISPLAY="${APP_DISPLAY_NAME}")
 
     set_target_properties(Miyo PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/Info.plist.in
         MACOSX_BUNDLE_ICON_FILE "${APP_ICON}"
         MACOSX_BUNDLE_GUI_IDENTIFIER "${APP_ID}"
-        MACOSX_BUNDLE_BUNDLE_NAME "${APP_NAME}"
+        MACOSX_BUNDLE_BUNDLE_NAME "${APP_DISPLAY_NAME}"
         OUTPUT_NAME "${APP_NAME}"
     )
 
@@ -354,7 +370,12 @@ if(APPLE)
 
     # Icon — APP_ICON_PATH can be overridden via -DAPP_ICON_PATH="..."
     if(NOT APP_ICON_PATH)
-        set(APP_ICON_PATH "${CMAKE_SOURCE_DIR}/resources/chernobyl.icns")
+        # APP_ICON 과 같은 파일을 가리킨다 — 둘이 어긋나면 아이콘이 조용히 안 바뀐다
+        # (Info.plist 는 새 이름을 가리키는데 번들에는 옛 파일만 들어가는 식).
+        set(APP_ICON_PATH "${CMAKE_SOURCE_DIR}/resources/${APP_ICON}")
+    endif()
+    if(NOT EXISTS "${APP_ICON_PATH}")
+        message(WARNING "아이콘 파일이 없습니다: ${APP_ICON_PATH} — 기본 아이콘으로 나갑니다")
     endif()
     if(EXISTS "${APP_ICON_PATH}")
         add_custom_command(TARGET Miyo POST_BUILD
