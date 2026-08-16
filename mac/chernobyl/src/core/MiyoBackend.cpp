@@ -1516,7 +1516,7 @@ void MiyoBackend::backupNow()
     // ★ 모니터 종료 시 STOP sentinel 파일 만들어짐 (script trap) → 워치독이 발견하면 백업 중지
     QString stopSentinel = m_terminalLogPaths.value("backup") + ".STOP";
     QFile::remove(stopSentinel);
-    writeTerminalLog("\033[1;36m📦 カメラ 백업 시작 — 파일별 병렬 cp 모드 (한국어/일본어/NAS 안전)\033[0m", "backup");
+    writeTerminalLog("\033[1;36m📦 Predormition 백업 시작 — 파일별 병렬 cp 모드 (한국어/일본어/NAS 안전)\033[0m", "backup");
     writeTerminalLog(QString("\033[90m  📂 백업 위치:\033[0m %1").arg(backupRoot), "backup");
     writeTerminalLog(QString("\033[90m  🕐 시작 시각:\033[0m %1").arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss")), "backup");
     writeTerminalLog(QString("\033[90m  📁 대상 폴더:\033[0m %1 개  /  \033[90m🚀 병렬 워커:\033[0m %2").arg(platformDirs.size()).arg(CONCURRENT), "backup");
@@ -3285,11 +3285,11 @@ void MiyoBackend::openBackupTerminalLog()
         QString content;
         content += "@echo off\r\n";
         content += "chcp 65001 >nul\r\n";
-        content += "title カメラ Backup Monitor\r\n";
+        content += "title Predormition Backup Monitor\r\n";
         content += ":loop\r\n";
         content += "cls\r\n";
         content += "echo ===============================================\r\n";
-        content += "echo   📦 カメラ 백업 진행 모니터\r\n";
+        content += "echo   📦 Predormition 백업 진행 모니터\r\n";
         content += "echo ===============================================\r\n";
         content += "powershell -NoProfile -Command \"Get-Content -Tail 30 '" + QDir::toNativeSeparators(logPath) + "'\"\r\n";
         content += "findstr /C:\"[DONE]\" \"" + QDir::toNativeSeparators(logPath) + "\" >nul 2>&1\r\n";
@@ -3304,7 +3304,7 @@ void MiyoBackend::openBackupTerminalLog()
         script.write(content.toUtf8());
         script.close();
     }
-    QProcess::startDetached("cmd.exe", {"/c", "start", "カメラ-Backup", QDir::toNativeSeparators(scriptPath)});
+    QProcess::startDetached("cmd.exe", {"/c", "start", "Predormition-Backup", QDir::toNativeSeparators(scriptPath)});
 #else
     // macOS — 컬러 + 스피너 애니메이션, 150ms refresh
     QString scriptPath = scriptDir + "/miyo_backup_tail.command";
@@ -3330,7 +3330,7 @@ void MiyoBackend::openBackupTerminalLog()
         content += "  ROWS=$(tput lines 2>/dev/null || echo 40)\n";
         content += "  TAIL_N=$((ROWS - 8))\n";
         content += "  echo -e \"${BOLD}${CYAN}═══════════════════════════════════════════════════════════════${RESET}\"\n";
-        content += "  echo -e \"${BOLD}${CYAN}  📦 カメラ 백업 진행 모니터  ${GRAY}$(date '+%H:%M:%S')${RESET}\"\n";
+        content += "  echo -e \"${BOLD}${CYAN}  📦 Predormition 백업 진행 모니터  ${GRAY}$(date '+%H:%M:%S')${RESET}\"\n";
         content += "  echo -e \"${BOLD}${CYAN}═══════════════════════════════════════════════════════════════${RESET}\"\n";
         content += "  if [ -f \"$LOG\" ]; then\n";
         content += "    tail -n $TAIL_N \"$LOG\"\n";
@@ -3386,7 +3386,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
     QFile f(m_terminalLogPath);
     if (!f.open(QIODevice::WriteOnly)) return;
     f.write("=========================================\n");
-    f.write(QString("  カメラ - %1\n").arg(platform.toUpper()).toUtf8());
+    f.write(QString("  Predormition - %1\n").arg(platform.toUpper()).toUtf8());
     f.write("=========================================\n\n");
     f.close();
 
@@ -3398,7 +3398,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
         QString content;
         content += "@echo off\r\n";
         content += "chcp 65001 >nul\r\n";
-        content += "title カメラ - " + platform.toUpper() + "\r\n";
+        content += "title Predormition - " + platform.toUpper() + "\r\n";
         content += ":loop\r\n";
         content += "cls\r\n";
         content += "type \"" + QDir::toNativeSeparators(logPath) + "\"\r\n";
@@ -3414,7 +3414,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
         script.write(content.toUtf8());
         script.close();
     }
-    QProcess::startDetached("cmd.exe", {"/c", "start", "カメラ", QDir::toNativeSeparators(scriptPath)});
+    QProcess::startDetached("cmd.exe", {"/c", "start", "Predormition", QDir::toNativeSeparators(scriptPath)});
 #else
     // macOS/Linux: 단순 tail -f — kernel inotify/kqueue 사용, CPU 거의 0
     // ★ 옛 애니메이션 (150ms clear+refresh) 은 CPU/메모리 부담 큼 → 사용자 요청으로 단순화
@@ -5400,7 +5400,7 @@ bool MiyoBackend::captureRealTweetPage(const QString &tweetUrl,
                     }
                     QString out = html;
                     QString metaTag = QString(
-                        "\n<!-- カメラ real Twitter capture (rendered DOM) -->\n"
+                        "\n<!-- Predormition real Twitter capture (rendered DOM) -->\n"
                         "<!-- source: %1 -->\n"
                         "<!-- captured: %2 -->\n")
                         .arg(tweetUrl.toHtmlEscaped(),
@@ -9193,12 +9193,12 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     script += "@echo off\r\nchcp 65001 >nul\r\n";
     // ★ 한글/유니코드 채널·제목 파일명 — Python(yt-dlp) UTF-8 강제 (윈도우 ANSI 코드페이지 폴백 → UnicodeError 방지)
     script += "set PYTHONUTF8=1\r\nset PYTHONIOENCODING=UTF-8\r\n";
-    script += "title カメラ - YouTube\r\n";
+    script += "title Predormition - YouTube\r\n";
     script += "set \"STATUS=" + QDir::toNativeSeparators(statusFile) + "\"\r\n";
     script += "set \"STOP_MARKER=" + QDir::toNativeSeparators(stopMarker) + "\"\r\n";
     script += "echo STARTED > \"%STATUS%\"\r\n";
     script += "echo =========================================\r\n";
-    script += "echo   カメラ - YouTube Download\r\n";
+    script += "echo   Predormition - YouTube Download\r\n";
     script += QString("echo   총 %1개 URL\r\n").arg(urls.size());
     script += "echo =========================================\r\n";
     script += "echo.\r\nset SUCCESS=0\r\nset FAIL=0\r\n\r\n";
@@ -9257,7 +9257,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     script += "echo 'STARTED' > \"$STATUS\"\n\n";
     script += "clear\n";
     script += "echo '========================================='\n";
-    script += "echo '  カメラ - " + plabel + " ダウンロード'\n";
+    script += "echo '  Predormition - " + plabel + " ダウンロード'\n";
     script += QString("echo '  총 %1개 URL'\n").arg(urls.size());
     script += "echo '========================================='\n";
     script += "echo ''\n\n";
@@ -9348,7 +9348,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     // Launch terminal with script
     log(QString("터미널에서 %1개 URL 다운로드 시작...").arg(urls.size()), "info", platform);
 #ifdef Q_OS_WIN
-    QProcess::startDetached("cmd.exe", {"/c", "start", "カメラ-YouTube", QDir::toNativeSeparators(scriptPath)});
+    QProcess::startDetached("cmd.exe", {"/c", "start", "Predormition-YouTube", QDir::toNativeSeparators(scriptPath)});
 #else
     QProcess::startDetached("/usr/bin/open", {scriptPath});
 #endif
@@ -11807,7 +11807,7 @@ void MiyoBackend::startTrad(const QString &configJson)
         // 임시 폴더 정리 (.trad_tmp)
         QDir(tempDir).removeRecursively();
 
-        FileHelper::setDownloadMeta(outputPath, "カメラ trad");
+        FileHelper::setDownloadMeta(outputPath, "Predormition trad");
 
         // ★ WebDAV 자동 업로드 (활성화 시)
         QMetaObject::invokeMethod(this, [this, outputPath]() {
@@ -12776,10 +12776,20 @@ void MiyoBackend::getSystemInfo()
 
         QStringList info;
         info << "═══════════════════════════════════";
-        info << "  カメラ 시스템 정보";
+        // ★ 옛 이름(カメラ)이 그대로 남아 있었다 — 앱 이름이 네 번 바뀌는 동안 여기만
+        //   따라오지 못했다. 판 이름은 CODENAME 에서 온다.
+        {
+            const QString codename = QStringLiteral(PREDORMITION_CODENAME);
+            info << QString("  Predormition%1 시스템 정보")
+                        .arg(codename.isEmpty() ? QString() : (" " + codename));
+        }
         info << "═══════════════════════════════════";
 
         // App version
+        info << QString("판: %1  (내부 %2)")
+                    .arg(QStringLiteral(PREDORMITION_CODENAME).isEmpty()
+                             ? QStringLiteral("(이름 없음)") : QStringLiteral(PREDORMITION_CODENAME),
+                         QStringLiteral(PREDORMITION_VERSION_STR));
         info << QString("앱 경로: %1").arg(QCoreApplication::applicationDirPath());
         info << QString("디스크 경로: %1").arg(m_config->tempDir().isEmpty() ? "(미설정)" : m_config->tempDir());
 
@@ -15457,7 +15467,7 @@ void MiyoBackend::writeStartupLog()
 
     QTextStream ts(&f);
     ts << "═══════════════════════════════════\n";
-    ts << "  カメラ System Log\n";
+    ts << "  Predormition System Log\n";
     ts << "  " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n";
     ts << "═══════════════════════════════════\n\n";
 

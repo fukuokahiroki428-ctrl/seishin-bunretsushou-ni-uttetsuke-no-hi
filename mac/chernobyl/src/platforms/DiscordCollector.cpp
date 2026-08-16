@@ -381,7 +381,7 @@ void DiscordCollector::runCollection()
         QFile f(m_terminalLogPath);
         f.open(QIODevice::WriteOnly);
         f.write("=========================================\n");
-        f.write("  カメラ - DISCORD\n");
+        f.write("  Predormition - DISCORD\n");
         f.write("=========================================\n\n");
         f.close();
     }
@@ -404,7 +404,7 @@ void DiscordCollector::runCollection()
             script.write(content.toUtf8());
             script.close();
         }
-        QProcess::startDetached("cmd.exe", {"/c", "start", "カメラ-Discord", QDir::toNativeSeparators(scriptPath)});
+        QProcess::startDetached("cmd.exe", {"/c", "start", "Predormition-Discord", QDir::toNativeSeparators(scriptPath)});
     }
 #else
     QString scriptPath = tempDir + "/miyo_discord_tail.command";
@@ -630,6 +630,6 @@ void DiscordCollector::saveToExcel(DiskJsonBuffer &buffer, const QString &saveDi
 
     QString filepath = saveDir + "/" + channelName + "_messages.xlsx";
     writer.save(filepath);
-    FileHelper::setDownloadMeta(filepath, "カメラ Discord");
+    FileHelper::setDownloadMeta(filepath, "Predormition Discord");
     emit m_signals->log(QString("  저장: %1").arg(filepath));
 }

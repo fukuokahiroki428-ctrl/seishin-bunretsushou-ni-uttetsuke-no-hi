@@ -9,6 +9,26 @@ file(READ "${CMAKE_CURRENT_LIST_DIR}/../../VERSION" PREDORMITION_VERSION)
 string(STRIP "${PREDORMITION_VERSION}" PREDORMITION_VERSION)
 project(Miyo VERSION ${PREDORMITION_VERSION} LANGUAGES CXX)
 
+# ── 판 이름(코드네임) ──────────────────────────────────────────────────────
+#   사용자에게 보이는 이름은 '上野' 다. 숫자(VERSION)는 기계용으로만 남긴다.
+#   왜 나누나:
+#     - CMake 의 project(VERSION) 은 숫자만 받는다. 上野 를 넣으면 configure 가 실패한다.
+#     - macOS 는 CFBundleShortVersionString 을 숫자로 비교해 판올림을 판단한다.
+#       문자열이면 업데이트 감지·Gatekeeper 가 어긋난다.
+#     - GitHub 릴리즈 자산 이름은 ASCII 만 허용된다.
+#   그래서 숫자는 조용히 두고, 창 제목·정보 화면에는 이름을 쓴다.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/../../CODENAME")
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../../CODENAME")
+    file(READ "${CMAKE_CURRENT_LIST_DIR}/../../CODENAME" PREDORMITION_CODENAME)
+    string(STRIP "${PREDORMITION_CODENAME}" PREDORMITION_CODENAME)
+else()
+    set(PREDORMITION_CODENAME "")
+endif()
+message(STATUS "판 이름: ${PREDORMITION_CODENAME} (내부 ${PREDORMITION_VERSION})")
+add_compile_definitions(
+    PREDORMITION_CODENAME="${PREDORMITION_CODENAME}"
+    PREDORMITION_VERSION_STR="${PREDORMITION_VERSION}")
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
