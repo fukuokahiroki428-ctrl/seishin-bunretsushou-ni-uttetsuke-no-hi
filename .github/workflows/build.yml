@@ -288,6 +288,35 @@ jobs:
           if ($sfSrc) { Copy-Item $sfSrc "$dist/tools/singlefile_extension" -Recurse -Force; Write-Host "  ✔ SingleFile 확장 포함" }
           else { Write-Host "  ⚠ SingleFile 확장 없음 — 페이지 통째 캡쳐 기능이 비활성" }
 
+          # ★ Chromium 번들 — Chrome for Testing (win64, BSD 라이선스)
+          #   맥은 진작 Resources/chromium 에 동봉하고 그걸 1순위로 쓰는데, 윈도우 배포본에는
+          #   브라우저가 아예 없었다. 그래서 Chrome 이 안 깔린 기계에서는 '진짜 페이지 캡쳐' 가
+          #   통째로 동작하지 않았다(실측: 이 저장소 담당자 기계에 Chrome 이 없고 Edge 도
+          #   EdgeCore 배치라 후보 7개가 전부 빗나갔다). 시스템 브라우저는 폴백이어야 한다.
+          #   앱은 <exe>/chromium/chrome.exe 를 먼저 본다.
+          $cftJson = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json"
+          $cftUrl = $null
+          foreach ($try in 1..3) {
+            try {
+              $meta = Invoke-RestMethod $cftJson -TimeoutSec 60 -ErrorAction Stop
+              $cftUrl = ($meta.channels.Stable.downloads.chrome | Where-Object { $_.platform -eq 'win64' }).url
+              if ($cftUrl) { Write-Host "  Chrome for Testing $($meta.channels.Stable.version)"; break }
+            } catch { Write-Host "  목록 받기 실패($try/3): $($_.Exception.Message)"; Start-Sleep -Seconds 5 }
+          }
+          if (-not $cftUrl) { throw "Chrome for Testing 주소를 얻지 못했습니다 — 브라우저 없는 배포본이 나가는 것을 막기 위해 중단합니다" }
+          $cftZip = "$env:RUNNER_TEMP/chrome-win64.zip"
+          & curl.exe -fL --retry 3 --retry-delay 5 -o $cftZip $cftUrl
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $cftZip)) { throw "Chrome for Testing 내려받기 실패" }
+          Expand-Archive $cftZip -DestinationPath "$dist/chromium" -Force
+          # 압축 안이 chrome-win64/ 한 겹으로 싸여 있으면 펴 준다(앱은 양쪽 다 보지만 경로가 짧은 편이 낫다).
+          if (Test-Path "$dist/chromium/chrome-win64/chrome.exe") {
+            Move-Item "$dist/chromium/chrome-win64/*" "$dist/chromium/" -Force
+            Remove-Item "$dist/chromium/chrome-win64" -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          if (-not (Test-Path "$dist/chromium/chrome.exe")) { throw "chrome.exe 가 dist/chromium 에 없습니다 — 압축 구조 확인 필요" }
+          $chMB = (Get-ChildItem "$dist/chromium" -Recurse -File | Measure-Object -Property Length -Sum).Sum/1MB
+          Write-Host ("  ✔ Chromium 번들: {0:N1} MB" -f $chMB)
+
           # ★ Python 환경 — Twitter/Bluesky 데몬(twikit/atproto)에 필수.
           #   bundle_python_win.bat 가 build_win/python_env 에 생성 → 앱은 <exe>/python_env/python.exe 를 찾으므로 dist 루트로 복사.
           if (Test-Path "build_win/python_env") {

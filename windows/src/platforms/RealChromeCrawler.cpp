@@ -60,6 +60,17 @@ QString RealChromeCrawler::findChromeExecutable() const
         << "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
         << "/Applications/Arc.app/Contents/MacOS/Arc";
 #elif defined(Q_OS_WIN)
+    // ★ 번들된 Chromium 최우선 — 앱 자체 동봉 (사용자 시스템 브라우저 의존성 제거).
+    //   맥은 진작 이렇게 하고 있었는데(Resources/chromium/Chromium.app) 윈도우 분기에는
+    //   번들 후보가 아예 없었다. 그래서 사용자 기계에 Chrome 이 없으면 '진짜 페이지 캡쳐' 가
+    //   통째로 안 돌았다 — 시스템 브라우저를 찾아 쓰는 것은 폴백이어야지 유일한 길이면 안 된다.
+    //   CI 가 Chrome for Testing(win64)을 dist/win/chromium 에 풀어 넣는다.
+    //   압축 안의 폴더 이름(chrome-win64)이 남는 경우까지 함께 본다.
+    {
+        const QString appDir = QCoreApplication::applicationDirPath();
+        candidates << appDir + "/chromium/chrome.exe"
+                   << appDir + "/chromium/chrome-win64/chrome.exe";
+    }
     QString programFiles = qEnvironmentVariable("ProgramFiles");
     QString programFilesX86 = qEnvironmentVariable("ProgramFiles(x86)");
     QString localAppData = qEnvironmentVariable("LOCALAPPDATA");
