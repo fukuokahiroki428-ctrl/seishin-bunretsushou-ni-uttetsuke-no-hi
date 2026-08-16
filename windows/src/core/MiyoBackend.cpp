@@ -155,6 +155,22 @@ static void killByCommandLine(const QString &imageName, const QString &needle)
         .arg(img, pat);
     QProcess::execute("powershell", {"-NoProfile", "-NonInteractive", "-Command", ps});
 }
+
+// 캡쳐에 쓰일 수 있는 Chromium 계열 실행 파일 이름 전부.
+//   ★ chrome.exe 만 보면 안 된다. findChromeExecutable() 은 Chrome 이 없으면 Edge 를,
+//     그것도 없으면 Brave 를 쓴다. Chrome 이 안 깔린 기계(윈도우 기본 상태가 그렇다)에서는
+//     캡쳐 브라우저가 msedge.exe 로 뜨는데, 정리 코드가 chrome.exe 만 찾아서 한 번도
+//     정리되지 않았다 — 프로세스와 프로필 폴더가 세션마다 쌓인다.
+//     맥은 `pkill -f chrome_capture_profile` 이라 이름을 안 보고 잡아서 이 문제가 없다.
+//     윈도우로 옮기며 이미지 이름 필터를 넣을 때 chrome.exe 하나로 좁힌 것이 원인이다.
+//   ※ 명령줄 필터(needle)는 그대로 둔다 — 그게 없으면 사용자 브라우저까지 죽는다.
+static void killCaptureBrowsers(const QString &needle)
+{
+    for (const QString &img : { QStringLiteral("chrome.exe"),
+                                QStringLiteral("msedge.exe"),
+                                QStringLiteral("brave.exe") })
+        killByCommandLine(img, needle);
+}
 #endif
 
 // ───────────────────────────────────────────────────────────
@@ -222,7 +238,7 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     QProcess::execute("/usr/bin/pkill", {"-f", "miyo_.*_tail.command"});
     QProcess::execute("/usr/bin/pkill", {"-f", "miyo_backup_tail.command"});
 #elif defined(Q_OS_WIN)
-    killByCommandLine("chrome.exe", "chrome_capture_profile");
+    killCaptureBrowsers("chrome_capture_profile");
     // ★ 여기 있던 두 줄은 지웠다:
     //     taskkill /F /IM "Chrome for Testing.exe"
     //     taskkill /F /IM chrome_crashpad_handler.exe
@@ -4601,7 +4617,7 @@ void MiyoBackend::killZombieChromes()
 #elif defined(Q_OS_WIN)
     // COMMANDLINE 은 taskkill 에 없는 필터라 아무것도 안 죽었고, 나머지 둘은 필터가
     // 없어 사용자가 쓰던 Chrome for Testing·본인 Chrome 의 크래시 핸들러까지 죽였다.
-    killByCommandLine("chrome.exe", "chrome_capture_profile");
+    killCaptureBrowsers("chrome_capture_profile");
 #endif
     log(QString("좀비 정리 완료 — capture chrome + 앱 내부 Chromium + helper/crashpad").arg(killed),
         "success", "settings");
