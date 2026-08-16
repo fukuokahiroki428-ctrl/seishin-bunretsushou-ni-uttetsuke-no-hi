@@ -581,14 +581,27 @@ async def main():
     consecutive_404 = 0       # Track consecutive 404s
 
     # Process commands from stdin
+    #   ★ Windows 는 기본 이벤트 루프가 Proactor 인데, 거기서는 connect_read_pipe 로
+    #     stdin 을 읽을 수 없다. 붙이면 _ProactorReadPipeTransport._loop_reading 에서
+    #     예외가 나고 이후 명령을 하나도 받지 못한다. 앱 쪽에서는 ready 까지는 받아
+    #     놓고(이 루프 진입 전에 출력되므로) 30초를 기다리다
+    #     "Daemon: incomplete response (0 bytes, 30000ms)" 로 포기한다 — 실측.
+    #     그래서 윈도우에서는 blocking readline 을 스레드에서 돌려 같은 모양으로 쓴다.
     loop = asyncio.get_event_loop()
-    reader = asyncio.StreamReader()
-    protocol = asyncio.StreamReaderProtocol(reader)
-    await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+    if sys.platform == "win32":
+        async def _read_line():
+            return await loop.run_in_executor(None, sys.stdin.buffer.readline)
+    else:
+        reader = asyncio.StreamReader()
+        protocol = asyncio.StreamReaderProtocol(reader)
+        await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+
+        async def _read_line():
+            return await reader.readline()
 
     while True:
         try:
-            line = await reader.readline()
+            line = await _read_line()
             if not line:
                 break  # EOF
             line = line.decode('utf-8').strip()
