@@ -91,22 +91,56 @@ int main(int argc, char *argv[])
 #endif
 
     QApplication app(argc, argv);
-    app.setApplicationName("Predormition");
+    // ★ 이름은 빌드에서 온다(APP_NAME_ASCII). 여기 박아 두면 CMake 의 이름과
+    //   어긋나 데이터 폴더가 갈라진다 — 실제로 그렇게 갈라진 적이 있다.
+    //   폴더 이름은 ASCII 로 둔다. 일본어 폴더는 NAS·백업 경로에서 NFC/NFD 로
+    //   어긋나 사고가 나기 쉽다(사용자에게 보이는 이름은 번들이 따로 갖는다).
+    app.setApplicationName(QStringLiteral(APP_NAME_ASCII));
     app.setOrganizationName("Miyo");
 
-    // ★ 앱 이름 변경(Chernobyl → Predormition) 시 사용자 데이터 자동 이전.
-    //   AppDataLocation 이 .../Miyo/Chernobyl → .../Miyo/Predormition 로 바뀌므로,
-    //   새 폴더가 없고 옛 폴더가 있으면 통째로 옮긴다(설정·토큰·AI 수정본·python_env 유지).
+    // ★ 앱 이름이 바뀌면 사용자 데이터 폴더도 바뀐다 — 통째로 이어받는다.
+    //
+    //   AppDataLocation 은 .../Miyo/<앱이름> 이다. 이름을 바꾸는 순간 새 폴더가
+    //   생기고, 예전 것은 그 자리에 남아 아무도 안 본다. 거기에는 설정만 있는 게
+    //   아니라 AI 모델(약 9GB)·python_env·크롬 프로필·색인 DB 가 전부 들어 있다.
+    //   그대로 두면 사용자는 AI 를 다시 받고 로그인을 다시 해야 한다.
+    //
+    //   ★ 옛 이름을 코드에 박으면 안 된다. 예전엔 "Chernobyl" 이 박혀 있었는데,
+    //     이 앱은 이미 다섯 번째 이름이다(カメラ → チェルノブイリ → Chernobyl →
+    //     Predormition → …). 박아 두면 다음 변경 때 또 같은 일이 난다.
+    //     그래서 형제 폴더 중 '가장 최근에 쓰던 것' 을 찾아 이어받는다.
+    //
+    //   같은 디스크 안 rename 이라 9GB 라도 즉시 끝난다(복사가 아니다).
     {
-        const QString base = QFileInfo(
-            QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).absolutePath();
-        const QString oldDir = base + "/Chernobyl";
-        const QString newDir = base + "/Predormition";
-        if (!QFileInfo::exists(newDir) && QFileInfo::exists(oldDir)) {
-            if (QDir().rename(oldDir, newDir))
-                qInfo() << "[startup] user data migrated:" << oldDir << "→" << newDir;
-            else
-                qWarning() << "[startup] user data migration failed — 기존 설정이 새 폴더에 없을 수 있음";
+        const QString mine = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        const QString base = QFileInfo(mine).absolutePath();          // .../Miyo
+        const bool mineEmpty = !QFileInfo::exists(mine)
+                               || QDir(mine).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot);
+        if (mineEmpty) {
+            QFileInfo best;
+            qint64 bestTime = 0;
+            const auto dirs = QDir(base).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+            for (const QFileInfo &d : dirs) {
+                if (d.absoluteFilePath() == QFileInfo(mine).absoluteFilePath()) continue;
+                // 이 앱이 쓰던 폴더인지 — 우리 흔적이 하나라도 있어야 한다.
+                //   (Miyo 아래에 다른 앱 폴더가 있어도 잘못 가져오지 않게)
+                static const char *marks[] = {"miyo_config.json", "llm", "python_env_arm64",
+                                              "script_overrides", "archive_index.db"};
+                bool ours = false;
+                for (const char *m : marks)
+                    if (QFileInfo::exists(d.absoluteFilePath() + "/" + QString::fromLatin1(m))) { ours = true; break; }
+                if (!ours) continue;
+                const qint64 t = d.lastModified().toMSecsSinceEpoch();
+                if (t > bestTime) { bestTime = t; best = d; }
+            }
+            if (best.exists()) {
+                QDir().mkpath(base);
+                if (QFileInfo::exists(mine)) QDir(mine).removeRecursively();   // 비어 있는 새 폴더
+                if (QDir().rename(best.absoluteFilePath(), mine))
+                    qInfo() << "[startup] 사용자 데이터 이어받음:" << best.fileName() << "→" << QFileInfo(mine).fileName();
+                else
+                    qWarning() << "[startup] 데이터 이어받기 실패 — 옛 폴더는 그대로 둡니다:" << best.absoluteFilePath();
+            }
         }
     }
     app.setQuitOnLastWindowClosed(false);

@@ -12780,8 +12780,9 @@ void MiyoBackend::getSystemInfo()
         //   따라오지 못했다. 판 이름은 CODENAME 에서 온다.
         {
             const QString codename = QStringLiteral(PREDORMITION_CODENAME);
-            info << QString("  Predormition%1 시스템 정보")
-                        .arg(codename.isEmpty() ? QString() : (" " + codename));
+            info << QString("  %1%2 시스템 정보")
+                        .arg(QStringLiteral(APP_NAME_DISPLAY),
+                             codename.isEmpty() ? QString() : (" " + codename));
         }
         info << "═══════════════════════════════════";
 
