@@ -171,6 +171,46 @@ static void killCaptureBrowsers(const QString &needle)
                                 QStringLiteral("brave.exe") })
         killByCommandLine(img, needle);
 }
+
+// ★ 모니터링 터미널의 한글·일본어가 전부 '?' 로 나오던 문제.
+//   원인은 인코딩이 아니다. 확인한 것:
+//     로그 파일   E3 82 AB E3 83 A1 E3 83 A9 …  = "カメラ" 정상 UTF-8, '?' 0개
+//     chcp 65001  \r\r\n 로 적혀 있어도 정상 적용됨(직접 시험)
+//     콘솔 글꼴   HKCU\Console FaceName = Consolas  ← 한글·일본어 글리프가 없다
+//   글꼴에 글자가 없으니 conhost 가 '?' 로 채운다. 파일도 코드페이지도 멀쩡한데 화면만 깨진다.
+//   레지스트리 기본값을 바꾸면 사용자의 다른 콘솔까지 건드리므로, 그 창에서만 바꾼다.
+//   실패하면 조용히 넘어간다 — 글꼴 때문에 모니터링을 못 열 이유는 없다.
+static void writeConsoleFontHelper(const QString &dir)
+{
+    QFile f(dir + "/miyo_console_font.ps1");
+    if (!f.open(QIODevice::WriteOnly)) return;   // ★ Text 금지 — \n 이 \r\r\n 이 된다
+    const QString ps = QStringLiteral(
+        "$ErrorActionPreference='SilentlyContinue'\r\n"
+        "Add-Type -AssemblyName System.Drawing\r\n"
+        "$code=@'\r\n"
+        "using System;using System.Runtime.InteropServices;\r\n"
+        "public class CF{\r\n"
+        "  [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]\r\n"
+        "  public struct FI{public uint cb;public bool max;public uint idx;\r\n"
+        "    public short x;public short y;public uint fam;public uint wt;\r\n"
+        "    [MarshalAs(UnmanagedType.ByValTStr,SizeConst=32)] public string fn;}\r\n"
+        "  [DllImport(\"kernel32.dll\",SetLastError=true)]\r\n"
+        "  public static extern IntPtr GetStdHandle(int n);\r\n"
+        "  [DllImport(\"kernel32.dll\",SetLastError=true,CharSet=CharSet.Unicode)]\r\n"
+        "  public static extern bool SetCurrentConsoleFontEx(IntPtr h,bool mx,ref FI f);\r\n"
+        "  public static bool Set(string name,short size){\r\n"
+        "    FI f=new FI();f.cb=(uint)Marshal.SizeOf(typeof(FI));\r\n"
+        "    f.idx=0;f.x=0;f.y=size;f.fam=54;f.wt=400;f.fn=name;\r\n"
+        "    return SetCurrentConsoleFontEx(GetStdHandle(-11),false,ref f);}}\r\n"
+        "'@\r\n"
+        "Add-Type -TypeDefinition $code\r\n"
+        "$have=(New-Object System.Drawing.Text.InstalledFontCollection).Families.Name\r\n"
+        "foreach($n in @('MS Gothic','NSimSun','Malgun Gothic','Meiryo')){\r\n"
+        "  if($have -contains $n){ [void][CF]::Set($n,16); break }\r\n"
+        "}\r\n");
+    f.write(ps.toUtf8());
+    f.close();
+}
 #endif
 
 // ───────────────────────────────────────────────────────────
@@ -3267,6 +3307,7 @@ void MiyoBackend::openBackupTerminalLog()
     QString platform = "backup";
     QString scriptDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_" + platform;
     QDir().mkpath(scriptDir);
+    writeConsoleFontHelper(scriptDir);   // 콘솔 글꼴(CJK) 보조 스크립트
     QString logPath = scriptDir + "/.miyo_" + platform + "_log.txt";
     m_terminalLogPaths[platform] = logPath;
     m_terminalLogPath = logPath;
@@ -3295,6 +3336,9 @@ void MiyoBackend::openBackupTerminalLog()
         QString content;
         content += "@echo off\r\n";
         content += "chcp 65001 >nul\r\n";
+        content += "powershell -NoProfile -ExecutionPolicy Bypass -File \"" +
+                   QDir::toNativeSeparators(scriptDir + "/miyo_console_font.ps1") +
+                   "\" >nul 2>&1\r\n";
         content += "title カメラ Backup Monitor\r\n";
         content += "echo ===============================================\r\n";
         content += "echo   📦 カメラ 백업 진행 모니터\r\n";
@@ -3401,6 +3445,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
     //   창 하나를 아끼는 대신 로그를 못 읽게 만들었다. 맥 방식으로 되돌린다.
     QString scriptDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_" + platform;
     QDir().mkpath(scriptDir);
+    writeConsoleFontHelper(scriptDir);   // 콘솔 글꼴(CJK) 보조 스크립트
 
     QString logPath = scriptDir + "/.miyo_" + platform + "_log.txt";
     m_terminalLogPaths[platform] = logPath;
@@ -3423,6 +3468,9 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
         QString content;
         content += "@echo off\r\n";
         content += "chcp 65001 >nul\r\n";
+        content += "powershell -NoProfile -ExecutionPolicy Bypass -File \"" +
+                   QDir::toNativeSeparators(scriptDir + "/miyo_console_font.ps1") +
+                   "\" >nul 2>&1\r\n";
         content += "title Predormition - " + platform.toUpper() + "\r\n";
         // ★ 렉 방지 — 옛 방식은 `:loop / cls / type 전체파일 / timeout 2 / goto loop` 라
         //   로그가 길어지면 매 2초 전체 파일을 다시 그려(콘솔 full clear+redraw) CPU/GPU 부담 → 렉.
