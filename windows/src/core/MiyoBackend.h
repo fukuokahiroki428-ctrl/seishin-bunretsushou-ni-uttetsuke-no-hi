@@ -334,7 +334,6 @@ public:
     void closeAllTerminalLogs();
     QString m_terminalLogPath;
     QMap<QString, QString> m_terminalLogPaths;
-    QSet<QString> m_openTerminalBases;   // ★ 다중 수집: 베이스 플랫폼당 터미널 1개만 (twitter#0/#1 → twitter 하나)
     QMap<QString, qint64> m_lastStatsUpdate;
 
     // Log batching — 로그 배치 처리로 UI 부하 감소

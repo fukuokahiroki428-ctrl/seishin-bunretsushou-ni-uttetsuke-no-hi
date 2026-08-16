@@ -3388,22 +3388,23 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
 {
     // ★ .command 는 로컬 temp 에 (NAS/외장 마운트는 POSIX 실행권한 보존 X)
     //   사용자 tempDir 이 NAS 면 .command 실행 실패. 로컬 /tmp 사용.
-    // ★ 다중 수집: trackKey(twitter#0/#1 …)마다 따로 열지 말고 베이스 플랫폼(twitter) 하나로 통합.
-    //   타겟 N개여도 터미널 1개 — 모든 타겟이 같은 통합 로그에 쓰고, 그 로그를 한 터미널이 tail.
-    QString base = platform.section('#', 0, 0);
-    QString scriptDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_" + base;
+    // ★ 트랙마다 터미널 하나 — 맥과 같다.
+    //   예전엔 베이스 플랫폼(twitter)으로 묶어 터미널 1개만 띄우고 twitter#0/#1 이 같은 로그에
+    //   같이 썼다. 그러면 두 트랙의 줄이 한 창에서 서로 끼어들어 읽을 수가 없다. 실제로 이렇게 나온다:
+    //       수집 시작 (twitter#0)
+    //       ━━━ [TWITTER] 사용자 선택 옵션 ━━━
+    //       수집 시작 (twitter#1)
+    //       ━━━ [TWITTER] 사용자 선택 옵션 ━━━
+    //         ☑ ON : downloadMedia, …      ← 어느 트랙 것인지 알 수 없다
+    //         ☑ ON : downloadMedia, …
+    //   맥에는 이 통합이 없다(m_openTerminalBases 자체가 없다). 윈도우로 옮기며 들어간 것이고,
+    //   창 하나를 아끼는 대신 로그를 못 읽게 만들었다. 맥 방식으로 되돌린다.
+    QString scriptDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_" + platform;
     QDir().mkpath(scriptDir);
 
-    QString logPath = scriptDir + "/.miyo_" + base + "_log.txt";
-    m_terminalLogPaths[platform] = logPath;   // 이 trackKey 의 writeTerminalLog → 통합 로그
-    m_terminalLogPaths[base]     = logPath;    // closeTerminalLog(base) 가 [DONE] 쓸 대상
+    QString logPath = scriptDir + "/.miyo_" + platform + "_log.txt";
+    m_terminalLogPaths[platform] = logPath;
     m_terminalLogPath = logPath;  // backward compat
-
-    qWarning() << "[openTerminalLog] platform=" << platform << "base=" << base
-               << "alreadyOpen=" << m_openTerminalBases.contains(base);
-    // 이미 이 베이스의 터미널이 열려있으면 새 터미널을 안 엶 — 같은 로그만 공유.
-    if (m_openTerminalBases.contains(base)) return;
-    m_openTerminalBases.insert(base);
     QFile::remove(logPath);
 
     // Create the log file
@@ -4439,11 +4440,10 @@ void MiyoBackend::startCollection(const QString &configJson)
             bool platformIdle = !m_isRunning.value(platformName, false);
             if (platformIdle) {
                 runJs(QString("setRunning('%1', false)").arg(platformName));
-                // ★ 통합 터미널은 같은 베이스의 모든 trackKey 가 끝났을 때만 닫는다(조기 종료 방지).
-                closeTerminalLog(platformName);
-                m_openTerminalBases.remove(platformName);
             }
             m_stopRequested[trackKey] = false;
+            // ★ 터미널은 트랙마다 하나라 트랙이 끝나면 그 트랙 것만 닫는다 (맥과 같다).
+            closeTerminalLog(trackKey);
             m_collectionThreads.remove(trackKey);
             // 모든 수집이 끝났으면 절전 해제
             if (m_collectionThreads.isEmpty()) {
