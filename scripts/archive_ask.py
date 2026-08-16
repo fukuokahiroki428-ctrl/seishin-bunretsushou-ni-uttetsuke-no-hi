@@ -19,7 +19,7 @@
     python3 archive_ask.py "질문"              # 한 번 묻고 끝
     python3 archive_ask.py --search "검색어"    # AI 없이 검색만
 """
-import argparse, json, os, re, sqlite3, sys, urllib.request
+import argparse, json, os, re, sqlite3, sys, unicodedata, urllib.request
 from pathlib import Path
 
 def default_db() -> Path:
@@ -53,7 +53,7 @@ STOP = {'뭐','뭔','무슨','어떤','어느','있어','있나','있었','알�
 
 def tokens(q: str) -> list[str]:
     """검색어 뽑기 — 조사·의문사를 빼고 의미가 있는 조각만 남긴다."""
-    parts = re.split(r'[\s,./?!"\'()\[\]{}<>:;]+', q)
+    parts = re.split(r'[\s,./?!"\'()\[\]{}<>:;]+', nfc(q))
     out = []
     for p in parts:
         p = p.strip()
@@ -61,6 +61,53 @@ def tokens(q: str) -> list[str]:
             continue
         out.append(p)
     return out[:8]
+
+
+# ── 질문 의도 읽기 ─────────────────────────────────────────────────────────
+#   35만 건에서 써 보니 두 가지가 무너졌다.
+#
+#   ① "몇 개 있어?" → 모델이 파일명 속 픽시브 사용자 ID(44554758)를 개수로 답했다.
+#      숫자가 필요한 질문은 애초에 모델에게 맡기면 안 된다. 코드가 세서 답한다.
+#   ② "가장 최근에 모은 게 뭐야?" → '최근'·'모은' 을 그냥 검색어로 써서 아무 파일이나
+#      걸렸고, 2023년 파일을 '가장 최근' 이라고 답했다. 시간 질문은 정렬 문제지
+#      검색 문제가 아니다.
+COUNT_WORDS  = ('몇 개', '몇개', '몇 건', '몇건', '개수', '얼마나', '갯수', 'how many')
+RECENT_WORDS = ('가장 최근', '최근에', '최신', '마지막으로', '요즘', 'latest', 'recent', 'newest')
+OLDEST_WORDS = ('가장 오래', '제일 오래', '처음', '맨 처음', 'oldest', 'earliest')
+
+
+def nfc(s: str) -> str:
+    """
+    한글을 NFC 로 맞춘다.
+
+    ★ 맥에서 넘어오는 한글은 NFD(자모 분리)다. '가장 최근' 을 NFD 로 받으면
+      이 파일에 NFC 로 적힌 낱말과 한 글자도 안 맞아, 의도 판별이 통째로
+      빗나간다(실제로 앱에서만 시간 질문이 안 먹었다 — 터미널에서는 됐다).
+      검색어 쪼개기도 같은 이유로 여기서 한 번 맞춰 둔다.
+    """
+    return unicodedata.normalize('NFC', s)
+
+
+def detect_intent(q: str) -> str:
+    """'count' | 'recent' | 'oldest' | '' — 빈 문자열이면 평범한 검색."""
+    low = nfc(q).lower()
+    if any(w in low for w in RECENT_WORDS): return 'recent'
+    if any(w in low for w in OLDEST_WORDS): return 'oldest'
+    if any(w in low for w in COUNT_WORDS):  return 'count'
+    return ''
+
+
+def by_time(db: sqlite3.Connection, newest: bool, limit: int) -> list[dict]:
+    """수집 시각(mtime) 순. '모은/받은' 기준이라 EXIF 촬영일이 아니라 파일 시각을 쓴다."""
+    order = 'DESC' if newest else 'ASC'
+    rows = db.execute(f"""
+        SELECT path,name,kind,platform,artist,title,description,source_url,taken,mtime,
+               substr(body,1,?)
+        FROM files WHERE mtime > 0 ORDER BY mtime {order} LIMIT ?""",
+        (SNIPPET, limit)).fetchall()
+    return [{'path': r[0], 'name': r[1], 'kind': r[2], 'platform': r[3], 'artist': r[4],
+             'title': r[5], 'description': r[6], 'source_url': r[7], 'taken': r[8],
+             'mtime': r[9], 'body': r[10], 'score': 1} for r in rows]
 
 
 def search(db: sqlite3.Connection, query: str, limit: int = TOP_K,
@@ -90,6 +137,11 @@ def search(db: sqlite3.Connection, query: str, limit: int = TOP_K,
             except sqlite3.OperationalError:
                 rows = []
         if not rows:   # 짧은 검색어 또는 FTS 실패 → LIKE 폴백
+            # ★ 2글자 이하는 어쩔 수 없이 전체 훑기(LIKE)다. trigram 인덱스는 3글자부터라
+            #   2글자로는 인덱스를 탈 수 없다. 35만 건에서 약 1초 — 접두 매칭('한글'*)로
+            #   먼저 좁혀 보았지만 그것도 인덱스를 못 타서 오히려 느렸다(1.03초 → 1.14초).
+            #   1초는 대화형으로 견딜 만하고, 2글자 검색은 드물다. 그대로 둔다.
+            #   정말 빠르게 하려면 2-gram 인덱스를 따로 만들어야 하는데 DB 가 두 배가 된다.
             like = f'%{t}%'
             rows = db.execute("""
                 SELECT path,name,kind,platform,artist,title,description,source_url,
@@ -141,7 +193,8 @@ def summarize(items: list[dict], total: int) -> str:
     #   예전엔 "대표 40건만 실었다" 를 함께 넣었더니, 개수를 물었을 때 모델이
     #   435건 대신 40건이라고 답했다 — 숫자가 둘 있으면 작은 모델은 고른다.
     parts = [f"질문에 해당하는 자료는 정확히 {total}건이다"
-             " (개수를 물으면 반드시 이 숫자로 답한다)"]
+             " (개수를 물으면 반드시 이 숫자로 답한다)",
+             "파일 이름 속 긴 숫자는 사이트의 글·계정 ID 다 — 개수가 아니다"]
     if artists:
         parts.append("작가: " + ", ".join(f"{a}({c}건)" for a, c in artists.most_common(5)))
     if plats:
@@ -259,7 +312,15 @@ def main() -> int:
     if not args.question:
         ap.print_help(); return 1
 
-    items, total, allhits = search(db, args.question, args.top, want_total=True)
+    intent = detect_intent(args.question)
+
+    # ★ 시간 질문은 검색이 아니라 정렬 문제다. '최근·모은' 을 검색어로 쓰면
+    #   아무 파일이나 걸리고, 실제로 2023년 파일을 '가장 최근' 이라 답했다.
+    if intent in ('recent', 'oldest'):
+        items = by_time(db, intent == 'recent', args.top)
+        allhits, total = items, len(items)
+    else:
+        items, total, allhits = search(db, args.question, args.top, want_total=True)
     if not items:
         if args.json:
             print(json.dumps({'ok': True, 'answer': '색인에서 관련 자료를 찾지 못했습니다.',
@@ -269,6 +330,45 @@ def main() -> int:
     if args.json:
         srcs = [{'name': d['name'], 'artist': d['artist'] or '', 'title': d['title'] or '',
                  'url': d['source_url'] or '', 'path': d['path']} for d in items[:12]]
+
+        # ★ 개수 질문은 AI 를 거치지 않는다. 35만 건에서 시험했더니 모델이 파일명 속
+        #   픽시브 사용자 ID(44554758)를 개수로 답했다. 숫자는 코드가 세면 틀릴 수 없다.
+        # ★ 시간 질문도 코드가 답한다. 모델에 맡기면 "…html 입니다. 이 파일은 …html
+        #   라는 이름으로 저장되었으며" 처럼 파일명만 되풀이하고 정작 '언제' 가 빠진다.
+        if intent in ('recent', 'oldest') and items:
+            import datetime
+            head = items[0]
+            when = datetime.datetime.fromtimestamp(head['mtime']).strftime('%Y-%m-%d %H:%M') \
+                   if head.get('mtime') else '(시각 없음)'
+            label = '가장 최근에 모은 것' if intent == 'recent' else '가장 먼저 모은 것'
+            line = f"{label}은 {when} 의 {head['name']} 입니다."
+            bits = []
+            if head.get('artist'):   bits.append(f"작가 {head['artist']}")
+            if head.get('platform'): bits.append(f"출처 {head['platform']}")
+            if bits: line += " (" + " · ".join(bits) + ")"
+            if len(items) > 1:
+                more = []
+                for d in items[1:4]:
+                    w = datetime.datetime.fromtimestamp(d['mtime']).strftime('%m-%d %H:%M') \
+                        if d.get('mtime') else ''
+                    more.append(f"{w} {d['name'][:44]}")
+                line += "\n그 다음: " + " / ".join(more)
+            print(json.dumps({'ok': True, 'answer': line, 'sources': srcs, 'total': total,
+                              'exact': True}, ensure_ascii=False))
+            return 0
+
+        if intent == 'count':
+            from collections import Counter
+            kinds = Counter(d['kind'] for d in allhits if d['kind'])
+            arts  = Counter(d['artist'] for d in allhits if d['artist'])
+            line = f"{total}건 있습니다."
+            if kinds:
+                line += " (" + ", ".join(f"{k} {c}" for k, c in kinds.most_common(4)) + ")"
+            if arts and len(arts) <= 3:
+                line += " 작가: " + ", ".join(f"{a}({c})" for a, c in arts.most_common(3))
+            print(json.dumps({'ok': True, 'answer': line, 'sources': srcs, 'total': total,
+                              'exact': True}, ensure_ascii=False))
+            return 0
         if not llm_alive():
             # AI 가 꺼져 있어도 검색 결과는 준다 — 아무것도 못 하는 것보다 낫다.
             print(json.dumps({'ok': True, 'noai': True, 'sources': srcs, 'total': total,
