@@ -451,7 +451,9 @@ QString userPythonEnvDir()
            + "/python_env" KAMERA_PY_ARCH;
 }
 
-#ifdef Q_OS_MACOS
+// ★ 이 두 헬퍼는 맥 전용 가드 안에 있었다. activePythonEnvDir 의 윈도우 갈래도 쓰게 되면서
+//   윈도우까지 열었다 — 가드를 그대로 두면 error C3861(identifier not found)로 빌드가 깨진다.
+#if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
 // 심볼릭 링크/실행권한 보존이 필요(standalone python 은 symlink 포함) → cp -a 로 복사.
 static bool copyTreePreserving(const QString &src, const QString &dst)
 {

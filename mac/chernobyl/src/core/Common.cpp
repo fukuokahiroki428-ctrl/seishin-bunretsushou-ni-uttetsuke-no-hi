@@ -426,7 +426,9 @@ QString userPythonEnvDir()
            + "/python_env" KAMERA_PY_ARCH;
 }
 
-#ifdef Q_OS_MACOS
+// ★ activePythonEnvDir 의 윈도우 갈래도 이 둔 헬퍼를 쓴다 — 가드를 함께 열어 둔다
+//   (윈도우 트리에서 같은 가드를 두면 error C3861 로 빌드가 깨졌다).
+#if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
 // 심볼릭 링크/실행권한 보존이 필요(standalone python 은 symlink 포함) → cp -a 로 복사.
 static bool copyTreePreserving(const QString &src, const QString &dst)
 {
