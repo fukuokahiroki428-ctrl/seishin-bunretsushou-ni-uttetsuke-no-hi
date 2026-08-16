@@ -1236,5 +1236,10 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
 
 if __name__ == "__main__":
     # Ignore SIGPIPE
-    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    #   ★ SIGPIPE 는 POSIX 신호라 Windows 에는 없다. 그대로 부르면 시작하자마자
+    #     AttributeError 로 죽고, 앱은 "Daemon: ready signal not received" 뒤
+    #     TID 폴백으로 넘어간다 — 즉 윈도우에서 twikit 데몬이 한 번도 뜬 적이 없다.
+    #     (실측: Windows 11 / Python 3.14.3 / twikit 2.3.3 정상 설치 상태에서도 동일)
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     asyncio.run(main())
