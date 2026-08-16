@@ -23,6 +23,8 @@
 #include <QFileInfo>
 #include <QDirIterator>
 #include <QDir>
+#include <QVersionNumber>
+#include <algorithm>
 #include <QDateTime>
 #include <QStandardPaths>
 #include <QTimer>
@@ -79,6 +81,24 @@ QString RealChromeCrawler::findChromeExecutable() const
     if (!localAppData.isEmpty()) {
         candidates << localAppData + "\\Google\\Chrome\\Application\\chrome.exe"
                    << localAppData + "\\Microsoft\\Edge\\Application\\msedge.exe";
+    }
+    // ★ 요즘 Edge 배치 — ...\Microsoft\EdgeCore\<버전>\msedge.exe
+    //   Edge 를 Application 폴더가 아니라 버전별 EdgeCore 폴더에 두는 설치가 있다.
+    //   사용자 기계가 그렇다(152.0.4191.19). 위 고정 경로만 보면 Chrome 도 Edge 도
+    //   못 찾아 findChromeExecutable() 이 빈 값을 주고, 그러면 '진짜 페이지 캡쳐' 가
+    //   통째로 동작하지 않는다(트위터는 이 토글이 기본 켜짐이다).
+    //   EdgeCore 의 msedge.exe 는 CDP 브라우저로 멀쩡히 돌아간다 — 직접 띄워
+    //   /json/version 이 "Edg/152.0.4191.19" 로 답하는 것을 확인했다.
+    for (const QString &base : { programFilesX86, programFiles, localAppData }) {
+        if (base.isEmpty()) continue;
+        QDir core(base + "\\Microsoft\\EdgeCore");
+        if (!core.exists()) continue;
+        QStringList vers = core.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        std::sort(vers.begin(), vers.end(), [](const QString &a, const QString &b) {
+            return QVersionNumber::fromString(a) > QVersionNumber::fromString(b);
+        });
+        for (const QString &v : vers)
+            candidates << core.absolutePath() + "/" + v + "/msedge.exe";
     }
 #else
     candidates
