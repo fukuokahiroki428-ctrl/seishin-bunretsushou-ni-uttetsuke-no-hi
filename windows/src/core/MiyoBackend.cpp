@@ -5663,6 +5663,7 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
             auto startDone = std::make_shared<QSemaphore>(0);
             auto startOk = std::make_shared<bool>(false);
             QMetaObject::invokeMethod(this, [this, chromePtr, startDone, startOk]() {
+                if (!*chromePtr) { startDone->release(); return; }   // 트랙 종료로 슬롯이 비워짐
                 (*chromePtr)->start([this, startDone, startOk](bool ok) {
                     *startOk = ok;
                     if (!ok) log("실제 Chrome 시작 실패 — Chrome/Edge 설치 확인", "error", "twitter");
@@ -5698,6 +5699,7 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
         }
         auto cookieDone = std::make_shared<QSemaphore>(0);
         QMetaObject::invokeMethod(this, [this, chromePtr, cookieArr, cookieDone]() {
+            if (!*chromePtr) { cookieDone->release(); return; }   // 트랙 종료로 슬롯이 비워짐
             (*chromePtr)->setCookies(cookieArr, [cookieDone](bool){ cookieDone->release(); });
         }, Qt::QueuedConnection);
         cookieDone->tryAcquire(1, 5000);  // 쿠키 주입 5초 안에 끝남 보장
@@ -5729,6 +5731,7 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
 
     QString libCode = s_sfLibCode;
     QMetaObject::invokeMethod(this, [this, chromePtr, url, filePath, libCode, waitMs, done, resultOk]() {
+        if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
         (*chromePtr)->navigate(url, [this, chromePtr, filePath, url, libCode, waitMs, done, resultOk](bool navOk) {
             if (!navOk) {
                 log("CDP navigate 실패 — 캡쳐 스킵", "warning", "twitter");
@@ -5747,6 +5750,7 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                     return document.readyState;
                 })()
             )JS").arg(qMin(waitMs, 3000));
+            if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
             (*chromePtr)->evaluate(readyJs, [this, chromePtr, filePath, url, libCode, done, resultOk](const QJsonValue &) {
                 // 원래 QTimer::singleShot 람다 내부 그대로 호출 — 매크로 이어짐
                 // ★ 단순 캡쳐 — 끝까지 스크롤 + 댓글 펼치기. virtualized DOM 재구성 제거 (메모리↓)
@@ -5784,6 +5788,7 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                         return 1;
                     })()
                 )JS";
+                if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
                 (*chromePtr)->evaluate(scrollJs, [this, chromePtr, filePath, url, libCode, done, resultOk](const QJsonValue &v) {
                     log(QString("[캡쳐] virtualized 스크롤 완료 — article %1개 정적 DOM 재구성").arg(v.toInt()), "info", "twitter");
 
@@ -5834,9 +5839,11 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                             return true;
                         })()
                     )JS";
+                    if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
                     (*chromePtr)->evaluate(clearFiltersJs, [this, chromePtr, filePath, url, libCode, done, resultOk](const QJsonValue &) {
                     log("[캡쳐] grayscale/blur 필터 정리 완료", "info", "twitter");
                     // 1) SingleFile lib 주입
+                    if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
                     (*chromePtr)->evaluate(libCode, [this, chromePtr, filePath, url, done, resultOk](const QJsonValue &) {
                     // 2) singlefile.getPageData() 호출 (await Promise)
                     QString call = R"JS(
@@ -5884,6 +5891,7 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                             }
                         })()
                     )JS";
+                    if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
                     (*chromePtr)->evaluate(call, [this, chromePtr, filePath, url, done, resultOk](const QJsonValue &v) {
                         QJsonObject obj = v.toObject();
                         if (obj.contains("error")) {
@@ -5934,8 +5942,9 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                                 if (*offsetPtr >= totalSize) {
                                     outFile->close();
                                     delete outFile;
-                                    // JS global 해제
-                                    (*chromePtr)->evaluate("delete window.__capContent; true;", [](const QJsonValue &){});
+                                    // JS global 해제 (Chrome 이 이미 정리됐으면 해제할 대상도 없다)
+                                    if (*chromePtr)
+                                        (*chromePtr)->evaluate("delete window.__capContent; true;", [](const QJsonValue &){});
 
                                     // ★ 로컬 temp 에 쓴 경우 → NAS 로 cp + 로컬 삭제
                                     bool finalOk = true;
@@ -5978,6 +5987,14 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                                 }
                                 qint64 end = qMin(*offsetPtr + CHUNK, totalSize);
                                 QString slice = QString("window.__capContent.slice(%1, %2)").arg(*offsetPtr).arg(end);
+                                // ★ 트랙 종료로 슬롯이 비워짐 — 열어둔 파일을 닫고 빠져나간다(핸들 누수 방지).
+                                if (!*chromePtr) {
+                                    outFile->close();
+                                    delete outFile;
+                                    log("[SingleFile] 캡쳐 Chrome 정리됨 — 청크 전송 중단", "warning", "twitter");
+                                    done->release();
+                                    return;
+                                }
                                 (*chromePtr)->evaluate(slice, [outFile, offsetPtr, fetchNext, end](const QJsonValue &cv) {
                                     QByteArray bytes = cv.toString().toUtf8();
                                     outFile->write(bytes);
