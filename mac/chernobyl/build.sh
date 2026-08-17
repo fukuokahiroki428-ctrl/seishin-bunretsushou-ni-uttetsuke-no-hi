@@ -77,6 +77,23 @@ fi
 #   안 하면 배포본에서 렌더러가 못 떠 '백지 창'이 된다. (위 @executable_path 처리와 상보적)
 bash "$(dirname "$0")/fix_webengine_helper.sh" "$APPDIR" || true
 
+# ★ 서명 직전: 끊어진 심볼릭 링크 제거.
+#   codesign --verify --deep 는 끊어진 링크를 하나라도 만나면 그 위치가 아니라
+#   앱 전체를 가리키며 "No such file or directory" 로 실패한다. 원인을 찾기가 아주 나쁘다.
+#   그런 앱을 macOS 는 SIGKILL 로 죽인다.
+#   같은 정리가 CMakeLists 의 POST_BUILD 에도 있지만 그건 '타겟이 다시 링크될 때만' 돈다.
+#   build.sh 는 소스 변경 없이도 macdeployqt 와 헬퍼 수정을 다시 돌리는 별도 경로이므로
+#   여기에도 있어야 한다(실제로 없어서 두 번째 빌드마다 서명이 깨졌다).
+#   CMake 쪽처럼 링크를 몽땅 지우지는 않는다 — Frameworks 에는 libfoo.1.dylib 같은
+#   정상 링크도 있다. 끊어진 것만 고른다.
+BROKEN=0
+while IFS= read -r link; do
+    [ -z "$link" ] && continue
+    echo "  끊어진 링크 제거: ${link#$APPDIR/}"
+    rm -f "$link"; BROKEN=$((BROKEN + 1))
+done < <(find "$APPDIR" -type l ! -exec test -e {} \; -print 2>/dev/null)
+[ "$BROKEN" -gt 0 ] && echo "=== 끊어진 심볼릭 링크 $BROKEN 개 정리함 ==="
+
 echo "=== Codesign (inside-out + --deep --strict verify) ==="
 # 단일 서명 경로로 위임 — 서명/검증 실패 시 codesign_app.sh 가 exit 1 → set -e 로 중단.
 bash "$(dirname "$0")/codesign_app.sh" "$APPDIR"

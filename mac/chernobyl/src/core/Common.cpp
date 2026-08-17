@@ -530,7 +530,20 @@ QString activeToolScriptPath(const QString &name)
 {
     const QString ov = scriptOverrideDir() + "/" + name;
     if (QFileInfo::exists(ov)) return ov;
-    return bundledToolsDir() + "/" + name;
+
+    // 번들 원본 찾기.
+    //   tools/ 바로 밑에만 있는 게 아니다 — CMake 는 보관함 스크립트를
+    //   tools/archive/ 하위에 넣는다(archive_ask.py, archive_index.py).
+    //   예전엔 tools/ 만 봐서 그 둘의 원본을 못 찾았고, AI 자가수리 화면이
+    //   빈 편집기를 띄웠다(내용이 빈 문자열로 왔다). 하위 폴더도 본다.
+    const QString tools = bundledToolsDir();
+    const QStringList subs = { QString(), QStringLiteral("/archive") };
+    for (const QString &sub : subs) {
+        const QString p = tools + sub + "/" + name;
+        if (QFileInfo::exists(p)) return p;
+    }
+    // 못 찾으면 예전과 같은 경로를 돌려준다(호출부가 존재 여부를 다시 확인한다).
+    return tools + "/" + name;
 }
 
 // ── 외부 서비스 상수 런타임 오버라이드 ────────────────────────────────────────
