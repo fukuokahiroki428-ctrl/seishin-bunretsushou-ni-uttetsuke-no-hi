@@ -1,4 +1,5 @@
 #pragma once
+#include <QStorageInfo>
 // ═════════════════════════════════════════════════════════════════════════
 // SelfRepair.h — 앱 자가진단 · 자가복구 + 로컬 LLM 진단 계층 (header-only)
 // 설치 위치: windows/src/utils/SelfRepair.h  (mac/chernobyl/src/utils/ 동일)
@@ -376,6 +377,94 @@ inline QString llmDiagnose(const QString &reportText)
         .value("message").toObject().value("content").toString().trimmed();
 }
 
+
+// ── 앱 상태 점검 ─────────────────────────────────────────────────────────
+//   ★ 예전 진단서는 도구 5개(yt-dlp/ffmpeg/python/exiftool/rclone)만 봤다.
+//     그런데 오늘 실제로 사람을 막은 고장들은 전부 그 밖에 있었다:
+//       파이썬 패키지 누락(수집이 통째로 죽는다) · AI 엔진 미설치 ·
+//       색인 없음 · 설정 파일 권한이 열림 · 디스크 여유 부족
+//     진단서에 안 나오니 자가수리가 "이상 없음" 이라고 답할 수밖에 없었다.
+//     고칠 수 있는지와 별개로, '보이기는 해야' 사람이 다음 수를 둔다.
+inline QString checkEnvironment()
+{
+    QString out;
+    const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+
+    // 1) 파이썬 패키지 — 하나만 빠져도 그 플랫폼 수집이 통째로 죽는다.
+    {
+        const QString py = Common::bundledPythonPath();
+        if (QFile::exists(py)) {
+            QProcess pc;
+            pc.setProcessEnvironment(Common::bundledProcessEnv());
+            pc.start(py, {"-c",
+                "import importlib.util as u\n"
+                "mods=['twikit','httpx','atproto','openpyxl','PIL','piexif',"
+                "'browser_cookie3','bs4','websockets','lxml','m3u8','cryptography']\n"
+                "miss=[m for m in mods if u.find_spec(m) is None]\n"
+                "print(','.join(miss))"});
+            pc.waitForFinished(20000);
+            const QString miss = QString::fromUtf8(pc.readAllStandardOutput()).trimmed();
+            if (!miss.isEmpty())
+                out += "[FAIL] 파이썬 패키지 없음: " + miss + " — 수집이 실패합니다\n";
+            else
+                out += "[OK]   파이썬 패키지 12종 정상\n";
+        }
+    }
+
+    // 2) AI 엔진·모델 — 없으면 자가수리·보관함 질의가 아예 못 돈다.
+    {
+        const QString llm = appData + "/llm";
+        const bool srv = QFile::exists(llm + "/llama-server");
+        const int models = QDir(llm).entryList(QStringList() << "*.gguf", QDir::Files).size();
+        if (!srv || models == 0)
+            out += QString("[WARN] AI 엔진 미설치 (엔진 %1 · 모델 %2개) — 'AI 설치' 를 실행하세요\n")
+                       .arg(srv ? "있음" : "없음").arg(models);
+        else
+            out += QString("[OK]   AI 엔진 · 모델 %1개\n").arg(models);
+    }
+
+    // 3) 산출물 색인 — 없으면 보관함 질문이 전부 "자료 없음" 이 된다.
+    {
+        const QFileInfo db(appData + "/archive_index.db");
+        if (!db.exists())
+            out += "[WARN] 산출물 색인 없음 — 설정에서 '색인 만들기' 를 한 번 실행하세요\n";
+        else {
+            const int days = db.lastModified().daysTo(QDateTime::currentDateTime());
+            out += QString("[OK]   산출물 색인 %1MB (%2일 전 갱신)%3\n")
+                       .arg(db.size() / 1024 / 1024).arg(days)
+                       .arg(days > 30 ? "  ← 오래됐습니다. 갱신을 권합니다" : "");
+        }
+    }
+
+    // 4) 설정 파일 권한 — NAS 비밀번호·쿠키·토큰이 들어 있다.
+    {
+        const QString cfg = appData + "/miyo_config.json";
+        if (QFile::exists(cfg)) {
+            const QFile::Permissions pm = QFile::permissions(cfg);
+            const bool others = pm & (QFile::ReadGroup | QFile::ReadOther);
+            out += others
+                ? "[WARN] 설정 파일을 다른 사용자도 읽을 수 있습니다 — 저장하면 자동으로 조여집니다\n"
+                : "[OK]   설정 파일 권한 (본인만 읽기)\n";
+        }
+    }
+
+    // 5) 저장 디스크 여유 — 가득 차면 수집이 조용히 반쪽 파일을 남긴다.
+    {
+        const QString dir = Common::resolveTempBase(QString());
+        if (!dir.isEmpty()) {
+            QStorageInfo si(dir);
+            if (si.isValid() && si.bytesTotal() > 0) {
+                const double freeGB = si.bytesAvailable() / (1024.0 * 1024 * 1024);
+                const double pct = 100.0 * si.bytesAvailable() / si.bytesTotal();
+                out += QString(freeGB < 5 ? "[FAIL] " : (pct < 10 ? "[WARN] " : "[OK]   "))
+                     + QString("저장 디스크 여유 %1GB (%2%)\n")
+                           .arg(freeGB, 0, 'f', 1).arg(pct, 0, 'f', 0);
+            }
+        }
+    }
+    return out;
+}
+
 // ── 오케스트레이터 ───────────────────────────────────────────────────────
 
 inline QString runStartupMaintenance()
@@ -401,6 +490,9 @@ inline QString runStartupMaintenance()
             report += QString("[OK]   %1 — %2 (%3)\n").arg(t, st.version, st.path);
         }
     }
+
+    // 도구 밖의 상태도 본다 — 실제로 사람을 막는 것은 대부분 여기다.
+    report += checkEnvironment();
 
     const QStringList cleaned = cleanStaleState();
     for (const QString &c : cleaned)
