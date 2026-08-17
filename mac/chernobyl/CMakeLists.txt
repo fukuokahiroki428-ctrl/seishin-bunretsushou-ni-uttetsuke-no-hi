@@ -482,6 +482,20 @@ if(APPLE)
         COMMENT "Codesigning entire app bundle"
     )
 
+    # ★ 자원 동기화 — 위 자원 복사 POST_BUILD 들도 '타겟이 다시 링크될 때만' 돈다.
+    #   그래서 C++ 을 안 건드리고 자원만 바꾸면(도구 교체·HTML 수정·스크립트 수정)
+    #   빌드가 조용히 옛것을 그대로 둔다. 실제로 ffprobe 를 arm64 로 갈아 끼우고
+    #   빌드했는데 번들엔 옛 x86_64 가 남았다("Bundling" 줄이 한 줄도 안 찍혔다).
+    #   항상 도는 이 타겟이 소스와 번들을 다시 맞춘다. build.sh 도 같은 스크립트를
+    #   부르므로, cmake 를 직접 부르는 경로(IDE·CI)에서도 똑같이 보호된다.
+    #   반드시 codesign_verify 앞에서 — 자원이 바뀌면 서명이 어긋나기 때문이다.
+    add_custom_target(sync_resources ALL
+        COMMAND bash "${CMAKE_SOURCE_DIR}/sync_resources.sh" "$<TARGET_BUNDLE_DIR:Miyo>"
+        COMMENT "Syncing bundled resources from source (always runs)"
+        VERBATIM
+    )
+    add_dependencies(sync_resources Miyo)
+
     # ★ 서명 정합성 보증 — 위 POST_BUILD 는 '타겟이 다시 링크될 때만' 돈다.
     #   Info.plist 는 cmake 재구성만으로도 새로 생성되므로(예: VERSION 만 변경),
     #   그때는 링크가 없어 서명 단계가 건너뛰어지고 서명이 plist 와 어긋난 채 남는다.
@@ -492,7 +506,8 @@ if(APPLE)
         COMMENT "Verifying code signature (re-signs only when stale)"
         VERBATIM
     )
-    add_dependencies(codesign_verify Miyo)
+    #   자원 동기화가 먼저 끝나야 한다(자원이 바뀐 뒤에 서명 정합성을 봐야 의미가 있다).
+    add_dependencies(codesign_verify Miyo sync_resources)
 endif()
 
 # ═══════════════════════════════════════════
