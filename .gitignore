@@ -9,6 +9,11 @@ dist/
 **/resources/tools/yt-dlp*
 **/resources/tools/ffmpeg*
 **/resources/tools/ffprobe*
+# ★ 단, tools/yt-dlp 는 이제 바이너리가 아니라 1.3K 셸 래퍼(우리가 쓴 소스)다.
+#   위 규칙이 바이너리를 막으려고 yt-dlp* 로 넓게 잡는 바람에 이 스크립트까지
+#   따라 걸려서, 고쳐도 저장소에 안 남고 다음 사람 손에 옛것이 갔다.
+#   이름이 정확히 yt-dlp 인 것만 되살린다(yt-dlp.exe 등 바이너리는 계속 무시).
+!**/resources/tools/yt-dlp
 **/resources/tools/deno*
 **/resources/tools/rclone*
 **/resources/tools/exiftool/
