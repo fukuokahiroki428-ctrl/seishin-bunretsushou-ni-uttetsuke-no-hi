@@ -13914,6 +13914,13 @@ static QString webSearchSnippets(const QString &apiKey, const QString &query)
 static QString archiveScriptPath(const QString &name)
 {
     const QStringList cands = {
+        // ★ AI 자가수리가 고친 사본이 맨 앞이다.
+        //   예전엔 이 목록에 override 가 없어서, AI 가 archive_ask.py 를 고쳐
+        //   override 에 저장해도 실행은 늘 번들 원본으로 됐다. 즉 '고쳤다' 는
+        //   말만 나오고 동작은 하나도 안 바뀌는, 알아채기 힘든 고장이었다.
+        //   getScriptSource/applyScriptPatch 쪽(activeToolScriptPath)과 우선순위를
+        //   같게 맞춘다 — 읽기와 실행이 다른 파일을 보면 안 된다.
+        Common::scriptOverrideDir() + "/" + name,
         Common::bundledResourcesDir() + "/tools/archive/" + name,
         Common::bundledResourcesDir() + "/../../../../scripts/" + name,   // 개발 트리
         QCoreApplication::applicationDirPath() + "/scripts/" + name,      // 윈도우 배포

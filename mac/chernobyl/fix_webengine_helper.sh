@@ -17,7 +17,20 @@ if [ ! -f "$HELPER_BIN" ]; then
 fi
 
 # Create Frameworks symlink so @executable_path/../Frameworks resolves to main app's Frameworks
-ln -sf "../../../../../../../Frameworks" "$HELPER_CONTENTS/Frameworks"
+#
+# ★ -n 과 rm -f 가 둘 다 필요하다. 이유:
+#   이 링크는 본 번들의 Contents/Frameworks 를 가리키는 '디렉터리 심볼릭 링크' 다.
+#   두 번째 빌드에서 링크가 이미 있는 채로 그냥 `ln -sf 대상 링크` 를 하면,
+#   ln 은 링크를 갈아끼우는 대신 링크를 '따라 들어가' 그 안에 만든다. 즉
+#       본번들/Contents/Frameworks/Frameworks -> ../../../../../../../Frameworks
+#   가 생기고, 이건 그 위치 기준으로는 번들 밖을 가리켜 끊어진 링크가 된다.
+#   끊어진 링크가 하나라도 있으면 codesign --verify --deep 이
+#   "No such file or directory" 로 실패하고, macOS 는 그런 앱을 SIGKILL 로 죽인다.
+#   실제로 이 저장소에서 두 번째 빌드마다 그 일이 벌어지고 있었다.
+#   -n(--no-dereference) 은 대상이 디렉터리 링크여도 따라가지 않게 하고,
+#   rm -f 는 -n 을 지원하지 않는 낡은 ln 에서도 같은 결과가 되게 한다.
+rm -f "$HELPER_CONTENTS/Frameworks"
+ln -sfn "../../../../../../../Frameworks" "$HELPER_CONTENTS/Frameworks"
 
 # Add rpath to main app's Frameworks
 install_name_tool -add_rpath "@loader_path/../../../../../../../../Frameworks" "$HELPER_BIN" 2>/dev/null || true
