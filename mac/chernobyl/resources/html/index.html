@@ -863,7 +863,9 @@
         .metric-chip.accent { background: var(--accent-bg); color: var(--accent); }
         .metric-chip.ok { background: rgba(52,199,89,0.12); color: #1e7b3a; }
         .metric-chip.err { background: rgba(255,59,48,0.12); color: var(--red); }
-    </style>
+    
+
+</style>
 <script>
 /* Darkroom v2 — 테마 부트 (렌더 전 적용, 깜빡임 방지) */
 (function(){ try{ var t=localStorage.getItem('ntTheme')||'auto'; var r=t;
@@ -6998,5 +7000,224 @@
       if(document.readyState!=='loading') _boot(); else document.addEventListener('DOMContentLoaded', _boot);
     })();
     </script>
+<style id="refine-office">
+
+/* ══════════════════════════════════════════════════════════════════════════
+   단정한 업무용 — 정제 레이어
+
+   ★ 마크업과 JS 는 한 글자도 건드리지 않는다. id 474개·인라인 핸들러 253곳·
+     슬롯 92종이 그대로라 기능이 깨질 수 없다. 여기서는 '보이는 것' 만 바꾼다.
+   ★ 앞선 규칙 262개는 대부분 var(--…) 를 쓰므로(178곳), 토큰을 다시 세우면
+     대부분이 한 번에 따라온다. 토큰으로 안 되는 몇 곳만 아래에서 덮는다.
+
+   무엇을 고쳤나 — 화면을 실제로 찍어 보고 정한 것들:
+     · 입력칸이 전부 회색 박스라 목록이 무거웠다 → 흰 바탕 + 얇은 테두리
+     · 로그가 검정 패널이라 밝은 화면에서 혼자 튀었다 → 화면에 맞춘 색
+     · 행 간격이 넓어 한 화면에 조금밖에 안 들어갔다 → 밀도를 올림
+     · 강조색(보라)이 업무용치고 셌다 → 차분한 남색
+     · 섹션 제목이 흐려 위계가 약했다 → 또렷하게
+   ══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+    /* ── 바탕·글자 — 중성 회색. 파랑기 없는 순수 무채색이라 오래 봐도 편하다 */
+    --bg:             #FFFFFF;
+    --bg-secondary:   #F7F8F9;
+    --bg-tertiary:    #EEF0F2;
+    --text:           #16181C;
+    --text-secondary: #5A6069;
+    --text-tertiary:  #8A9099;
+    --border:         #D8DCE0;
+    --border-light:   #E8EBEE;
+
+    /* ── 강조 — 남색. 보라보다 조용하고 링크·선택과 헷갈리지 않는다 */
+    --accent:         #2C5FA8;
+    --accent-hover:   #24518F;
+    --accent-bg:      rgba(44, 95, 168, 0.08);
+
+    /* ── 상태 — 채도를 낮춰 화면에서 튀지 않게 */
+    --red:            #C0392B;
+    --green:          #1E7F4E;
+    --orange:         #9A6B10;
+
+    /* ── 치수 */
+    --sidebar-w:      148px;
+    --radius:         6px;
+    --radius-lg:      10px;
+    --transition:     0.14s cubic-bezier(.4, 0, .2, 1);
+
+    /* ── 간격 눈금 — 4의 배수. 값을 눈대중으로 고르지 않게 */
+    --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px;
+    --sp-4: 16px; --sp-5: 20px; --sp-6: 24px;
+
+    /* ── 그림자 — 업무용은 그림자로 띄우지 않는다. 테두리로 구분한다 */
+    --shadow-sm: 0 1px 2px rgba(16, 20, 26, 0.05);
+    --shadow:    0 2px 8px rgba(16, 20, 26, 0.07);
+}
+
+/* 어두운 테마 — 같은 뼈대에 색만 바꾼다 */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --bg:             #16181C;
+        --bg-secondary:   #1D2025;
+        --bg-tertiary:    #262A30;
+        --text:           #E8EAED;
+        --text-secondary: #A0A6AE;
+        --text-tertiary:  #6E757E;
+        --border:         #333840;
+        --border-light:   #262A30;
+        --accent:         #6E9FE0;
+        --accent-hover:   #8AB4E8;
+        --accent-bg:      rgba(110, 159, 224, 0.14);
+        --red:            #E5776B;
+        --green:          #57BC8A;
+        --orange:         #D6A63F;
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+        --shadow:    0 2px 8px rgba(0, 0, 0, 0.4);
+    }
+}
+:root[data-theme="dark"] {
+    --bg:             #16181C;
+    --bg-secondary:   #1D2025;
+    --bg-tertiary:    #262A30;
+    --text:           #E8EAED;
+    --text-secondary: #A0A6AE;
+    --text-tertiary:  #6E757E;
+    --border:         #333840;
+    --border-light:   #262A30;
+    --accent:         #6E9FE0;
+    --accent-hover:   #8AB4E8;
+    --accent-bg:      rgba(110, 159, 224, 0.14);
+    --red:            #E5776B;
+    --green:          #57BC8A;
+    --orange:         #D6A63F;
+}
+
+/* ── 입력칸 ────────────────────────────────────────────────────────────────
+   회색 박스가 화면을 가득 채우면 어디를 봐야 할지 모른다. 바탕은 비우고
+   테두리로만 경계를 준다. 지금 만지는 칸만 강조색으로 뜬다. */
+.input,
+input[type="text"], input[type="password"], input[type="number"], select, textarea {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    padding: 0 var(--sp-2);
+    transition: border-color var(--transition), box-shadow var(--transition);
+}
+.input:hover, input:hover:not(:disabled), select:hover:not(:disabled) { border-color: var(--text-tertiary); }
+.input:focus, input:focus, select:focus, textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.input:disabled, input:disabled, select:disabled {
+    background: var(--bg-secondary);
+    color: var(--text-tertiary);
+    cursor: not-allowed;
+}
+.input::placeholder, input::placeholder, textarea::placeholder { color: var(--text-tertiary); }
+
+/* ── 단추 ──────────────────────────────────────────────────────────────────
+   기본은 조용하게, 주 동작만 채운다. 눌리는 느낌은 1px 로 충분하다. */
+.btn {
+    border-radius: var(--radius);
+    font-weight: 500;
+    border: 1px solid transparent;
+    transition: background var(--transition), border-color var(--transition), color var(--transition);
+    cursor: pointer;
+}
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary            { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn-secondary          { background: var(--bg); border-color: var(--border); color: var(--text); }
+.btn-secondary:hover:not(:disabled) { background: var(--bg-secondary); border-color: var(--text-tertiary); }
+.btn-ghost              { background: transparent; border-color: transparent; color: var(--text-secondary); }
+.btn-ghost:hover:not(:disabled)     { background: var(--bg-secondary); color: var(--text); }
+.btn-danger             { background: var(--red); border-color: var(--red); color: #fff; }
+.btn:focus-visible      { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ── 제목·구획 ─────────────────────────────────────────────────────────────
+   섹션 제목이 흐려 위계가 약했다. 대문자 간격을 줄이고 또렷하게. */
+.section-label {
+    font-size: 11.5px;
+    font-weight: 650;
+    color: var(--text-secondary);
+    text-transform: none;
+    letter-spacing: 0;
+    margin-bottom: var(--sp-3);
+    padding-bottom: var(--sp-2);
+    border-bottom: 1px solid var(--border-light);
+}
+.section { margin-bottom: var(--sp-6); }
+.field-label { font-size: 11.5px; color: var(--text-secondary); margin-bottom: var(--sp-1); }
+
+/* ── 왼쪽 차림표 ───────────────────────────────────────────────────────────
+   선택된 항목만 분명히. 나머지는 조용히. */
+.nav-item {
+    border-radius: var(--radius);
+    color: var(--text-secondary);
+    transition: background var(--transition), color var(--transition);
+}
+.nav-item:hover        { background: var(--bg-secondary); color: var(--text); }
+.nav-item.active       { background: var(--accent-bg); color: var(--accent); font-weight: 600; }
+.nav-icon              { border-radius: 4px; font-weight: 700; }
+.nav-badge             { background: var(--bg-tertiary); color: var(--text-secondary); font-weight: 600; }
+.nav-item.active .nav-badge { background: var(--accent); color: #fff; }
+
+/* ── 기록 화면 ─────────────────────────────────────────────────────────────
+   검은 패널이 밝은 화면에서 혼자 튀었다. 화면 색을 따라가되 등폭 글꼴로
+   구분한다. 어두운 테마에서는 자연히 어두워진다. */
+.log-box {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius);
+    color: var(--text-secondary);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 11.5px;
+    line-height: 1.6;
+    padding: var(--sp-3);
+}
+.log-time { color: var(--text-tertiary); }
+.log-box .ok, .log-box .success { color: var(--green); }
+.log-box .err, .log-box .error  { color: var(--red); }
+
+/* ── 목록 밀도 ─────────────────────────────────────────────────────────────
+   19줄짜리 목록이 화면을 넘어갔다. 줄 높이를 줄여 한눈에 들어오게. */
+.account-row  { gap: var(--sp-2); align-items: center; }
+.account-list > * + * { margin-top: var(--sp-1); }
+.option-item  { color: var(--text-secondary); }
+.option-row   { gap: var(--sp-3) var(--sp-4); }
+
+/* ── 위쪽 띠 ───────────────────────────────────────────────────────────────*/
+.toolbar { border-bottom: 1px solid var(--border-light); background: var(--bg); }
+.toolbar-title { font-weight: 650; letter-spacing: -0.01em; }
+.toolbar-stat-value { font-weight: 650; color: var(--text); }
+
+/* ── 진행 막대 ─────────────────────────────────────────────────────────────*/
+.progress-bar  { background: var(--bg-tertiary); border-radius: 99px; overflow: hidden; }
+.progress-fill { background: var(--accent); transition: width var(--transition); }
+
+/* 곁가지 — 스크롤 막대도 화면에 맞춘다(윈도우 크롬은 기본이 두껍고 튄다) */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 99px;
+    border: 3px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); }
+
+/* 목록 밀도 — 행이 38px 라 한 화면에 15줄밖에 안 들어갔다.
+   ★ !important 를 쓴다. 앞선 이식(graft) 층이 .input 높이를 !important 로 못박아
+     두어 보통 규칙으로는 이길 수 없다. 대상 목록의 줄에만 좁게 적용한다 —
+     다른 화면의 입력칸은 그대로 둔다. */
+.account-row { min-height: 0; gap: 6px; }
+.account-row .input,
+.account-row select { height: 30px !important; font-size: 12.5px !important; }
+.account-row > .field { margin-bottom: 0 !important; }
+.account-list > * + * { margin-top: 2px; }
+
+</style>
 </body>
 </html>
