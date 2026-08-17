@@ -14179,20 +14179,51 @@ void MiyoBackend::autoRepair()
         if (!pyAction.isEmpty()) plan << pyAction;
         if (doTokens) plan << "refreshAllTokens";
 
-        // ★ 결정론적 안전 가드: 진단에 '명백한 실패 신호'가 없으면 모델이 무엇을 골랐든 수리하지 않는다.
-        //   (작은 모델이 정상([OK]) 상태에서도 updateModules 를 고르는 오탐을 원천 차단.)
-        if (!plan.isEmpty()) {
-            static const QStringList failMarks{
-                QStringLiteral("❌"), QStringLiteral("실패"), QStringLiteral("Traceback"),
-                QStringLiteral("No module"), QStringLiteral("ModuleNotFound"),
-                QStringLiteral("not installed"), QStringLiteral("[FAIL"),
-                QStringLiteral("손상"), QStringLiteral("깨졌"), QStringLiteral("깨진")};
-            bool hasFail = false;
-            for (const QString &m : failMarks) if (report.contains(m, Qt::CaseInsensitive)) { hasFail = true; break; }
-            if (!hasFail) {
-                say("ok", "진단 결과 명백한 오류 신호가 없어 자동 수리를 건너뜁니다(정상). 실제 수집이 안 되면 위 대화창에서 증상을 알려주세요.");
-                m_autoRepairBusy = false; say("done", ""); return;
+        // ★ 신호와 행동을 묶는다.
+        //   예전에는 "진단에 실패 신호가 하나라도 있으면 모델이 고른 것을 실행" 이었다.
+        //   그래서 색인이 없다는 경고 하나 때문에 게이트가 열리고, 모델이 엉뚱하게
+        //   refreshAllTokens 를 골라 실행되는 일이 실제로 일어났다(둘은 아무 관계가 없다).
+        //   각 수리 동작은 '그 동작이 고칠 수 있는 신호' 가 진단서에 있을 때만 실행한다.
+        //   모델은 후보를 고를 뿐, 실행 여부는 진단서가 정한다.
+        {
+            auto has = [&report](std::initializer_list<const char *> marks) {
+                for (const char *m : marks)
+                    if (report.contains(QString::fromUtf8(m), Qt::CaseInsensitive)) return true;
+                return false;
+            };
+            // 파이썬 환경이 깨졌다는 신호
+            const bool pyBroken = has({"패키지 없음", "No module", "ModuleNotFound",
+                                       "[FAIL] python", "not installed", "Traceback"});
+            // 토큰·로그인 문제라는 신호
+            const bool tokenBad = has({"토큰", "token", "로그인", "login", "쿠키", "cookie",
+                                       "401", "403", "만료"});
+
+            QStringList kept, dropped;
+            for (const QString &act : plan) {
+                const bool ok = (act == "refreshAllTokens") ? tokenBad : pyBroken;
+                (ok ? kept : dropped) << act;
             }
+            if (!dropped.isEmpty())
+                say("info", QString("진단서에 근거가 없어 건너뜁니다: %1\n"
+                                    "  (AI 가 골랐지만 그 문제를 가리키는 신호가 진단에 없습니다)")
+                                .arg(dropped.join(", ")));
+            plan = kept;
+        }
+
+        // ★ 자동으로 고칠 수 없지만 사람이 하면 되는 것은, 무엇을 누르면 되는지 알린다.
+        //   예전엔 "고칠 항목을 찾지 못했습니다" 로 끝나서 사용자가 다음 수를 몰랐다.
+        {
+            QStringList todo;
+            if (report.contains("AI 엔진 미설치"))
+                todo << "AI 설치 — DMG 안 'AI 설치.command' 를 더블클릭하세요";
+            if (report.contains("산출물 색인 없음"))
+                todo << "산출물 보관함 — 설정 탭에서 '색인 만들기' 를 누르세요";
+            if (report.contains("오래됐습니다"))
+                todo << "산출물 색인이 오래됐습니다 — '색인 갱신' 을 누르세요(바뀐 것만 합니다)";
+            if (report.contains("디스크 여유") && report.contains("[FAIL] 저장 디스크"))
+                todo << "저장 디스크가 거의 찼습니다 — 공간을 비우거나 저장 위치를 바꾸세요";
+            if (!todo.isEmpty())
+                say("info", "사람이 해야 하는 것:\n  · " + todo.join("\n  · "));
         }
 
         if (plan.isEmpty()) {
