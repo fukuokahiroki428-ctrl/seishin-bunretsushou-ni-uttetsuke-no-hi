@@ -1,0 +1,70 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════
+#  배포용 DMG 를 만든다.
+#
+#  사용:  ./make_dmg.sh [bundle.app]
+#         (인자 없으면 build/ 의 .app 을 자동으로 찾는다)
+#
+#  주의할 점들 — 전에 물린 적이 있는 것들이다:
+#   · 파일 이름은 ASCII 로만 만든다. 앱 표시 이름은 ハンイシキ 지만, GitHub 릴리즈
+#     자산 이름이나 다른 도구가 비ASCII 에서 깨지는 일이 있어 Hanishiki 를 쓴다.
+#   · DMG 에 넣기 전에 서명을 검증한다. 깨진 앱을 담아 배포하면 받는 쪽에서
+#     macOS 가 SIGKILL 로 죽인다(원인이 안 보인다).
+#   · 이 앱은 공증(notarize)되어 있지 않다. 받는 사람은 Gatekeeper 경고를 본다.
+#     공증하려면 notarytool submit + stapler staple 이 따로 필요하다.
+# ═══════════════════════════════════════════════════════════════════════════
+set -e
+cd "$(dirname "$0")"
+
+APP="${1:-$(ls -d build/*.app 2>/dev/null | head -1)}"
+[ -n "$APP" ] && [ -d "$APP" ] || { echo "❌ .app 을 찾지 못했습니다."; exit 1; }
+APP="$(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")"
+
+VERSION="$(cat ../../VERSION 2>/dev/null || echo 0.0.0)"
+NAME="$(basename "$APP" .app)"          # ASCII (Hanishiki)
+OUT="build/${NAME}-${VERSION}.dmg"
+
+# ── 서명 확인 — 깨진 걸 담아 배포하지 않는다 ──────────────────────────────
+echo "=== 서명 확인 ==="
+if ! codesign --verify --deep --strict "$APP" 2>&1; then
+    echo "❌ 서명이 유효하지 않습니다. DMG 를 만들지 않습니다."
+    echo "   (이대로 배포하면 받는 쪽에서 macOS 가 앱을 죽입니다)"
+    exit 1
+fi
+echo "  ✔ 유효"
+
+# ── 담을 것만 모은다 ──────────────────────────────────────────────────────
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT INT TERM
+# -R 이 아니라 -Rp: 심볼릭 링크·권한을 그대로 옮겨야 서명 봉인이 유지된다.
+cp -Rp "$APP" "$STAGE/"
+ln -s /Applications "$STAGE/Applications"      # 끌어다 놓기용
+
+echo "=== DMG 만드는 중 ($OUT) ==="
+rm -f "$OUT"
+hdiutil create -volname "$NAME $VERSION" \
+               -srcfolder "$STAGE" \
+               -ov -format UDZO \
+               -quiet \
+               "$OUT"
+
+# ── 담긴 것이 성한지 되확인 ───────────────────────────────────────────────
+echo "=== 결과 확인 ==="
+MNT="$(mktemp -d)"
+hdiutil attach "$OUT" -nobrowse -quiet -mountpoint "$MNT"
+if codesign --verify --deep --strict "$MNT/$(basename "$APP")" 2>&1; then
+    echo "  ✔ DMG 안 앱의 서명 정상"
+else
+    echo "  ❌ DMG 안에서 서명이 깨졌습니다"
+    hdiutil detach "$MNT" -quiet; rmdir "$MNT"; exit 1
+fi
+MINOS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' \
+         "$MNT/$(basename "$APP")/Contents/Info.plist" 2>/dev/null || echo '?')"
+hdiutil detach "$MNT" -quiet; rmdir "$MNT"
+
+echo ""
+echo "=== 완료 ==="
+echo "  파일     : $(cd "$(dirname "$OUT")" && pwd)/$(basename "$OUT")"
+echo "  크기     : $(du -h "$OUT" | cut -f1)"
+echo "  최소 macOS: $MINOS"
+echo "  ※ 공증 안 됨 — 받는 사람은 Gatekeeper 경고를 봅니다."

@@ -94,44 +94,12 @@ while IFS= read -r link; do
 done < <(find "$APPDIR" -type l ! -exec test -e {} \; -print 2>/dev/null)
 [ "$BROKEN" -gt 0 ] && echo "=== 끊어진 심볼릭 링크 $BROKEN 개 정리함 ==="
 
-# ★ 소스의 자원을 번들에 다시 맞춘다.
-#   CMake 의 자원 복사는 전부 add_custom_command(TARGET Miyo POST_BUILD) 라서
-#   '타겟이 다시 링크될 때만' 돈다. 그래서 C++ 을 건드리지 않고 자원만 바꾸면
-#   (도구 교체, HTML 수정, 파이썬 스크립트 수정) 빌드가 조용히 옛것을 그대로 둔다.
-#   실제로 ffprobe 를 arm64 로 갈아 끼우고 빌드했는데 번들엔 옛 x86_64 가 남아 있었고,
-#   빌드 로그에 "Bundling" 줄이 하나도 안 찍혔다. 고쳤다고 믿고 넘어가기 딱 좋다.
-#   → 여기서 소스가 더 새것이면 다시 복사한다. 복사한 게 있으면 반드시 알린다.
-#   (근본 해결은 CMake 쪽을 항상 도는 타겟으로 바꾸는 것이다. 그건 별도 작업.)
+# ★ 소스의 자원을 번들에 다시 맞춘다(codesign 앞에서).
+#   CMake 의 자원 복사가 POST_BUILD 라 '타겟이 다시 링크될 때만' 도는 탓에,
+#   자원만 바꾼 빌드는 조용히 옛것을 남긴다. 자세한 사정은 sync_resources.sh 주석 참고.
+#   같은 스크립트를 CMake 의 항상 도는 타겟도 부른다(IDE·CI 경로 보호).
 echo "=== 자원 동기화(소스 → 번들) ==="
-SRCROOT="$(cd "$(dirname "$0")" && pwd)"
-SYNCED=0
-sync_one() {   # $1=소스 $2=번들 안 상대경로
-    [ -f "$1" ] || return 0
-    local dst="$APPDIR/$2"
-    # 내용 비교(cmp)를 쓰면 안 된다 — 번들 사본에는 codesign 이 서명을 붙여 두어서
-    # 원본과 '언제나' 다르다. 그러면 매 빌드마다 전부 갱신으로 잡혀 경고가 무의미해진다.
-    # 갱신 시각으로 본다. cp 는 대상 시각을 지금으로 만드니 다음 빌드에선 조용하다.
-    if [ ! -f "$dst" ] || [ "$1" -nt "$dst" ]; then
-        mkdir -p "$(dirname "$dst")"
-        cp -f "$1" "$dst" && chmod +x "$dst" 2>/dev/null
-        echo "  갱신: $2"
-        SYNCED=$((SYNCED + 1))
-    fi
-}
-sync_one "$SRCROOT/resources/tools/ffmpeg"      "Contents/MacOS/ffmpeg"
-sync_one "$SRCROOT/resources/tools/ffprobe"     "Contents/MacOS/ffprobe"
-sync_one "$SRCROOT/resources/tools/deno"        "Contents/MacOS/deno"
-sync_one "$SRCROOT/resources/tools/yt-dlp"      "Contents/Resources/tools/yt-dlp"
-sync_one "$SRCROOT/resources/tools/rclone"      "Contents/Resources/tools/rclone"
-sync_one "$SRCROOT/resources/html/index.html"   "Contents/Resources/html/index.html"
-for _p in "$SRCROOT"/resources/tools/*.py; do
-    [ -f "$_p" ] && sync_one "$_p" "Contents/Resources/tools/$(basename "$_p")"
-done
-for _p in "$SRCROOT"/../../scripts/archive_*.py; do
-    [ -f "$_p" ] && sync_one "$_p" "Contents/Resources/tools/archive/$(basename "$_p")"
-done
-[ "$SYNCED" -eq 0 ] && echo "  번들이 이미 소스와 같습니다." \
-                    || echo "  $SYNCED 개 갱신됨(CMake POST_BUILD 가 안 돌았다는 뜻)."
+bash "$(dirname "$0")/sync_resources.sh" "$APPDIR"
 
 # ★ 번들 도구의 아키텍처 확인.
 #   ffmpeg·deno·rclone 은 arm64 인데 ffprobe 만 x86_64 로 들어가 있었다.
