@@ -73,6 +73,7 @@ public slots:
     void stopLocalLlm();
     bool killLlmOnPort();   // 8737 을 문 llama-server 정리(고아 포함)                            // 우리가 띄운 서버 종료
     void getLlmStatus();                            // JS onLlmStatus(json) 로 상태·모델목록 통지
+    QString appStateBrief() const;   // 대화에 넘길 앱 설정 요약(진단서엔 없는 것)
     void llmChat(const QString &historyJson);       // 로컬 AI 와 대화(수리 도우미) — JS onLlmReply(text)
     void openLlmTerminal();                          // 오픈클로를 Terminal.app 대화형 REPL 로 띄움
     void winStartMove();                             // 상단 띠 드래그 → 창 이동(네이티브 스냅 유지)

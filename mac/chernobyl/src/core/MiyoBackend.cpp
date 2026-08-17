@@ -13372,6 +13372,40 @@ bool MiyoBackend::killLlmOnPort()
 static QString webSearchSnippets(const QString &apiKey, const QString &query);  // 전방 선언(정의는 아래)
 
 // 로컬 AI 와 대화 — 수리 도우미. historyJson = [{role,content}...]. 응답은 onLlmReply(text).
+// 대화용 앱 상태 요약.
+//   자가진단서는 '도구가 도는가' 만 본다. 그런데 사용자가 묻는 것은 대개 설정 쪽이다
+//   ("트위터가 안 돼요" → 토큰이 있나? 캡쳐가 켜져 있나? 저장 위치는?).
+//   그것을 모르면 AI 는 일반론만 답한다(실제로 "트위터 앱을 열어 권한을 허용하세요"
+//   같은, 이 앱과 상관없는 답이 나왔다).
+QString MiyoBackend::appStateBrief() const
+{
+    if (!m_config) return QString();
+    QStringList out;
+    out << QStringLiteral("[앱 설정]");
+    out << QStringLiteral("  판: %1 %2").arg(QStringLiteral(APP_NAME_DISPLAY),
+                                             QStringLiteral(PREDORMITION_CODENAME));
+    out << QStringLiteral("  저장 위치: %1").arg(m_config->tempDir().isEmpty()
+                                                    ? QStringLiteral("(미설정 — 이것부터 정해야 수집이 된다)")
+                                                    : m_config->tempDir());
+    // 어떤 플랫폼에 수집 대상이 등록돼 있나
+    const QJsonObject pt = m_config->platformTargets();
+    QStringList have; int total = 0;
+    for (auto it = pt.constBegin(); it != pt.constEnd(); ++it) {
+        const int n = it.value().toArray().size();
+        if (n > 0) { have << QStringLiteral("%1(%2)").arg(it.key()).arg(n); total += n; }
+    }
+    // ★ 합계를 미리 적어 준다. 모델에게 더하게 하면 틀린다 — 실제로 4+2+7+19 을
+    //   10 이라고 답했다. 보관함에서 세운 원칙과 같다: 숫자는 코드가 센다.
+    out << QStringLiteral("  수집 대상: 모두 %1개 — %2")
+               .arg(total).arg(have.isEmpty() ? QStringLiteral("없음") : have.join(", "));
+    out << QStringLiteral("  AI 방식: %1").arg(m_config->aiOnline() ? QStringLiteral("온라인(API)") : QStringLiteral("로컬"));
+    const QString nas = m_config->webdavUrl();
+    out << QStringLiteral("  NAS 업로드: %1").arg(nas.isEmpty() ? QStringLiteral("설정 안 됨")
+            : QStringLiteral("%1 (%2)").arg(nas.startsWith("sftp://") ? "SFTP" : "WebDAV",
+                                            m_config->webdavEnabled() ? "켜짐" : "꺼짐"));
+    return out.join('\n');
+}
+
 void MiyoBackend::llmChat(const QString &historyJson)
 {
     const QJsonArray history = QJsonDocument::fromJson(historyJson.toUtf8()).array();
@@ -13422,11 +13456,11 @@ void MiyoBackend::llmChat(const QString &historyJson)
             "너는 이 컴퓨터 안에서(인터넷 없이) 돌아가는 로컬 AI '오픈클로'야. 무엇이든 자유롭게 대화하는 "
             "친근한 AI 비서지 — 질문 답하기, 아이디어 내기, 글쓰기, 번역, 코드, 그냥 잡담까지 뭐든 편하게 도와줘. "
             "부드러운 존댓말로 자연스럽고 사람스럽게, 설명서 같은 딱딱한 말투는 피하고. 이모지도 가끔 써도 좋아. "
-            "너는 마침 카메라(소셜 미디어 아카이빙) 앱 안에 들어와 있어서 그 앱 문제도 도울 수 있어 — 수집이 "
+            "너는 마침 " + QStringLiteral(APP_NAME_DISPLAY) + "(소셜 미디어 아카이빙) 앱 안에 들어와 있어서 그 앱 문제도 도울 수 있어 — 수집이 "
             "안 되면 원인을 짚고 설정→환경 복구·모듈 업데이트·토큰 추출·yt-dlp 갱신·자가진단 같은 기능을 권해줘. "
             "하지만 앱 얘기만 하는 게 아니라, 사용자가 뭘 물어보든 편하게 응해. 답은 필요한 만큼만, 모르면 솔직히 "
-            "모른다고 해.\n\n(참고 — 물어보면 알려줄 앱 자가진단 상태, 먼저 나열하진 마):\n%1")
-            .arg(report.isEmpty() ? QStringLiteral("(보고서 없음)") : report);
+            "모른다고 해.\n\n(참고 — 물어보면 알려줄 앱 상태, 먼저 나열하진 마):\n%1\n%2")
+            .arg(report.isEmpty() ? QStringLiteral("(보고서 없음)") : report, appStateBrief());
 
         QJsonArray messages;
         messages.append(QJsonObject{{"role", "system"}, {"content", sys}});
@@ -13702,7 +13736,11 @@ void MiyoBackend::setLlmUseWeb(bool on) { m_llmUseWeb = on; }
 //   실행부는 Common::activeToolScriptPath() 로 override 우선 사용.
 // ═════════════════════════════════════════════════════════════════════════
 static const QStringList kEditableScripts = {
-    "twitter_api.py", "twitter_tid.py", "twitter_daemon.py", "bluesky_daemon.py", "email_watch.py"};
+    "twitter_api.py", "twitter_tid.py", "twitter_daemon.py", "bluesky_daemon.py", "email_watch.py",
+    // ★ 보관함 스크립트도 AI 가 고칠 수 있게 한다. 이쪽이야말로 손볼 일이 잦다 —
+    //   검색 방식·질문 의도 판별·요약 계산이 전부 여기 있고, 고쳐도 앱을 다시
+    //   빌드할 필요가 없다(앱은 파일을 그때그때 읽어 실행한다).
+    "archive_ask.py", "archive_index.py"};
 
 void MiyoBackend::getScriptSource(const QString &name)
 {
