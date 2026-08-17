@@ -878,10 +878,10 @@
     <div id="captureOptModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
         <div style="background:#1a1a1d;color:#e7e7ea;padding:24px 28px;border-radius:12px;min-width:380px;max-width:480px;border:1px solid #333;box-shadow:0 12px 40px rgba(0,0,0,0.5);">
             <h3 style="margin:0 0 6px;font-size:16px;color:var(--accent);">진짜 페이지 캡쳐 설정</h3>
-            <div id="captureOptPlatform" style="font-size:13px;color:#888;margin-bottom:18px;">—</div>
-            <label class="cap-opt"><input type="radio" name="captureMode" value="off"> <span><strong>캡쳐 안 함</strong><br><small style="color:#888">미디어만 받음. 페이지 HTML 저장 X. 가장 빠름.</small></span></label>
-            <label class="cap-opt"><input type="radio" name="captureMode" value="media"> <span><strong>미디어 있는 글만 캡쳐</strong><br><small style="color:#888">이미지/영상 첨부된 포스트만 HTML 저장. 텍스트만 RT/리플 skip.</small></span></label>
-            <label class="cap-opt"><input type="radio" name="captureMode" value="all" checked> <span><strong>전체 글 캡쳐 (텍스트 포함)</strong><br><small style="color:#888">미디어 유무 무관 모든 포스트 HTML 저장. 가장 완전. (현재 기본)</small></span></label>
+            <div id="captureOptPlatform" style="font-size:13px;color:var(--text-tertiary);margin-bottom:18px;">—</div>
+            <label class="cap-opt"><input type="radio" name="captureMode" value="off"> <span><strong>캡쳐 안 함</strong><br><small style="color:var(--text-tertiary)">미디어만 받음. 페이지 HTML 저장 X. 가장 빠름.</small></span></label>
+            <label class="cap-opt"><input type="radio" name="captureMode" value="media"> <span><strong>미디어 있는 글만 캡쳐</strong><br><small style="color:var(--text-tertiary)">이미지/영상 첨부된 포스트만 HTML 저장. 텍스트만 RT/리플 skip.</small></span></label>
+            <label class="cap-opt"><input type="radio" name="captureMode" value="all" checked> <span><strong>전체 글 캡쳐 (텍스트 포함)</strong><br><small style="color:var(--text-tertiary)">미디어 유무 무관 모든 포스트 HTML 저장. 가장 완전. (현재 기본)</small></span></label>
             <div style="display:flex;gap:8px;margin-top:18px;justify-content:flex-end;">
                 <button class="btn btn-secondary btn-sm" onclick="closeCaptureModal(false)">취소</button>
                 <button class="btn btn-primary btn-sm" onclick="closeCaptureModal(true)">저장</button>
@@ -1121,7 +1121,7 @@
                     <div class="btn-row">
                         <button class="btn btn-primary" id="twitter-start-btn" onclick="startTwitter()">수집 시작</button>
                         <button class="btn btn-secondary" id="twitter-stop-btn" onclick="stopTwitter()" disabled>중지</button>
-                        <button class="btn" id="twitter-checknew-btn" onclick="checkNewTwitter()" disabled style="background:#10b981;color:#fff;opacity:0.5;">새트윗확인</button>
+                        <button class="btn" id="twitter-checknew-btn" onclick="checkNewTwitter()" disabled style="background:var(--success);color:var(--success-ink);opacity:0.5;">새트윗확인</button>
                     </div>
                     <div class="section" style="margin-top:20px;">
                         <div class="section-label">로그</div>
@@ -1238,7 +1238,7 @@
                                 </select>
                             </label>
                         </div>
-                        <div style="font-size:10px;color:#888;margin:-4px 0 4px 4px;">전체 다운로드 시 자동으로 15분 대기+재시도 (리밋 걸려도 중단 안 함)</div>
+                        <div style="font-size:10px;color:var(--text-tertiary);margin:-4px 0 4px 4px;">전체 다운로드 시 자동으로 15분 대기+재시도 (리밋 걸려도 중단 안 함)</div>
                     </div>
                     <div class="section">
                         <div class="section-label">저장 경로</div>
@@ -1260,7 +1260,7 @@
                     <div class="btn-row">
                         <button class="btn btn-primary" id="bluesky-start-btn" onclick="startBluesky()">수집 시작</button>
                         <button class="btn btn-secondary" id="bluesky-stop-btn" onclick="stopBluesky()" disabled>중지</button>
-                        <button class="btn" id="bluesky-checknew-btn" onclick="checkNewBluesky()" disabled style="background:#10b981;color:#fff;opacity:0.5;">새글확인</button>
+                        <button class="btn" id="bluesky-checknew-btn" onclick="checkNewBluesky()" disabled style="background:var(--success);color:var(--success-ink);opacity:0.5;">새글확인</button>
                     </div>
                     <div class="section" style="margin-top:20px;">
                         <div class="section-label">로그</div>
@@ -5488,7 +5488,7 @@
                 pill.style.background = 'var(--danger-bg,#fdecec)'; pill.style.color = 'var(--danger,#c0392b)';
             } else if (s.busy) {
                 pill.textContent = '색인 중…';
-                pill.style.background = 'var(--accent)'; pill.style.color = '#fff';
+                pill.style.background = 'var(--accent)'; pill.style.color = 'var(--accent-ink)';
             } else if (!s.exists || !s.files) {
                 pill.textContent = '색인 없음';
                 pill.style.background = 'var(--bg-tertiary)'; pill.style.color = 'var(--text-secondary)';
@@ -5531,7 +5531,7 @@
             const d = document.createElement('div');
             const mine = who === 'me';
             d.style.cssText = 'max-width:88%;padding:9px 12px;border-radius:12px;font-size:12.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word;'
-                + (mine ? 'align-self:flex-end;background:var(--accent);color:#fff;'
+                + (mine ? 'align-self:flex-end;background:var(--accent);color:var(--accent-ink);'
                         : 'align-self:flex-start;background:var(--bg-primary);border:1px solid var(--border-light);color:var(--text-primary);');
             d.innerHTML = html;
             box.appendChild(d); box.scrollTop = box.scrollHeight;
@@ -5741,7 +5741,7 @@
             var log = document.getElementById('ai-chat-log'); if (!log) return null;
             var d = document.createElement('div'); var me = role === 'user';
             d.style.cssText = 'max-width:82%;padding:9px 12px;border-radius:12px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word;' +
-                (me ? 'align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:4px;'
+                (me ? 'align-self:flex-end;background:var(--accent);color:var(--accent-ink);border-bottom-right-radius:4px;'
                     : 'align-self:flex-start;background:var(--bg);border:1px solid var(--border-light);border-bottom-left-radius:4px;');
             d.textContent = text; log.appendChild(d); log.scrollTop = log.scrollHeight; return d;
         }
@@ -6746,7 +6746,7 @@
     .login-pause-card .icon { font-size:20px; flex-shrink:0; }
     .login-pause-card .body { flex:1; min-width:0; }
     .login-pause-card .title { font-weight:600; color:#ffb84d; font-size:12px; margin-bottom:2px; }
-    .login-pause-card .desc { font-size:10.5px; color:#999; line-height:1.4; }
+    .login-pause-card .desc { font-size:10.5px; color:var(--text-tertiary); line-height:1.4; }
     .login-pause-card button {
         background:#1f3a2c; color:#3ddc84; border:1px solid #264a36;
         border-radius:5px; padding:5px 10px; font-size:11px; font-weight:600; cursor:pointer;
@@ -6850,7 +6850,8 @@
     .theme-seg-btn{ flex:1; padding:9px 8px; border:none; background:transparent; color:var(--text-secondary);
         border-radius:9px; font-size:13px; font-weight:500; cursor:pointer; font-family:inherit; transition:background .2s,color .2s; }
     .theme-seg-btn:hover{ color:var(--text); background:var(--card); }
-    .theme-seg-btn.active{ background:var(--accent); color:#fff; }
+    /* 흰 글씨로 고정하면 어두운 테마(밝은 남색 바탕)에서 2.7:1 이 된다 — 잉크 토큰에 맡긴다. */
+    .theme-seg-btn.active{ background:var(--accent); color:var(--accent-ink); }
     @media (prefers-reduced-motion: reduce){ *{ transition:none !important; animation:none !important; } }
     </style>
     <script>
@@ -6881,28 +6882,46 @@
       /* 흰 배경 + 중성 회색 + 보라 강조.
          본문 캔버스는 순백(--bg), 사이드바만 아주 옅게 눌러(--bg-secondary) 면을 가른다.
          카드는 순백 + 실선 테두리라 흰 배경 위에서도 경계가 분명하다. */
-      --bg:#FFFFFF !important; --bg-secondary:#F6F6F8 !important; --bg-tertiary:#EDEDF1 !important;
-      /* 대비(흰 배경 기준): text 17.9:1, secondary 6.5:1, tertiary 4.9:1, 강조 4.9:1 — 전부 AA 통과.
-         이전 베이지 팔레트는 tertiary 2.65:1, 골드 강조 2.39:1 로 둘 다 크게 미달이었다. */
-      --text:#16171A !important; --text-secondary:#5A5E68 !important; --text-tertiary:#6C717B !important;
-      --border:#E4E5EA !important; --border-light:#EFEFF3 !important;
-      --accent:#6D5AE6 !important; --accent-hover:#5B48D0 !important;
-      --accent-bg:rgba(109,90,230,.10) !important; --accent-soft:rgba(109,90,230,.10) !important;
-      /* 보라 위에는 흰 글씨가 읽힌다(4.9:1). 골드 시절 쓰던 어두운 글씨는 더 이상 필요 없다. */
+      --bg:#FFFFFF !important; --bg-secondary:#F7F8F9 !important; --bg-tertiary:#EEF0F2 !important;
+      /* 대비(흰 배경 기준): text 17.7:1, secondary 6.3:1, tertiary 4.9:1, 강조 6.3:1 — 전부 AA 통과.
+         강조는 보라(#6D5AE6, 4.9:1)에서 남색으로 옮겼다. 대비가 오르고, 업무용 화면에서
+         링크·선택 표시와 헷갈리지 않는다. tertiary 는 4.9:1 이라 그대로 둔다(내리면 AA 미달). */
+      --text:#16181C !important; --text-secondary:#5A6069 !important; --text-tertiary:#6C717B !important;
+      --border:#D8DCE0 !important; --border-light:#E8EBEE !important;
+      --accent:#2C5FA8 !important; --accent-hover:#24518F !important;
+      --accent-bg:rgba(44,95,168,.08) !important; --accent-soft:rgba(44,95,168,.08) !important;
+      /* 남색 위에는 흰 글씨가 6.3:1 로 읽힌다. */
       --accent-ink:#FFFFFF; --card:#FFFFFF !important;
+      /* 상태 칩 — JS 가 var(--success-bg,#e8f6ee) 처럼 되돌림값을 달고 쓰는데
+         그 토큰이 어디에도 없어서 늘 되돌림값(밝은 칩)이 나왔다. 어두운 테마에서도
+         흰 칩이 뜨던 이유다. 여기서 토큰을 세워 두면 되돌림값은 다시는 안 쓰인다. */
+      --success-bg:#E8F6EE !important; --success:#16693F !important;   /* 6.0:1 */
+      --danger-bg:#FDECEC !important;  --danger:#C0392B !important;    /* 4.8:1 */
+      /* 성공색을 '배경' 으로 쓰는 단추(새 글 확인 등)의 글씨색. 진한 초록이라 흰 글씨(6.7:1). */
+      --success-ink:#FFFFFF !important;
     }
     html[data-theme="dark"]{
-      --bg:#101114 !important; --bg-secondary:#17181C !important; --bg-tertiary:#212329 !important;
-      --text:#F2F3F5 !important; --text-secondary:#A8ADB7 !important; --text-tertiary:#7C828D !important;
-      --border:#2A2D34 !important; --border-light:#23262C !important;
-      /* 어두운 배경에선 보라를 밝게 올려야 대비가 선다(#6D5AE6 는 5:1 미만). */
-      --accent:#9C8CF5 !important; --accent-hover:#B0A3F8 !important;
-      --accent-bg:rgba(156,140,245,.16) !important; --accent-soft:rgba(156,140,245,.16) !important;
-      --accent-ink:#14101F; --card:#17181C !important;
+      --bg:#16181C !important; --bg-secondary:#1D2025 !important; --bg-tertiary:#262A30 !important;
+      /* 대비(어두운 배경 기준): text 13.6:1, secondary 7.5:1, tertiary 5.3:1, 강조 7.0:1.
+         tertiary 는 #6E757E 였을 때 3.9:1 로 AA 미달이라 한 단계 올렸다. */
+      --text:#E8EAED !important; --text-secondary:#A0A6AE !important; --text-tertiary:#838A94 !important;
+      --border:#333840 !important; --border-light:#262A30 !important;
+      /* 어두운 배경에선 남색을 밝게 올려야 대비가 선다(#2C5FA8 은 여기서 1.1:1). */
+      --accent:#6E9FE0 !important; --accent-hover:#8AB4E8 !important;
+      --accent-bg:rgba(110,159,224,.16) !important; --accent-soft:rgba(110,159,224,.16) !important;
+      /* 밝은 남색 위에 흰 글씨는 2.7:1 로 못 읽는다. 어두운 잉크를 쓴다(6.8:1). */
+      --accent-ink:#0F1620; --card:#1D2025 !important;
+      --success-bg:#152A20 !important; --success:#5FD79A !important;   /* 8.5:1 */
+      --danger-bg:#2E1A19 !important;  --danger:#F08B80 !important;    /* 6.8:1 */
+      /* 어두운 테마의 성공색은 밝은 초록이라 흰 글씨가 안 읽힌다. 어두운 잉크(8.6:1). */
+      --success-ink:#0B2A1E !important;
     }
-    /* 강조색 위 글씨 — 보라 배경에는 흰 글씨(4.9:1). 배지·아이콘은 강조색을 배경이 아니라
-       글자색으로 쓰므로 여기서 색을 강제하지 않는다(강제하면 흰 배지에 흰 글씨가 된다). */
-    .btn-primary, .btn-primary:hover { color:#FFFFFF !important; }
+    /* 강조색 위 글씨 — 테마마다 다르다. 밝은 테마는 진한 남색 바탕이라 흰 글씨(6.3:1),
+       어두운 테마는 밝은 남색 바탕이라 어두운 잉크(6.8:1). 흰 글씨로 고정하면 어두운
+       테마에서 2.7:1 이 되어 못 읽으므로 토큰(--accent-ink)에 맡긴다.
+       배지·아이콘은 강조색을 배경이 아니라 글자색으로 쓰므로 여기서 강제하지 않는다
+       (강제하면 흰 배지에 흰 글씨가 된다). */
+    .btn-primary, .btn-primary:hover { color:var(--accent-ink) !important; }
     /* macOS frosted 크롬 — 하드코딩 밝은색 → 테마 반응 */
     /* 사이드바·툴바·타이틀바를 같은 --bg 로 통일(이음선 제거) — 상단이 하나로 이어져 보이게 */
     /* 사이드바·툴바·상단 띠를 같은 면으로 — 셋의 배경이 같아야 상단이 하나로 이어져 보인다.
@@ -6913,7 +6932,7 @@
     body.platform-mac .sidebar-header{ background: transparent !important; border-bottom-color: var(--border-light) !important; }
     body.platform-mac .nav-item.active{ background: var(--accent-bg) !important; box-shadow:none !important; }
     /* 테마 전환(라이트/다크/자동) — 활성 버튼: 노란 배경 위 흰 글씨가 안 읽혀 어둡게+굵게 */
-    .theme-seg-btn.active{ color:#FFFFFF !important; font-weight:600 !important; }
+    .theme-seg-btn.active{ color:var(--accent-ink) !important; font-weight:600 !important; }
     /* ═══ 스테이션 레일 (콘솔 스테이지 1) — 모노 배지 + LED 상태등 ═══ */
     .sidebar-nav .nav-item{ position:relative !important; gap:9px !important; padding:7px 9px !important; border-radius:9px !important; margin-bottom:2px !important; }
     .sidebar-nav .nav-icon{ width:24px !important; height:24px !important; border-radius:7px !important; box-shadow:none !important;
@@ -7018,22 +7037,12 @@
      · 섹션 제목이 흐려 위계가 약했다 → 또렷하게
    ══════════════════════════════════════════════════════════════════════════ */
 
+/* ── 색은 여기서 정하지 않는다 ────────────────────────────────────────────
+   위쪽 darkroom-graft 층이 색 토큰을 !important 로 박아 두어서, 여기서 같은
+   토큰을 다시 써도 이길 수 없다(실제로 그래서 테마 단추와 내보내기 단추만
+   옛 보라로 남아 있었다). 색은 그 층 한 곳에서만 정하고, 여기서는 색이 아닌
+   것들만 다룬다. 두 곳에 색을 두면 반드시 또 어긋난다. */
 :root {
-    /* ── 바탕·글자 — 중성 회색. 파랑기 없는 순수 무채색이라 오래 봐도 편하다 */
-    --bg:             #FFFFFF;
-    --bg-secondary:   #F7F8F9;
-    --bg-tertiary:    #EEF0F2;
-    --text:           #16181C;
-    --text-secondary: #5A6069;
-    --text-tertiary:  #8A9099;
-    --border:         #D8DCE0;
-    --border-light:   #E8EBEE;
-
-    /* ── 강조 — 남색. 보라보다 조용하고 링크·선택과 헷갈리지 않는다 */
-    --accent:         #2C5FA8;
-    --accent-hover:   #24518F;
-    --accent-bg:      rgba(44, 95, 168, 0.08);
-
     /* ── 상태 — 채도를 낮춰 화면에서 튀지 않게 */
     --red:            #C0392B;
     --green:          #1E7F4E;
@@ -7054,42 +7063,16 @@
     --shadow:    0 2px 8px rgba(16, 20, 26, 0.07);
 }
 
-/* 어두운 테마 — 같은 뼈대에 색만 바꾼다 */
-@media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-        --bg:             #16181C;
-        --bg-secondary:   #1D2025;
-        --bg-tertiary:    #262A30;
-        --text:           #E8EAED;
-        --text-secondary: #A0A6AE;
-        --text-tertiary:  #6E757E;
-        --border:         #333840;
-        --border-light:   #262A30;
-        --accent:         #6E9FE0;
-        --accent-hover:   #8AB4E8;
-        --accent-bg:      rgba(110, 159, 224, 0.14);
-        --red:            #E5776B;
-        --green:          #57BC8A;
-        --orange:         #D6A63F;
-        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-        --shadow:    0 2px 8px rgba(0, 0, 0, 0.4);
-    }
-}
+/* 어두운 테마 — 바탕·강조색은 graft 층이 맡는다. 여기서는 그 층에 없는 것만.
+   '자동' 을 골라도 applyTheme() 이 data-theme 를 dark/light 로 확정해 주므로
+   prefers-color-scheme 미디어쿼리는 필요 없다(있어도 절대 안 걸린다). */
 :root[data-theme="dark"] {
-    --bg:             #16181C;
-    --bg-secondary:   #1D2025;
-    --bg-tertiary:    #262A30;
-    --text:           #E8EAED;
-    --text-secondary: #A0A6AE;
-    --text-tertiary:  #6E757E;
-    --border:         #333840;
-    --border-light:   #262A30;
-    --accent:         #6E9FE0;
-    --accent-hover:   #8AB4E8;
-    --accent-bg:      rgba(110, 159, 224, 0.14);
+    /* 상태색은 어두운 바탕에서 그대로 쓰면 탁하다. 밝기를 올린다. */
     --red:            #E5776B;
     --green:          #57BC8A;
     --orange:         #D6A63F;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow:    0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
 /* ── 입력칸 ────────────────────────────────────────────────────────────────
@@ -7128,7 +7111,15 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
 }
 .btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
-.btn-primary            { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* 강조색을 배경으로 깔면서 글씨를 흰색으로 고정한 곳이 여러 군데 있었다(단추·배지·
+   아이콘·선택목록). 밝은 테마에선 맞지만 어두운 테마에선 바탕이 밝은 남색이라
+   2.7:1 로 못 읽는다. 한 곳에서 모두 잉크 토큰으로 돌린다. */
+.btn-primary,
+.nav-item.active .nav-badge,
+.nav-item.active .nav-icon,
+.select-option:hover,
+.select-option.selected:hover { color: var(--accent-ink) !important; }
+.btn-primary            { background: var(--accent); border-color: var(--accent); }
 .btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn-secondary          { background: var(--bg); border-color: var(--border); color: var(--text); }
 .btn-secondary:hover:not(:disabled) { background: var(--bg-secondary); border-color: var(--text-tertiary); }
@@ -7168,19 +7159,35 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
 /* ── 기록 화면 ─────────────────────────────────────────────────────────────
    검은 패널이 밝은 화면에서 혼자 튀었다. 화면 색을 따라가되 등폭 글꼴로
    구분한다. 어두운 테마에서는 자연히 어두워진다. */
+/* 앞 층이 background:#0B0E14 !important 로 박아 두어 밝은 테마에서도 검은 패널이
+   그대로 남는다. 여기서 !important 로 되받아야 한다(선택자만으로는 못 이긴다).
+   등급색도 함께 바꾼다 — #4ADE80·#FBBF24 는 검은 바탕용이라 흰 바탕에서 각각
+   1.7:1, 1.8:1 로 사실상 안 보인다. 바탕만 바꾸고 글자색을 두면 더 나빠진다. */
 .log-box {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-light);
-    border-radius: var(--radius);
-    color: var(--text-secondary);
+    background: var(--bg-secondary) !important;
+    border: 1px solid var(--border-light) !important;
+    border-radius: var(--radius) !important;
+    color: var(--text-secondary) !important;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
     font-size: 11.5px;
     line-height: 1.6;
-    padding: var(--sp-3);
 }
-.log-time { color: var(--text-tertiary); }
-.log-box .ok, .log-box .success { color: var(--green); }
-.log-box .err, .log-box .error  { color: var(--red); }
+/* 위에 붙어 있는 '라이브 로그' 머리띠도 같은 면으로 */
+.log-box::before {
+    color: var(--text-tertiary) !important;
+    background: var(--bg-tertiary) !important;
+    border-bottom: 1px solid var(--border-light) !important;
+}
+/* 밝은 바탕 기준 대비: 시각 4.8:1, 알림 6.2:1, 성공 4.7:1, 실패 5.1:1, 주의 5.3:1 — 전부 AA */
+.log-box .log-time    { color: var(--text-tertiary) !important; }
+.log-box .log-info    { color: var(--text-secondary) !important; }
+.log-box .log-success { color: var(--green) !important; }
+.log-box .log-error   { color: var(--red) !important; }
+.log-box .log-warning { color: #8A5F0E !important; }
+/* 어두운 테마에서는 원래의 밝은 등급색이 맞다(검은 바탕용으로 고른 색들). */
+:root[data-theme="dark"] .log-box .log-success { color: #4ADE80 !important; }
+:root[data-theme="dark"] .log-box .log-error   { color: #F87171 !important; }
+:root[data-theme="dark"] .log-box .log-warning { color: #FBBF24 !important; }
 
 /* ── 목록 밀도 ─────────────────────────────────────────────────────────────
    19줄짜리 목록이 화면을 넘어갔다. 줄 높이를 줄여 한눈에 들어오게. */
