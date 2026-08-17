@@ -1,4 +1,6 @@
 #include "TwitterCollector.h"
+#include <QJsonArray>
+#include <QFileInfo>
 #include "core/MiyoBackend.h"
 #include "core/Common.h"
 #include "utils/HttpClient.h"
@@ -2155,6 +2157,31 @@ void TwitterCollector::captureTweet(const QJsonObject &tweet, const QString &cap
     meta["favoriteCount"] = legacy["favorite_count"].toInt();
     meta["retweetCount"]  = legacy["retweet_count"].toInt();
     meta["replyCount"]    = legacy["reply_count"].toInt();
+
+    // ★ 이미 내려받아 둔 이 트윗의 미디어를 카드에 붙인다.
+    //   카드 생성기는 예전부터 mediaRelPaths 를 그릴 수 있었는데(에스크 쪽은 채운다)
+    //   트위터 호출부가 채우지 않아, 캡쳐가 실패하면 카드에 그림이 통째로 빠졌다.
+    //   파일은 captures 의 형제인 media/ 에 있고 이름에 트윗 ID 가 들어간다 —
+    //   JSON 을 다시 해석하지 말고 디스크에 실제로 있는 것을 쓴다(받다 만 것은 제외).
+    {
+        const QString mediaDir = QFileInfo(capturesDir).absolutePath() + "/media";
+        QJsonArray rel;
+        if (QDir(mediaDir).exists()) {
+            const auto files = QDir(mediaDir).entryInfoList(QDir::Files, QDir::Name);
+            for (const QFileInfo &fi : files) {
+                if (!fi.fileName().contains(tweetId)) continue;
+                if (fi.size() <= 0) continue;                       // 받다 만 파일
+                if (fi.fileName().startsWith('.')) continue;
+                rel.append(QStringLiteral("../media/") + fi.fileName());
+            }
+        }
+        if (!rel.isEmpty()) meta["mediaRelPaths"] = rel;
+        // 카드가 '왜' 합성인지 남긴다 — 카드만 봐서는 원래 글만 있었는지
+        // 캡쳐가 실패했는지 구분이 안 됐다.
+        meta["cardReason"] = config["realCapture"].toBool(true)
+                                 ? QStringLiteral("실제 페이지 캡쳐에 실패해 만든 카드입니다")
+                                 : QStringLiteral("캡쳐를 끄고 수집해 만든 카드입니다");
+    }
     FileHelper::generateTweetArchiveHtml(capturesDir, filename, meta);
 }
 

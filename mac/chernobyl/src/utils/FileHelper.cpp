@@ -661,6 +661,7 @@ QString generateTweetArchiveHtml(const QString &saveDir,
     html += QString("<title>%1</title>\n").arg(htmlEscape(title));
     html += "<style>\n"
             "  :root { color-scheme: light dark; }\n"
+        "  .note { margin-top:10px; font-size:11px; opacity:.55; }\n"
             "  * { box-sizing: border-box; }\n"
             "  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans',\n"
             "         'Noto Sans CJK JP', sans-serif; background: #f7f9fa; margin: 0; padding: 20px;\n"
@@ -720,6 +721,13 @@ QString generateTweetArchiveHtml(const QString &saveDir,
     if (!tweetUrl.isEmpty()) {
         html += QString("  <a class=\"link\" href=\"%1\" target=\"_blank\" rel=\"noopener\">원본 보기 · View on X</a>\n")
                     .arg(htmlEscape(tweetUrl));
+    }
+    // ★ 왜 합성 카드인지 남긴다. 예전엔 카드만 봐서는 '원래 글만 있던 트윗' 인지
+    //   '캡쳐가 실패한 것' 인지 구분할 수 없어, 나중에 다시 받아야 하는지 판단이 안 됐다.
+    {
+        const QString why = meta.value("cardReason").toString();
+        if (!why.isEmpty())
+            html += QString("  <div class=\"note\">%1</div>\n").arg(htmlEscape(why));
     }
     html += "</article>\n";
     // 검색용 메타 — 크롤러가 찾기 쉽도록 마지막에 숨김 정보
