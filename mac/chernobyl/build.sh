@@ -94,6 +94,64 @@ while IFS= read -r link; do
 done < <(find "$APPDIR" -type l ! -exec test -e {} \; -print 2>/dev/null)
 [ "$BROKEN" -gt 0 ] && echo "=== 끊어진 심볼릭 링크 $BROKEN 개 정리함 ==="
 
+# ★ 번들 도구의 아키텍처 확인.
+#   ffmpeg·deno·rclone 은 arm64 인데 ffprobe 만 x86_64 로 들어가 있었다.
+#   이 맥에는 로제타가 깔려 있어 그냥 돌아버리는 바람에 아무도 몰랐다. 로제타가
+#   없는 애플 실리콘 맥에서는 실행 자체가 안 된다("Bad CPU type in executable").
+#   조용히 지나가지 않게 빌드가 대신 봐 준다. 빌드를 세우지는 않는다 —
+#   로제타가 있으면 실제로 동작은 하므로, 크게 눈에 띄게 알리기만 한다.
+echo "=== 번들 도구 아키텍처 확인 (호스트: $(uname -m)) ==="
+HOST_ARCH="$(uname -m)"
+MISMATCH=0
+for T in "$APPDIR/Contents/MacOS/ffmpeg" \
+         "$APPDIR/Contents/MacOS/ffprobe" \
+         "$APPDIR/Contents/MacOS/deno" \
+         "$APPDIR/Contents/Resources/tools/rclone"; do
+    [ -f "$T" ] || continue
+    ARCHS="$(lipo -archs "$T" 2>/dev/null)" || continue
+    [ -z "$ARCHS" ] && continue
+    case " $ARCHS " in
+        *" $HOST_ARCH "*) ;;                       # 호스트 아키텍처 포함 → 정상
+        *)
+            echo "  ⚠ $(basename "$T"): $ARCHS — $HOST_ARCH 아님."
+            echo "     로제타 없는 맥에서 실행 불가. 같은 아키텍처 빌드로 교체하십시오:"
+            echo "     resources/tools/$(basename "$T")"
+            MISMATCH=$((MISMATCH + 1))
+            ;;
+    esac
+done
+if [ "$MISMATCH" -gt 0 ]; then
+    echo "  ⚠ 아키텍처가 어긋난 도구 $MISMATCH 개 — 위 안내를 보십시오."
+else
+    echo "  모든 번들 도구가 $HOST_ARCH 를 지원합니다."
+fi
+
+# ★ Info.plist 의 LSMinimumSystemVersion 을 '실제로 필요한 값' 으로 맞춘다.
+#   Info.plist.in 에는 12.0 이라고 손으로 적혀 있었는데, 실측하면 26.0 이 필요하다
+#   (실행 파일 minos 26.0, 그리고 QtWebChannel·libicu 등 Homebrew dylib 63개가 26.0).
+#   그 값은 우리가 고른 게 아니라 Homebrew 병이 어떤 macOS 에서 만들어졌느냐로 정해진다.
+#   손으로 적어 두면 Homebrew 를 올릴 때마다 조용히 어긋나고, 그러면 macOS 12~25
+#   사용자는 설치는 되는데 실행만 안 되는(원인 안 보이는) 상태가 된다.
+#   → 번들 안 Mach-O 들의 minos 최대값을 그때그때 계산해 적는다.
+#   반드시 codesign 앞에서 — plist 를 서명 뒤에 고치면 봉인이 깨진다.
+FLOOR="$(
+  { vtool -show-build "$APPDIR/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APPDIR/Contents/Info.plist")" 2>/dev/null
+    find "$APPDIR/Contents/Frameworks" "$APPDIR/Contents/PlugIns" -type f 2>/dev/null | while IFS= read -r f; do
+        file -b "$f" 2>/dev/null | grep -q "Mach-O" && vtool -show-build "$f" 2>/dev/null
+    done
+  } | awk '/minos/{print $2}' | sort -V | tail -1
+)"
+if [ -n "$FLOOR" ]; then
+    DECLARED="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APPDIR/Contents/Info.plist" 2>/dev/null || echo '')"
+    if [ "$DECLARED" != "$FLOOR" ]; then
+        echo "=== 최소 macOS 정정: ${DECLARED:-(없음)} → $FLOOR (실측) ==="
+        /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion $FLOOR" "$APPDIR/Contents/Info.plist" 2>/dev/null \
+          || /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string $FLOOR" "$APPDIR/Contents/Info.plist"
+    else
+        echo "=== 최소 macOS $FLOOR (선언과 실측 일치) ==="
+    fi
+fi
+
 echo "=== Codesign (inside-out + --deep --strict verify) ==="
 # 단일 서명 경로로 위임 — 서명/검증 실패 시 codesign_app.sh 가 exit 1 → set -e 로 중단.
 bash "$(dirname "$0")/codesign_app.sh" "$APPDIR"
