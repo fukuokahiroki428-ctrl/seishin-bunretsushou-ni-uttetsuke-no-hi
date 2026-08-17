@@ -40,6 +40,17 @@ trap 'rm -rf "$STAGE"' EXIT INT TERM
 cp -Rp "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"      # 끌어다 놓기용
 
+# ── 받는 사람용 안내와 준비 스크립트 ──────────────────────────────────────
+#   공증을 안 했으므로 받는 쪽에서 첫 실행이 막힌다. 매번 xattr 명령을 알려 주는
+#   대신 더블클릭용 .command 를 같이 넣는다. 그 스크립트는 이 앱 하나의 격리
+#   표시만 뗀다 — 시스템 Gatekeeper 는 절대 건드리지 않는다.
+for _f in "$(dirname "$0")"/resources/dmg/*; do
+    [ -e "$_f" ] || continue
+    cp -p "$_f" "$STAGE/"
+    case "$_f" in *.command) chmod +x "$STAGE/$(basename "$_f")" ;; esac
+    echo "  동봉: $(basename "$_f")"
+done
+
 echo "=== DMG 만드는 중 ($OUT) ==="
 rm -f "$OUT"
 hdiutil create -volname "$NAME $VERSION" \
