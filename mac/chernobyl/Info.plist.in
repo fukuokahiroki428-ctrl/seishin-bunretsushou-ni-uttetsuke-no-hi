@@ -22,7 +22,12 @@
     <string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
     <key>CFBundleVersion</key>
     <string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
-    <key>LSMinimumSystemVersion</key>
+    <!-- 이 값은 build.sh 가 빌드 끝에 실측값으로 덮어쓴다(codesign 앞에서).
+         여기 적힌 값은 오래 방치된 손 입력이었고, 실제로는 26.0 이 필요했다
+         (Homebrew 로 받은 Qt·icu 등이 그 macOS 에서 만들어졌기 때문).
+         어긋나 있으면 macOS 12~25 사용자는 설치는 되는데 실행만 조용히 실패한다.
+         손으로 맞추지 말 것 — Homebrew 를 올리면 또 바뀐다. -->
+         <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
