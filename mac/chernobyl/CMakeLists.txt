@@ -100,10 +100,7 @@ set(UTILS_HEADERS
 )
 
 set(PLATFORM_SOURCES
-    src/platforms/DiscordCollector.cpp
     src/platforms/BlueskyCollector.cpp
-    src/platforms/InstagramCollector.cpp
-    src/platforms/YouTubeDownloader.cpp
     src/platforms/TwitterCollector.cpp
     src/platforms/SiteCrawler.cpp
     src/platforms/RealChromeCrawler.cpp
@@ -111,12 +108,10 @@ set(PLATFORM_SOURCES
 )
 
 set(PLATFORM_HEADERS
-    src/platforms/DiscordCollector.h
     src/platforms/BlueskyCollector.h
-    src/platforms/InstagramCollector.h
-    src/platforms/YouTubeDownloader.h
     src/platforms/TwitterCollector.h
     src/platforms/SiteCrawler.h
+    src/platforms/DiscordError.h
     src/platforms/RealChromeCrawler.h
     src/platforms/PenChromeCrawler.h
 )
