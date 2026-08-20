@@ -303,6 +303,25 @@ if(APPLE)
         )
     endif()
 
+    # ★ 자동 재서명 도구 — 앱이 스스로 봉인을 복구할 때 쓴다.
+    #   앱 내부(번들)에 모듈/스크립트를 설치하면 codesign 봉인이 깨진다. 예전에는
+    #   런타임이 `codesign -f -s <id> --deep` 로 다시 서명했는데, 이 저장소의 빌드는
+    #   --deep 서명을 일부러 피하고 inside-out 으로 서명한다(애플도 --deep 은 배포용이
+    #   아니라고 한다). 두 방식이 갈려 있으면 런타임 재서명만 미묘하게 다른 결과를 낸다.
+    #   → 빌드가 쓰는 바로 그 스크립트를 번들에 넣고, 런타임도 같은 것을 부른다.
+    foreach(_sf codesign_app.sh predormition.entitlements)
+        if(EXISTS "${CMAKE_SOURCE_DIR}/${_sf}")
+            add_custom_command(TARGET Miyo POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_SOURCE_DIR}/${_sf}"
+                    "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/${_sf}"
+                COMMENT "Bundling ${_sf} (자동 재서명용)"
+            )
+        else()
+            message(WARNING "자동 재서명 도구가 없습니다: ${_sf} — 앱이 스스로 서명을 복구하지 못합니다.")
+        endif()
+    endforeach()
+
     # exiftool (프로젝트 내 Perl script + libs → Resources/tools/exiftool/)
     set(EXIFTOOL_SRC "${CMAKE_SOURCE_DIR}/resources/tools/exiftool")
     if(EXISTS "${EXIFTOOL_SRC}/exiftool")
