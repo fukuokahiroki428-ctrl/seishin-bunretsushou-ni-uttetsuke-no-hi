@@ -95,9 +95,32 @@ bool BlueskyCollector::startDaemon(const QString &handle, const QString &passwor
         return false;
     }
 
+    // ★ 실패했을 때 왜 실패했는지 남긴다.
+    //   예전에는 어떤 이유로 실패하든 "Daemon: never became ready" 한 줄이 전부였다.
+    //   로그인 실패인지, 요금 제한인지, 파이썬이 traceback 을 뱉고 죽은 것인지 구분할 수가
+    //   없어서 사용자도 우리도 원인을 못 찾았다. 데몬은 오류를 JSON 으로 잘 내보내는데
+    //   (실측: 잘못된 계정으로 띄우면 0.2초 만에 error 줄이 나온다) 그것이 stdout 이 아닌
+    //   경로로 죽거나 형식이 어긋나면 통째로 사라졌다.
+    //   stderr 와 종료 코드, 그리고 해석하지 못한 줄까지 함께 보고한다.
+    auto reportDaemonFailure = [this](const QString &why) {
+        m_backend->log("Bluesky 데몬 실패: " + why, "error", "bluesky");
+        if (m_daemon) {
+            const QString err = QString::fromUtf8(m_daemon->readAllStandardError()).trimmed();
+            if (!err.isEmpty()) {
+                const QStringList lines = err.split('\n');
+                const int from = qMax(0, lines.size() - 8);   // 마지막 8줄이면 원인은 보인다
+                for (int i = from; i < lines.size(); ++i)
+                    m_backend->log("  │ " + lines[i].trimmed(), "error", "bluesky");
+            }
+            if (m_daemon->state() == QProcess::NotRunning)
+                m_backend->log(QString("  └ 데몬이 종료됨 (코드 %1)").arg(m_daemon->exitCode()),
+                               "error", "bluesky");
+        }
+    };
+
     // Wait for "ready" signal
     if (!m_daemon->waitForReadyRead(30000)) {
-        m_backend->log("Daemon: timeout waiting for ready", "error", "bluesky");
+        reportDaemonFailure("30초 안에 아무 응답이 없었습니다");
         stopDaemon();
         return false;
     }
@@ -105,10 +128,17 @@ bool BlueskyCollector::startDaemon(const QString &handle, const QString &passwor
     while (m_daemon->canReadLine() || m_daemon->waitForReadyRead(3000)) {
         QByteArray line = m_daemon->readLine().trimmed();
         if (line.isEmpty()) continue;
-        QJsonObject msg = QJsonDocument::fromJson(line).object();
+        QJsonParseError perr;
+        QJsonObject msg = QJsonDocument::fromJson(line, &perr).object();
+        if (perr.error != QJsonParseError::NoError) {
+            // JSON 이 아니면 그냥 버리지 말고 보여 준다 — 파이썬 경고·traceback 이 여기로 온다.
+            m_backend->log("  │ " + QString::fromUtf8(line.left(300)), "warning", "bluesky");
+            continue;
+        }
 
         if (msg.contains("error")) {
             m_backend->log("Daemon error: " + msg["error"].toString(), "error", "bluesky");
+            reportDaemonFailure("로그인 또는 초기화 실패");
             stopDaemon();
             return false;
         }
@@ -122,7 +152,7 @@ bool BlueskyCollector::startDaemon(const QString &handle, const QString &passwor
         }
     }
 
-    m_backend->log("Daemon: never became ready", "error", "bluesky");
+    reportDaemonFailure("ready 신호 없이 출력이 끊겼습니다");
     stopDaemon();
     return false;
 }

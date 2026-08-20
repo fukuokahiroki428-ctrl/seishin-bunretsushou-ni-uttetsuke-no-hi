@@ -23,6 +23,8 @@
 #include <QFileInfo>
 #include <QDirIterator>
 #include <QDir>
+#include <QVersionNumber>
+#include <algorithm>
 #include <QDateTime>
 #include <QStandardPaths>
 #include <QTimer>
@@ -58,6 +60,17 @@ QString RealChromeCrawler::findChromeExecutable() const
         << "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
         << "/Applications/Arc.app/Contents/MacOS/Arc";
 #elif defined(Q_OS_WIN)
+    // ★ 번들된 Chromium 최우선 — 앱 자체 동봉 (사용자 시스템 브라우저 의존성 제거).
+    //   맥은 진작 이렇게 하고 있었는데(Resources/chromium/Chromium.app) 윈도우 분기에는
+    //   번들 후보가 아예 없었다. 그래서 사용자 기계에 Chrome 이 없으면 '진짜 페이지 캡쳐' 가
+    //   통째로 안 돌았다 — 시스템 브라우저를 찾아 쓰는 것은 폴백이어야지 유일한 길이면 안 된다.
+    //   CI 가 Chrome for Testing(win64)을 dist/win/chromium 에 풀어 넣는다.
+    //   압축 안의 폴더 이름(chrome-win64)이 남는 경우까지 함께 본다.
+    {
+        const QString appDir = QCoreApplication::applicationDirPath();
+        candidates << appDir + "/chromium/chrome.exe"
+                   << appDir + "/chromium/chrome-win64/chrome.exe";
+    }
     QString programFiles = qEnvironmentVariable("ProgramFiles");
     QString programFilesX86 = qEnvironmentVariable("ProgramFiles(x86)");
     QString localAppData = qEnvironmentVariable("LOCALAPPDATA");
@@ -73,6 +86,25 @@ QString RealChromeCrawler::findChromeExecutable() const
     if (!localAppData.isEmpty()) {
         candidates << localAppData + "\\Google\\Chrome\\Application\\chrome.exe"
                    << localAppData + "\\Microsoft\\Edge\\Application\\msedge.exe";
+    }
+    // ★ 요즘 Edge 배치 — ...\Microsoft\EdgeCore\<버전>\msedge.exe
+    //   Edge 를 Application 폴더가 아니라 버전별 EdgeCore 폴더에 두는 설치가 있다.
+    //   이 사용자의 기계가 그렇다(152.0.4191.19). 위 고정 경로만 보면 Chrome 도 Edge 도
+    //   못 찾아 findChromeExecutable() 이 빈 값을 주고, 그러면 '진짜 페이지 캡쳐' 가
+    //   통째로 동작하지 않는다(트위터는 이 토글이 기본 켜짐이다).
+    //   그런데 EdgeCore 의 msedge.exe 는 CDP 브라우저로 멀쩡히 돈다 — 직접 띄워
+    //   /json/version 이 "Edg/152.0.4191.19" 로 답하는 것을 확인했다.
+    //   버전 폴더가 여러 개면 최신 것을 먼저 쓴다.
+    for (const QString &base : { programFilesX86, programFiles, localAppData }) {
+        if (base.isEmpty()) continue;
+        QDir core(base + "\\Microsoft\\EdgeCore");
+        if (!core.exists()) continue;
+        QStringList vers = core.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        std::sort(vers.begin(), vers.end(), [](const QString &a, const QString &b) {
+            return QVersionNumber::fromString(a) > QVersionNumber::fromString(b);
+        });
+        for (const QString &v : vers)
+            candidates << core.absolutePath() + "/" + v + "/msedge.exe";
     }
 #else
     candidates
@@ -174,9 +206,14 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
             QString marker = ud.section('/', -1);   // chrome_capture_profile[_<trackKey>]
             marker.replace("'", "''");
             if (!marker.isEmpty()) {
+                // ★ chrome.exe 만 보면 안 된다 — findChromeExecutable() 은 Chrome 이 없으면
+                //   Edge, 그것도 없으면 Brave 를 띄운다. Chrome 이 안 깔린 기계에서는 캡쳐
+                //   브라우저가 msedge.exe 라, 이 정리가 고아를 하나도 못 잡았다. 그 고아가
+                //   바로 위 주석이 말하는 "로그인 사전 navigate 실패" 의 원인이다.
                 QString ps = QString(
                     "Get-CimInstance Win32_Process | "
-                    "Where-Object { $_.Name -eq 'chrome.exe' -and $_.CommandLine -like '*%1*' } | "
+                    "Where-Object { $_.Name -in @('chrome.exe','msedge.exe','brave.exe') "
+                    "-and $_.CommandLine -like '*%1*' } | "
                     "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
                 ).arg(marker);
                 QProcess::execute("powershell", {"-NoProfile", "-NonInteractive", "-Command", ps});
@@ -217,7 +254,12 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
         args << "--no-first-run"
              << "--no-default-browser-check"
              // ★ 8GB Mac OOM 방지 — Chrome 메모리 ~50% 절약 (single-process + 캐시 cap)
-             << "--disable-features=Translate,OptimizationHints,MediaRouter,GlobalMediaControls,IsolateOrigins,site-per-process"
+             // ★ --disable-features 는 하나로 몰아야 한다.
+             //   크로미움은 같은 스위치가 여러 번 오면 마지막 것만 쓴다. 예전엔 7번 나눠 있어
+             //   실제로는 마지막 줄(DnsOverHttpsUpgrade)만 적용되고 나머지 여섯 줄은
+             //   전부 버려졌다 — WebRTC IP 노출 방지도, NTLMv1 차단도, Autofill 서버
+             //   통신 차단도 도는 줄 알았지만 하나도 안 돌고 있었다.
+             << "--disable-features=Translate,OptimizationHints,MediaRouter,GlobalMediaControls,IsolateOrigins,site-per-process,WebRtcHideLocalIpsWithMdns,WebRTC,AutofillServerCommunication,OptimizationGuideModelDownloading,NtlmV1,AsyncDns,ChromeWhatsNewUI,DnsOverHttpsUpgrade"
              << "--disable-background-networking"
              << "--disable-component-update"
              << "--disable-domain-reliability"
@@ -249,25 +291,19 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
              << "--site-per-process"                                    // Site isolation (Spectre 방어)
              << "--enable-strict-mixed-content-checking"                // HTTPS 안 HTTP 차단
              << "--block-third-party-cookies"                           // 3rd party 쿠키 차단 (추적 방지)
-             << "--disable-features=WebRtcHideLocalIpsWithMdns,WebRTC"  // WebRTC IP 노출 방지
              << "--disable-background-mode"                             // 백그라운드 실행 차단
              << "--disable-default-apps"
              << "--disable-translate"
              << "--no-default-browser-check"
              << "--no-first-run"
              << "--disable-sync"
-             << "--disable-features=AutofillServerCommunication,OptimizationGuideModelDownloading";
 #ifdef Q_OS_WIN
         // ★ Windows 전용 추가 보안 — macOS 보다 공격 표면이 넓음
         args << "--win-job-object"                              // Windows Job Object 격리 강화
-             << "--disable-features=NtlmV1"                     // NTLMv1 인증 차단 (legacy 취약)
              << "--enforce-strict-secure-origin-for-secure-frames"
-             << "--disable-features=AsyncDns"                   // mDNS 응답 IP 노출 방지
              << "--restrict-runtime-allocation"                 // ASLR 강화
              << "--enable-features=NetworkServiceSandbox"       // Network 서비스 sandbox
              << "--block-insecure-private-network-requests"     // 내부망 비보안 요청 차단
-             << "--disable-features=ChromeWhatsNewUI"
-             << "--disable-features=DnsOverHttpsUpgrade";       // DoH 자동 upgrade 차단 (MITM 우회 방지)
 #endif
         args << "--disable-gpu"
              << "--disable-software-rasterizer"

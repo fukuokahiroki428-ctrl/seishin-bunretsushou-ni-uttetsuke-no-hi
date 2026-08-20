@@ -84,6 +84,27 @@ static void chernobylLogHandler(QtMsgType type, const QMessageLogContext &, cons
 int main(int argc, char *argv[])
 {
     // ★ WebEngine — 메모리 절약 + Site isolation 유지 (보안)
+    //   ★ GPU 관련 플래그는 플랫폼을 가른다.
+    //     이 묶음은 8GB 맥에서 나던 OOM 크래시를 잡으려고 넣은 것인데 윈도우에도 그대로
+    //     걸려 있었다. 윈도우는 그 제약을 질 이유가 없어 GPU 계열만 뺀다.
+    //     메모리 계열(캐시 상한·JS 힙·site-per-process)은 양쪽 다 그대로 둔다.
+    // ★ 밖에서 이미 지정했으면 그것을 존중한다.
+    //   qputenv 는 무조건 덮어쓴다. 그래서 예전에는 QTWEBENGINE_CHROMIUM_FLAGS 를 주고
+    //   앱을 띄워도 이 줄이 곧바로 지워버려, 플래그를 바꿔 시험하는 것 자체가 불가능했다
+    //   (실제로 GPU 를 켜고 재본다고 한 측정이 전부 무의미했다 — 앱이 값을 덮어쓴 뒤였다).
+    //   빌드하지 않고도 확인할 수 있어야 원인을 가릴 수 있다.
+    if (!qEnvironmentVariableIsSet("QTWEBENGINE_CHROMIUM_FLAGS")) {
+#ifdef Q_OS_WIN
+    qputenv("QTWEBENGINE_CHROMIUM_FLAGS",
+        "--site-per-process "                      // ★ 보안 격리 유지
+        "--memory-pressure-off "
+        "--js-flags=--max-old-space-size=384 "
+        "--disk-cache-size=10485760 "
+        "--media-cache-size=5242880 "
+        "--aggressive-cache-discard");
+        // --num-raster-threads=2 도 뺐다 — 래스터 스레드를 인위적으로 2개로 묶으면
+        // 가속을 켜 놓고도 소프트웨어 경로에서 병목이 남는다. 기본값에 맡긴다.
+#else
     qputenv("QTWEBENGINE_CHROMIUM_FLAGS",
         "--disable-gpu "
         "--disable-gpu-compositing "
@@ -97,6 +118,8 @@ int main(int argc, char *argv[])
         "--media-cache-size=5242880 "
         "--aggressive-cache-discard "
         "--num-raster-threads=2");
+#endif
+    }
 
     QApplication app(argc, argv);
     // ★ 로그 핸들러보다 반드시 먼저 설정한다. Windows 의 AppDataLocation 은
