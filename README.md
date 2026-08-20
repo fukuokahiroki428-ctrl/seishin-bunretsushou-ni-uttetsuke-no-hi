@@ -1,6 +1,6 @@
 # 精神分裂症を患うにはうってつけの日
 
-> **Predormition** (Windows · macOS)
+> **ハンイシキ** (macOS · 판 이름 上野) · **Predormition** (Windows)
 > 소셜 미디어 다운로더 · 사이트 통째 크롤러 통합 앱
 > (구 별도 앱 "팬을 잘 쓰고 싶다 / Pen"은 Predormition 에 **통합**되었습니다 — PenBackend)
 
@@ -13,7 +13,7 @@
 | 앱 | 플랫폼 | 설명 |
 |----|--------|------|
 | **Predormition** | Windows | Twitter/Bluesky/Instagram/Pixiv/Fanbox/Tumblr/Discord/YouTube 등 다운로더 |
-| **Predormition** | macOS | 위와 동일 (원본). rclone 기반 NAS 백업 + CDP 캡쳐 포함 |
+| **ハンイシキ** | macOS | 독자 노선. 13개 플랫폼 + rclone NAS 백업 + CDP 캡쳐 + 로컬 AI |
 
 > 구 **팬을 잘 쓰고 싶다 (Pen)** 독립 앱은 폐기되고 기능(사이트 통째 미러)이
 > Predormition 내부(`PenBackend`)로 통합되었습니다.
@@ -29,7 +29,7 @@
 | 파일 | 플랫폼 | 용량 | 설치 |
 |------|--------|------|------|
 | `Predormition_Setup.exe` | Windows 10/11 (x64) | ~261 MB | 더블클릭 → 설치 (관리자 권한 불필요, %LOCALAPPDATA% 에 설치) |
-| `Predormition.dmg` | macOS (Apple Silicon) | ~721 MB | 마운트 → Applications 로 드래그 |
+| `Hanishiki-<버전>.dmg` | macOS 26.0+ (Apple Silicon) | ~700 MB | 마운트 → Applications 로 드래그 → `첫실행_준비.command` |
 
 > 📌 구 릴리스의 `Pen.dmg` 는 폐기된 독립 앱입니다 — 해당 기능은 이제 Chernobyl 안에 있습니다.
 
@@ -46,8 +46,8 @@
 ```
 .
 ├── mac/
-│   └── chernobyl/      # macOS Chernobyl 소스 (Qt6 C++)
-├── windows/            # Windows Chernobyl 소스 (Qt6 C++) + GitHub Actions 빌드
+│   └── chernobyl/      # macOS ハンイシキ 소스 (Qt6 C++) — 폴더 이름은 옛 이름 그대로
+├── windows/            # Windows Predormition 소스 (Qt6 C++) + GitHub Actions 빌드
 ├── design-system/      # Darkroom v2 디자인 시스템 카드 (claude.ai/design 동기화)
 └── README.md
 ```
@@ -68,31 +68,10 @@
 
 로컬 빌드 시: `windows/scripts/download_windows_tools.sh` 로 도구 받은 뒤 CMake + MSVC.
 
-### macOS (로컬 빌드)
-요구사항: **Qt 6.7+ (Homebrew: `brew install qt`)**, CMake 3.20+, Xcode CLT
+### macOS (ハンイシキ)
 
-```bash
-cd mac/chernobyl
-cmake -B build -DAPP_NAME=Predormition -DAPP_ID=com.predormition.app
-cmake --build build -j
-#  ★ 앱 이름을 바꾸면 scripts/make_dmg.sh 의 기본 경로(build/Predormition.app)와 어긋나 DMG 생성이 실패한다.
-
-```
-
-#### 배포용 DMG 만들기 (Qt 프레임워크 번들 — 깨끗한 맥에서도 실행)
-개발 빌드는 시스템 Homebrew Qt 에 의존합니다. 배포본은 `macdeployqt` 로 Qt 를 .app 안에 넣어야 합니다.
-
-```bash
-cd mac/chernobyl
-./build.sh   # macdeployqt 로 Qt 번들 + fix_webengine_helper.sh + 코드사인 (packaging/ 참고)
-```
-배포 파이프라인이 하는 일:
-1. `macdeployqt` 로 Qt 프레임워크 번들
-2. WebEngine 헬퍼(QtWebEngineProcess) 경로 수정 (`fix_webengine_helper.sh` — 백지창 방지)
-3. 코드사인 (`codesign_app.sh` / `packaging/` 의 개발자 인증 스크립트)
-
-> **중요(macOS 플러그인 충돌)**: `main.cpp` 는 `_NSGetExecutablePath` 로 번들 PlugIns 를 우선 사용합니다.
-> 이 처리가 없으면 번들 Qt 와 Homebrew Qt 가 동시에 로드되어("two sets of Qt") SIGABRT 로 죽습니다.
+아래 「🍎 ハンイシキ (macOS)」 절의 **빌드** 를 보십시오.
+옛 명령(`-DAPP_NAME=Predormition`, `scripts/make_dmg.sh`)은 더 이상 맞지 않습니다.
 
 ---
 
@@ -150,6 +129,154 @@ cd mac/chernobyl
 
 ---
 
+---
+
+# 🍎 ハンイシキ (macOS) — 판 이름 **上野**
+
+> macOS 라인은 Windows 와 갈라진 **독자 노선**입니다. 이름이 여러 번 바뀌었습니다:
+> **カメラ → Chernobyl → Predormition → ハンイシキ**.
+> 아래 설명은 전부 지금(4.0.0 / 上野) 기준이며, 실제로 확인한 것만 적었습니다.
+
+## 이름이 세 가지인 이유
+
+| 쓰이는 곳 | 값 | 바꾸면 생기는 일 |
+|---|---|---|
+| 화면 표시 (Finder·Dock·메뉴·창 제목) | `ハンイシキ` | — (보이는 것뿐) |
+| 실행 파일 (`CFBundleExecutable`) | `Hanishiki` | `kill_app.sh` 가 프로세스를 못 찾는다 |
+| **사용자 데이터 폴더** | `~/Library/Application Support/Miyo/Hanishiki` | **설정·수집물이 갈라진다. 실제로 잃은 적이 있다** |
+
+`.app` 폴더 이름은 `build.sh` 가 codesign 직전에 표시 이름(`ハンイシキ.app`)으로 바꿉니다.
+Finder 는 `CFBundleDisplayName` 이 아니라 **파일명**을 보여주기 때문입니다
+(메뉴 막대·Dock 만 표시 이름을 씁니다 — `LSDisplayName`).
+
+## 설치
+
+[Releases](../../releases/latest) 에서 `Hanishiki-<버전>.dmg` 를 받으십시오.
+
+1. DMG 를 열고 **ハンイシキ** 를 `Applications` 로 끌어다 놓습니다.
+2. 같이 든 `첫실행_준비.command` 를 두 번 누릅니다.
+   - 그 파일도 처음엔 막힙니다 → **오른쪽 클릭 → 열기**.
+   - 이 앱 하나의 격리 표시만 뗍니다. **시스템 Gatekeeper 는 건드리지 않습니다**
+     (`spctl --master-disable` 같은 건 맥 전체를 무방비로 만들기 때문에 쓰지 않습니다).
+   - 쓰기 싫으시면 앱을 오른쪽 클릭 → 열기 로 한 번 실행해도 같습니다.
+
+**요구 환경**: macOS **26.0 이상**, 애플 실리콘(arm64).
+26.0 이라는 값은 우리가 고른 게 아니라 Homebrew 로 받은 Qt·ICU 등 dylib 63개가 그 macOS 에서
+만들어졌기 때문입니다(Qt 자체는 14.0 을 지원). `build.sh` 가 번들 안 Mach-O 의 `minos` 최대값을
+빌드마다 계산해 `LSMinimumSystemVersion` 에 적습니다 — 손으로 적어 두면 조용히 어긋나고,
+그러면 낮은 macOS 사용자는 **설치는 되는데 실행만 안 되는** 상태가 됩니다.
+
+**공증(notarize)은 되어 있지 않습니다.** 서명은 Apple Development 인증서입니다.
+
+## 빌드
+
+```bash
+brew install qt cmake
+cd mac/chernobyl
+cmake -B build
+./build.sh          # macdeployqt → 경로 수정 → 자원 동기화 → 검사 → 이름 변경 → 서명
+./make_dmg.sh       # 서명 검증 → DMG → 안의 앱 재검증
+```
+
+`build.sh` 는 단순한 래퍼가 아닙니다. 다음을 순서대로 합니다(각 단계는 실제 사고를 겪고 생겼습니다):
+
+| 단계 | 왜 |
+|---|---|
+| 빌드 잠금 | 빌드를 겹쳐 돌리면 서로의 실행 파일을 지운다. '성공' 인데 앱이 안 뜬다 |
+| 끊어진 심볼릭 링크 제거 | 하나만 있어도 `codesign --verify` 가 앱 전체를 가리키며 실패한다 |
+| **자원 동기화** | CMake 의 자원 복사는 `POST_BUILD` 라 **타겟이 다시 링크될 때만** 돈다. C++ 을 안 건드리고 자원만 바꾸면 옛것이 그대로 남는다 |
+| 도구 아키텍처 확인 | `ffprobe` 만 x86_64 인 채 배포된 적이 있다. 로제타가 있으면 그냥 돌아서 아무도 몰랐다 |
+| 최소 macOS 실측 | 위 참고 |
+| 번들 이름 변경 | Finder 표시용 |
+| inside-out 서명 | `--deep` 서명은 쓰지 않는다(애플도 배포용이 아니라고 한다) |
+
+### 번들 Chromium 넣기 (캡쳐 기능에 필요)
+
+캡쳐는 CDP 로 Chromium 을 몰아 씁니다. 번들에 없으면 **사용자 시스템 Chrome** 으로 떨어지고,
+크롬이 없는 맥에서는 캡쳐가 통째로 안 됩니다. CMake 가 없으면 경고합니다.
+
+```bash
+# Google 공식 Chrome for Testing (버전은 아래 JSON 에서 확인)
+# https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json
+curl -fL -o /tmp/cft.zip \
+  "https://storage.googleapis.com/chrome-for-testing-public/152.0.7977.54/mac-arm64/chrome-mac-arm64.zip"
+unzip -q /tmp/cft.zip -d /tmp/cft
+mkdir -p mac/chernobyl/resources/chromium
+cp -Rp "/tmp/cft/chrome-mac-arm64/Google Chrome for Testing.app" \
+       mac/chernobyl/resources/chromium/Chromium.app
+```
+
+`.app` 폴더 이름은 반드시 `Chromium.app`, 그 안의 실행 파일은 `Google Chrome for Testing` 이어야
+합니다(`RealChromeCrawler::findChromeExecutable()` 이 그렇게 찾습니다). git 에는 넣지 않습니다(`.gitignore`).
+
+## 앱 내부 한 갈래 원칙
+
+파이썬·도구·스크립트는 **전부 앱 번들 안**에서 돕니다. 예전엔 '번들이 쓰기가능하면 번들,
+아니면 외부 복사본' 두 갈래였는데, 층마다 가정이 달라 **Python 업그레이드가 늘 중단되는**
+고장이 있었습니다(한쪽은 "번들 우선", 다른 쪽은 "번들이면 중단"이었습니다).
+
+번들에 쓰면 codesign 봉인이 깨지므로 **자동으로 다시 서명**합니다:
+
+- 설치·업그레이드 직후 → `Common::resealAppBundle()`
+- 기동할 때마다 → 봉인을 확인하고 깨져 있으면 스스로 복구 (`[SEAL]` 로그)
+
+재서명은 번들에 동봉한 `codesign_app.sh`(빌드가 쓰는 그 스크립트)가 합니다.
+인증서가 있으면 그것으로, 없으면 ad-hoc 으로 — **양쪽 다 실제로 검증까지 통과하는 것을 확인**했습니다.
+
+> 참고: 코드 곳곳의 옛 주석은 "봉인이 깨지면 macOS 가 SIGKILL 한다" 고 하지만,
+> 지금 서명 구성(Apple Development, 하드닝 런타임 없음)에서는 **깨진 채로도 실행됩니다**.
+> 그래도 고쳐야 합니다 — `codesign --verify` 가 계속 실패하고, 공증·배포에서 막히며,
+> 하드닝 런타임을 켜는 날 갑자기 안 뜹니다. 급한 불이 아니라 위생 문제입니다.
+
+**앱 밖에 남는 것** (사용자 데이터라 앱을 지워도 남아야 합니다):
+
+```
+~/Library/Application Support/Miyo/Hanishiki/
+├── miyo_config.json        설정·계정·토큰
+├── archive_index.db        산출물 색인 (수백 MB)
+├── api_overrides.json      외부 API 상수 덮어쓰기
+├── llm/                    AI 엔진·모델 (~9GB — 번들에 넣으면 DMG 가 10GB)
+├── script_overrides/       AI 가 고친 스크립트
+├── chrome_capture_profile/ 캡쳐용 크롬 프로필
+└── tools/                  yt-dlp 자동 갱신본
+```
+
+## 배포 절차
+
+**릴리즈가 immutable 입니다** — 발행 뒤에는 자산 교체·추가가 **거부됩니다**
+(`HTTP 422: Cannot upload assets to an immutable release`). 잘못 올리면 새 태그로 다시 내야 합니다.
+
+```bash
+cd mac/chernobyl && ./build.sh && ./make_dmg.sh
+cd ../..
+gh release create mac-<버전> "mac/chernobyl/build/Hanishiki-<버전>.dmg" \
+   --target ueno --title "ハンイシキ <버전> (上野)" --notes "..."
+```
+
+**태그를 `v` 로 시작하지 마십시오.** `.github/workflows/build.yml` 은 `v*` 태그에 반응하는
+**Windows 전용** 워크플로입니다. `v4.0.0` 을 밀면 맥과 무관한 빌드가 돕니다.
+맥 라인용 CI 는 없습니다 — 로컬 빌드 그대로 냅니다.
+
+## 도구 스크립트
+
+| 파일 | 하는 일 |
+|---|---|
+| `build.sh` | 위 표의 전 과정 |
+| `make_dmg.sh` | 서명 검증 → DMG → 안의 앱 재검증. 파일명은 ASCII, 볼륨명은 카타카나 |
+| `sync_resources.sh` | 소스 자원 → 번들. `build.sh` 와 CMake 의 항상 도는 타겟이 **둘 다** 부른다 |
+| `codesign_app.sh` | inside-out 서명. 번들에도 동봉되어 런타임 자동 재서명이 쓴다 |
+| `kill_app.sh` | 실행 중인 앱만 종료. `pgrep -x` ∩ `pgrep -f` — `ps` 는 한글 경로를 8진 이스케이프로 찍어 비교가 **언제나** 실패했다 |
+| `fix_webengine_helper.sh` | QtWebEngineProcess 의 `@executable_path` → `@rpath`. 안 하면 백지 창 |
+| `fix_bundle_rpaths.sh` | Homebrew 절대경로 → `@rpath`. 안 하면 남의 맥에서 안 뜬다 |
+
+## 알려진 제약
+
+- **공증 안 됨** — 첫 실행에 오른쪽 클릭 → 열기가 필요합니다
+- **macOS 26.0 이상** — Homebrew 의존성이 정합니다. 낮추려면 의존성을 낮은 대상으로 다시 빌드해야 합니다
+- **애플 실리콘 전용** — 번들 도구가 arm64 입니다
+
+---
+
 ## ⚖️ 라이선스 / 고지
 
 - 본 소스는 개인 사용 목적입니다. 번들 외부 도구는 각자의 라이선스를 따릅니다
@@ -158,31 +285,18 @@ cd mac/chernobyl
 
 ---
 
-## 🚀 릴리즈 배포 절차 (중요)
+## 🚀 릴리즈 배포 절차
 
-이 저장소는 **발행된 릴리즈가 immutable** 이라, 발행 후에는 자산을 추가할 수 없다.
-mac DMG 는 CI 가 아니라 **로컬에서 빌드·서명**하므로 순서를 반드시 지켜야 한다.
+> **macOS(ハンイシキ) 절차는 위 「배포 절차」 를 보십시오.** 아래는 Windows 용입니다.
+> 두 라인은 갈라졌습니다 — 맥은 로컬 빌드, 윈도우는 CI 입니다.
+
+### Windows
+`v*` 태그를 push 하면 `.github/workflows/build.yml` 이 windows-2022 에서 빌드하고
+`Predormition_Setup.exe` 를 릴리즈에 올립니다.
 
 ```bash
-# 1) mac 앱 빌드 (모델 제외본으로 DMG 를 만든다 — 릴리즈 자산은 파일당 2GB 제한)
-cd mac/chernobyl && cmake -B build -DAPP_NAME=Predormition -DAPP_ID=com.predormition.app && cmake --build build -j
-
-# 2) DMG 생성 (서명 자동) → repo/dist/Predormition.dmg
-cd ../.. && bash scripts/make_dmg.sh
-
-# 3) 태그 push → CI 가 Windows 빌드 후 '초안(draft)' 릴리즈에 Predormition_Setup.exe 를 올린다
-git tag -a v3.7.1 -m "..." && git push origin v3.7.1
-
-# 4) CI 완료를 기다린 뒤 DMG 를 같은 초안에 추가
-gh release upload v3.7.1 dist/Predormition.dmg
-
-# 5) 발행 (이 시점 이후로는 자산 추가 불가)
-gh release edit v3.7.1 --draft=false --latest --notes "..."
+git tag -a v<버전> -m "..." && git push origin v<버전>
 ```
 
-**주의**
-- 3단계에서 CI 가 만드는 것은 **초안**이다. GitHub UI 에서 먼저 발행해 버리면 mac DMG 를 붙일 수 없다.
-- 로컬 AI 모델(gguf, 약 9GB)은 용량 때문에 배포본에 넣지 않는다. DMG 안의
-  `AI_설치_더블클릭.command` 가 사용자 PC 에서 내려받아 앱 내부에 설치한다.
-- mac 앱 번들 안에 파일을 추가하면 코드서명 봉인이 깨진다 → 반드시 재서명
-  (`scripts/bundle_llm.sh` 와 `Common::resealAppBundle()` 이 자동 처리).
+**주의**: 이 저장소는 발행된 릴리즈가 **immutable** 이라 발행 뒤에는 자산을 추가·교체할 수
+없습니다(`HTTP 422`). 자산을 다 올린 뒤에 발행하십시오.
