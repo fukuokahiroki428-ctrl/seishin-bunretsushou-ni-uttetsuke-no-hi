@@ -312,11 +312,19 @@ if(APPLE)
             "   README 의 '번들 Chromium 넣기' 를 보고 내려받아 두십시오.")
     endif()
     if(EXISTS "${CHROMIUM_SRC}")
+        # ★ cmake -E copy_directory 를 쓰면 안 된다 — 심볼릭 링크를 따라가 실체를
+        #   복제한다. Chromium.app 은 프레임워크 링크(Versions/Current 등) 5개를 갖고
+        #   있어서, 그렇게 복사하면 356MB 가 1.0GB 로 불어난다(실측). 게다가 링크가
+        #   사라지면 프레임워크 구조가 깨져 codesign 이 그 프레임워크를 서명하지 못한다.
+        #   cp -Rp 로 링크와 권한을 그대로 옮긴다.
         add_custom_command(TARGET Miyo POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${CHROMIUM_SRC}"
+            COMMAND ${CMAKE_COMMAND} -E rm -rf
                 "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/chromium/Chromium.app"
-            COMMENT "Bundling Chromium"
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/chromium"
+            COMMAND cp -Rp "${CHROMIUM_SRC}"
+                "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/chromium/Chromium.app"
+            COMMENT "Bundling Chromium (심볼릭 링크 보존)"
         )
     endif()
 
