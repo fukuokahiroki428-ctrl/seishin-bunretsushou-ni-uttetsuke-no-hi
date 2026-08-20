@@ -21,7 +21,14 @@ APP="${1:-$(ls -d build/*.app 2>/dev/null | head -1)}"
 APP="$(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")"
 
 VERSION="$(cat ../../VERSION 2>/dev/null || echo 0.0.0)"
-NAME="$(basename "$APP" .app)"          # ASCII (Hanishiki)
+# ★ DMG 파일 이름은 ASCII 로 고정한다.
+#   번들 폴더 이름은 이제 카타카나(ハンイシキ.app)라 basename 을 쓰면 DMG 이름까지
+#   비ASCII 가 된다. GitHub 릴리즈 자산 이름이나 다른 도구에서 깨질 수 있다.
+#   실행 파일 이름(CFBundleExecutable)은 ASCII 로 유지되므로 그것을 쓴다.
+NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist" 2>/dev/null \
+        || basename "$APP" .app)"
+# 볼륨 이름(창 제목)은 보이는 것이므로 표시 이름을 쓴다.
+VOLNAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$APP/Contents/Info.plist" 2>/dev/null || echo "$NAME")"
 OUT="build/${NAME}-${VERSION}.dmg"
 
 # ── 서명 확인 — 깨진 걸 담아 배포하지 않는다 ──────────────────────────────
@@ -53,7 +60,7 @@ done
 
 echo "=== DMG 만드는 중 ($OUT) ==="
 rm -f "$OUT"
-hdiutil create -volname "$NAME $VERSION" \
+hdiutil create -volname "$VOLNAME $VERSION" \
                -srcfolder "$STAGE" \
                -ov -format UDZO \
                -quiet \

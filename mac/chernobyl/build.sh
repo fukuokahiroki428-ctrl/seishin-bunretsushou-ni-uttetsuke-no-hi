@@ -159,6 +159,29 @@ if [ -n "$FLOOR" ]; then
     fi
 fi
 
+# ★ 번들 폴더 이름을 '보이는 이름'(카타카나)으로 바꾼다 — 서명 직전에.
+#   Finder 는 .app 의 파일명을 그대로 보여준다. CFBundleDisplayName 은 메뉴 막대·Dock
+#   에만 쓰인다(실측: LSDisplayName=ハンイシキ 인데 kMDItemDisplayName=Hanishiki 였다).
+#   그래서 폴더 이름을 바꿔야 Finder 에도 카타카나로 뜬다.
+#   ★ 바꾸는 것은 '폴더 이름' 뿐이다:
+#     · 실행 파일 이름(CFBundleExecutable)은 ASCII 그대로 — kill_app.sh 의 pgrep -x 가 쓴다.
+#     · 사용자 데이터 경로는 app.setApplicationName(ASCII) 이 정하므로 영향 없다.
+#       (여기를 잘못 건드리면 Miyo/<앱이름> 폴더가 갈라져 설정·수집물을 잃는다.)
+#     · DMG 파일 이름도 ASCII 로 둔다(make_dmg.sh 가 실행 파일 이름을 쓴다).
+#   codesign 앞에서 해야 한다 — 서명 뒤에 옮기면 경로가 바뀌어 다시 서명해야 한다.
+DISPLAY_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$APPDIR/Contents/Info.plist" 2>/dev/null || true)"
+if [ -n "$DISPLAY_NAME" ] && [ "$(basename "$APPDIR" .app)" != "$DISPLAY_NAME" ]; then
+    NEWDIR="$(dirname "$APPDIR")/$DISPLAY_NAME.app"
+    rm -rf "$NEWDIR"
+    if mv "$APPDIR" "$NEWDIR"; then
+        echo "=== 번들 이름 → $DISPLAY_NAME.app (Finder 표시용, 실행 파일은 ASCII 유지) ==="
+        APPDIR="$NEWDIR"
+        FWDIR="$APPDIR/Contents/Frameworks"
+    else
+        echo "⚠ 번들 이름 변경 실패 — ASCII 이름 그대로 진행합니다."
+    fi
+fi
+
 echo "=== Codesign (inside-out + --deep --strict verify) ==="
 # 단일 서명 경로로 위임 — 서명/검증 실패 시 codesign_app.sh 가 exit 1 → set -e 로 중단.
 bash "$(dirname "$0")/codesign_app.sh" "$APPDIR"
