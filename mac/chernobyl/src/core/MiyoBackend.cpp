@@ -2165,7 +2165,9 @@ void MiyoBackend::writeDownloadManifest(const QString &dir, const QString &platf
     // 2) JSON manifest
     QJsonObject root;
     root["version"] = 1;
-    root["app"] = "Predormition";
+    // 앱 이름을 손으로 적지 않는다 — Chernobyl → Predormition → Hanishiki 로 두 번
+    //   바뀌는 동안 여기가 옛 이름에 멈춰 있었다. 빌드가 정해 주는 이름을 쓴다.
+    root["app"] = QStringLiteral(APP_NAME_ASCII);
     root["platform"] = platform;
     root["dir"] = dir;
     root["created_at"] = QDateTime::currentDateTime().toString(Qt::ISODate);
@@ -2374,7 +2376,7 @@ void MiyoBackend::exportConfig()
     QJsonObject root = m_config->toJson();
     // 메타 추가 — version + 생성 시각 + app
     QJsonObject meta;
-    meta["app"] = "Predormition";
+    meta["app"] = QStringLiteral(APP_NAME_ASCII);
     meta["version"] = QCoreApplication::applicationVersion().isEmpty() ? "1.0" : QCoreApplication::applicationVersion();
     meta["exported_at"] = QDateTime::currentDateTime().toString(Qt::ISODate);
     meta["exported_unix"] = QDateTime::currentSecsSinceEpoch();
@@ -2426,8 +2428,11 @@ void MiyoBackend::importConfig()
     QString fromApp = root["__meta__"].toObject()["app"].toString();
     QString fromVer = root["__meta__"].toObject()["version"].toString();
     QString fromTime = root["__meta__"].toObject()["exported_at"].toString();
-    // 옛 이름(Chernobyl)으로 내보낸 config 도 그대로 받는다 — 앱 이름만 바뀌었을 뿐 형식은 동일.
-    if (!fromApp.isEmpty() && fromApp != "Predormition" && fromApp != "Chernobyl") {
+    // 옛 이름으로 내보낸 config 도 그대로 받는다 — 앱 이름만 바뀌었을 뿐이다.
+    //   이름이 또 바뀌어도 자기가 내보낸 파일을 거절하지 않도록 현재 이름을 함께 둔다.
+    static const QStringList kKnownAppNames = {
+        QStringLiteral(APP_NAME_ASCII), "Predormition", "Chernobyl", "Hanishiki"};
+    if (!fromApp.isEmpty() && !kKnownAppNames.contains(fromApp)) {
         log(QString("⚠ 다른 앱의 config (%1) — 그래도 시도").arg(fromApp), "warning", "settings");
     }
 
@@ -11050,7 +11055,7 @@ void MiyoBackend::startTrad(const QString &configJson)
         {
             QJsonObject manifest;
             manifest["version"] = "1";
-            manifest["app"] = "Predormition";
+            manifest["app"] = QStringLiteral(APP_NAME_ASCII);
             manifest["app_version"] = QCoreApplication::applicationVersion().isEmpty()
                 ? QString("1.0") : QCoreApplication::applicationVersion();
             manifest["format"] = "PNG+ZIP Polyglot";
@@ -13802,11 +13807,15 @@ bool MiyoBackend::applyScriptPatchImpl(const QString &name, const QString &newCo
     const QString dir = Common::scriptOverrideDir();
     QDir().mkpath(dir);
     const QString ov = dir + "/" + name;
-    // 백업: 기존 override 있으면 그것, 없으면 번들 원본을 .bak 로
+    // 백업: 기존 override 있으면 그것, 없으면 '지금 실제로 쓰이는' 원본을 .bak 로.
+    //   ★ 예전엔 bundledToolsDir()+"/"+name 을 그대로 썼는데, 보관함 스크립트는
+    //     tools/archive/ 하위에 있어서 그 경로에 파일이 없다. 백업이 조용히
+    //     실패했다. activeToolScriptPath() 가 하위 폴더까지 찾아 준다.
+    const bool hadOverride = QFile::exists(ov);   // 원복 방식을 가르는 값 — 아래에서 쓴다
     const QString bak = ov + ".bak";
     QFile::remove(bak);
-    if (QFile::exists(ov)) QFile::copy(ov, bak);
-    else QFile::copy(Common::bundledToolsDir() + "/" + name, bak);
+    if (hadOverride) QFile::copy(ov, bak);
+    else             QFile::copy(Common::activeToolScriptPath(name), bak);
     // 쓰기
     { QFile f(ov); if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) { err = "override 쓰기 실패"; return false; }
       f.write(newContent.toUtf8()); f.close(); }
@@ -13819,9 +13828,14 @@ bool MiyoBackend::applyScriptPatchImpl(const QString &name, const QString &newCo
     const bool ok = (proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0);
     if (!ok) {
         err = QString::fromUtf8(proc.readAllStandardError()).left(300);
-        // 원복: .bak 이 있으면 되돌리고, 없으면 override 삭제(번들 사용)
-        if (QFile::exists(bak)) { QFile::remove(ov); QFile::copy(bak, ov); }
-        else QFile::remove(ov);
+        // 원복.
+        //   ★ 원래 override 가 '없었다면' 없던 상태로 되돌려야 한다.
+        //     예전엔 .bak(=번들 원본 사본)을 override 로 복사해 넣어서, 실패한
+        //     패치 한 번에 없던 override 가 생겼다. 내용은 같아 보이지만 그때의
+        //     번들 내용에 고정된 사본이라, 앱을 갱신해도 그 옛 스크립트가 계속
+        //     덮어쓴다. 조용히 옛 코드를 붙잡는 고장이 된다.
+        if (hadOverride && QFile::exists(bak)) { QFile::remove(ov); QFile::copy(bak, ov); }
+        else { QFile::remove(ov); QFile::remove(bak); }
         return false;
     }
     return true;
