@@ -4271,6 +4271,17 @@ void MiyoBackend::startCollection(const QString &configJson)
             runAskedCollection(config);
         } else if (platformName == "fanbox") {
             runFanboxCollection(config);
+        } else {
+            // ★ 모르는 플랫폼이면 여기서 잡는다.
+            //   예전엔 else 가 없어서, 이 사슬에 없는 platform 이 들어오면 아무 일도
+            //   안 하고 그대로 아래로 내려가 '완료' 로 끝났다. 지금은 UI 가 보내는
+            //   10종이 모두 위에 있어 실제로 걸리지는 않지만, 플랫폼을 하나 더
+            //   붙이면서 여기에 줄을 빠뜨리면 '수집했다고 하는데 아무것도 없는'
+            //   고장이 된다 — 디스코드에서 겪은 바로 그 종류다. 조용히 넘기지 않는다.
+            log(QString("내부 오류: '%1' 을 처리할 수집기가 없습니다. "
+                        "이 플랫폼은 아직 연결되지 않았습니다.").arg(platformName),
+                "error", platformName);
+            ++m_collectionErrorCount;   // 완료로 위장하지 않도록(공용 실패 표시)
         }
         // ★ 수집 끝 — manifest 생성 (무결성 검증 + 통계 파일)
         //   ★ 저장 루트 전체(모든 플랫폼·유저, 수십 GB)를 매번 walk 하면 느리고,
@@ -7359,7 +7370,7 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
         //   보지 않고 마지막에 "전체 수집 완료!" 를 success 로 찍었다. 실제로
         //   403 으로 한 건도 못 받은 채 '완료' 만 뜬 적이 있다. 아카이버에서
         //   이건 가장 나쁜 고장이다 — 사용자가 받았다고 믿고 넘어가기 때문이다.
-        m_discordErrorCount = 0;
+        m_collectionErrorCount = 0;
         for (int i = 0; i < subTypes.size(); ++i) {
             if (!m_isRunning.value("discord", false)) break;
             log(QString("▶ [%1/%2] %3 수집...").arg(i+1).arg(subTypes.size()).arg(subTypes[i]), "info", "discord");
@@ -7367,9 +7378,9 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
             subConfig["type"] = subTypes[i];
             runDiscordCollection(subConfig);
         }
-        if (m_discordErrorCount > 0) {
+        if (m_collectionErrorCount > 0) {
             log(QString("═══ 전체 수집 실패 — %1건이 오류로 끝났습니다 ═══")
-                    .arg(m_discordErrorCount), "error", "discord");
+                    .arg(m_collectionErrorCount), "error", "discord");
             updateStats(0, 0, "오류", "discord");
         } else {
             log("═══ 전체 수집 완료! ═══", "success", "discord");
@@ -7408,7 +7419,7 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
             log(QString("서버 채널 목록 조회 실패: %1").arg(describeDiscordError(resp)),
                 "error", "discord");
             updateStats(0, 0, "오류", "discord");
-            ++m_discordErrorCount;   // 상위 'all' 루프가 이걸 보고 완료를 거짓말하지 않는다
+            ++m_collectionErrorCount;   // 상위 'all' 루프가 이걸 보고 완료를 거짓말하지 않는다
             return;
         }
         QJsonArray channels = QJsonDocument::fromJson(resp.data).array();
@@ -7484,7 +7495,7 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
     // ── 채널/서버 ID 둘 다 없으면 에러 ──
     if (channelId.isEmpty() && serverId.isEmpty()) {
         log("채널 ID 또는 서버 ID를 입력하세요.", "error", "discord");
-        ++m_discordErrorCount;   // 이것도 실패다 — 상위 'all' 이 완료라고 하면 안 된다
+        ++m_collectionErrorCount;   // 이것도 실패다 — 상위 'all' 이 완료라고 하면 안 된다
         updateStats(0, 0, "오류", "discord");
         return;
     }
