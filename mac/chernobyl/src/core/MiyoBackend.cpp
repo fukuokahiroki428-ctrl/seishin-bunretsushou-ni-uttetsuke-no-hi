@@ -9666,6 +9666,10 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
     if (type == "all") {
         log("═══ 전체 수집 모드 ═══", "success", "pixiv");
         QStringList subTypes = {"user", "bookmarks"};
+        // ★ 디스코드와 같은 구조라 같은 고장이 있었다 — runPixivCollection() 이 void 라
+        //   하위 수집이 전부 실패해도 결과를 보지 않고 "전체 수집 완료!" 를 success 로
+        //   찍었다. 아카이버에서 이건 가장 나쁘다(받았다고 믿고 넘어간다).
+        m_collectionErrorCount = 0;
         for (int i = 0; i < subTypes.size(); ++i) {
             if (!m_isRunning.value("pixiv", false)) break;
             log(QString("▶ [%1/%2] %3 수집...").arg(i+1).arg(subTypes.size()).arg(subTypes[i]), "info", "pixiv");
@@ -9673,7 +9677,13 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
             subConfig["type"] = subTypes[i];
             runPixivCollection(subConfig);
         }
-        log("═══ 전체 수집 완료! ═══", "success", "pixiv");
+        if (m_collectionErrorCount > 0) {
+            log(QString("═══ 전체 수집 실패 — %1건이 오류로 끝났습니다 ═══")
+                    .arg(m_collectionErrorCount), "error", "pixiv");
+            updateStats(0, 0, "오류", "pixiv");
+        } else {
+            log("═══ 전체 수집 완료! ═══", "success", "pixiv");
+        }
         return;
     }
 
@@ -9737,6 +9747,7 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
         userId = target;
     } else {
         log("올바른 유저 ID, 일러스트/소설 URL, 또는 유저 URL을 입력하세요.", "error", "pixiv");
+        ++m_collectionErrorCount;   // 상위 all 루프가 완료를 거짓말하지 않게
         return;
     }
 
@@ -10588,6 +10599,7 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
             HttpResponse profResp = http.get(profileUrl, apiHeaders);
             if (!profResp.isOk()) {
                 log(QString("유저 프로필 실패 (HTTP %1)").arg(profResp.statusCode), "error", "pixiv");
+                ++m_collectionErrorCount;   // 상위 all 루프가 완료를 거짓말하지 않게
                 return;
             }
 
@@ -11661,6 +11673,7 @@ void MiyoBackend::startTrad(const QString &configJson)
                     log("ZIP LFH 재오픈 실패", "error", "pixiv");
                     outputFile.close();
                     QFile::remove(outputPath);
+                    ++m_collectionErrorCount;   // 상위 all 루프가 완료를 거짓말하지 않게
                     return;
                 }
                 const int WCHUNK = 8 * 1024 * 1024; // 8MB
