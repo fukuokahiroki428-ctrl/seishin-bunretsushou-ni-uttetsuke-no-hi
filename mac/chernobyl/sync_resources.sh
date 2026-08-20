@@ -58,6 +58,22 @@ for _p in "$SRCROOT"/../../scripts/archive_*.py; do
     [ -f "$_p" ] && sync_one "$_p" "Contents/Resources/tools/archive/$(basename "$_p")"
 done
 
+# 번들 Chromium — 폴더라 sync_one 으로 못 다룬다. 없을 때만 넣는다.
+#   ★ cp -Rp 여야 한다. cmake -E copy_directory 나 cp -R 은 심볼릭 링크를 따라가
+#     실체를 복제해서 356MB 가 1.0GB 로 불고, 프레임워크 구조가 깨져 codesign 이
+#     실패한다(실제로 겪었다).
+CHROMIUM_SRC="$SRCROOT/resources/chromium/Chromium.app"
+CHROMIUM_DST="$APPDIR/Contents/Resources/chromium/Chromium.app"
+if [ -d "$CHROMIUM_SRC" ] && [ ! -d "$CHROMIUM_DST" ]; then
+    mkdir -p "$(dirname "$CHROMIUM_DST")"
+    cp -Rp "$CHROMIUM_SRC" "$CHROMIUM_DST"
+    echo "  갱신: Contents/Resources/chromium/Chromium.app"
+    SYNCED=$((SYNCED + 1))
+elif [ ! -d "$CHROMIUM_SRC" ]; then
+    echo "  ⚠ 번들 Chromium 이 없습니다 — 캡쳐가 사용자 시스템 Chrome 에 의존합니다."
+    echo "     README 의 '번들 Chromium 넣기' 참고."
+fi
+
 if [ "$SYNCED" -eq 0 ]; then
     echo "  번들이 이미 소스와 같습니다."
 else
