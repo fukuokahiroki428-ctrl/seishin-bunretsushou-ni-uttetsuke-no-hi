@@ -180,6 +180,10 @@ static void killCaptureBrowsers(const QString &needle)
 //   글꼴에 글자가 없으니 conhost 가 '?' 로 채운다. 파일도 코드페이지도 멀쩡한데 화면만 깨진다.
 //   레지스트리 기본값을 바꾸면 사용자의 다른 콘솔까지 건드리므로, 그 창에서만 바꾼다.
 //   실패하면 조용히 넘어간다 — 글꼴 때문에 모니터링을 못 열 이유는 없다.
+//   ★ CONSOLE_FONT_INFOEX 는 84바이트다. bMaximumWindow 는 구조체 멤버가 아니라 함수 인자다.
+//     멤버로 넣어 88바이트가 되면 cb 가 안 맞아 ERROR_INVALID_PARAMETER(87) 로
+//     조용히 실패한다 — 첫 판이 정확히 그러했고, 사용자 화면은 그대로 깨져 있었다.
+//     고친 뒤 실측: size=84 · before 'Consolas' h=14 → after 'MS Gothic' h=16 · ok=True
 static void writeConsoleFontHelper(const QString &dir)
 {
     QFile f(dir + "/miyo_console_font.ps1");
@@ -191,7 +195,7 @@ static void writeConsoleFontHelper(const QString &dir)
         "using System;using System.Runtime.InteropServices;\r\n"
         "public class CF{\r\n"
         "  [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]\r\n"
-        "  public struct FI{public uint cb;public bool max;public uint idx;\r\n"
+        "  public struct FI{public uint cb;public uint idx;\r\n"
         "    public short x;public short y;public uint fam;public uint wt;\r\n"
         "    [MarshalAs(UnmanagedType.ByValTStr,SizeConst=32)] public string fn;}\r\n"
         "  [DllImport(\"kernel32.dll\",SetLastError=true)]\r\n"
@@ -3355,7 +3359,7 @@ void MiyoBackend::openBackupTerminalLog()
                    " if($n){ $n=$n -replace ($esc+'\\[[0-9;]*m'),'';"
                    " [Console]::Out.Write($n); [Console]::Out.Flush();"
                    " if($n -match '\\[DONE\\]'){break} } }catch{}"
-                   " Start-Sleep -Milliseconds 700 }\"\r\n";
+                   " Start-Sleep -Milliseconds 150 }\"\r\n";
         content += "echo.\r\n";
         content += "echo 백업 완료 — 터미널을 닫아도 됩니다.\r\n";
         content += "pause >nul\r\n";
@@ -3491,7 +3495,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
                    " if($n){ $n=$n -replace ($esc+'\\[[0-9;]*m'),'';"
                    " [Console]::Out.Write($n); [Console]::Out.Flush();"
                    " if($n -match '\\[DONE\\]'){break} } }catch{}"
-                   " Start-Sleep -Milliseconds 700 }\"\r\n";
+                   " Start-Sleep -Milliseconds 150 }\"\r\n";
         content += "echo.\r\n";
         content += "echo 터미널을 닫아도 됩니다.\r\n";
         content += "pause >nul\r\n";
