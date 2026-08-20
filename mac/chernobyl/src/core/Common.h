@@ -34,13 +34,13 @@ QString ansiSafePath(const QString &path);
 // Windows: <exe_dir>/python_env/python.exe
 QString bundledPythonPath();
 
-// ★ 쓰기가능 python_env 경로 (~/Library/Application Support/.../python_env).
-//   macOS 는 .app 번들이 codesign 으로 sealed → 번들 내부 python_env 에 pip install 하면
-//   "sealed resource invalid" → macOS 가 앱을 SIGKILL. 그래서 외부 복사본을 두고 사용한다.
-QString userPythonEnvDir();
 // 실제 사용할 python_env 디렉토리.
-//   macOS: 외부 복사본 우선 — 없으면 번들에서 1회 자동 복사(시드). 복사 실패 시 읽기전용 번들.
-//   Windows/Linux: 설치 위치의 python_env 그대로 (서명 seal 없음 → 제자리 수정 안전).
+//   macOS: 앱 내부(번들) 고정. 예전엔 '외부 복사본 우선, 없으면 시드' 였는데
+//     그 두 갈래를 층마다 다르게 가정해 서로 어긋났다(업그레이드가 늘 중단되는
+//     고장이 실제로 있었다). 지금은 한 갈래다 — 번들에 설치하고, 설치 직후
+//     resealAppBundle() 로 다시 서명해 codesign 봉인을 복구한다.
+//     번들에 쓸 수 없으면 몰래 다른 곳으로 새지 않고 호출부가 그 사실을 알린다.
+//   Windows/Linux: 설치 위치의 python_env 그대로 (서명 seal 없음).
 QString activePythonEnvDir();
 
 // macOS: Contents/Resources/tools/

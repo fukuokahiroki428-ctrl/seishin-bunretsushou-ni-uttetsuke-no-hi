@@ -13040,7 +13040,8 @@ void MiyoBackend::resealBundleAfterInstall(const QString &why)
 {
     const QString app = Common::appBundlePath();
     if (app.isEmpty()) return;                                   // 번들 실행이 아님(개발 빌드)
-    if (!Common::activePythonEnvDir().startsWith(app)) return;   // 외부 env 사용 중 → 서명 무관
+    // 앱 내부 고정이므로 보통 참이지만, 개발 트리 실행 등 예외를 위해 그대로 둔다.
+    if (!Common::activePythonEnvDir().startsWith(app)) return;
 
     log(QString("앱 내부에 설치했으므로 서명을 복구합니다 (%1) — 용량이 커 수 분 걸릴 수 있습니다...").arg(why),
         "info", "settings");
@@ -13698,7 +13699,10 @@ if __name__ == "__main__":
     QProcess::startDetached("cmd.exe", {"/c", "start", "오픈클로", QDir::toNativeSeparators(scriptPath)});
 #else
     // python 후보: 쓰기가능 env → 번들(arch) → 번들 → 시스템 (전부 앱 내부 우선)
-    const QString userPy    = Common::userPythonEnvDir() + "/bin/python3";
+    // 외부 복사본은 더 이상 쓰지 않는다(activePythonEnvDir 이 앱 내부 고정).
+    //   옛 설치에서 남은 외부본이 있으면 그게 먼저 잡혀 '고친 줄 알았는데 옛 환경이
+    //   도는' 상태가 되므로, 후보에서 뺀다.
+    const QString userPy    = Common::activePythonEnvDir() + "/bin/python3";
     const QString bundlePyA = Common::bundledResourcesDir() + "/python_env_arm64/bin/python3";
     const QString bundlePy  = Common::bundledResourcesDir() + "/python_env/bin/python3";
     QString scriptPath = dir + "/openclaude.command";
@@ -14342,13 +14346,19 @@ void MiyoBackend::upgradePython()
     runJs("setPythonEnvBusy(true, '업그레이드 중...')");
 
     QThread *thread = QThread::create([this]() {
-        // ★ 번들 내부가 아니라 쓰기가능 외부 python_env 에 설치 (번들 codesign seal 보호).
+        // ★ 앱 내부(번들) python_env 에 설치한다. 끝나면 재서명해 봉인을 복구한다.
+        //   예전엔 여기서 "외부 복사본이 아니면 중단" 이었다. 그런데
+        //   activePythonEnvDir() 는 번들을 우선하도록 되어 있어서 이 조건이 '항상'
+        //   참이 되어 Python 업그레이드가 언제나 중단됐다. 두 층이 서로 반대 정책을
+        //   갖고 있었던 것이다. 이제 '앱 내부' 한 갈래로 통일한다.
         QString pythonDir = Common::activePythonEnvDir();
 
 #ifdef Q_OS_MACOS
-        // 외부 복사본을 만들 수 없어 번들을 가리키면 중단 — 번들에 쓰면 seal 깨져 SIGKILL.
-        if (pythonDir != Common::userPythonEnvDir()) {
-            log("⚠️ python_env 쓰기가능 복사본을 만들 수 없어 업그레이드를 중단합니다 (번들 서명 보호). 디스크 공간을 확인하세요.", "error", "settings");
+        // 번들에 쓸 수 없으면(권한 없는 위치 등) 조용히 다른 곳으로 새지 않고 분명히 알린다.
+        if (!QFileInfo(pythonDir).isWritable()) {
+            log(QString("⚠️ 앱 내부에 쓸 수 없어 업그레이드를 중단합니다: %1 — "
+                        "앱을 응용 프로그램 폴더처럼 쓰기 가능한 위치로 옮긴 뒤 다시 시도해 주십시오.")
+                    .arg(pythonDir), "error", "settings");
             m_pythonBusy = false;
             runJs("setPythonEnvBusy(false, '중단')");
             return;
@@ -14611,23 +14621,18 @@ void MiyoBackend::repairPython()
             log(QString("    • %1").arg(p), "warning", "settings");
         }
 
-        // 2. Python 자체가 없으면 → 번들에서 외부로 재시드 (번들엔 절대 쓰지 않음 — seal 보호)
+        // 2. Python 자체가 없으면 → 앱 내부 python_env 가 깨진 것이다.
+        //    예전엔 여기서 '번들 → 외부로 재시드' 를 시도했다. 이제 외부 복사본을
+        //    쓰지 않으므로(activePythonEnvDir 이 번들 고정) 그 재시드는 아무 일도
+        //    하지 않는 죽은 동작이었다. 앱 내부가 깨진 것은 여기서 고칠 수 없으므로
+        //    무엇을 해야 하는지 분명히 알린다.
         if (problems.contains("python_missing")) {
-            log("  Python 바이너리가 없습니다. 번들에서 재설치 시도...", "warning", "settings");
-
-            // 깨진 외부본 표식 제거 후, activePythonEnvDir() 가 번들→외부 재복사(시드)를 수행하도록 유도.
-            QFile::remove(pythonDir + "/.bundled_ok");
-            Common::activePythonEnvDir();
-            python = Common::bundledPythonPath();
-
-            if (!QFile::exists(python)) {
-                log("  ❌ 재설치 실패. 'Python 업그레이드'로 새로 받으세요.", "error", "settings");
-                m_pythonBusy = false;
-                runJs("setPythonEnvBusy(false, '복구 실패')");
-                return;
-            }
-            // 재진단
-            problems = diagnosePythonEnv(python);
+            log("  앱 내부 Python 이 없습니다.", "error", "settings");
+            log("  → 'Python 업그레이드' 로 새로 받거나, 앱을 다시 설치해 주십시오.",
+                "info", "settings");
+            m_pythonBusy = false;
+            runJs("setPythonEnvBusy(false, '복구 실패')");
+            return;
         }
 
         // 3. pip 복구
