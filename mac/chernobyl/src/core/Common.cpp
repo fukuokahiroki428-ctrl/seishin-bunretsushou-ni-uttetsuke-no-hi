@@ -420,87 +420,31 @@ QString bundledResourcesDir()
 #  define KAMERA_PY_ARCH ""
 #endif
 
-QString userPythonEnvDir()
-{
-    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-           + "/python_env" KAMERA_PY_ARCH;
-}
-
-#ifdef Q_OS_MACOS
-// 심볼릭 링크/실행권한 보존이 필요(standalone python 은 symlink 포함) → cp -a 로 복사.
-static bool copyTreePreserving(const QString &src, const QString &dst)
-{
-    QProcess cp;
-    cp.start("/bin/cp", {"-a", src, dst});
-    if (!cp.waitForStarted(5000)) return false;
-    if (!cp.waitForFinished(180000)) { cp.kill(); cp.waitForFinished(2000); return false; }
-    return cp.exitStatus() == QProcess::NormalExit && cp.exitCode() == 0;
-}
-
-// 외부 python_env 가 '완전한지' 검증 — bin/python3 는 있는데 핵심 패키지(twikit)가 빠진
-// 깨진/구 복사본(예: 옛 설치의 다른 파이썬 버전 · 패키지 0개)이면 번들에서 재시드해야 한다.
-// python 실행 없이 site-packages/twikit 디렉토리 존재로 판단(빠름).
-static bool pythonEnvHasCorePackages(const QString &envDir)
-{
-    QDir libDir(envDir + "/lib");
-    const QStringList pyDirs = libDir.entryList(QStringList() << "python3*", QDir::Dirs | QDir::NoDotAndDotDot);
-    for (const QString &pd : pyDirs) {
-        if (QFileInfo::exists(envDir + "/lib/" + pd + "/site-packages/twikit"))
-            return true;
-    }
-    return false;
-}
-#endif
 
 QString activePythonEnvDir()
 {
 #ifdef Q_OS_MACOS
-    // 번들은 codesign 으로 sealed → 외부 복사본을 쓴다. 없으면 번들에서 1회 시드.
-    static QMutex seedMutex;
-    const QString ext = userPythonEnvDir();
-    const QString extPy = ext + "/bin/python3";
-
+    // ★★ 앱 내부(번들) 고정 — 외부 복사본은 쓰지 않는다.
+    //
+    //   예전엔 '번들이 쓰기가능하면 번들, 아니면 외부로 복사해서 그걸 쓴다' 였다.
+    //   그런데 그 두 갈래가 층마다 다르게 가정돼 서로 어긋나 있었다. 실제로
+    //   upgradePythonEnv() 는 "외부가 아니면 중단" 이라 번들을 쓰는 지금 상태에서는
+    //   Python 업그레이드가 '항상' 중단됐다. 갈래가 둘이면 이런 어긋남이 계속 난다.
+    //
+    //   번들에 쓰면 codesign 봉인이 깨지지만, 설치 직후 resealAppBundle() 이 다시
+    //   서명해 복구한다(인증서가 있으면 그것으로, 없으면 ad-hoc — 둘 다 실제로
+    //   검증까지 통과하는 것을 확인했다).
+    //
+    //   번들이 읽기전용이면 예전처럼 몰래 외부로 새지 않는다. 그대로 번들을
+    //   돌려주고, 설치·업그레이드 쪽에서 '쓸 수 없다' 고 분명히 알린다.
+    //   조용히 다른 곳을 쓰는 것보다 안 되는 이유를 말하는 편이 낫다.
     QString bundled = bundledResourcesDir() + "/python_env" KAMERA_PY_ARCH;
-    // 호환: arch 별 디렉토리가 없으면 단일 python_env 로 폴백 (구 번들/단일 arch 빌드).
     if (!QFile::exists(bundled + "/bin/python3"))
-        bundled = bundledResourcesDir() + "/python_env";
-    const bool bundleReady = QFile::exists(bundled + "/bin/python3") && pythonEnvHasCorePackages(bundled);
-
-    // ★★ 앱 내부(번들) 우선 — 모듈/라이브러리를 앱 안에 두고 앱 안에 설치한다.
-    //   번들에 쓰면 codesign 봉인이 깨지지만, 설치·수리 직후 Common::resealAppBundle() 이
-    //   자동 재서명해 복구하므로 안전하다(재서명 실패 시에는 아래 외부 복사본 경로로 자연 폴백).
-    //   번들이 읽기전용(권한 없는 위치·검역 등)이면 예전처럼 외부 복사본을 쓴다.
-    if (bundleReady && isDirWritable(bundled))
-        return bundled;
-
-    // ★ 외부본이 존재하되 핵심 패키지(twikit)까지 있어야 그대로 사용한다.
-    //   bin/python3 만 있고 패키지가 빠진 깨진 복사본(옛 설치의 3.15b·패키지 0개 등)은
-    //   재시드 대상 — 이게 'twikit not installed' 로 트위터 수집이 죽던 근본 원인이었다.
-    //   (번들에 완전한 env 가 없으면 재시드해도 소용없으니 그때는 외부본을 그대로 둔다.)
-    if (QFile::exists(extPy) && (pythonEnvHasCorePackages(ext) || !bundleReady))
-        return ext;
-
-    QMutexLocker lock(&seedMutex);
-    if (QFile::exists(extPy) && (pythonEnvHasCorePackages(ext) || !bundleReady))
-        return ext;   // 락 대기 중 다른 스레드가 끝냈을 수 있음
-    if (!bundleReady)
-        return ext;   // 번들에도 완전한 env 없음 → 외부 경로 반환(새 설치/복구 대상)
-
-    QDir().mkpath(QFileInfo(ext).absolutePath());
-    const QString tmp = ext + ".seeding";
-    QDir(tmp).removeRecursively();
-    if (copyTreePreserving(bundled, tmp) && QFile::exists(tmp + "/bin/python3")) {
-        QDir(ext).removeRecursively();          // 깨진 기존 외부본이 있으면 교체
-        if (QDir().rename(tmp, ext) && QFile::exists(extPy)) {
-            qDebug() << "[Common] python_env seeded to writable location:" << ext;
-            return ext;
-        }
-    }
-    QDir(tmp).removeRecursively();
-    qWarning() << "[Common] python_env seed failed — using read-only bundle (upgrade disabled)";
-    return bundled;   // 복사 실패 → 읽기전용 번들 (upgrade/repair 가 거부함)
+        bundled = bundledResourcesDir() + "/python_env";   // 구 번들/단일 arch 폴백
+    return bundled;
+#elif defined(Q_OS_WIN)
+    return bundledResourcesDir() + "/python_env";
 #else
-    // Windows/Linux: 서명 seal 없음 → 설치 위치의 python_env 그대로.
     return bundledResourcesDir() + "/python_env";
 #endif
 }
