@@ -254,7 +254,12 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
         args << "--no-first-run"
              << "--no-default-browser-check"
              // ★ 8GB Mac OOM 방지 — Chrome 메모리 ~50% 절약 (single-process + 캐시 cap)
-             << "--disable-features=Translate,OptimizationHints,MediaRouter,GlobalMediaControls,IsolateOrigins,site-per-process"
+             // ★ --disable-features 는 하나로 몰아야 한다.
+             //   크로미움은 같은 스위치가 여러 번 오면 마지막 것만 쓴다. 예전엔 7번 나눠 있어
+             //   실제로는 마지막 줄(DnsOverHttpsUpgrade)만 적용되고 나머지 여섯 줄은
+             //   전부 버려졌다 — WebRTC IP 노출 방지도, NTLMv1 차단도, Autofill 서버
+             //   통신 차단도 도는 줄 알았지만 하나도 안 돌고 있었다.
+             << "--disable-features=Translate,OptimizationHints,MediaRouter,GlobalMediaControls,IsolateOrigins,site-per-process,WebRtcHideLocalIpsWithMdns,WebRTC,AutofillServerCommunication,OptimizationGuideModelDownloading,NtlmV1,AsyncDns,ChromeWhatsNewUI,DnsOverHttpsUpgrade"
              << "--disable-background-networking"
              << "--disable-component-update"
              << "--disable-domain-reliability"
@@ -286,25 +291,19 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
              << "--site-per-process"                                    // Site isolation (Spectre 방어)
              << "--enable-strict-mixed-content-checking"                // HTTPS 안 HTTP 차단
              << "--block-third-party-cookies"                           // 3rd party 쿠키 차단 (추적 방지)
-             << "--disable-features=WebRtcHideLocalIpsWithMdns,WebRTC"  // WebRTC IP 노출 방지
              << "--disable-background-mode"                             // 백그라운드 실행 차단
              << "--disable-default-apps"
              << "--disable-translate"
              << "--no-default-browser-check"
              << "--no-first-run"
              << "--disable-sync"
-             << "--disable-features=AutofillServerCommunication,OptimizationGuideModelDownloading";
 #ifdef Q_OS_WIN
         // ★ Windows 전용 추가 보안 — macOS 보다 공격 표면이 넓음
         args << "--win-job-object"                              // Windows Job Object 격리 강화
-             << "--disable-features=NtlmV1"                     // NTLMv1 인증 차단 (legacy 취약)
              << "--enforce-strict-secure-origin-for-secure-frames"
-             << "--disable-features=AsyncDns"                   // mDNS 응답 IP 노출 방지
              << "--restrict-runtime-allocation"                 // ASLR 강화
              << "--enable-features=NetworkServiceSandbox"       // Network 서비스 sandbox
              << "--block-insecure-private-network-requests"     // 내부망 비보안 요청 차단
-             << "--disable-features=ChromeWhatsNewUI"
-             << "--disable-features=DnsOverHttpsUpgrade";       // DoH 자동 upgrade 차단 (MITM 우회 방지)
 #endif
         args << "--disable-gpu"
              << "--disable-software-rasterizer"
