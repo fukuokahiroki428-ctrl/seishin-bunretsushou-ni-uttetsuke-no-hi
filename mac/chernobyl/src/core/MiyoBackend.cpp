@@ -6206,7 +6206,43 @@ bool MiyoBackend::captureRealPageCDPLoginAware(const QString &url,
     }, Qt::QueuedConnection);
 
     if (!sem->tryAcquire(1, 60000)) {
-        log("로그인 사전 검사 타임아웃", "warning", p);
+        // ★ 여기서 그냥 돌아가면 그 트랙은 영구히 망가진다.
+        //   실측: 캡쳐 273번 시도에 273번 이 타임아웃, 캡쳐 완료 0번. 한 번 이렇게 되면
+        //   앱이 끝날 때까지 회복하지 못한다.
+        //
+        //   렌더러만 멈춘 상태였다. 그 크롬에 직접 CDP 를 물려 보면 이렇다.
+        //       Runtime.evaluate(1+1)  무응답   ← 렌더러가 처리
+        //       Network.enable         무응답   ← 렌더러 경유
+        //       Network.setCookie      응답 OK  ← 브라우저 프로세스가 처리
+        //   웹소켓은 멀쩡하니 isReady() 는 계속 true 를 돌려준다. 그래서 위쪽
+        //   "죽은 인스턴스 재생성" 가드가 발동하지 않는다 — 건강 판정이 '소켓이 붙어
+        //   있는가' 뿐이라 렌더러가 죽은 것을 볼 수단이 없다.
+        //
+        //   회복 경로가 하나뿐인 것도 문제다. 크롬 재활용(CHROME_REUSE_LIMIT)은
+        //   captureRealPageCDP 의 성공 경로에만 있는데, 여기서 막히면 캡쳐가 시작조차
+        //   못 하니 카운터가 늘지 않는다. 즉 성공해야만 회복할 수 있는 구조였다.
+        //
+        //   타임아웃 자체를 '이 크롬은 못 쓴다' 는 신호로 쓴다. 슬롯을 비우고 정리하면
+        //   다음 캡쳐가 새 크롬으로 시작한다. 실패는 한 건으로 끝난다.
+        log("로그인 사전 검사 타임아웃 — 응답 없는 캡쳐 브라우저를 정리하고 다음 항목부터 새로 띄웁니다",
+            "warning", p);
+        if (!trackKey.isEmpty()) {
+            RealChromeCrawler *stuck = nullptr;
+            {
+                QMutexLocker mapLock(&m_capChromeMapMutex);
+                auto it = m_captureChromesPerThread.find(trackKey);
+                if (it != m_captureChromesPerThread.end()) {
+                    stuck = it.value();
+                    it.value() = nullptr;   // ★ 노드는 남긴다 — 콜백들이 주소를 붙들고 있다
+                }
+            }
+            if (stuck) {
+                QMetaObject::invokeMethod(this, [stuck]() {
+                    stuck->stop();
+                    stuck->deleteLater();
+                }, Qt::QueuedConnection);
+            }
+        }
         return false;
     }
     if (!*navOk) {
