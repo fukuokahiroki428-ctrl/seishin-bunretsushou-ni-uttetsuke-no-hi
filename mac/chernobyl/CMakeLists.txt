@@ -188,11 +188,17 @@ endif()
 if(APPLE)
     # App name / icon / identifier — override with -DAPP_NAME="..." -DAPP_ICON="..." -DAPP_ID="..."
     #
-    #   ★ 파일명(APP_NAME)은 ASCII 로 둔다 — GitHub 릴리즈 자산 이름이 ASCII 만 받고,
-    #     .app 이름에 비ASCII 가 들어가면 codesign 이 NFC/NFD 로 어긋나 실패한다
-    #     (codesign_app.sh 가 이미 그 문제를 우회하고 있다).
-    #     사용자에게 보이는 이름은 APP_DISPLAY_NAME 이 맡는다 — Finder·Dock·메뉴에
-    #     이것이 뜬다(CFBundleDisplayName).
+    #   ★ APP_NAME(ASCII)은 '실행 파일 이름' 과 '사용자 데이터 폴더 이름' 을 정한다.
+    #     - 실행 파일: kill_app.sh 의 pgrep -x 가 이 이름으로 프로세스를 찾는다.
+    #     - 데이터 폴더: app.setApplicationName(ASCII) → ~/…/Miyo/<APP_NAME>.
+    #       여기를 바꾸면 설정·수집물이 갈라진다(실제로 잃은 적이 있다). 건드리지 말 것.
+    #     .app 폴더 이름은 build.sh 가 codesign 직전에 APP_DISPLAY_NAME 으로 바꾼다.
+    #
+    #   ★ 옛 주석 정정(실측으로 확인함):
+    #     - "Finder 에 CFBundleDisplayName 이 뜬다" → 틀렸다. Finder 는 .app 파일명을
+    #       그대로 보여준다(kMDItemDisplayName). 메뉴 막대·Dock 만 표시 이름을 쓴다.
+    #     - "비ASCII .app 이름은 codesign 이 실패한다" → 틀렸다. ハンイシキ.app 으로
+    #       서명·--deep --strict 검증·실행까지 모두 통과하는 것을 확인했다.
     if(NOT APP_NAME)
         set(APP_NAME "Hanishiki")
     endif()
@@ -294,6 +300,17 @@ if(APPLE)
     # ★ Chromium 번들 — Chrome for Testing (~340MB, BSD)
     #   사용자 시스템 Chrome 의존성 제거. 캡쳐 전용 Chromium 자체 동봉.
     set(CHROMIUM_SRC "${CMAKE_SOURCE_DIR}/resources/chromium/Chromium.app")
+    # ★ 없으면 조용히 건너뛰지 않는다.
+    #   예전엔 if(EXISTS) 가 거짓이면 아무 말이 없어서, 번들에 Chromium 이 들어간 줄
+    #   알고 넘어갔다. 실제로는 빠진 채 배포됐고 앱은 시스템 Chrome 으로 떨어졌다.
+    #   크롬이 없는 맥에서는 캡쳐가 통째로 안 된다. 빠졌으면 반드시 알린다.
+    if(NOT EXISTS "${CHROMIUM_SRC}")
+        message(WARNING
+            "번들 Chromium 이 없습니다: ${CHROMIUM_SRC}\n"
+            "   → 캡쳐 기능이 사용자의 시스템 Chrome 에 의존하게 됩니다"
+            "(크롬이 없는 맥에서는 동작하지 않습니다).\n"
+            "   README 의 '번들 Chromium 넣기' 를 보고 내려받아 두십시오.")
+    endif()
     if(EXISTS "${CHROMIUM_SRC}")
         add_custom_command(TARGET Miyo POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
