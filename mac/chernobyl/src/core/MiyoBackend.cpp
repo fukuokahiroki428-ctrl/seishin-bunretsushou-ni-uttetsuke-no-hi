@@ -151,6 +151,20 @@ static void killByCommandLine(const QString &imageName, const QString &needle)
         .arg(img, pat);
     QProcess::execute("powershell", {"-NoProfile", "-NonInteractive", "-Command", ps});
 }
+
+// ★ 캡쳐에 쓰일 수 있는 Chromium 계열 실행 파일 이름 전부.
+//   findChromeExecutable() 은 Chrome 이 없으면 Edge 를, 그것도 없으면 Brave 를 쓴다.
+//   chrome.exe 만 보면 Edge 만 깔린 기계에서 캡쳐 브라우저가 한 번도 정리되지
+//   않아 프로세스와 프로필 폴더가 세션마다 쌓인다.
+//   맥은 pkill -f 라 이름을 안 보고 잡아서 이 문제가 없다 — 윈도우로 옮기며 생긴 회귀다.
+//   ※ 명령줄 필터(needle)는 그대로 둔다 — 그게 없으면 사용자 브라우저까지 죽는다.
+static void killCaptureBrowsers(const QString &needle)
+{
+    for (const QString &img : { QStringLiteral("chrome.exe"),
+                                QStringLiteral("msedge.exe"),
+                                QStringLiteral("brave.exe") })
+        killByCommandLine(img, needle);
+}
 #endif
 
 MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
@@ -187,7 +201,7 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
 #elif defined(Q_OS_WIN)
     // COMMANDLINE 은 taskkill 에 없는 필터라 아무것도 안 죽었고, 나머지 둘은 필터가 없어
     // 사용자가 쓰던 Chrome for Testing·본인 Chrome 의 크래시 핸들러까지 죽였다.
-    killByCommandLine("chrome.exe", "chrome_capture_profile");
+    killCaptureBrowsers("chrome_capture_profile");
     // 옛 tail script 청소
     killByCommandLine("cmd.exe", "miyo_");
 #endif
@@ -4352,13 +4366,22 @@ void MiyoBackend::startCollection(const QString &configJson)
             closeTerminalLog(trackKey);
             m_collectionThreads.remove(trackKey);
             // ★ 이 트랙의 캡쳐용 Chrome 창 자동 닫기 — 수집/다운로드 끝났으니 더 안 씀.
+            //   ★ take() 하면 안 된다 — 노드를 지우는 것이라 notifyCollectionEnded 에서
+            //     erase 를 없앤 것과 같은 이유로 위험하다. getChromePtr() 이 이 맵 노드의
+            //     '주소' 를 넘겨주고 진행 중인 CDP 콜백들이 그걸 붙들고 있는데, 바로 아래
+            //     stop() 이 그 콜백들을 취소가 아니라 강제 호출한다. 노드가 사라진 뒤
+            //     깨어난 콜백은 해제된 메모리를 역참조한다.
+            //     슬롯은 남기고 값만 비운다. 잠금은 풀고 나서 정리한다.
+            RealChromeCrawler *cc = nullptr;
             {
                 QMutexLocker mapLock(&m_capChromeMapMutex);
-                if (m_captureChromesPerThread.contains(trackKey)) {
-                    RealChromeCrawler *cc = m_captureChromesPerThread.take(trackKey);
-                    if (cc) { cc->stop(); cc->deleteLater(); }
+                auto it = m_captureChromesPerThread.find(trackKey);
+                if (it != m_captureChromesPerThread.end()) {
+                    cc = it.value();
+                    it.value() = nullptr;
                 }
             }
+            if (cc) { cc->stop(); cc->deleteLater(); }
             // 모든 수집이 끝났으면 절전 해제 + 남은 캡쳐 Chrome(단일/잔여) 전부 닫기
             if (m_collectionThreads.isEmpty()) {
                 if (m_window) m_window->releaseAwake();
@@ -4544,7 +4567,7 @@ void MiyoBackend::killZombieChromes()
 #elif defined(Q_OS_WIN)
     // COMMANDLINE 은 taskkill 에 없는 필터라 아무것도 안 죽었고, 나머지 둘은 필터가 없어
     // 사용자가 쓰던 Chrome for Testing·본인 Chrome 의 크래시 핸들러까지 죽였다.
-    killByCommandLine("chrome.exe", "chrome_capture_profile");
+    killCaptureBrowsers("chrome_capture_profile");
 #endif
     log(QString("좀비 정리 완료 — capture chrome + 앱 내부 Chromium + helper/crashpad").arg(killed),
         "success", "settings");
@@ -5620,9 +5643,9 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
     }
 
     QString libCode = s_sfLibCode;
-    QMetaObject::invokeMethod(this, [this, chromePtr, url, filePath, libCode, waitMs, done, resultOk]() {
+    QMetaObject::invokeMethod(this, [this, chromePtr, url, filePath, libCode, waitMs, done, resultOk, trackKey]() {
         if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-        (*chromePtr)->navigate(url, [this, chromePtr, filePath, url, libCode, waitMs, done, resultOk](bool navOk) {
+        (*chromePtr)->navigate(url, [this, chromePtr, filePath, url, libCode, waitMs, done, resultOk, trackKey](bool navOk) {
             if (!navOk) {
                 log("CDP navigate 실패 — 캡쳐 스킵", "warning", "twitter");
                 done->release();
@@ -5641,7 +5664,7 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                 })()
             )JS").arg(qMin(waitMs, 3000));
             if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-            (*chromePtr)->evaluate(readyJs, [this, chromePtr, filePath, url, libCode, done, resultOk](const QJsonValue &) {
+            (*chromePtr)->evaluate(readyJs, [this, chromePtr, filePath, url, libCode, done, resultOk, trackKey](const QJsonValue &) {
                 // 원래 QTimer::singleShot 람다 내부 그대로 호출 — 매크로 이어짐
                 // ★ 단순 캡쳐 — 끝까지 스크롤 + 댓글 펼치기. virtualized DOM 재구성 제거 (메모리↓)
                 //   사용자 의도: "그냥 캡쳐만 해서 다운하는 방식. 댓글까지 전부 보이게"
@@ -5679,7 +5702,7 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                     })()
                 )JS";
                 if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-                (*chromePtr)->evaluate(scrollJs, [this, chromePtr, filePath, url, libCode, done, resultOk](const QJsonValue &v) {
+                (*chromePtr)->evaluate(scrollJs, [this, chromePtr, filePath, url, libCode, done, resultOk, trackKey](const QJsonValue &v) {
                     log(QString("[캡쳐] virtualized 스크롤 완료 — article %1개 정적 DOM 재구성").arg(v.toInt()), "info", "twitter");
 
                     // ★ 트위터의 절전 모드 / sensitive overlay / grayscale/blur 필터 강제 제거
@@ -5730,11 +5753,11 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                         })()
                     )JS";
                     if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-                    (*chromePtr)->evaluate(clearFiltersJs, [this, chromePtr, filePath, url, libCode, done, resultOk](const QJsonValue &) {
+                    (*chromePtr)->evaluate(clearFiltersJs, [this, chromePtr, filePath, url, libCode, done, resultOk, trackKey](const QJsonValue &) {
                     log("[캡쳐] grayscale/blur 필터 정리 완료", "info", "twitter");
                     // 1) SingleFile lib 주입
                     if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-                    (*chromePtr)->evaluate(libCode, [this, chromePtr, filePath, url, done, resultOk](const QJsonValue &) {
+                    (*chromePtr)->evaluate(libCode, [this, chromePtr, filePath, url, done, resultOk, trackKey](const QJsonValue &) {
                     // 2) singlefile.getPageData() 호출 (await Promise)
                     QString call = R"JS(
                         (async () => {
@@ -5782,7 +5805,7 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                         })()
                     )JS";
                     if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-                    (*chromePtr)->evaluate(call, [this, chromePtr, filePath, url, done, resultOk](const QJsonValue &v) {
+                    (*chromePtr)->evaluate(call, [this, chromePtr, filePath, url, done, resultOk, trackKey](const QJsonValue &v) {
                         QJsonObject obj = v.toObject();
                         if (obj.contains("error")) {
                             log(QString("[SingleFile] 호출 오류: %1").arg(obj["error"].toString()), "warning", "twitter");
@@ -5828,7 +5851,7 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                             const qint64 CHUNK = 1024 * 1024;  // 1MB
                             auto offsetPtr = std::make_shared<qint64>(0);
                             auto fetchNext = std::make_shared<std::function<void()>>();
-                            *fetchNext = [this, chromePtr, outFile, totalSize, offsetPtr, fetchNext, filePath, writeTarget, useLocalTemp, url, done, resultOk]() {
+                            *fetchNext = [this, chromePtr, outFile, totalSize, offsetPtr, fetchNext, filePath, writeTarget, useLocalTemp, url, done, resultOk, trackKey]() {
                                 if (*offsetPtr >= totalSize) {
                                     outFile->close();
                                     delete outFile;
@@ -5860,7 +5883,13 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
 
                                     // ★ N회 캡쳐마다 Chrome 재시작 — 메모리 누수 방지 (60+개 안정성)
                                     static const int CHROME_REUSE_LIMIT = 25;
-                                    QString tk = currentThreadTrackKey();
+                                    // ★ 여기는 메인 스레드다(CDP 콜백). currentThreadTrackKey() 는
+                                    //   thread-local 이라 여기서 부르면 언제나 빈 문자열이 나온다.
+                                    //   그러면 병렬 트랙 전부가 카운터 하나("")를 나누어 쓰게 되어,
+                                    //   25회 제한에 트랙 수만큼 빨리 걸린다 — 자기 몫을 다 쓰지도
+                                    //   않은 트랙의 Chrome 이 수집 도중 재시작된다.
+                                    //   수집 스레드에서 미리 잡아 둔 trackKey 를 그대로 쓴다.
+                                    const QString &tk = trackKey;
                                     int cnt = ++m_captureCountsPerKey[tk];
                                     if (cnt >= CHROME_REUSE_LIMIT) {
                                         log(QString("Chrome %1회 재사용 — 메모리 청소 위해 재시작").arg(cnt),

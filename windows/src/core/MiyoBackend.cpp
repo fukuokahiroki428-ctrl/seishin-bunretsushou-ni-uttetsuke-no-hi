@@ -155,6 +155,66 @@ static void killByCommandLine(const QString &imageName, const QString &needle)
         .arg(img, pat);
     QProcess::execute("powershell", {"-NoProfile", "-NonInteractive", "-Command", ps});
 }
+
+// 캡쳐에 쓰일 수 있는 Chromium 계열 실행 파일 이름 전부.
+//   ★ chrome.exe 만 보면 안 된다. findChromeExecutable() 은 Chrome 이 없으면 Edge 를,
+//     그것도 없으면 Brave 를 쓴다. Chrome 이 안 깔린 기계(윈도우 기본 상태가 그렇다)에서는
+//     캡쳐 브라우저가 msedge.exe 로 뜨는데, 정리 코드가 chrome.exe 만 찾아서 한 번도
+//     정리되지 않았다 — 프로세스와 프로필 폴더가 세션마다 쌓인다.
+//     맥은 `pkill -f chrome_capture_profile` 이라 이름을 안 보고 잡아서 이 문제가 없다.
+//     윈도우로 옮기며 이미지 이름 필터를 넣을 때 chrome.exe 하나로 좁힌 것이 원인이다.
+//   ※ 명령줄 필터(needle)는 그대로 둔다 — 그게 없으면 사용자 브라우저까지 죽는다.
+static void killCaptureBrowsers(const QString &needle)
+{
+    for (const QString &img : { QStringLiteral("chrome.exe"),
+                                QStringLiteral("msedge.exe"),
+                                QStringLiteral("brave.exe") })
+        killByCommandLine(img, needle);
+}
+
+// ★ 모니터링 터미널의 한글·일본어가 전부 '?' 로 나오던 문제.
+//   원인은 인코딩이 아니다. 확인한 것:
+//     로그 파일   E3 82 AB E3 83 A1 E3 83 A9 …  = "カメラ" 정상 UTF-8, '?' 0개
+//     chcp 65001  \r\r\n 로 적혀 있어도 정상 적용됨(직접 시험)
+//     콘솔 글꼴   HKCU\Console FaceName = Consolas  ← 한글·일본어 글리프가 없다
+//   글꼴에 글자가 없으니 conhost 가 '?' 로 채운다. 파일도 코드페이지도 멀쩡한데 화면만 깨진다.
+//   레지스트리 기본값을 바꾸면 사용자의 다른 콘솔까지 건드리므로, 그 창에서만 바꾼다.
+//   실패하면 조용히 넘어간다 — 글꼴 때문에 모니터링을 못 열 이유는 없다.
+//   ★ CONSOLE_FONT_INFOEX 는 84바이트다. bMaximumWindow 는 구조체 멤버가 아니라 함수 인자다.
+//     멤버로 넣어 88바이트가 되면 cb 가 안 맞아 ERROR_INVALID_PARAMETER(87) 로
+//     조용히 실패한다 — 첫 판이 정확히 그러했고, 사용자 화면은 그대로 깨져 있었다.
+//     고친 뒤 실측: size=84 · before 'Consolas' h=14 → after 'MS Gothic' h=16 · ok=True
+static void writeConsoleFontHelper(const QString &dir)
+{
+    QFile f(dir + "/miyo_console_font.ps1");
+    if (!f.open(QIODevice::WriteOnly)) return;   // ★ Text 금지 — \n 이 \r\r\n 이 된다
+    const QString ps = QStringLiteral(
+        "$ErrorActionPreference='SilentlyContinue'\r\n"
+        "Add-Type -AssemblyName System.Drawing\r\n"
+        "$code=@'\r\n"
+        "using System;using System.Runtime.InteropServices;\r\n"
+        "public class CF{\r\n"
+        "  [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]\r\n"
+        "  public struct FI{public uint cb;public uint idx;\r\n"
+        "    public short x;public short y;public uint fam;public uint wt;\r\n"
+        "    [MarshalAs(UnmanagedType.ByValTStr,SizeConst=32)] public string fn;}\r\n"
+        "  [DllImport(\"kernel32.dll\",SetLastError=true)]\r\n"
+        "  public static extern IntPtr GetStdHandle(int n);\r\n"
+        "  [DllImport(\"kernel32.dll\",SetLastError=true,CharSet=CharSet.Unicode)]\r\n"
+        "  public static extern bool SetCurrentConsoleFontEx(IntPtr h,bool mx,ref FI f);\r\n"
+        "  public static bool Set(string name,short size){\r\n"
+        "    FI f=new FI();f.cb=(uint)Marshal.SizeOf(typeof(FI));\r\n"
+        "    f.idx=0;f.x=0;f.y=size;f.fam=54;f.wt=400;f.fn=name;\r\n"
+        "    return SetCurrentConsoleFontEx(GetStdHandle(-11),false,ref f);}}\r\n"
+        "'@\r\n"
+        "Add-Type -TypeDefinition $code\r\n"
+        "$have=(New-Object System.Drawing.Text.InstalledFontCollection).Families.Name\r\n"
+        "foreach($n in @('MS Gothic','NSimSun','Malgun Gothic','Meiryo')){\r\n"
+        "  if($have -contains $n){ [void][CF]::Set($n,16); break }\r\n"
+        "}\r\n");
+    f.write(ps.toUtf8());
+    f.close();
+}
 #endif
 
 // ───────────────────────────────────────────────────────────
@@ -222,7 +282,7 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     QProcess::execute("/usr/bin/pkill", {"-f", "miyo_.*_tail.command"});
     QProcess::execute("/usr/bin/pkill", {"-f", "miyo_backup_tail.command"});
 #elif defined(Q_OS_WIN)
-    killByCommandLine("chrome.exe", "chrome_capture_profile");
+    killCaptureBrowsers("chrome_capture_profile");
     // ★ 여기 있던 두 줄은 지웠다:
     //     taskkill /F /IM "Chrome for Testing.exe"
     //     taskkill /F /IM chrome_crashpad_handler.exe
@@ -3251,6 +3311,7 @@ void MiyoBackend::openBackupTerminalLog()
     QString platform = "backup";
     QString scriptDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_" + platform;
     QDir().mkpath(scriptDir);
+    writeConsoleFontHelper(scriptDir);   // 콘솔 글꼴(CJK) 보조 스크립트
     QString logPath = scriptDir + "/.miyo_" + platform + "_log.txt";
     m_terminalLogPaths[platform] = logPath;
     m_terminalLogPath = logPath;
@@ -3279,6 +3340,9 @@ void MiyoBackend::openBackupTerminalLog()
         QString content;
         content += "@echo off\r\n";
         content += "chcp 65001 >nul\r\n";
+        content += "powershell -NoProfile -ExecutionPolicy Bypass -File \"" +
+                   QDir::toNativeSeparators(scriptDir + "/miyo_console_font.ps1") +
+                   "\" >nul 2>&1\r\n";
         content += "title カメラ Backup Monitor\r\n";
         content += "echo ===============================================\r\n";
         content += "echo   📦 カメラ 백업 진행 모니터\r\n";
@@ -3295,7 +3359,7 @@ void MiyoBackend::openBackupTerminalLog()
                    " if($n){ $n=$n -replace ($esc+'\\[[0-9;]*m'),'';"
                    " [Console]::Out.Write($n); [Console]::Out.Flush();"
                    " if($n -match '\\[DONE\\]'){break} } }catch{}"
-                   " Start-Sleep -Milliseconds 700 }\"\r\n";
+                   " Start-Sleep -Milliseconds 150 }\"\r\n";
         content += "echo.\r\n";
         content += "echo 백업 완료 — 터미널을 닫아도 됩니다.\r\n";
         content += "pause >nul\r\n";
@@ -3372,22 +3436,24 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
 {
     // ★ .command 는 로컬 temp 에 (NAS/외장 마운트는 POSIX 실행권한 보존 X)
     //   사용자 tempDir 이 NAS 면 .command 실행 실패. 로컬 /tmp 사용.
-    // ★ 다중 수집: trackKey(twitter#0/#1 …)마다 따로 열지 말고 베이스 플랫폼(twitter) 하나로 통합.
-    //   타겟 N개여도 터미널 1개 — 모든 타겟이 같은 통합 로그에 쓰고, 그 로그를 한 터미널이 tail.
-    QString base = platform.section('#', 0, 0);
-    QString scriptDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_" + base;
+    // ★ 트랙마다 터미널 하나 — 맥과 같다.
+    //   예전엔 베이스 플랫폼(twitter)으로 묶어 터미널 1개만 띄우고 twitter#0/#1 이 같은 로그에
+    //   같이 썼다. 그러면 두 트랙의 줄이 한 창에서 서로 끼어들어 읽을 수가 없다. 실제로 이렇게 나온다:
+    //       수집 시작 (twitter#0)
+    //       ━━━ [TWITTER] 사용자 선택 옵션 ━━━
+    //       수집 시작 (twitter#1)
+    //       ━━━ [TWITTER] 사용자 선택 옵션 ━━━
+    //         ☑ ON : downloadMedia, …      ← 어느 트랙 것인지 알 수 없다
+    //         ☑ ON : downloadMedia, …
+    //   맥에는 이 통합이 없다(m_openTerminalBases 자체가 없다). 윈도우로 옮기며 들어간 것이고,
+    //   창 하나를 아끼는 대신 로그를 못 읽게 만들었다. 맥 방식으로 되돌린다.
+    QString scriptDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_" + platform;
     QDir().mkpath(scriptDir);
+    writeConsoleFontHelper(scriptDir);   // 콘솔 글꼴(CJK) 보조 스크립트
 
-    QString logPath = scriptDir + "/.miyo_" + base + "_log.txt";
-    m_terminalLogPaths[platform] = logPath;   // 이 trackKey 의 writeTerminalLog → 통합 로그
-    m_terminalLogPaths[base]     = logPath;    // closeTerminalLog(base) 가 [DONE] 쓸 대상
+    QString logPath = scriptDir + "/.miyo_" + platform + "_log.txt";
+    m_terminalLogPaths[platform] = logPath;
     m_terminalLogPath = logPath;  // backward compat
-
-    qWarning() << "[openTerminalLog] platform=" << platform << "base=" << base
-               << "alreadyOpen=" << m_openTerminalBases.contains(base);
-    // 이미 이 베이스의 터미널이 열려있으면 새 터미널을 안 엶 — 같은 로그만 공유.
-    if (m_openTerminalBases.contains(base)) return;
-    m_openTerminalBases.insert(base);
     QFile::remove(logPath);
 
     // Create the log file
@@ -3406,6 +3472,9 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
         QString content;
         content += "@echo off\r\n";
         content += "chcp 65001 >nul\r\n";
+        content += "powershell -NoProfile -ExecutionPolicy Bypass -File \"" +
+                   QDir::toNativeSeparators(scriptDir + "/miyo_console_font.ps1") +
+                   "\" >nul 2>&1\r\n";
         content += "title Predormition - " + platform.toUpper() + "\r\n";
         // ★ 렉 방지 — 옛 방식은 `:loop / cls / type 전체파일 / timeout 2 / goto loop` 라
         //   로그가 길어지면 매 2초 전체 파일을 다시 그려(콘솔 full clear+redraw) CPU/GPU 부담 → 렉.
@@ -3426,7 +3495,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
                    " if($n){ $n=$n -replace ($esc+'\\[[0-9;]*m'),'';"
                    " [Console]::Out.Write($n); [Console]::Out.Flush();"
                    " if($n -match '\\[DONE\\]'){break} } }catch{}"
-                   " Start-Sleep -Milliseconds 700 }\"\r\n";
+                   " Start-Sleep -Milliseconds 150 }\"\r\n";
         content += "echo.\r\n";
         content += "echo 터미널을 닫아도 됩니다.\r\n";
         content += "pause >nul\r\n";
@@ -4423,11 +4492,10 @@ void MiyoBackend::startCollection(const QString &configJson)
             bool platformIdle = !m_isRunning.value(platformName, false);
             if (platformIdle) {
                 runJs(QString("setRunning('%1', false)").arg(platformName));
-                // ★ 통합 터미널은 같은 베이스의 모든 trackKey 가 끝났을 때만 닫는다(조기 종료 방지).
-                closeTerminalLog(platformName);
-                m_openTerminalBases.remove(platformName);
             }
             m_stopRequested[trackKey] = false;
+            // ★ 터미널은 트랙마다 하나라 트랙이 끝나면 그 트랙 것만 닫는다 (맥과 같다).
+            closeTerminalLog(trackKey);
             m_collectionThreads.remove(trackKey);
             // 모든 수집이 끝났으면 절전 해제
             if (m_collectionThreads.isEmpty()) {
@@ -4601,7 +4669,7 @@ void MiyoBackend::killZombieChromes()
 #elif defined(Q_OS_WIN)
     // COMMANDLINE 은 taskkill 에 없는 필터라 아무것도 안 죽었고, 나머지 둘은 필터가
     // 없어 사용자가 쓰던 Chrome for Testing·본인 Chrome 의 크래시 핸들러까지 죽였다.
-    killByCommandLine("chrome.exe", "chrome_capture_profile");
+    killCaptureBrowsers("chrome_capture_profile");
 #endif
     log(QString("좀비 정리 완료 — capture chrome + 앱 내부 Chromium + helper/crashpad").arg(killed),
         "success", "settings");
@@ -5730,9 +5798,9 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
     }
 
     QString libCode = s_sfLibCode;
-    QMetaObject::invokeMethod(this, [this, chromePtr, url, filePath, libCode, waitMs, done, resultOk]() {
+    QMetaObject::invokeMethod(this, [this, chromePtr, url, filePath, libCode, waitMs, done, resultOk, trackKey]() {
         if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-        (*chromePtr)->navigate(url, [this, chromePtr, filePath, url, libCode, waitMs, done, resultOk](bool navOk) {
+        (*chromePtr)->navigate(url, [this, chromePtr, filePath, url, libCode, waitMs, done, resultOk, trackKey](bool navOk) {
             if (!navOk) {
                 log("CDP navigate 실패 — 캡쳐 스킵", "warning", "twitter");
                 done->release();
@@ -5751,7 +5819,7 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                 })()
             )JS").arg(qMin(waitMs, 3000));
             if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-            (*chromePtr)->evaluate(readyJs, [this, chromePtr, filePath, url, libCode, done, resultOk](const QJsonValue &) {
+            (*chromePtr)->evaluate(readyJs, [this, chromePtr, filePath, url, libCode, done, resultOk, trackKey](const QJsonValue &) {
                 // 원래 QTimer::singleShot 람다 내부 그대로 호출 — 매크로 이어짐
                 // ★ 단순 캡쳐 — 끝까지 스크롤 + 댓글 펼치기. virtualized DOM 재구성 제거 (메모리↓)
                 //   사용자 의도: "그냥 캡쳐만 해서 다운하는 방식. 댓글까지 전부 보이게"
@@ -5789,7 +5857,7 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                     })()
                 )JS";
                 if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-                (*chromePtr)->evaluate(scrollJs, [this, chromePtr, filePath, url, libCode, done, resultOk](const QJsonValue &v) {
+                (*chromePtr)->evaluate(scrollJs, [this, chromePtr, filePath, url, libCode, done, resultOk, trackKey](const QJsonValue &v) {
                     log(QString("[캡쳐] virtualized 스크롤 완료 — article %1개 정적 DOM 재구성").arg(v.toInt()), "info", "twitter");
 
                     // ★ 트위터의 절전 모드 / sensitive overlay / grayscale/blur 필터 강제 제거
@@ -5840,11 +5908,11 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                         })()
                     )JS";
                     if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-                    (*chromePtr)->evaluate(clearFiltersJs, [this, chromePtr, filePath, url, libCode, done, resultOk](const QJsonValue &) {
+                    (*chromePtr)->evaluate(clearFiltersJs, [this, chromePtr, filePath, url, libCode, done, resultOk, trackKey](const QJsonValue &) {
                     log("[캡쳐] grayscale/blur 필터 정리 완료", "info", "twitter");
                     // 1) SingleFile lib 주입
                     if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-                    (*chromePtr)->evaluate(libCode, [this, chromePtr, filePath, url, done, resultOk](const QJsonValue &) {
+                    (*chromePtr)->evaluate(libCode, [this, chromePtr, filePath, url, done, resultOk, trackKey](const QJsonValue &) {
                     // 2) singlefile.getPageData() 호출 (await Promise)
                     QString call = R"JS(
                         (async () => {
@@ -5892,7 +5960,7 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                         })()
                     )JS";
                     if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-                    (*chromePtr)->evaluate(call, [this, chromePtr, filePath, url, done, resultOk](const QJsonValue &v) {
+                    (*chromePtr)->evaluate(call, [this, chromePtr, filePath, url, done, resultOk, trackKey](const QJsonValue &v) {
                         QJsonObject obj = v.toObject();
                         if (obj.contains("error")) {
                             log(QString("[SingleFile] 호출 오류: %1").arg(obj["error"].toString()), "warning", "twitter");
@@ -5938,7 +6006,7 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
                             const qint64 CHUNK = 1024 * 1024;  // 1MB
                             auto offsetPtr = std::make_shared<qint64>(0);
                             auto fetchNext = std::make_shared<std::function<void()>>();
-                            *fetchNext = [this, chromePtr, outFile, totalSize, offsetPtr, fetchNext, filePath, writeTarget, useLocalTemp, url, done, resultOk]() {
+                            *fetchNext = [this, chromePtr, outFile, totalSize, offsetPtr, fetchNext, filePath, writeTarget, useLocalTemp, url, done, resultOk, trackKey]() {
                                 if (*offsetPtr >= totalSize) {
                                     outFile->close();
                                     delete outFile;
@@ -5970,7 +6038,15 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
 
                                     // ★ N회 캡쳐마다 Chrome 재시작 — 메모리 누수 방지 (60+개 안정성)
                                     static const int CHROME_REUSE_LIMIT = 25;
-                                    QString tk = currentThreadTrackKey();
+                                    // ★ 여기는 메인 스레드다(CDP 콜백). currentThreadTrackKey() 는
+                                    //   thread-local 이라 여기서 부르면 언제나 빈 문자열이 나온다.
+                                    //   그러면 병렬 트랙 전부가 카운터 하나("")를 나눠 쓰게 되어,
+                                    //   25회 제한에 트랙 수만큼 빨리 걸린다 — 자기 몫을 다 쓰지도
+                                    //   않은 트랙의 Chrome 이 수집 도중 재시작된다(재시작마다 Chrome
+                                    //   기동 + 쿠키 재주입 값을 치른다).
+                                    //   수집 스레드에서 미리 잡아 둔 trackKey 를 그대로 쓴다
+                                    //   (같은 함수 위쪽 getChromePtr 이 쓰는 것과 같은 값이다).
+                                    const QString &tk = trackKey;
                                     int cnt = ++m_captureCountsPerKey[tk];
                                     if (cnt >= CHROME_REUSE_LIMIT) {
                                         log(QString("Chrome %1회 재사용 — 메모리 청소 위해 재시작").arg(cnt),
