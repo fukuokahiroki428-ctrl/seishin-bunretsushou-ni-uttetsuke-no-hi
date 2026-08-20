@@ -47,6 +47,10 @@ sync_one "$SRCROOT/resources/tools/yt-dlp"      "Contents/Resources/tools/yt-dlp
 sync_one "$SRCROOT/resources/tools/rclone"      "Contents/Resources/tools/rclone"
 sync_one "$SRCROOT/resources/html/index.html"   "Contents/Resources/html/index.html"
 
+# 자동 재서명 도구 — 앱이 스스로 봉인을 복구할 때 쓴다(런타임이 이걸 부른다).
+sync_one "$SRCROOT/codesign_app.sh"             "Contents/Resources/tools/codesign_app.sh"
+sync_one "$SRCROOT/predormition.entitlements"   "Contents/Resources/tools/predormition.entitlements"
+
 for _p in "$SRCROOT"/resources/tools/*.py; do
     [ -f "$_p" ] && sync_one "$_p" "Contents/Resources/tools/$(basename "$_p")"
 done

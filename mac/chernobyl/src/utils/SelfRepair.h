@@ -494,6 +494,36 @@ inline QString runStartupMaintenance()
     // 도구 밖의 상태도 본다 — 실제로 사람을 막는 것은 대부분 여기다.
     report += checkEnvironment();
 
+#ifdef Q_OS_MACOS
+    // ── 코드 서명 봉인 자동 복구 ─────────────────────────────────────────────
+    //   앱 내부에 pip 설치·스크립트 갱신이 일어나면 codesign 봉인이 깨진다.
+    //   깨진 채로도 지금 서명 구성(Apple Development, 하드닝 런타임 없음)에서는
+    //   앱이 실행된다 — 실제로 확인했다. 하지만 그대로 두면
+    //     · codesign --verify 가 계속 실패하고
+    //     · 공증·배포로 넘어가는 순간 막히며
+    //     · 하드닝 런타임을 켜는 날 갑자기 실행이 안 된다.
+    //   그러니 기동할 때 조용히 확인하고, 깨져 있으면 스스로 다시 서명한다.
+    //   재서명은 번들에 동봉한 codesign_app.sh(빌드가 쓰는 그 스크립트)가 한다.
+    {
+        const QString app = Common::appBundlePath();
+        if (!app.isEmpty()) {
+            QProcess vf;
+            vf.start("/usr/bin/codesign", {"--verify", "--deep", "--strict", app});
+            vf.waitForFinished(300000);
+            if (vf.exitCode() != 0) {
+                report += "[SEAL] 코드 서명 봉인이 깨져 있습니다 — 자동 복구를 시도합니다"
+                          " (번들이 커서 수 분 걸릴 수 있습니다)…\n";
+                QString serr;
+                if (Common::resealAppBundle(&serr))
+                    report += "[SEAL] ✅ 서명 복구 완료.\n";
+                else
+                    report += "[SEAL] ⚠️ 서명 복구 실패: " + serr.left(200) + "\n"
+                              "       앱은 계속 쓸 수 있지만, 배포·공증 전에 다시 빌드하십시오.\n";
+            }
+        }
+    }
+#endif
+
     const QStringList cleaned = cleanStaleState();
     for (const QString &c : cleaned)
         report += "[CLEAN] stale lock 제거: " + c + "\n";

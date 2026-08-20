@@ -593,28 +593,32 @@ bool resealAppBundle(QString *err)
         for (const QString &c : caches) QDir(c).removeRecursively();
     }
 
-    // 서명 아이덴티티 탐색 — 있으면 그걸로, 없으면 ad-hoc(-). 로컬 실행에는 ad-hoc 로 충분하다.
-    QString identity = "-";
-    {
-        QProcess find;
-        find.start("/usr/bin/security", {"find-identity", "-v", "-p", "codesigning"});
-        if (find.waitForFinished(10000)) {
-            const QString out = QString::fromUtf8(find.readAllStandardOutput());
-            const QRegularExpression re("\\b([0-9A-F]{40})\\b");
-            const QRegularExpressionMatch m = re.match(out);
-            if (m.hasMatch()) identity = m.captured(1);
-        }
+    // ★ 번들에 동봉한 codesign_app.sh 로 재서명한다.
+    //   빌드가 쓰는 바로 그 스크립트다 — inside-out 으로 컴포넌트부터 서명하고
+    //   마지막에 --deep --strict 로 검증한다. 인증서 선택(Developer ID → Apple
+    //   Development → ad-hoc)과 entitlements 처리도 그 안에 이미 들어 있다.
+    //
+    //   예전엔 여기서 `codesign -f -s <id> --deep` 로 직접 서명했다. 동작은 했지만
+    //   빌드는 --deep 서명을 일부러 피하는데(애플도 배포용이 아니라고 한다) 런타임만
+    //   다른 방식을 쓰고 있었다. 두 갈래로 두면 언젠가 결과가 갈린다.
+    const QString signer = bundledToolsDir() + "/codesign_app.sh";
+    if (!QFile::exists(signer)) {
+        if (err) *err = QString("재서명 도구가 번들에 없습니다: %1").arg(signer);
+        return false;
     }
 
     QProcess cs;
-    cs.start("/usr/bin/codesign", {"-f", "-s", identity, "--deep", app});
-    if (!cs.waitForFinished(900000)) {                    // 번들이 크면(모델 포함) 수 분 걸릴 수 있음
+    cs.start("/bin/bash", {signer, app});
+    if (!cs.waitForFinished(1800000)) {         // 번들이 크면(모델 포함) 수 분 걸린다
         cs.kill(); cs.waitForFinished(3000);
-        if (err) *err = "codesign 시간 초과";
+        if (err) *err = "재서명 시간 초과";
         return false;
     }
     if (cs.exitCode() != 0) {
-        if (err) *err = QString::fromUtf8(cs.readAllStandardError()).left(300);
+        // 스크립트가 실패 사유를 표준출력에도 적는다(개별 서명 실패 목록 등).
+        const QString out = QString::fromUtf8(cs.readAllStandardOutput()).right(400);
+        const QString e   = QString::fromUtf8(cs.readAllStandardError()).left(300);
+        if (err) *err = (e.isEmpty() ? out : e);
         return false;
     }
 
