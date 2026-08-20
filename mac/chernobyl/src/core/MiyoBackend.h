@@ -486,6 +486,8 @@ public:
     QMap<QString, RealChromeCrawler*> m_captureChromesPerThread;
     QMutex m_capChromeMapMutex;
     int m_nextCapPort = 9223;
+    // 디스코드 'all' 모드에서 하위 수집이 몇 건 실패했는지. 0 이 아니면 완료가 아니다.
+    int m_discordErrorCount = 0;
     // ★ trackKey → 디버그 포트 고정. 예전엔 맵에 트랙을 처음 넣을 때만 포트를 배정해서,
     //   Chrome 이 죽어 재생성될 때 기본값 9223 으로 되돌아갔다. start() 는 그 포트를 쓰는
     //   프로세스를 죽이므로 다른 트랙의 멀쩡한 Chrome 을 잡아버린다.

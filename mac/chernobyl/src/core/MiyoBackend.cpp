@@ -15,6 +15,7 @@
 #include "utils/SelfRepair.h"
 #include <QPointer>
 #include "core/Common.h"
+#include "platforms/DiscordError.h"
 using FileHelper::sanitizeFilename;
 
 #include <QApplication>
@@ -7353,6 +7354,12 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
     if (discordType == "all") {
         log("═══ 전체 수집 모드 ═══", "success", "discord");
         QStringList subTypes = {"messages", "pins"};
+        // ★ 하위 수집의 성패를 세어 둔다.
+        //   예전엔 runDiscordCollection() 이 void 라 하위가 전부 실패해도 결과를
+        //   보지 않고 마지막에 "전체 수집 완료!" 를 success 로 찍었다. 실제로
+        //   403 으로 한 건도 못 받은 채 '완료' 만 뜬 적이 있다. 아카이버에서
+        //   이건 가장 나쁜 고장이다 — 사용자가 받았다고 믿고 넘어가기 때문이다.
+        m_discordErrorCount = 0;
         for (int i = 0; i < subTypes.size(); ++i) {
             if (!m_isRunning.value("discord", false)) break;
             log(QString("▶ [%1/%2] %3 수집...").arg(i+1).arg(subTypes.size()).arg(subTypes[i]), "info", "discord");
@@ -7360,7 +7367,13 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
             subConfig["type"] = subTypes[i];
             runDiscordCollection(subConfig);
         }
-        log("═══ 전체 수집 완료! ═══", "success", "discord");
+        if (m_discordErrorCount > 0) {
+            log(QString("═══ 전체 수집 실패 — %1건이 오류로 끝났습니다 ═══")
+                    .arg(m_discordErrorCount), "error", "discord");
+            updateStats(0, 0, "오류", "discord");
+        } else {
+            log("═══ 전체 수집 완료! ═══", "success", "discord");
+        }
         return;
     }
 
@@ -7373,7 +7386,15 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
             QMap<QString, QString> gh;
             gh["Authorization"] = token;
             HttpResponse gResp = http.get(guildInfoUrl, gh);
-            if (gResp.isOk()) srvName = gResp.json()["name"].toString();
+            if (gResp.isOk()) {
+                srvName = gResp.json()["name"].toString();
+            } else {
+                // 예전엔 여기서 아무 말이 없었다. 서버 이름을 못 얻는다는 건 대개
+                // 그 서버에 접근할 수 없다는 첫 신호인데, 조용히 넘어가서 바로 뒤의
+                // 채널 목록 실패가 갑자기 튀어나온 것처럼 보였다.
+                log(QString("서버 정보 조회 실패: %1").arg(describeDiscordError(gResp)),
+                    "warning", "discord");
+            }
         }
         if (srvName.isEmpty()) srvName = serverId;
         log(QString("서버: %1 (%2)").arg(srvName, serverId), "info", "discord");
@@ -7384,8 +7405,10 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
         headers["Authorization"] = token;
         HttpResponse resp = http.get(url, headers);
         if (!resp.isOk()) {
-            log(QString("서버 채널 목록 조회 실패: HTTP %1").arg(resp.statusCode), "error", "discord");
+            log(QString("서버 채널 목록 조회 실패: %1").arg(describeDiscordError(resp)),
+                "error", "discord");
             updateStats(0, 0, "오류", "discord");
+            ++m_discordErrorCount;   // 상위 'all' 루프가 이걸 보고 완료를 거짓말하지 않는다
             return;
         }
         QJsonArray channels = QJsonDocument::fromJson(resp.data).array();
@@ -7461,6 +7484,7 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
     // ── 채널/서버 ID 둘 다 없으면 에러 ──
     if (channelId.isEmpty() && serverId.isEmpty()) {
         log("채널 ID 또는 서버 ID를 입력하세요.", "error", "discord");
+        ++m_discordErrorCount;   // 이것도 실패다 — 상위 'all' 이 완료라고 하면 안 된다
         updateStats(0, 0, "오류", "discord");
         return;
     }
