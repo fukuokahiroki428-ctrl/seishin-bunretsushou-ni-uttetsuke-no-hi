@@ -12,7 +12,7 @@
 #include <QMap>
 #include <functional>
 
-class MiyoBackend;
+class HanishikiBackend;
 class HttpClient;
 class QWebEnginePage;
 class QWebEngineProfile;
@@ -23,7 +23,7 @@ class SiteCrawler : public QObject
     Q_OBJECT
 
 public:
-    explicit SiteCrawler(MiyoBackend *backend, QWebEngineProfile *sharedProfile = nullptr, QObject *parent = nullptr);
+    explicit SiteCrawler(HanishikiBackend *backend, QWebEngineProfile *sharedProfile = nullptr, QObject *parent = nullptr);
     ~SiteCrawler() override;
 
     void crawl(const QJsonObject &config);
@@ -88,7 +88,7 @@ private:
     void saveSecurityReport();
     void finishCrawl();
 
-    MiyoBackend *m_backend;
+    HanishikiBackend *m_backend;
     QWebEngineProfile *m_profile = nullptr;
     bool m_ownsProfile = false;
     QWebEnginePage *m_page = nullptr;

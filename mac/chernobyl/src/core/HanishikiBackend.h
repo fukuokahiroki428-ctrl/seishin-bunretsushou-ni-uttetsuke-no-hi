@@ -23,13 +23,13 @@ class QTimer;
 class QProcess;
 class WebDavUploader;
 
-class MiyoBackend : public QObject
+class HanishikiBackend : public QObject
 {
     Q_OBJECT
 
 public:
-    explicit MiyoBackend(MainWindow *window, QObject *parent = nullptr);
-    ~MiyoBackend() override;
+    explicit HanishikiBackend(MainWindow *window, QObject *parent = nullptr);
+    ~HanishikiBackend() override;
 
     Config *config() const { return m_config; }
 

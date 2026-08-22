@@ -9,7 +9,7 @@
 #include <QPair>
 #include <QProcess>
 
-class MiyoBackend;
+class HanishikiBackend;
 class HttpClient;
 class DiskJsonBuffer;
 
@@ -18,13 +18,13 @@ class TwitterCollector : public QObject
     Q_OBJECT
 
 public:
-    explicit TwitterCollector(MiyoBackend *backend, QObject *parent = nullptr);
+    explicit TwitterCollector(HanishikiBackend *backend, QObject *parent = nullptr);
     ~TwitterCollector() override;
 
     void collect(const QJsonObject &config, bool &isRunning);
     void checkNewPosts(const QJsonObject &config, bool &isRunning);
     void stopDaemon();
-    // 외부(MiyoBackend)에서 중지 시 프로세스를 즉시 죽이기 위해 노출
+    // 외부(HanishikiBackend)에서 중지 시 프로세스를 즉시 죽이기 위해 노출
     qint64 daemonPid() const { return m_daemon ? m_daemon->processId() : 0; }
     QString newestTweetId() const { return m_newestTweetId; }
 
@@ -99,7 +99,7 @@ private:
     //   force: 명시적으로 캡쳐할지 (likes/bookmarks 같이 별도 폴더 쓸 때 capturesDir만 다르게)
     void captureTweet(const QJsonObject &tweet, const QString &capturesDir, const QJsonObject &config);
 
-    MiyoBackend *m_backend;
+    HanishikiBackend *m_backend;
     HttpClient *m_http;
 
     // Adaptive delay — auto-adjusts based on rate limit responses

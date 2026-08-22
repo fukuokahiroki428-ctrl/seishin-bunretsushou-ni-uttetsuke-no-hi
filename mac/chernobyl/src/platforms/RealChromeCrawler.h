@@ -32,7 +32,7 @@
 #include <QPointer>
 #include <functional>
 
-class MiyoBackend;
+class HanishikiBackend;
 class QProcess;
 class QWebSocket;
 class QNetworkAccessManager;
@@ -42,7 +42,7 @@ class RealChromeCrawler : public QObject
     Q_OBJECT
 
 public:
-    explicit RealChromeCrawler(MiyoBackend *backend, QObject *parent = nullptr);
+    explicit RealChromeCrawler(HanishikiBackend *backend, QObject *parent = nullptr);
     ~RealChromeCrawler() override;
 
     // 공유 프로필 사용 (사용자의 기본 Chrome 로그인 세션 그대로)
@@ -112,7 +112,7 @@ private:
                     std::function<void(const QJsonValue &result, const QJsonValue &error)> cb);
     void handleEvent(const QString &method, const QJsonObject &params);
 
-    MiyoBackend *m_backend = nullptr;
+    HanishikiBackend *m_backend = nullptr;
     QPointer<QProcess> m_chromeProc;
     QPointer<QWebSocket> m_ws;
     QNetworkAccessManager *m_nam = nullptr;

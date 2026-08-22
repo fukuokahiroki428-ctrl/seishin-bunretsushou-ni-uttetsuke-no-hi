@@ -1,5 +1,5 @@
 #include "MainWindow.h"
-#include "MiyoBackend.h"
+#include "HanishikiBackend.h"
 #include "PenBackend.h"
 
 #include <QWebEngineSettings>
@@ -110,7 +110,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // WebChannel
     m_channel = new QWebChannel(this);
-    m_backend = new MiyoBackend(this);
+    m_backend = new HanishikiBackend(this);
     m_channel->registerObject(QStringLiteral("backend"), m_backend);
     // ★ PEN(팬을 잘 쓰고 싶다) 통합 — 사이트 미러 엔진을 2번째 WebChannel 객체로 등록.
     //   UI 의 미러/캡쳐 탭이 penBackend.crawl* 를 호출. PenBackend 는 같은 m_webView 를 공유

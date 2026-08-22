@@ -1,7 +1,7 @@
 #include "TwitterCollector.h"
 #include <QJsonArray>
 #include <QFileInfo>
-#include "core/MiyoBackend.h"
+#include "core/HanishikiBackend.h"
 #include "core/Common.h"
 #include "utils/HttpClient.h"
 #include "utils/ExcelWriter.h"
@@ -41,7 +41,7 @@ QString TwitterCollector::apiUrl(const QString &key, const QString &builtin)
     return Common::apiOverride("twitter." + key, builtin);
 }
 
-TwitterCollector::TwitterCollector(MiyoBackend *backend, QObject *parent)
+TwitterCollector::TwitterCollector(HanishikiBackend *backend, QObject *parent)
     : QObject(parent)
     , m_backend(backend)
     , m_http(new HttpClient(this))
@@ -51,7 +51,7 @@ TwitterCollector::TwitterCollector(MiyoBackend *backend, QObject *parent)
 
 TwitterCollector::~TwitterCollector()
 {
-    // multi-target: MiyoBackend가 매 collect()마다 collector를 새로 만들므로
+    // multi-target: HanishikiBackend가 매 collect()마다 collector를 새로 만들므로
     // 이전 collector가 destroy될 때 daemon이 leak되지 않도록 명시적으로 정리.
     stopDaemon();
 }

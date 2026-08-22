@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.20)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/../../VERSION")
 file(READ "${CMAKE_CURRENT_LIST_DIR}/../../VERSION" PREDORMITION_VERSION)
 string(STRIP "${PREDORMITION_VERSION}" PREDORMITION_VERSION)
-project(Miyo VERSION ${PREDORMITION_VERSION} LANGUAGES CXX)
+project(Hanishiki VERSION ${PREDORMITION_VERSION} LANGUAGES CXX)
 
 # ── 판 이름(코드네임) ──────────────────────────────────────────────────────
 #   사용자에게 보이는 이름은 '上野' 다. 숫자(VERSION)는 기계용으로만 남긴다.
@@ -66,7 +66,7 @@ FetchContent_MakeAvailable(QXlsx)
 # Sources
 set(CORE_SOURCES
     src/core/MainWindow.cpp
-    src/core/MiyoBackend.cpp
+    src/core/HanishikiBackend.cpp
     src/core/PenBackend.cpp
     src/core/Common.cpp
     src/core/Config.cpp
@@ -74,7 +74,7 @@ set(CORE_SOURCES
 
 set(CORE_HEADERS
     src/core/MainWindow.h
-    src/core/MiyoBackend.h
+    src/core/HanishikiBackend.h
     src/core/PenBackend.h
     src/core/WorkerSignals.h
     src/core/Common.h
@@ -117,7 +117,7 @@ set(PLATFORM_HEADERS
 )
 
 # Resources
-set(RESOURCES resources/miyo.qrc)
+set(RESOURCES resources/hanishiki.qrc)
 
 # ═══════════════════════════════════════════
 # Platform-specific executable setup
@@ -128,7 +128,7 @@ if(APPLE)
     set(MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION})
     set(MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION})
 
-    add_executable(Miyo MACOSX_BUNDLE
+    add_executable(Hanishiki MACOSX_BUNDLE
         src/main.cpp
         ${CORE_SOURCES} ${CORE_HEADERS}
         ${UTILS_SOURCES} ${UTILS_HEADERS}
@@ -137,7 +137,7 @@ if(APPLE)
     )
 elseif(WIN32)
     # Windows: WIN32 flag for GUI app (no console window)
-    add_executable(Miyo WIN32
+    add_executable(Hanishiki WIN32
         src/main.cpp
         ${CORE_SOURCES} ${CORE_HEADERS}
         ${UTILS_SOURCES} ${UTILS_HEADERS}
@@ -145,7 +145,7 @@ elseif(WIN32)
         ${RESOURCES}
     )
 else()
-    add_executable(Miyo
+    add_executable(Hanishiki
         src/main.cpp
         ${CORE_SOURCES} ${CORE_HEADERS}
         ${UTILS_SOURCES} ${UTILS_HEADERS}
@@ -154,7 +154,7 @@ else()
     )
 endif()
 
-target_include_directories(Miyo PRIVATE
+target_include_directories(Hanishiki PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/core
     ${CMAKE_SOURCE_DIR}/src/utils
@@ -165,7 +165,7 @@ target_include_directories(Miyo PRIVATE
 # Platform-specific linking
 # ═══════════════════════════════════════════
 
-target_link_libraries(Miyo PRIVATE
+target_link_libraries(Hanishiki PRIVATE
     Qt6::Core
     Qt6::Widgets
     Qt6::WebEngineWidgets
@@ -176,9 +176,9 @@ target_link_libraries(Miyo PRIVATE
 )
 
 if(APPLE)
-    target_link_libraries(Miyo PRIVATE "-framework IOKit")
+    target_link_libraries(Hanishiki PRIVATE "-framework IOKit")
 elseif(WIN32)
-    target_link_libraries(Miyo PRIVATE dwmapi)
+    target_link_libraries(Hanishiki PRIVATE dwmapi)
 endif()
 
 # ═══════════════════════════════════════════
@@ -190,7 +190,7 @@ if(APPLE)
     #
     #   ★ APP_NAME(ASCII)은 '실행 파일 이름' 과 '사용자 데이터 폴더 이름' 을 정한다.
     #     - 실행 파일: kill_app.sh 의 pgrep -x 가 이 이름으로 프로세스를 찾는다.
-    #     - 데이터 폴더: app.setApplicationName(ASCII) → ~/…/Miyo/<APP_NAME>.
+    #     - 데이터 폴더: app.setApplicationName(ASCII) → ~/…/Hanishiki/<APP_NAME>.
     #       여기를 바꾸면 설정·수집물이 갈라진다(실제로 잃은 적이 있다). 건드리지 말 것.
     #     .app 폴더 이름은 build.sh 가 codesign 직전에 APP_DISPLAY_NAME 으로 바꾼다.
     #
@@ -215,11 +215,11 @@ if(APPLE)
     # ★ 앱 이름을 코드에 박지 않는다 — 지금까지 main.cpp·백엔드·설치기에 각각
     #   "Predormition" 이 흩어져 있어서, 이름을 바꿀 때마다 일부만 따라오고
     #   나머지는 옛 이름을 가리켰다(데이터 폴더가 갈라지는 원인).
-    target_compile_definitions(Miyo PRIVATE
+    target_compile_definitions(Hanishiki PRIVATE
         APP_NAME_ASCII="${APP_NAME}"
         APP_NAME_DISPLAY="${APP_DISPLAY_NAME}")
 
-    set_target_properties(Miyo PROPERTIES
+    set_target_properties(Hanishiki PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/Info.plist.in
         MACOSX_BUNDLE_ICON_FILE "${APP_ICON}"
@@ -237,30 +237,30 @@ if(APPLE)
         # ★ yt-dlp 는 셸 래퍼(python -m yt_dlp) → Resources/tools/ 에 둔다.
         #   Contents/MacOS/ 는 Mach-O 전용이라 스크립트를 두면 codesign --deep 이 실패한다.
         #   앱의 findBundledYtDlp 가 MacOS/ 다음 Resources/tools/ 를 확인하므로 정상 발견.
-        add_custom_command(TARGET Miyo POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_BUNDLE_DIR:Miyo>/Contents/MacOS/yt-dlp"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools"
+        add_custom_command(TARGET Hanishiki POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E rm -f "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/MacOS/yt-dlp"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${YTDLP_PATH}" "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/yt-dlp"
-            COMMAND chmod +x "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/yt-dlp"
+                "${YTDLP_PATH}" "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools/yt-dlp"
+            COMMAND chmod +x "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools/yt-dlp"
             COMMENT "Bundling yt-dlp wrapper (Resources/tools)"
         )
     endif()
 
     if(EXISTS "${FFMPEG_PATH}")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${FFMPEG_PATH}" "$<TARGET_BUNDLE_DIR:Miyo>/Contents/MacOS/ffmpeg"
-            COMMAND chmod +x "$<TARGET_BUNDLE_DIR:Miyo>/Contents/MacOS/ffmpeg"
+                "${FFMPEG_PATH}" "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/MacOS/ffmpeg"
+            COMMAND chmod +x "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/MacOS/ffmpeg"
             COMMENT "Bundling ffmpeg"
         )
     endif()
 
     if(EXISTS "${FFPROBE_PATH}")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${FFPROBE_PATH}" "$<TARGET_BUNDLE_DIR:Miyo>/Contents/MacOS/ffprobe"
-            COMMAND chmod +x "$<TARGET_BUNDLE_DIR:Miyo>/Contents/MacOS/ffprobe"
+                "${FFPROBE_PATH}" "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/MacOS/ffprobe"
+            COMMAND chmod +x "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/MacOS/ffprobe"
             COMMENT "Bundling ffprobe"
         )
     endif()
@@ -269,10 +269,10 @@ if(APPLE)
     #   없으면 시스템 deno 로 폴백(없으면 yt-dlp 내장 JS, 덜 안정). MacOS/ 에 두면 yt-dlp 가 PATH 로 찾음.
     set(DENO_PATH "${CMAKE_SOURCE_DIR}/resources/tools/deno")
     if(EXISTS "${DENO_PATH}")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${DENO_PATH}" "$<TARGET_BUNDLE_DIR:Miyo>/Contents/MacOS/deno"
-            COMMAND chmod +x "$<TARGET_BUNDLE_DIR:Miyo>/Contents/MacOS/deno"
+                "${DENO_PATH}" "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/MacOS/deno"
+            COMMAND chmod +x "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/MacOS/deno"
             COMMENT "Bundling deno (yt-dlp JS runtime)"
         )
     endif()
@@ -280,20 +280,20 @@ if(APPLE)
     # ★ rclone — WebDAV/SFTP/S3/Mountain Duck 호환 (50+ protocol, MIT 라이센스)
     set(RCLONE_PATH "${CMAKE_SOURCE_DIR}/resources/tools/rclone")
     if(EXISTS "${RCLONE_PATH}")
-        add_custom_command(TARGET Miyo POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools"
+        add_custom_command(TARGET Hanishiki POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${RCLONE_PATH}" "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/rclone"
-            COMMAND chmod +x "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/rclone"
+                "${RCLONE_PATH}" "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools/rclone"
+            COMMAND chmod +x "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools/rclone"
             COMMENT "Bundling rclone (WebDAV/SFTP/Mountain Duck 호환 fast transfer)"
         )
     endif()
 
     # ★ HTML 외부화 — AUTORCC 의존성 추적 깨졌을 때 즉시 반영 위해 별도 복사
-    add_custom_command(TARGET Miyo POST_BUILD
+    add_custom_command(TARGET Hanishiki POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/resources/html"
-            "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/html"
+            "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/html"
         COMMENT "Bundling HTML (external — bypasses AUTORCC cache issues)"
     )
 
@@ -317,13 +317,13 @@ if(APPLE)
         #   있어서, 그렇게 복사하면 356MB 가 1.0GB 로 불어난다(실측). 게다가 링크가
         #   사라지면 프레임워크 구조가 깨져 codesign 이 그 프레임워크를 서명하지 못한다.
         #   cp -Rp 로 링크와 권한을 그대로 옮긴다.
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E rm -rf
-                "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/chromium/Chromium.app"
+                "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/chromium/Chromium.app"
             COMMAND ${CMAKE_COMMAND} -E make_directory
-                "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/chromium"
+                "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/chromium"
             COMMAND cp -Rp "${CHROMIUM_SRC}"
-                "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/chromium/Chromium.app"
+                "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/chromium/Chromium.app"
             COMMENT "Bundling Chromium (심볼릭 링크 보존)"
         )
     endif()
@@ -336,10 +336,10 @@ if(APPLE)
     #   → 빌드가 쓰는 바로 그 스크립트를 번들에 넣고, 런타임도 같은 것을 부른다.
     foreach(_sf codesign_app.sh hanishiki.entitlements)
         if(EXISTS "${CMAKE_SOURCE_DIR}/${_sf}")
-            add_custom_command(TARGET Miyo POST_BUILD
+            add_custom_command(TARGET Hanishiki POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${CMAKE_SOURCE_DIR}/${_sf}"
-                    "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/${_sf}"
+                    "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools/${_sf}"
                 COMMENT "Bundling ${_sf} (자동 재서명용)"
             )
         else()
@@ -350,26 +350,26 @@ if(APPLE)
     # exiftool (프로젝트 내 Perl script + libs → Resources/tools/exiftool/)
     set(EXIFTOOL_SRC "${CMAKE_SOURCE_DIR}/resources/tools/exiftool")
     if(EXISTS "${EXIFTOOL_SRC}/exiftool")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${EXIFTOOL_SRC}"
-                "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/exiftool"
-            COMMAND chmod +x "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/exiftool/exiftool"
+                "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools/exiftool"
+            COMMAND chmod +x "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools/exiftool/exiftool"
             COMMENT "Bundling exiftool + Perl libs"
         )
     endif()
 
     # Python tool scripts
     set(TOOLS_DIR "${CMAKE_SOURCE_DIR}/resources/tools")
-    add_custom_command(TARGET Miyo POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools"
+    add_custom_command(TARGET Hanishiki POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools"
         COMMENT "Creating tools directory"
     )
     foreach(TOOL_SCRIPT twitter_tid.py twitter_api.py twitter_daemon.py bluesky_daemon.py email_watch.py)
         if(EXISTS "${TOOLS_DIR}/${TOOL_SCRIPT}")
-            add_custom_command(TARGET Miyo POST_BUILD
+            add_custom_command(TARGET Hanishiki POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${TOOLS_DIR}/${TOOL_SCRIPT}" "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/${TOOL_SCRIPT}"
+                    "${TOOLS_DIR}/${TOOL_SCRIPT}" "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools/${TOOL_SCRIPT}"
                 COMMENT "Bundling ${TOOL_SCRIPT}"
             )
         endif()
@@ -377,24 +377,24 @@ if(APPLE)
 
     # SingleFile Chrome 확장 — 진짜 페이지 캡쳐 시 인라인 저장에 사용
     if(EXISTS "${TOOLS_DIR}/singlefile_extension")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${TOOLS_DIR}/singlefile_extension"
-                "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/singlefile_extension"
+                "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools/singlefile_extension"
             COMMENT "Bundling SingleFile extension"
         )
     endif()
 
     # Bundle Python venv
-    add_custom_command(TARGET Miyo POST_BUILD
-        COMMAND bash "${CMAKE_SOURCE_DIR}/scripts/bundle_python.sh" "$<TARGET_BUNDLE_DIR:Miyo>"
+    add_custom_command(TARGET Hanishiki POST_BUILD
+        COMMAND bash "${CMAKE_SOURCE_DIR}/scripts/bundle_python.sh" "$<TARGET_BUNDLE_DIR:Hanishiki>"
         COMMENT "Bundling Python venv (twikit, httpx, atproto)"
     )
 
 
     # Fix QtWebEngineProcess
-    add_custom_command(TARGET Miyo POST_BUILD
-        COMMAND bash "${CMAKE_SOURCE_DIR}/fix_webengine_helper.sh" "$<TARGET_BUNDLE_DIR:Miyo>"
+    add_custom_command(TARGET Hanishiki POST_BUILD
+        COMMAND bash "${CMAKE_SOURCE_DIR}/fix_webengine_helper.sh" "$<TARGET_BUNDLE_DIR:Hanishiki>"
         COMMENT "Fixing QtWebEngineProcess library paths"
     )
 
@@ -408,22 +408,22 @@ if(APPLE)
         message(WARNING "아이콘 파일이 없습니다: ${APP_ICON_PATH} — 기본 아이콘으로 나갑니다")
     endif()
     if(EXISTS "${APP_ICON_PATH}")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${APP_ICON_PATH}" "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/${APP_ICON}"
+                "${APP_ICON_PATH}" "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/${APP_ICON}"
             COMMENT "Bundling app icon: ${APP_ICON}"
         )
     endif()
 
     # Bundle fonts
-    add_custom_command(TARGET Miyo POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/fonts"
+    add_custom_command(TARGET Hanishiki POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/fonts"
     )
     file(GLOB FONT_FILES "${CMAKE_SOURCE_DIR}/resources/fonts/*.ttf")
     foreach(FONT ${FONT_FILES})
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${FONT}"
-                "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/fonts/"
+                "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/fonts/"
             COMMENT "Bundling font: ${FONT}"
         )
     endforeach()
@@ -435,35 +435,35 @@ if(APPLE)
     # miyo_cli
     set(MIYO_CLI_PATH "${CMAKE_SOURCE_DIR}/../miyo_cli")
     if(EXISTS "${MIYO_CLI_PATH}")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${MIYO_CLI_PATH}" "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/miyo_cli"
+                "${MIYO_CLI_PATH}" "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/miyo_cli"
             COMMENT "Bundling miyo_cli"
         )
     endif()
 
     # ★ requirements.txt 번들 — Python 업그레이드 시 이 파일을 읽어 패키지를 다시 깐다.
     #   없으면 코드 안 최소 목록으로 폴백하지만 버전 고정이 사라지므로 반드시 넣는다.
-    add_custom_command(TARGET Miyo POST_BUILD
+    add_custom_command(TARGET Hanishiki POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_SOURCE_DIR}/../../requirements.txt"
-            "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/requirements.txt"
+            "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/requirements.txt"
         COMMENT "Bundling requirements.txt"
     )
 
     # ★ 보관함 질의응답 스크립트 — 색인/질문/디스코드 부품.
     #   저장소에만 있으면 배포본 사용자는 쓸 수 없다.
-    add_custom_command(TARGET Miyo POST_BUILD
+    add_custom_command(TARGET Hanishiki POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/archive"
+            "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools/archive"
         COMMENT "Bundling archive scripts"
     )
     foreach(_af archive_index.py archive_ask.py archive_bot.py archive_cog.py README_archive.md)
         if(EXISTS "${CMAKE_SOURCE_DIR}/../../scripts/${_af}")
-            add_custom_command(TARGET Miyo POST_BUILD
+            add_custom_command(TARGET Hanishiki POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${CMAKE_SOURCE_DIR}/../../scripts/${_af}"
-                    "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools/archive/${_af}"
+                    "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools/archive/${_af}"
             )
         endif()
     endforeach()
@@ -478,8 +478,8 @@ if(APPLE)
     find_program(MACDEPLOYQT_BIN macdeployqt
         HINTS "${Qt6_DIR}/../../../bin" "/opt/homebrew/bin" "/usr/local/bin")
     if(MACDEPLOYQT_BIN)
-        add_custom_command(TARGET Miyo POST_BUILD
-            COMMAND "${MACDEPLOYQT_BIN}" "$<TARGET_BUNDLE_DIR:Miyo>"
+        add_custom_command(TARGET Hanishiki POST_BUILD
+            COMMAND "${MACDEPLOYQT_BIN}" "$<TARGET_BUNDLE_DIR:Hanishiki>"
                     -always-overwrite -no-strip
             COMMENT "Bundling Qt frameworks (macdeployqt)"
         )
@@ -493,22 +493,22 @@ if(APPLE)
     #   그러면 프레임워크는 번들에 있는데 서로를 /opt/homebrew 로 참조해서
     #   Homebrew 없는 맥에서 앱이 안 켜진다. 반드시 codesign 앞에서 실행한다
     #   (install_name_tool 이 서명을 깨뜨리므로).
-    add_custom_command(TARGET Miyo POST_BUILD
-        COMMAND bash "${CMAKE_SOURCE_DIR}/fix_bundle_rpaths.sh" "$<TARGET_BUNDLE_DIR:Miyo>"
+    add_custom_command(TARGET Hanishiki POST_BUILD
+        COMMAND bash "${CMAKE_SOURCE_DIR}/fix_bundle_rpaths.sh" "$<TARGET_BUNDLE_DIR:Hanishiki>"
         COMMENT "Rewriting external paths to @rpath (self-contained check)"
     )
 
     # ★ Codesign 직전: fix_webengine_helper.sh가 만든 잘못된 심볼릭 링크 정리
     #   "Frameworks/Frameworks -> ../../../../../Frameworks" 같은 dangling symlink가
     #   codesign sealed resource verify를 깨뜨려 macOS가 SIGKILL로 앱 죽임.
-    add_custom_command(TARGET Miyo POST_BUILD
-        COMMAND find "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Frameworks" -maxdepth 1 -type l -delete 2>/dev/null || true
+    add_custom_command(TARGET Hanishiki POST_BUILD
+        COMMAND find "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Frameworks" -maxdepth 1 -type l -delete 2>/dev/null || true
         COMMENT "Cleaning broken Frameworks symlinks before codesign"
     )
 
     # Codesign
-    add_custom_command(TARGET Miyo POST_BUILD
-        COMMAND bash "${CMAKE_SOURCE_DIR}/codesign_app.sh" "$<TARGET_BUNDLE_DIR:Miyo>"
+    add_custom_command(TARGET Hanishiki POST_BUILD
+        COMMAND bash "${CMAKE_SOURCE_DIR}/codesign_app.sh" "$<TARGET_BUNDLE_DIR:Hanishiki>"
         COMMENT "Codesigning entire app bundle"
     )
 
@@ -520,11 +520,11 @@ if(APPLE)
     #   부르므로, cmake 를 직접 부르는 경로(IDE·CI)에서도 똑같이 보호된다.
     #   반드시 codesign_verify 앞에서 — 자원이 바뀌면 서명이 어긋나기 때문이다.
     add_custom_target(sync_resources ALL
-        COMMAND bash "${CMAKE_SOURCE_DIR}/sync_resources.sh" "$<TARGET_BUNDLE_DIR:Miyo>"
+        COMMAND bash "${CMAKE_SOURCE_DIR}/sync_resources.sh" "$<TARGET_BUNDLE_DIR:Hanishiki>"
         COMMENT "Syncing bundled resources from source (always runs)"
         VERBATIM
     )
-    add_dependencies(sync_resources Miyo)
+    add_dependencies(sync_resources Hanishiki)
 
     # ★ 서명 정합성 보증 — 위 POST_BUILD 는 '타겟이 다시 링크될 때만' 돈다.
     #   Info.plist 는 cmake 재구성만으로도 새로 생성되므로(예: VERSION 만 변경),
@@ -532,12 +532,12 @@ if(APPLE)
     #   → macOS 가 앱 실행을 거부한다("invalid Info.plist" / Launch failed).
     #   항상 도는 이 타겟이 확인하고, 어긋났을 때만 다시 서명한다.
     add_custom_target(codesign_verify ALL
-        COMMAND bash "${CMAKE_SOURCE_DIR}/verify_or_resign.sh" "$<TARGET_BUNDLE_DIR:Miyo>"
+        COMMAND bash "${CMAKE_SOURCE_DIR}/verify_or_resign.sh" "$<TARGET_BUNDLE_DIR:Hanishiki>"
         COMMENT "Verifying code signature (re-signs only when stale)"
         VERBATIM
     )
     #   자원 동기화가 먼저 끝나야 한다(자원이 바뀐 뒤에 서명 정합성을 봐야 의미가 있다).
-    add_dependencies(codesign_verify Miyo sync_resources)
+    add_dependencies(codesign_verify Hanishiki sync_resources)
 endif()
 
 # ═══════════════════════════════════════════
@@ -549,22 +549,22 @@ if(WIN32)
     if(NOT APP_NAME)
         set(APP_NAME "Predormition")
     endif()
-    set_target_properties(Miyo PROPERTIES
+    set_target_properties(Hanishiki PROPERTIES
         OUTPUT_NAME "${APP_NAME}"
         WIN32_EXECUTABLE TRUE
     )
 
-    set(WIN_OUTPUT_DIR "$<TARGET_FILE_DIR:Miyo>")
+    set(WIN_OUTPUT_DIR "$<TARGET_FILE_DIR:Hanishiki>")
 
     # Python tool scripts → <exe_dir>/tools/
     set(TOOLS_DIR "${CMAKE_SOURCE_DIR}/resources/tools")
-    add_custom_command(TARGET Miyo POST_BUILD
+    add_custom_command(TARGET Hanishiki POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${WIN_OUTPUT_DIR}/tools"
         COMMENT "Creating tools directory"
     )
     foreach(TOOL_SCRIPT twitter_tid.py twitter_api.py twitter_daemon.py bluesky_daemon.py email_watch.py)
         if(EXISTS "${TOOLS_DIR}/${TOOL_SCRIPT}")
-            add_custom_command(TARGET Miyo POST_BUILD
+            add_custom_command(TARGET Hanishiki POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${TOOLS_DIR}/${TOOL_SCRIPT}" "${WIN_OUTPUT_DIR}/tools/${TOOL_SCRIPT}"
                 COMMENT "Bundling ${TOOL_SCRIPT}"
@@ -578,31 +578,31 @@ if(WIN32)
     set(FFPROBE_WIN "${CMAKE_SOURCE_DIR}/resources/tools/ffprobe.exe")
 
     if(EXISTS "${YTDLP_WIN}")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${YTDLP_WIN}" "${WIN_OUTPUT_DIR}/yt-dlp.exe"
             COMMENT "Bundling yt-dlp.exe"
         )
     endif()
     if(EXISTS "${FFMPEG_WIN}")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${FFMPEG_WIN}" "${WIN_OUTPUT_DIR}/ffmpeg.exe"
             COMMENT "Bundling ffmpeg.exe"
         )
     endif()
     if(EXISTS "${FFPROBE_WIN}")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${FFPROBE_WIN}" "${WIN_OUTPUT_DIR}/ffprobe.exe"
             COMMENT "Bundling ffprobe.exe"
         )
     endif()
 
     # Fonts → <exe_dir>/fonts/
-    add_custom_command(TARGET Miyo POST_BUILD
+    add_custom_command(TARGET Hanishiki POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${WIN_OUTPUT_DIR}/fonts"
     )
     file(GLOB FONT_FILES "${CMAKE_SOURCE_DIR}/resources/fonts/*.ttf")
     foreach(FONT ${FONT_FILES})
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${FONT}" "${WIN_OUTPUT_DIR}/fonts/"
             COMMENT "Bundling font: ${FONT}"
         )
@@ -611,7 +611,7 @@ if(WIN32)
     # Chernobyl.png
     set(CHERNOBYL_PATH "${CMAKE_SOURCE_DIR}/../Chernobyl.png")
     if(EXISTS "${CHERNOBYL_PATH}")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CHERNOBYL_PATH}" "${WIN_OUTPUT_DIR}/Chernobyl.png"
             COMMENT "Bundling Chernobyl.png"
         )
@@ -620,7 +620,7 @@ if(WIN32)
     # exiftool.exe → <exe_dir>/
     set(EXIFTOOL_WIN "${CMAKE_SOURCE_DIR}/resources/tools/exiftool.exe")
     if(EXISTS "${EXIFTOOL_WIN}")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${EXIFTOOL_WIN}" "${WIN_OUTPUT_DIR}/exiftool.exe"
             COMMENT "Bundling exiftool.exe"
@@ -630,7 +630,7 @@ if(WIN32)
     # miyo_cli → <exe_dir>/miyo_cli/
     set(MIYO_CLI_WIN "${CMAKE_SOURCE_DIR}/../miyo_cli")
     if(EXISTS "${MIYO_CLI_WIN}")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${MIYO_CLI_WIN}" "${WIN_OUTPUT_DIR}/miyo_cli"
             COMMENT "Bundling miyo_cli"
@@ -646,7 +646,7 @@ if(WIN32)
     # Bundle Python (run bundle_python_win.bat post-build)
     set(BUNDLE_PY_WIN "${CMAKE_SOURCE_DIR}/scripts/bundle_python_win.bat")
     if(EXISTS "${BUNDLE_PY_WIN}")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET Hanishiki POST_BUILD
             COMMAND cmd /c call "${BUNDLE_PY_WIN}" "${WIN_OUTPUT_DIR}"
             COMMENT "Bundling Python for Windows"
         )
@@ -657,14 +657,14 @@ if(WIN32)
     #     이 트리엔 .ico 가 없어서, 그대로 넘기면 RC2135 로 빌드가 죽는다.
     set(RC_FILE "${CMAKE_SOURCE_DIR}/resources/abiwa.rc")
     if(EXISTS "${RC_FILE}" AND EXISTS "${CMAKE_SOURCE_DIR}/resources/abiwa.ico")
-        target_sources(Miyo PRIVATE "${RC_FILE}")
+        target_sources(Hanishiki PRIVATE "${RC_FILE}")
     endif()
 
     # windeployqt: deploy all Qt DLLs and plugins
     find_program(WINDEPLOYQT windeployqt HINTS "${Qt6_DIR}/../../../bin")
     if(WINDEPLOYQT)
-        add_custom_command(TARGET Miyo POST_BUILD
-            COMMAND "${WINDEPLOYQT}" --no-translations "$<TARGET_FILE:Miyo>"
+        add_custom_command(TARGET Hanishiki POST_BUILD
+            COMMAND "${WINDEPLOYQT}" --no-translations "$<TARGET_FILE:Hanishiki>"
             COMMENT "Running windeployqt (bundling Qt DLLs)"
         )
     endif()

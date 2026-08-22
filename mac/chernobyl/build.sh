@@ -25,7 +25,7 @@ echo $$ > "$LOCK/pid"
 trap 'rm -rf "$LOCK"' EXIT INT TERM
 
 echo "=== Building ==="
-cmake --build build --target Miyo
+cmake --build build --target Hanishiki
 
 # 빌드 산출 .app 자동 탐색(이름은 -DAPP_NAME 옵션에 따라 달라짐 — 하드코딩 금지). 인자/ENV 로 지정 가능.
 APPDIR="${1:-${APPDIR:-$(ls -d build/*.app 2>/dev/null | head -1)}}"
@@ -166,7 +166,7 @@ fi
 #   ★ 바꾸는 것은 '폴더 이름' 뿐이다:
 #     · 실행 파일 이름(CFBundleExecutable)은 ASCII 그대로 — kill_app.sh 의 pgrep -x 가 쓴다.
 #     · 사용자 데이터 경로는 app.setApplicationName(ASCII) 이 정하므로 영향 없다.
-#       (여기를 잘못 건드리면 Miyo/<앱이름> 폴더가 갈라져 설정·수집물을 잃는다.)
+#       (여기를 잘못 건드리면 데이터 폴더가 갈라져 설정·수집물을 잃는다.)
 #     · DMG 파일 이름도 ASCII 로 둔다(make_dmg.sh 가 실행 파일 이름을 쓴다).
 #   codesign 앞에서 해야 한다 — 서명 뒤에 옮기면 경로가 바뀌어 다시 서명해야 한다.
 DISPLAY_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$APPDIR/Contents/Info.plist" 2>/dev/null || true)"
