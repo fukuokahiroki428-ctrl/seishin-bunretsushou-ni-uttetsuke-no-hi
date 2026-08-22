@@ -50,3 +50,4 @@ mac/chernobyl/build-univ/
 secrets.*
 **/discord_token*
 __pycache__/
+*.pyc
