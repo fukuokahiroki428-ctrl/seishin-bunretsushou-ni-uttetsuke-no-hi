@@ -411,7 +411,7 @@ void PenBackend::crawlStart(const QString &startUrl, const QString &savePath, bo
     m_crawlSavePath = sp;
     m_crawlPageCounter = 0;
 
-    // ★ 터미널 로그 창 띄움 (Chernobyl 패턴) — 별도 Terminal.app 에서 실시간 로그 표시
+    // ★ 터미널 로그 창 띄움 (Predormition 패턴) — 별도 Terminal.app 에서 실시간 로그 표시
     openTerminalLog();
 
     log(QString("크롤 시작: %1 → %2").arg(startUrl.isEmpty() ? "(빈 페이지)" : startUrl, sp), "info");
@@ -648,7 +648,7 @@ void PenBackend::crawlCaptureCurrent(const QString &filename)
                         outFile->close();
                         delete outFile;
                         chrome->evaluate("delete window.__penContent; true;", [](const QJsonValue &){});
-                        // ★ Chernobyl 식 메타데이터: macOS xattr (where from) + Finder 코멘트
+                        // ★ Predormition 식 메타데이터: macOS xattr (where from) + Finder 코멘트
                         if (!sourceUrl.isEmpty()) {
                             FileHelper::setDownloadMeta(savePath, sourceUrl);
                             FileHelper::setFinderComment(savePath, sourceUrl);
@@ -1062,7 +1062,7 @@ void PenBackend::crawlCaptureTweet(const QString &tweetUrl, const QString &filen
             f.close();
             bytes.clear();
             content = QString();
-            // ★ Chernobyl 식 메타데이터
+            // ★ Predormition 식 메타데이터
             FileHelper::setDownloadMeta(savePath, tweetUrl);
             FileHelper::setFinderComment(savePath, tweetUrl);
             QMetaObject::invokeMethod(this, [this, savePath, kb = sz / 1024]() {
@@ -1429,7 +1429,7 @@ void PenBackend::crawlDownloadMedia()
                 if (fetchViaChrome(u, outPath) && QFileInfo(outPath).size() > 100) {
                     ok++;
                     m_autoMediaCount++;
-                    // ★ Chernobyl 식 메타데이터 — 원본 URL 박기
+                    // ★ Predormition 식 메타데이터 — 원본 URL 박기
                     FileHelper::setDownloadMeta(outPath, u);
                     FileHelper::setFinderComment(outPath, u);
                     // ★ WebDAV 자동 업로드
@@ -2018,7 +2018,7 @@ void PenBackend::crawlSiteMirror(const QString &startUrl, int maxPages, bool sam
                             if (*off >= total) {
                                 out->close(); delete out;
                                 m_crawlChrome->evaluate("delete window.__penContent;", [](const QJsonValue&){});
-                                // ★ Chernobyl 식 메타데이터
+                                // ★ Predormition 식 메타데이터
                                 if (!pageUrl.isEmpty()) {
                                     FileHelper::setDownloadMeta(chromeLocalPath, pageUrl);
                                     FileHelper::setFinderComment(chromeLocalPath, pageUrl);
@@ -2423,7 +2423,7 @@ void PenBackend::crawlDeepMirror(const QString &startUrl, int maxPages, bool sam
             if (pf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
                 pf.write(html.toUtf8());
                 pf.close();
-                // ★ Chernobyl 식 메타데이터
+                // ★ Predormition 식 메타데이터
                 FileHelper::setDownloadMeta(pageLocal, pageUrl);
                 FileHelper::setFinderComment(pageLocal, pageUrl);
                 // ★ WebDAV 자동 업로드
@@ -2494,7 +2494,7 @@ void PenBackend::crawlDeepMirror(const QString &startUrl, int maxPages, bool sam
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 터미널 로그 — 별도 Terminal.app 창에서 실시간 로그 표시 (Chernobyl 동일 패턴)
+// 터미널 로그 — 별도 Terminal.app 창에서 실시간 로그 표시 (Predormition 동일 패턴)
 //   crawlStart 시 호출 → .command 스크립트 만들고 Terminal.app 으로 띄움
 //   writeTerminalLog 가 로그 파일에 append → tail -f 가 실시간 표시
 // ═════════════════════════════════════════════════════════════════════════

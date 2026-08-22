@@ -42,8 +42,8 @@ static BOOL appShouldHandleReopen(id self, SEL _cmd, id app, BOOL hasVisibleWind
 
 #ifdef Q_OS_WIN
 // ★ Windows 진단용 — 모든 qDebug/qWarning + JS console(DebugWebEnginePage 가 qDebug 로 redirect)
-//   를 <exe>/chernobyl_log.txt 에 기록. "아무것도 안 됨" 원인을 GUI subsystem 에서도 잡기 위함.
-static void chernobylLogHandler(QtMsgType type, const QMessageLogContext &, const QString &msg)
+//   를 <exe>/predormition_log.txt 에 기록. "아무것도 안 됨" 원인을 GUI subsystem 에서도 잡기 위함.
+static void predormitionLogHandler(QtMsgType type, const QMessageLogContext &, const QString &msg)
 {
     static QMutex mtx;
     static QFile *logFile = nullptr;
@@ -130,7 +130,7 @@ int main(int argc, char *argv[])
     app.setApplicationName("Predormition");
     app.setOrganizationName("Miyo");
 #ifdef Q_OS_WIN
-    qInstallMessageHandler(chernobylLogHandler);
+    qInstallMessageHandler(predormitionLogHandler);
     qInfo() << "[startup] Predormition starting — exe dir:" << QCoreApplication::applicationDirPath();
 #endif
 

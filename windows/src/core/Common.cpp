@@ -692,7 +692,7 @@ bool isDirWritable(const QString &dir)
 QString appBundlePath()
 {
 #ifdef Q_OS_MACOS
-    // <...>/Chernobyl.app/Contents/MacOS  →  <...>/Chernobyl.app
+    // <...>/Predormition.app/Contents/MacOS  →  <...>/Predormition.app
     QDir d(QCoreApplication::applicationDirPath());
     if (!d.cdUp()) return QString();          // Contents
     if (!d.cdUp()) return QString();          // *.app
@@ -1058,7 +1058,7 @@ QString resolveTempBase(const QString &userConfigTempDir)
 {
     // ★ 사용자 임시 디스크 시스템 — 시스템 /tmp 절대 사용 X.
     //   1순위: 사용자가 설정한 tempDir (외장 SSD / NAS 등)
-    //   2순위: AppDataLocation (~/Library/Application Support/Miyo/Chernobyl/temp)
+    //   2순위: AppDataLocation (~/Library/Application Support/Miyo/Predormition/temp)
     //          시스템 /tmp 가 아니라 앱 전용 영구 폴더 — 권한 + 자동 정리 안 됨
     //   ★ /tmp 같은 시스템 temp 는 macOS 가 주기적으로 청소 → 작업 중 파일 사라질 수 있음
     if (!userConfigTempDir.isEmpty() && QDir(userConfigTempDir).exists()) {
