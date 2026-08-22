@@ -60,7 +60,7 @@ bool setApiOverride(const QString &key, const QString &value);   // 빈 값이�
 QString apiOverridesPath();
 QString apiOverridesJson();                                       // 현재 오버라이드 전체(JSON 문자열)
 
-// ★ macOS: 앱 번들 경로(.../Chernobyl.app). 번들이 아니면 빈 문자열.
+// ★ macOS: 앱 번들 경로(.../Predormition.app). 번들이 아니면 빈 문자열.
 QString appBundlePath();
 // ★ macOS: 앱 번들 재서명 — 번들 안에 파일이 추가/변경되면(모듈 설치 등) codesign 봉인이 깨져
 //   macOS 가 앱을 SIGKILL 할 수 있다. 설치 직후 이걸 호출해 봉인을 복구한다.
@@ -70,7 +70,7 @@ bool resealAppBundle(QString *err = nullptr);
 // 디렉토리에 실제로 쓸 수 있는지(임시파일 생성/삭제로 확인).
 bool isDirWritable(const QString &dir);
 
-// ★ 사용자 도구 폴더 (~/Library/Application Support/Chernobyl/tools/)
+// ★ 사용자 도구 폴더 (~/Library/Application Support/Predormition/tools/)
 //   yt-dlp 자동 업데이트 시 여기에 저장. 우선순위 더 높음.
 QString userToolsDir();
 // ★ yt-dlp 경로 — 사용자 폴더 우선, 없으면 번들.

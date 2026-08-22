@@ -1,7 +1,7 @@
 #pragma once
 // ═════════════════════════════════════════════════════════════════════════
 // SelfRepair.h — 앱 자가진단 · 자가복구 + 로컬 LLM 진단 계층 (header-only)
-// 설치 위치: windows/src/utils/SelfRepair.h  (mac/chernobyl/src/utils/ 동일)
+// 설치 위치: windows/src/utils/SelfRepair.h  (mac/predormition/src/utils/ 동일)
 //
 // 목적:
 //   1) 시작 시 번들 도구(yt-dlp/ffmpeg/exiftool/rclone/python) 존재·실행 자가진단
@@ -308,14 +308,16 @@ inline bool spawnBundledLlm(int port)
         heads << g;
     }
     if (heads.isEmpty()) { spawned.storeRelease(0); return false; }
-    // 선택: env CHERNOBYL_LLM_MODEL(부분일치) > 첫 헤드(알파벳순=가장 작은=빠른 기본).
+    // 선택: env PREDORMITION_LLM_MODEL(부분일치, 예전 이름 CHERNOBYL_LLM_MODEL 도 받음) > 첫 헤드(알파벳순=가장 작은=빠른 기본).
     QString chosen = heads.first();
-    const QString wantModel = qEnvironmentVariable("CHERNOBYL_LLM_MODEL");
+    // ★ 새 이름을 먼저 보고, 없으면 예전 이름을 받는다 — 쓰던 사람이 깨지지 않게.
+    QString wantModel = qEnvironmentVariable("PREDORMITION_LLM_MODEL");
+    if (wantModel.isEmpty()) wantModel = qEnvironmentVariable("CHERNOBYL_LLM_MODEL");
     if (!wantModel.isEmpty())
         for (const QString &h : heads)
             if (h.contains(wantModel, Qt::CaseInsensitive)) { chosen = h; break; }
     qInfo().noquote() << "[SelfRepair] 번들 LLM" << heads.size() << "개 모델 중 선택:" << chosen
-                      << "(env CHERNOBYL_LLM_MODEL 로 전환 가능)";
+                      << "(env PREDORMITION_LLM_MODEL 로 전환 가능)";
     makeExecutable(server);
     qint64 pid = 0;
     const bool ok = QProcess::startDetached(server,
@@ -336,11 +338,12 @@ inline bool spawnBundledLlm(int port)
     return ok;
 }
 
-// 살아있는 OpenAI 호환 엔드포인트 탐색. env CHERNOBYL_LLM_ENDPOINT 최우선.
+// 살아있는 OpenAI 호환 엔드포인트 탐색. env PREDORMITION_LLM_ENDPOINT 최우선(예전 이름도 받음).
 inline QString findLlmEndpoint()
 {
     QStringList bases;
-    const QString envEp = qEnvironmentVariable("CHERNOBYL_LLM_ENDPOINT");
+    QString envEp = qEnvironmentVariable("PREDORMITION_LLM_ENDPOINT");
+    if (envEp.isEmpty()) envEp = qEnvironmentVariable("CHERNOBYL_LLM_ENDPOINT");   // 예전 이름 폴백
     if (!envEp.isEmpty()) bases << envEp;
     bases << "http://127.0.0.1:11434"    // Ollama
           << "http://127.0.0.1:1234"     // LM Studio
