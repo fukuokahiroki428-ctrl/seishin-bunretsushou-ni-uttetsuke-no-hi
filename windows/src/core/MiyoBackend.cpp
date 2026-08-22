@@ -174,7 +174,7 @@ static void killCaptureBrowsers(const QString &needle)
 
 // ★ 모니터링 터미널의 한글·일본어가 전부 '?' 로 나오던 문제.
 //   원인은 인코딩이 아니다. 확인한 것:
-//     로그 파일   E3 82 AB E3 83 A1 E3 83 A9 …  = "カメラ" 정상 UTF-8, '?' 0개
+//     로그 파일   E3 82 AB E3 83 A1 E3 83 A9 …  = "Predormition" 정상 UTF-8, '?' 0개
 //     chcp 65001  \r\r\n 로 적혀 있어도 정상 적용됨(직접 시험)
 //     콘솔 글꼴   HKCU\Console FaceName = Consolas  ← 한글·일본어 글리프가 없다
 //   글꼴에 글자가 없으니 conhost 가 '?' 로 채운다. 파일도 코드페이지도 멀쩡한데 화면만 깨진다.
@@ -339,11 +339,11 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
         }
     }
 
-    // ★ 옛 번들 이름 (チェルノブイリ) 폴더 정리 — Chernobyl로 rename 후 남은 잔여 데이터
+    // ★ 옛 번들 이름 (チェルノブイリ) 폴더 정리 — Predormition로 rename 후 남은 잔여 데이터
     //   사용자 데이터 (config) 는 이미 새 위치로 마이그레이션 완료. 옛 dir 통째 제거.
     {
         QString appDataParent = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-        // AppData = ~/Library/Application Support/Miyo/Chernobyl (현재)
+        // AppData = ~/Library/Application Support/Miyo/Predormition (현재)
         //   → 부모 ~/Library/Application Support/Miyo 안에 옛 チェルノブイリ dir
         QDir parentDir(QFileInfo(appDataParent).absolutePath());
         QStringList legacy = {"チェルノブイリ", "カメラ", "Chernobyl"};
@@ -841,7 +841,7 @@ void MiyoBackend::testBackup()
         return;
     }
     // 테스트 파일 작성
-    QString testFile = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/chernobyl_backup_test.txt";
+    QString testFile = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/predormition_backup_test.txt";
     QFile f(testFile);
     if (f.open(QIODevice::WriteOnly)) {
         f.write(QString("백업 테스트 — %1\n").arg(QDateTime::currentDateTime().toString()).toUtf8());
@@ -1069,6 +1069,8 @@ void MiyoBackend::runRcloneBackup(const QStringList &srcDirs, const QString &des
                  << "--exclude" << ".abiwa_**"
                  << "--exclude" << ".DS_Store"
                  << "--exclude" << ".git/**"
+                 << "--exclude" << "__PREDORMITION_MANIFEST__*"
+                 // ★ 이름을 바꾸기 전에 만들어진 파일도 제외해야 한다 — 사용자 디스크에 이미 있다.
                  << "--exclude" << "__CHERNOBYL_MANIFEST__*";
             rc.start(rclonePath, args);
             if (!rc.waitForStarted(5000)) {
@@ -1229,7 +1231,8 @@ void MiyoBackend::startRemoteBackup(const QString &configJson)
              << "--progress" << "--stats" << "2s" << "--stats-one-line"
              << "--retries" << "5" << "--low-level-retries" << "10"
              << "--exclude" << ".abiwa_**" << "--exclude" << ".DS_Store"
-             << "--exclude" << ".git/**" << "--exclude" << "__CHERNOBYL_MANIFEST__*";
+             << "--exclude" << ".git/**" << "--exclude" << "__PREDORMITION_MANIFEST__*"
+             << "--exclude" << "__CHERNOBYL_MANIFEST__*";   // 이름 바꾸기 전 파일
         rc.start(rclonePath, args);
         int exitCode = -1;
         if (!rc.waitForStarted(5000)) {
@@ -1549,7 +1552,7 @@ void MiyoBackend::backupNow()
     // ★ 모니터 종료 시 STOP sentinel 파일 만들어짐 (script trap) → 워치독이 발견하면 백업 중지
     QString stopSentinel = m_terminalLogPaths.value("backup") + ".STOP";
     QFile::remove(stopSentinel);
-    writeTerminalLog("\033[1;36m📦 カメラ 백업 시작 — 파일별 병렬 cp 모드 (한국어/일본어/NAS 안전)\033[0m", "backup");
+    writeTerminalLog("\033[1;36m📦 Predormition 백업 시작 — 파일별 병렬 cp 모드 (한국어/일본어/NAS 안전)\033[0m", "backup");
     writeTerminalLog(QString("\033[90m  📂 백업 위치:\033[0m %1").arg(backupRoot), "backup");
     writeTerminalLog(QString("\033[90m  🕐 시작 시각:\033[0m %1").arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss")), "backup");
     writeTerminalLog(QString("\033[90m  📁 대상 폴더:\033[0m %1 개  /  \033[90m🚀 병렬 워커:\033[0m %2").arg(platformDirs.size()).arg(CONCURRENT), "backup");
@@ -1596,7 +1599,7 @@ void MiyoBackend::backupNow()
             while (dit.hasNext()) {
                 QString f = dit.next();
                 QString fn = QFileInfo(f).fileName();
-                if (fn.startsWith(".abiwa_write_test") || fn.startsWith("__CHERNOBYL_MANIFEST")) continue;
+                if (fn.startsWith(".abiwa_write_test") || (fn.startsWith("__PREDORMITION_MANIFEST") || fn.startsWith("__CHERNOBYL_MANIFEST"))) continue;
                 existingBytes += QFileInfo(f).size();
                 existingFiles++;
             }
@@ -2025,7 +2028,7 @@ void MiyoBackend::backupNow()
             while (dit.hasNext()) {
                 QString f = dit.next();
                 QString fn = QFileInfo(f).fileName();
-                if (fn.startsWith(".abiwa_write_test") || fn.startsWith("__CHERNOBYL_MANIFEST")) continue;
+                if (fn.startsWith(".abiwa_write_test") || (fn.startsWith("__PREDORMITION_MANIFEST") || fn.startsWith("__CHERNOBYL_MANIFEST"))) continue;
                 qint64 sz = QFileInfo(f).size();
                 finalDstBytes += sz;
                 finalDstFiles++;
@@ -2137,7 +2140,7 @@ void MiyoBackend::backupNow()
 // ═════════════════════════════════════════════════════════════════════════
 // ═════════════════════════════════════════════════════════════════════════
 // writeDownloadManifest — 폴더 안 모든 파일 통계 manifest 생성.
-//   JSON (__CHERNOBYL_MANIFEST__.json) + TXT (__CHERNOBYL_MANIFEST__.txt) 둘 다 생성.
+//   JSON (__PREDORMITION_MANIFEST__.json) + TXT (__PREDORMITION_MANIFEST__.txt) 둘 다 생성.
 //   각 platform 수집 끝나면 자동 호출. 사용자 / 백업 검증용.
 //   대용량 (10만 파일+) 도 streaming 으로 처리 — 메모리 안 먹음.
 // ═════════════════════════════════════════════════════════════════════════
@@ -2164,7 +2167,7 @@ void MiyoBackend::writeDownloadManifest(const QString &dir, const QString &platf
         QString f = it.next();
         QString fname = QFileInfo(f).fileName();
         // 시스템 / 매니페스트 자체 skip
-        if (fname.startsWith(".") || fname.startsWith("__CHERNOBYL_MANIFEST")
+        if (fname.startsWith(".") || (fname.startsWith("__PREDORMITION_MANIFEST") || fname.startsWith("__CHERNOBYL_MANIFEST"))
             || fname == "Thumbs.db" || fname == "desktop.ini") continue;
         if (f.contains("/.abiwa_") || f.contains("/.rsync-")) continue;
         qint64 sz = QFileInfo(f).size();
@@ -2254,7 +2257,7 @@ void MiyoBackend::writeDownloadManifest(const QString &dir, const QString &platf
     root["top_files"] = topArr;
 
     // JSON 저장
-    QString jsonPath = dir + "/__CHERNOBYL_MANIFEST__.json";
+    QString jsonPath = dir + "/__PREDORMITION_MANIFEST__.json";
     QFile jf(jsonPath);
     if (jf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         jf.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
@@ -2262,7 +2265,7 @@ void MiyoBackend::writeDownloadManifest(const QString &dir, const QString &platf
     }
 
     // 3) TXT manifest (사람이 읽기 좋게)
-    QString txtPath = dir + "/__CHERNOBYL_MANIFEST__.txt";
+    QString txtPath = dir + "/__PREDORMITION_MANIFEST__.txt";
     QFile tf(txtPath);
     if (tf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         QTextStream out(&tf);
@@ -2315,7 +2318,7 @@ void MiyoBackend::writeDownloadManifest(const QString &dir, const QString &platf
 
         out << "═══════════════════════════════════════════════════════════════\n";
         out << "💡 무결성 확인: 파일 개수 / 사이즈 / 확장자별 카운트가 다음 백업과 일치해야 OK\n";
-        out << "💡 상세 정보: __CHERNOBYL_MANIFEST__.json 에 모든 통계 + Top 50 파일 list\n";
+        out << "💡 상세 정보: __PREDORMITION_MANIFEST__.json 에 모든 통계 + Top 50 파일 list\n";
         out << "═══════════════════════════════════════════════════════════════\n";
         tf.close();
     }
@@ -2395,7 +2398,7 @@ void MiyoBackend::logCollectionOptions(const QJsonObject &config, const QString 
 // ═════════════════════════════════════════════════════════════════════════
 void MiyoBackend::exportConfig()
 {
-    QString defaultName = QString("chernobyl_config_%1.json")
+    QString defaultName = QString("predormition_config_%1.json")
         .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
     QString path = QFileDialog::getSaveFileName(m_window,
         "💾 사용자 정보 내보내기 — JSON 파일 저장",
@@ -2460,7 +2463,7 @@ void MiyoBackend::importConfig()
     QString fromApp = root["__meta__"].toObject()["app"].toString();
     QString fromVer = root["__meta__"].toObject()["version"].toString();
     QString fromTime = root["__meta__"].toObject()["exported_at"].toString();
-    // 옛 이름(Chernobyl)으로 내보낸 config 도 그대로 받는다 — 앱 이름만 바뀌었을 뿐 형식은 동일.
+    // 옛 이름(Predormition)으로 내보낸 config 도 그대로 받는다 — 앱 이름만 바뀌었을 뿐 형식은 동일.
     if (!fromApp.isEmpty() && fromApp != "Predormition" && fromApp != "Chernobyl") {
         log(QString("⚠ 다른 앱의 config (%1) — 그래도 시도").arg(fromApp), "warning", "settings");
     }
@@ -3343,9 +3346,9 @@ void MiyoBackend::openBackupTerminalLog()
         content += "powershell -NoProfile -ExecutionPolicy Bypass -File \"" +
                    QDir::toNativeSeparators(scriptDir + "/miyo_console_font.ps1") +
                    "\" >nul 2>&1\r\n";
-        content += "title カメラ Backup Monitor\r\n";
+        content += "title Predormition Backup Monitor\r\n";
         content += "echo ===============================================\r\n";
-        content += "echo   📦 カメラ 백업 진행 모니터\r\n";
+        content += "echo   📦 Predormition 백업 진행 모니터\r\n";
         content += "echo ===============================================\r\n";
         content += "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
                    "$p='" + nativeLog + "'; $pos=0; $esc=[char]27;"
@@ -3366,7 +3369,7 @@ void MiyoBackend::openBackupTerminalLog()
         script.write(content.toUtf8());
         script.close();
     }
-    launchChildConsole(scriptPath);  // 자체 콘솔 창 + Chernobyl 자식 프로세스 (nested)
+    launchChildConsole(scriptPath);  // 자체 콘솔 창 + Predormition 자식 프로세스 (nested)
 #else
     // macOS — 컬러 + 스피너 애니메이션, 150ms refresh
     QString scriptPath = scriptDir + "/miyo_backup_tail.command";
@@ -3392,7 +3395,7 @@ void MiyoBackend::openBackupTerminalLog()
         content += "  ROWS=$(tput lines 2>/dev/null || echo 40)\n";
         content += "  TAIL_N=$((ROWS - 8))\n";
         content += "  echo -e \"${BOLD}${CYAN}═══════════════════════════════════════════════════════════════${RESET}\"\n";
-        content += "  echo -e \"${BOLD}${CYAN}  📦 カメラ 백업 진행 모니터  ${GRAY}$(date '+%H:%M:%S')${RESET}\"\n";
+        content += "  echo -e \"${BOLD}${CYAN}  📦 Predormition 백업 진행 모니터  ${GRAY}$(date '+%H:%M:%S')${RESET}\"\n";
         content += "  echo -e \"${BOLD}${CYAN}═══════════════════════════════════════════════════════════════${RESET}\"\n";
         content += "  if [ -f \"$LOG\" ]; then\n";
         content += "    tail -n $TAIL_N \"$LOG\"\n";
@@ -3460,7 +3463,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
     QFile f(m_terminalLogPath);
     if (!f.open(QIODevice::WriteOnly)) return;
     f.write("=========================================\n");
-    f.write(QString("  カメラ - %1\n").arg(platform.toUpper()).toUtf8());
+    f.write(QString("  Predormition - %1\n").arg(platform.toUpper()).toUtf8());
     f.write("=========================================\n\n");
     f.close();
 
@@ -3502,7 +3505,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
         script.write(content.toUtf8());
         script.close();
     }
-    launchChildConsole(scriptPath);  // 자체 콘솔 창 + Chernobyl 자식 프로세스 (nested)
+    launchChildConsole(scriptPath);  // 자체 콘솔 창 + Predormition 자식 프로세스 (nested)
 #else
     // macOS/Linux: 단순 tail -f — kernel inotify/kqueue 사용, CPU 거의 0
     // ★ 옛 애니메이션 (150ms clear+refresh) 은 CPU/메모리 부담 큼 → 사용자 요청으로 단순화
@@ -3721,10 +3724,10 @@ void MiyoBackend::closeAllTerminalLogs()
 #endif
 }
 
-// ★ Windows: .bat 을 자체 콘솔 창 + Chernobyl 자식 프로세스로 실행.
+// ★ Windows: .bat 을 자체 콘솔 창 + Predormition 자식 프로세스로 실행.
 //   - CREATE_NEW_CONSOLE: 자체 콘솔 창 (사용자가 진행 상황을 봄)
 //   - STARTF_USESTDHANDLES 해제: 출력이 QProcess 파이프가 아닌 새 콘솔로 → 창에 보임
-//   - QProcess(this) 소유 + start(): cmd 가 Chernobyl.exe 의 자식 → 작업관리자에서 nested
+//   - QProcess(this) 소유 + start(): cmd 가 Predormition.exe 의 자식 → 작업관리자에서 nested
 //   - 추적(m_childConsoleProcs) → closeAllTerminalLogs 에서 트리 kill (앱 종료 시 같이 종료)
 void MiyoBackend::launchChildConsole(const QString &scriptPath)
 {
@@ -3736,7 +3739,7 @@ void MiyoBackend::launchChildConsole(const QString &scriptPath)
     p->setProgram("cmd.exe");
     p->setArguments({"/c", QDir::toNativeSeparators(scriptPath)});
     p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) {
-        // ★ Qt 는 부모가 콘솔 없는 GUI 앱(カメラ)이면 자식에 CREATE_NO_WINDOW 를 자동으로 붙인다
+        // ★ Qt 는 부모가 콘솔 없는 GUI 앱(Predormition)이면 자식에 CREATE_NO_WINDOW 를 자동으로 붙인다
         //   (GetConsoleWindow()==NULL). 그러면 CREATE_NEW_CONSOLE 를 줘도 새 콘솔이 숨겨져 안 뜬다.
         //   → CREATE_NO_WINDOW 를 반드시 끄고, 창을 보이게 표시.
         a->flags |= CREATE_NEW_CONSOLE;
@@ -4059,7 +4062,7 @@ void MiyoBackend::setAllPathsToNas()
 
         log(QString("🌐 NAS 일괄 적용: %1").arg(root), "success", "settings");
         // 각 input 값 일괄 갱신
-        // ★ 앱 이름이 바뀌어도 기존 아카이브가 갈라지지 않게: 이미 쓰던 Chernobyl 폴더가 있으면 그대로 쓴다.
+        // ★ 앱 이름이 바뀌어도 기존 아카이브가 갈라지지 않게: 이미 쓰던 Predormition 폴더가 있으면 그대로 쓴다.
         const QString brandDir = QFileInfo::exists(root + "/Chernobyl") ? QStringLiteral("Chernobyl")
                                                                        : QStringLiteral("Predormition");
         QString js = "(function(){ var c=0;";
@@ -4189,7 +4192,7 @@ void MiyoBackend::setStorageMode(const QString &mode)
             {"trad-path",       "Trad"},
             {"naikakukai-path", "Naikakukai"},
         };
-        // ★ 사용자가 명시한 폴더 그대로 사용 (Chernobyl/ subdir 자동 추가 X)
+        // ★ 사용자가 명시한 폴더 그대로 사용 (Predormition/ subdir 자동 추가 X)
         //   각 플랫폼은 <chosenFolder>/<Platform> 으로
         for (const auto &m : mappings) {
             QDir().mkpath(root + "/" + m.subdir);
@@ -5595,7 +5598,7 @@ bool MiyoBackend::captureRealTweetPage(const QString &tweetUrl,
                     }
                     QString out = html;
                     QString metaTag = QString(
-                        "\n<!-- カメラ real Twitter capture (rendered DOM) -->\n"
+                        "\n<!-- Predormition real Twitter capture (rendered DOM) -->\n"
                         "<!-- source: %1 -->\n"
                         "<!-- captured: %2 -->\n")
                         .arg(tweetUrl.toHtmlEscaped(),
@@ -9573,7 +9576,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     script += "echo 'STARTED' > \"$STATUS\"\n\n";
     script += "clear\n";
     script += "echo '========================================='\n";
-    script += "echo '  カメラ - YouTube ダウンロード'\n";
+    script += "echo '  Predormition - YouTube ダウンロード'\n";
     script += QString("echo '  총 %1개 URL'\n").arg(urls.size());
     script += "echo '========================================='\n";
     script += "echo ''\n\n";
@@ -9665,7 +9668,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     log(QString("터미널에서 %1개 URL 다운로드 시작...").arg(urls.size()), "info", platform);
 #ifdef Q_OS_WIN
     // ★ yt-dlp .bat 를 보이는 콘솔(CREATE_NEW_CONSOLE)로 실행 — 사용자가 다운로드 진행상황을 직접 본다.
-    //   Qt 는 부모가 콘솔 없는 GUI 앱(カメラ)이면 자식에 CREATE_NO_WINDOW 를 자동으로 붙여 창을 숨긴다
+    //   Qt 는 부모가 콘솔 없는 GUI 앱(Predormition)이면 자식에 CREATE_NO_WINDOW 를 자동으로 붙여 창을 숨긴다
     //   (GetConsoleWindow()==NULL) → 반드시 끄고 콘솔을 보이게 표시. 종료/정리는 m_childConsoleProcs 로 추적.
     {
         QProcess *p = new QProcess(this);
@@ -12148,7 +12151,7 @@ void MiyoBackend::startTrad(const QString &configJson)
         // 임시 폴더 정리 (.trad_tmp)
         QDir(tempDir).removeRecursively();
 
-        FileHelper::setDownloadMeta(outputPath, "カメラ trad");
+        FileHelper::setDownloadMeta(outputPath, "Predormition trad");
 
         // ★ WebDAV 자동 업로드 (활성화 시)
         QMetaObject::invokeMethod(this, [this, outputPath]() {
@@ -13117,7 +13120,7 @@ void MiyoBackend::getSystemInfo()
 
         QStringList info;
         info << "═══════════════════════════════════";
-        info << "  カメラ 시스템 정보";
+        info << "  Predormition 시스템 정보";
         info << "═══════════════════════════════════";
 
         // App version
@@ -15841,7 +15844,7 @@ void MiyoBackend::writeStartupLog()
 
     QTextStream ts(&f);
     ts << "═══════════════════════════════════\n";
-    ts << "  カメラ System Log\n";
+    ts << "  Predormition System Log\n";
     ts << "  " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n";
     ts << "═══════════════════════════════════\n\n";
 

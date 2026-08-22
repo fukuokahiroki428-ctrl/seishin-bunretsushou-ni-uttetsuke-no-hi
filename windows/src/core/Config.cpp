@@ -44,7 +44,7 @@ Config::Config(QObject *parent)
 
 QString Config::defaultConfigPath()
 {
-    // ★ 외부 user data 위치 — ~/Library/Application Support/Miyo/Chernobyl/miyo_config.json
+    // ★ 외부 user data 위치 — ~/Library/Application Support/Miyo/Predormition/miyo_config.json
     //   이전엔 앱 내부(Contents/Resources)에 저장했으나 매 save 시 codesign seal 깨짐
     //   → macOS 보안 정책이 "변조된 앱"으로 판단 → 캡쳐/CDP 등 보안 동작 차단 → 앱 크래시.
     //   외부 저장하면 번들은 read-only 유지 → 서명 유효 → macOS 권한 영구 유지.
