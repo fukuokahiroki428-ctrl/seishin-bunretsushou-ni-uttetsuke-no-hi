@@ -123,32 +123,54 @@ int main(int argc, char *argv[])
 
     QApplication app(argc, argv);
     // ★ 로그 핸들러보다 반드시 먼저 설정한다. Windows 의 AppDataLocation 은
-    //   %APPDATA%/<조직명>/<앱이름> 이라, 이 두 줄 전에 첫 메시지가 찍히면 조직명이 빈 채로
-    //   경로가 계산되고, 핸들러의 static QFile 이 %APPDATA%/Predormition (Miyo 누락) 으로
-    //   프로세스 내내 고정된다. 진단 로그가 앱 데이터 폴더 밖에 쌓여, 크래시 조사 시
-    //   문서가 안내하는 경로에는 아무것도 없었다.
+    //   %APPDATA%/<조직명>/<앱이름> 이라, 이름을 정하기 전에 첫 메시지가 찍히면
+    //   핸들러의 static QFile 이 엉뚱한 경로로 프로세스 내내 고정된다.
+    //   진단 로그가 앱 데이터 폴더 밖에 쌓여, 문서가 안내하는 경로에는 아무것도 없었다.
     app.setApplicationName("Predormition");
-    app.setOrganizationName("Miyo");
+    // ★ 조직명을 비운다 — 사용자 데이터 경로를 이름과 일치시킨다.
+    //   Qt 는 %APPDATA%/<조직>/<앱> 을 쓰므로, 조직이 있으면 ...\Miyo\Predormition 이 되고
+    //   조직을 "Predormition" 으로 두면 ...\Predormition\Predormition 으로 겹친다.
+    //   비우면 %APPDATA%\Predormition 하나로 떨어진다.
+    //   ※ 이 앱은 QSettings 를 쓰지 않으므로 조직명은 이 경로 계산 외에 쓰이는 데가 없다.
+    app.setOrganizationName(QString());
+    // ★ 로그 핸들러보다 먼저 이전해야 한다.
+    //   핸들러가 로그 파일을 열면서 AppDataLocation 을 mkpath 해 버리는데,
+    //   그러면 아래 '새 자리가 없을 때만 옮긴다' 조건이 거짓이 돼 이전이 통째로 건너뛰어진다.
+    // ★ 사용자 데이터 자동 이전 — 이름이 바뀌어도 설정·토큰·AI 모델을 잃지 않는다.
+    //   이 앱은 カメラ → チェルノブイリ → Chernobyl → Predormition 으로 네 번 이름이 바뀌었고,
+    //   그때마다 AppDataLocation 이 따라 움직였다. 여기서 옛 자리를 새 자리로 옮긴다.
+    //
+    //   ★ 같은 볼륨 안 이동이라 QDir::rename 은 즉시 끝난다 — AI 모델이 9GB 라도 복사하지 않는다.
+    //     실패하면 옛 자리를 그대로 두고 넘어간다. 데이터를 잃느니 두 벌이 낫다.
+    {
+        const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        const QString roaming = QFileInfo(appData).absolutePath();   // %APPDATA%
+        const QStringList olds = {
+            roaming + "/Miyo/Predormition",   // 조직명이 Miyo 이던 시절
+            roaming + "/Miyo/Chernobyl",      // 그 전 이름
+            roaming + "/Chernobyl",           // 조직명이 없던 더 이전
+        };
+        if (!QFileInfo::exists(appData)) {
+            for (const QString &oldDir : olds) {
+                if (!QFileInfo::exists(oldDir)) continue;
+                QDir().mkpath(QFileInfo(appData).absolutePath());
+                if (QDir().rename(oldDir, appData)) {
+                    qInfo() << "[startup] user data migrated:" << oldDir << "->" << appData;
+                    // 비어 버린 옛 조직 폴더는 치운다 (안에 다른 앱이 있으면 rmdir 이 실패하므로 안전)
+                    QDir().rmdir(roaming + "/Miyo");
+                } else {
+                    qWarning() << "[startup] user data migration failed (옛 자리를 그대로 둡니다):" << oldDir;
+                }
+                break;
+            }
+        }
+    }
+
 #ifdef Q_OS_WIN
     qInstallMessageHandler(predormitionLogHandler);
     qInfo() << "[startup] Predormition starting — exe dir:" << QCoreApplication::applicationDirPath();
 #endif
 
-    // ★ 앱 이름 변경(Chernobyl → Predormition) 시 사용자 데이터 자동 이전.
-    //   AppDataLocation 이 ...\Miyo\Chernobyl → ...\Miyo\Predormition 로 바뀌므로,
-    //   새 폴더가 없고 옛 폴더가 있으면 통째로 옮긴다(설정·토큰·AI 수정본 유지).
-    {
-        const QString base = QFileInfo(
-            QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).absolutePath();
-        const QString oldDir = base + "/Chernobyl";
-        const QString newDir = base + "/Predormition";
-        if (!QFileInfo::exists(newDir) && QFileInfo::exists(oldDir)) {
-            if (QDir().rename(oldDir, newDir))
-                qInfo() << "[startup] user data migrated:" << oldDir << "→" << newDir;
-            else
-                qWarning() << "[startup] user data migration failed";
-        }
-    }
     // ★ Mac 전용: Dock 컨벤션 — 창 닫아도 앱 살아있고 Dock 클릭으로 재오픈.
     //   Windows 에선 X 누르면 죽는 게 정상이라 기본값(true) 유지.
 #ifdef Q_OS_MACOS
