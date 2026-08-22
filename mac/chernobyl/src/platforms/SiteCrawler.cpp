@@ -1453,7 +1453,7 @@ void SiteCrawler::generateMainIndex()
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<title>%1 — Predormition Offline</title>
+<title>%1 — @@APPNAME@@ Offline</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; display:flex; height:100vh; background:#1a1a1a; color:#ccc; }
@@ -1540,6 +1540,10 @@ document.querySelector('#page-list a')?.classList.add('active');
         .arg(sidebarItems)
         .arg(firstPage.isEmpty() ? "" : firstPage)
         .arg(firstPage.isEmpty() ? "about:blank" : firstPage);
+    // ★ 원시 문자열(R"HTML(...)") 안에서는 매크로 이어붙이기가 안 된다 —
+    //   " APP_NAME_DISPLAY " 라고 쓰면 그 글자가 그대로 박힌다(실제로 그랬다).
+    //   표식을 두고 밖에서 바꾼다.
+    html.replace(QStringLiteral("@@APPNAME@@"), QStringLiteral(APP_NAME_DISPLAY));
 
     QString indexPath = m_saveDir + "/index.html";
     QFile f(indexPath);
@@ -1724,7 +1728,7 @@ void SiteCrawler::savePageListExcel(const QString &saveDir)
     QProcess::execute("xattr", {"-w", "com.apple.metadata:kMDItemDownloadedDate",
         QString("(\"%1\")").arg(QDateTime::currentDateTimeUtc().toString(Qt::ISODate)), excelPath});
     QProcess::execute("xattr", {"-w", "com.apple.metadata:kMDItemWhereFroms",
-        "(\"Predormition crawl\")", excelPath});
+        "(\"Hanishiki crawl\")", excelPath});
 #endif
 
     m_backend->log("Excel 저장: crawl_pages.xlsx", "success", "crawl");

@@ -208,15 +208,15 @@ QByteArray ContentSecurityScanner::sanitizeJavaScript(const QByteArray &content)
 
     // eval(atob(...)) → /* BLOCKED: eval(atob(...)) */
     text.replace(QRegularExpression(R"(eval\s*\(\s*atob\s*\([^)]*\)\s*\))"),
-        "/* Predormition_BLOCKED: eval+atob removed */");
+        "/* Hanishiki_BLOCKED: eval+atob removed */");
     text.replace(QRegularExpression(R"(eval\s*\(\s*unescape\s*\([^)]*\)\s*\))"),
-        "/* Predormition_BLOCKED: eval+unescape removed */");
+        "/* Hanishiki_BLOCKED: eval+unescape removed */");
 
     // document.cookie 접근 차단
-    text.replace(QRegularExpression(R"(document\.cookie)"), "/* Predormition_BLOCKED: document.cookie */''");
+    text.replace(QRegularExpression(R"(document\.cookie)"), "/* Hanishiki_BLOCKED: document.cookie */''");
 
     // WebSocket 차단
-    text.replace(QRegularExpression(R"(new\s+WebSocket\s*\()"), "/* Predormition_BLOCKED */ new (function(){this.send=function(){};this.close=function(){}})(");
+    text.replace(QRegularExpression(R"(new\s+WebSocket\s*\()"), "/* Hanishiki_BLOCKED */ new (function(){this.send=function(){};this.close=function(){}})(");
 
     return text.toUtf8();
 }
@@ -226,7 +226,7 @@ QByteArray ContentSecurityScanner::sanitizeJavaScript(const QByteArray &content)
 QByteArray ContentSecurityScanner::jsSandboxHeader()
 {
     return QByteArray(
-        "/* Predormition Offline Sandbox — 위험 API 비활성화 */\n"
+        "/* Hanishiki Offline Sandbox — 위험 API 비활성화 */\n"
         "(function(){\n"
         "  'use strict';\n"
         "  var noop=function(){return Promise.resolve(new Response('',{status:0}));};\n"

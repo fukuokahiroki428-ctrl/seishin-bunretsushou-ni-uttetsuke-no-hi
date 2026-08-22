@@ -1531,7 +1531,7 @@ void MiyoBackend::backupNow()
     // ★ 모니터 종료 시 STOP sentinel 파일 만들어짐 (script trap) → 워치독이 발견하면 백업 중지
     QString stopSentinel = m_terminalLogPaths.value("backup") + ".STOP";
     QFile::remove(stopSentinel);
-    writeTerminalLog("\033[1;36m📦 Predormition 백업 시작 — 파일별 병렬 cp 모드 (한국어/일본어/NAS 안전)\033[0m", "backup");
+    writeTerminalLog("\033[1;36m📦 " APP_NAME_DISPLAY " 백업 시작 — 파일별 병렬 cp 모드 (한국어/일본어/NAS 안전)\033[0m", "backup");
     writeTerminalLog(QString("\033[90m  📂 백업 위치:\033[0m %1").arg(backupRoot), "backup");
     writeTerminalLog(QString("\033[90m  🕐 시작 시각:\033[0m %1").arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss")), "backup");
     writeTerminalLog(QString("\033[90m  📁 대상 폴더:\033[0m %1 개  /  \033[90m🚀 병렬 워커:\033[0m %2").arg(platformDirs.size()).arg(CONCURRENT), "backup");
@@ -2250,7 +2250,7 @@ void MiyoBackend::writeDownloadManifest(const QString &dir, const QString &platf
         QTextStream out(&tf);
         out.setEncoding(QStringConverter::Utf8);
         out << "═══════════════════════════════════════════════════════════════\n";
-        out << "  📦 Predormition — " << platform.toUpper() << " 다운로드 manifest\n";
+        out << "  📦 " APP_NAME_DISPLAY " — " << platform.toUpper() << " 다운로드 manifest\n";
         out << "═══════════════════════════════════════════════════════════════\n";
         out << "생성: " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n";
         out << "위치: " << dir << "\n";
@@ -2434,7 +2434,7 @@ void MiyoBackend::importConfig()
     QJsonDocument doc = QJsonDocument::fromJson(bytes, &err);
     if (err.error != QJsonParseError::NoError || !doc.isObject()) {
         log(QString("❌ JSON 파싱 실패: %1").arg(err.errorString()), "error", "settings");
-        runJs(QString("alert('❌ JSON 파싱 실패:\\n%1\\n\\n올바른 Predormition config 파일이 아닙니다.');").arg(err.errorString()));
+        runJs(QString("alert('❌ JSON 파싱 실패:\\n%1\\n\\n올바른 설정 파일이 아닙니다.');").arg(err.errorString()));
         return;
     }
     QJsonObject root = doc.object();
@@ -3305,11 +3305,11 @@ void MiyoBackend::openBackupTerminalLog()
         QString content;
         content += "@echo off\r\n";
         content += "chcp 65001 >nul\r\n";
-        content += "title Predormition Backup Monitor\r\n";
+        content += "title " APP_NAME_DISPLAY " Backup Monitor\r\n";
         content += ":loop\r\n";
         content += "cls\r\n";
         content += "echo ===============================================\r\n";
-        content += "echo   📦 Predormition 백업 진행 모니터\r\n";
+        content += "echo   📦 " APP_NAME_DISPLAY " 백업 진행 모니터\r\n";
         content += "echo ===============================================\r\n";
         content += "powershell -NoProfile -Command \"Get-Content -Tail 30 '" + QDir::toNativeSeparators(logPath) + "'\"\r\n";
         content += "findstr /C:\"[DONE]\" \"" + QDir::toNativeSeparators(logPath) + "\" >nul 2>&1\r\n";
@@ -3324,7 +3324,7 @@ void MiyoBackend::openBackupTerminalLog()
         script.write(content.toUtf8());
         script.close();
     }
-    QProcess::startDetached("cmd.exe", {"/c", "start", "Predormition-Backup", QDir::toNativeSeparators(scriptPath)});
+    QProcess::startDetached("cmd.exe", {"/c", "start", "Hanishiki-Backup", QDir::toNativeSeparators(scriptPath)});
 #else
     // macOS — 컬러 + 스피너 애니메이션, 150ms refresh
     QString scriptPath = scriptDir + "/miyo_backup_tail.command";
@@ -3350,7 +3350,7 @@ void MiyoBackend::openBackupTerminalLog()
         content += "  ROWS=$(tput lines 2>/dev/null || echo 40)\n";
         content += "  TAIL_N=$((ROWS - 8))\n";
         content += "  echo -e \"${BOLD}${CYAN}═══════════════════════════════════════════════════════════════${RESET}\"\n";
-        content += "  echo -e \"${BOLD}${CYAN}  📦 Predormition 백업 진행 모니터  ${GRAY}$(date '+%H:%M:%S')${RESET}\"\n";
+        content += "  echo -e \"${BOLD}${CYAN}  📦 " APP_NAME_DISPLAY " 백업 진행 모니터  ${GRAY}$(date '+%H:%M:%S')${RESET}\"\n";
         content += "  echo -e \"${BOLD}${CYAN}═══════════════════════════════════════════════════════════════${RESET}\"\n";
         content += "  if [ -f \"$LOG\" ]; then\n";
         content += "    tail -n $TAIL_N \"$LOG\"\n";
@@ -3406,7 +3406,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
     QFile f(m_terminalLogPath);
     if (!f.open(QIODevice::WriteOnly)) return;
     f.write("=========================================\n");
-    f.write(QString("  Predormition - %1\n").arg(platform.toUpper()).toUtf8());
+    f.write(QString("  %1 - %2\n").arg(QStringLiteral(APP_NAME_DISPLAY), platform.toUpper()).toUtf8());
     f.write("=========================================\n\n");
     f.close();
 
@@ -3418,7 +3418,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
         QString content;
         content += "@echo off\r\n";
         content += "chcp 65001 >nul\r\n";
-        content += "title Predormition - " + platform.toUpper() + "\r\n";
+        content += "title " APP_NAME_DISPLAY " - " + platform.toUpper() + "\r\n";
         content += ":loop\r\n";
         content += "cls\r\n";
         content += "type \"" + QDir::toNativeSeparators(logPath) + "\"\r\n";
@@ -3434,7 +3434,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
         script.write(content.toUtf8());
         script.close();
     }
-    QProcess::startDetached("cmd.exe", {"/c", "start", "Predormition", QDir::toNativeSeparators(scriptPath)});
+    QProcess::startDetached("cmd.exe", {"/c", "start", "Hanishiki", QDir::toNativeSeparators(scriptPath)});
 #else
     // macOS/Linux: 단순 tail -f — kernel inotify/kqueue 사용, CPU 거의 0
     // ★ 옛 애니메이션 (150ms clear+refresh) 은 CPU/메모리 부담 큼 → 사용자 요청으로 단순화
@@ -5440,7 +5440,7 @@ bool MiyoBackend::captureRealTweetPage(const QString &tweetUrl,
                     }
                     QString out = html;
                     QString metaTag = QString(
-                        "\n<!-- Predormition real Twitter capture (rendered DOM) -->\n"
+                        "\n<!-- Hanishiki real Twitter capture (rendered DOM) -->\n"
                         "<!-- source: %1 -->\n"
                         "<!-- captured: %2 -->\n")
                         .arg(tweetUrl.toHtmlEscaped(),
@@ -9298,12 +9298,12 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     script += "@echo off\r\nchcp 65001 >nul\r\n";
     // ★ 한글/유니코드 채널·제목 파일명 — Python(yt-dlp) UTF-8 강제 (윈도우 ANSI 코드페이지 폴백 → UnicodeError 방지)
     script += "set PYTHONUTF8=1\r\nset PYTHONIOENCODING=UTF-8\r\n";
-    script += "title Predormition - YouTube\r\n";
+    script += "title " APP_NAME_DISPLAY " - YouTube\r\n";
     script += "set \"STATUS=" + QDir::toNativeSeparators(statusFile) + "\"\r\n";
     script += "set \"STOP_MARKER=" + QDir::toNativeSeparators(stopMarker) + "\"\r\n";
     script += "echo STARTED > \"%STATUS%\"\r\n";
     script += "echo =========================================\r\n";
-    script += "echo   Predormition - YouTube Download\r\n";
+    script += "echo   " APP_NAME_DISPLAY " - YouTube Download\r\n";
     script += QString("echo   총 %1개 URL\r\n").arg(urls.size());
     script += "echo =========================================\r\n";
     script += "echo.\r\nset SUCCESS=0\r\nset FAIL=0\r\n\r\n";
@@ -9362,7 +9362,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     script += "echo 'STARTED' > \"$STATUS\"\n\n";
     script += "clear\n";
     script += "echo '========================================='\n";
-    script += "echo '  Predormition - " + plabel + " ダウンロード'\n";
+    script += "echo '  " APP_NAME_DISPLAY " - " + plabel + " ダウンロード'\n";
     script += QString("echo '  총 %1개 URL'\n").arg(urls.size());
     script += "echo '========================================='\n";
     script += "echo ''\n\n";
@@ -9453,7 +9453,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     // Launch terminal with script
     log(QString("터미널에서 %1개 URL 다운로드 시작...").arg(urls.size()), "info", platform);
 #ifdef Q_OS_WIN
-    QProcess::startDetached("cmd.exe", {"/c", "start", "Predormition-YouTube", QDir::toNativeSeparators(scriptPath)});
+    QProcess::startDetached("cmd.exe", {"/c", "start", "Hanishiki-YouTube", QDir::toNativeSeparators(scriptPath)});
 #else
     QProcess::startDetached("/usr/bin/open", {scriptPath});
 #endif
@@ -11925,7 +11925,7 @@ void MiyoBackend::startTrad(const QString &configJson)
         // 임시 폴더 정리 (.trad_tmp)
         QDir(tempDir).removeRecursively();
 
-        FileHelper::setDownloadMeta(outputPath, "Predormition trad");
+        FileHelper::setDownloadMeta(outputPath, "Hanishiki trad");
 
         // ★ WebDAV 자동 업로드 (활성화 시)
         QMetaObject::invokeMethod(this, [this, outputPath]() {
@@ -13653,7 +13653,7 @@ void MiyoBackend::openLlmTerminal()
     // ── 대화형 REPL 클라이언트 (stdlib only) — SSE 스트리밍으로 토큰 실시간 출력 ──
     static const char *REPL_PY = R"PYEOF(#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 오픈클로 대화형 터미널 — Predormition 내장 로컬 LLM 클라이언트.
+# 오픈클로 대화형 터미널 — @@APPNAME@@ 내장 로컬 LLM 클라이언트.
 # 127.0.0.1:8737 (llama-server, OpenAI 호환) 와 SSE 스트리밍으로 대화한다.
 import json, os, sys, time, urllib.request
 try:
@@ -13755,7 +13755,10 @@ if __name__ == "__main__":
 )PYEOF";
     {
         QFile f(replPath);
-        if (f.open(QIODevice::WriteOnly | QIODevice::Text)) { f.write(REPL_PY); f.close(); }
+        // ★ 원시 문자열 안에서는 매크로 이어붙이기가 안 된다 — 표식을 두고 여기서 바꾼다.
+        QString repl = QString::fromUtf8(REPL_PY);
+        repl.replace(QStringLiteral("@@APPNAME@@"), QStringLiteral(APP_NAME_DISPLAY));
+        if (f.open(QIODevice::WriteOnly | QIODevice::Text)) { f.write(repl.toUtf8()); f.close(); }
         else { log("❌ 오픈클로 REPL 파일 생성 실패", "error", "settings"); return; }
     }
 
@@ -14301,7 +14304,7 @@ void MiyoBackend::autoRepair()
 
         // 3) AI 에게 '어떤 수리를 돌릴지' JSON 으로만 결정하게 한다.
         const QString sys = QString::fromUtf8(
-            "너는 Predormition 앱의 자동 수리 결정 엔진이다. 아래 '자가진단'을 읽고 실행할 수리 동작을 고른다.\n"
+            "너는 " APP_NAME_DISPLAY " 앱의 자동 수리 결정 엔진이다. 아래 '자가진단'을 읽고 실행할 수리 동작을 고른다.\n"
             "선택 가능한 동작(정확히 이 영어 이름만 사용):\n"
             "- repairPython : 파이썬 실행환경이 깨졌을 때(모듈 import 실패, twikit/atproto 없음, site-packages 손상)\n"
             "- updateModules : 모듈이 오래되어 수집이 실패할 때 pip 업그레이드(twikit, yt-dlp, atproto 등)\n"
@@ -15676,7 +15679,7 @@ void MiyoBackend::writeStartupLog()
 
     QTextStream ts(&f);
     ts << "═══════════════════════════════════\n";
-    ts << "  Predormition System Log\n";
+    ts << "  " APP_NAME_DISPLAY " System Log\n";
     ts << "  " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n";
     ts << "═══════════════════════════════════\n\n";
 

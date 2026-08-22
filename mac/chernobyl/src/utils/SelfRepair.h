@@ -360,7 +360,7 @@ inline QString llmDiagnose(const QString &reportText)
     if (!data.isEmpty()) model = data.first().toObject().value("id").toString("default");
 
     QJsonObject sys{{"role", "system"},
-        {"content", "당신은 Predormition/Pen 데스크톱 앱의 유지보수 진단가다. "
+        {"content", "당신은 Hanishiki 데스크톱 앱의 유지보수 진단가다. "
                     "아래 자가진단 보고서를 읽고, 실패 항목의 가장 유력한 원인과 "
                     "사용자가 취할 구체적 조치를 한국어 5줄 이내로 답하라."}};
     QJsonObject usr{{"role", "user"}, {"content", reportText}};
