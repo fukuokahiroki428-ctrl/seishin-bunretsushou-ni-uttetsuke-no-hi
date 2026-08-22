@@ -381,7 +381,7 @@ void DiscordCollector::runCollection()
         QFile f(m_terminalLogPath);
         f.open(QIODevice::WriteOnly);
         f.write("=========================================\n");
-        f.write("  カメラ - DISCORD\n");
+        f.write("  Predormition - DISCORD\n");
         f.write("=========================================\n\n");
         f.close();
     }
@@ -632,6 +632,6 @@ void DiscordCollector::saveToExcel(DiskJsonBuffer &buffer, const QString &saveDi
 
     QString filepath = saveDir + "/" + channelName + "_messages.xlsx";
     writer.save(filepath);
-    FileHelper::setDownloadMeta(filepath, "カメラ Discord");
+    FileHelper::setDownloadMeta(filepath, "Predormition Discord");
     emit m_signals->log(QString("  저장: %1").arg(filepath));
 }

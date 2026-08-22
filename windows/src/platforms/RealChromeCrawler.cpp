@@ -296,14 +296,14 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
              << "--disable-translate"
              << "--no-default-browser-check"
              << "--no-first-run"
-             << "--disable-sync"
+             << "--disable-sync";
 #ifdef Q_OS_WIN
         // ★ Windows 전용 추가 보안 — macOS 보다 공격 표면이 넓음
         args << "--win-job-object"                              // Windows Job Object 격리 강화
              << "--enforce-strict-secure-origin-for-secure-frames"
              << "--restrict-runtime-allocation"                 // ASLR 강화
              << "--enable-features=NetworkServiceSandbox"       // Network 서비스 sandbox
-             << "--block-insecure-private-network-requests"     // 내부망 비보안 요청 차단
+             << "--block-insecure-private-network-requests";    // 내부망 비보안 요청 차단
 #endif
         args << "--disable-gpu"
              << "--disable-software-rasterizer"

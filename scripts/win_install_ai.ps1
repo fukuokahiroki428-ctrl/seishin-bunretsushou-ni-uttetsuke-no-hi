@@ -116,7 +116,19 @@ Write-Host "앱 위치: $appDir"
 #   함께 사라져 그때마다 5GB 를 다시 받아야 한다(맥에서 실제로 그렇게 날렸다).
 #   사용자 데이터 폴더에 두면 앱을 몇 번을 다시 깔아도 남는다.
 #   (앱은 이 위치를 먼저 보고, 없으면 앱 폴더를 본다.)
-$llmDir = Join-Path $env:APPDATA (Join-Path 'Miyo' (Join-Path $AppName 'llm'))
+# ★ 이름 통일 뒤 사용자 데이터는 <APPDATA>\Predormition 이다.
+#   앱이 첫 실행에서 옆 자리(Miyo\<앱>)를 이쪽으로 옮긴다. 설치기가 먼저 돌 수도 있으므로
+#   여기서도 같은 이전을 해 둔다 — 안 그러면 9GB 를 두 번 받게 된다.
+$llmDir = Join-Path $env:APPDATA (Join-Path $AppName 'llm')
+$llmDirLegacy = Join-Path $env:APPDATA (Join-Path 'Miyo' (Join-Path $AppName 'llm'))
+if ((Test-Path $llmDirLegacy) -and -not (Test-Path $llmDir)) {
+    Write-Host '예전 자리의 AI 를 새 자리로 옮깁니다...'
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path $llmDir -Parent) | Out-Null
+        Move-Item $llmDirLegacy $llmDir -ErrorAction Stop
+        Write-Host '  옮겼습니다 — 다시 받지 않아도 됩니다.'
+    } catch { Write-Host "  옮기지 못했습니다: $($_.Exception.Message)" }
+}
 Write-Host "설치 위치: $llmDir"
 Write-Host '  (앱을 다시 설치해도 지워지지 않는 자리입니다)'
 

@@ -39,7 +39,14 @@ except ImportError:      # 단독으로 떼어 쓸 때를 위한 대비
             base = Path(os.environ.get('APPDATA') or (Path.home() / 'AppData/Roaming'))
         else:
             base = Path(os.environ.get('XDG_DATA_HOME') or (Path.home() / '.local/share'))
-        return base / 'Miyo/Predormition/archive_index.db'
+        # ★ 이름 통일 뒤 경로는 <APPDATA>/Predormition 이다.
+        #   예전 자리(Miyo/Predormition)에 이미 색인이 있으면 그것을 그대로 쓴다 —
+        #   색인을 다시 돌리게 만들지 않기 위해서다. 앱이 폴더를 옮기면 자연히 새 자리를 본다.
+        new = base / 'Predormition/archive_index.db'
+        old = base / 'Miyo/Predormition/archive_index.db'
+        if not new.exists() and old.exists():
+            return old
+        return new
 
 IMG_EXT = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff', '.avif'}
 VID_EXT = {'.mp4', '.webm', '.mkv', '.mov', '.m4v', '.avi'}

@@ -191,7 +191,7 @@ private:
     // 감지된 사이트 엔진 (GNUBoard / WordPress / XpressEngine·Rhymix ...)
     QString m_detectedEngine;
 
-    // 터미널 로그 — 별도 Terminal.app 창에서 실시간 로그 표시 (Chernobyl 패턴)
+    // 터미널 로그 — 별도 Terminal.app 창에서 실시간 로그 표시 (Predormition 패턴)
     QString m_terminalLogPath;
     void openTerminalLog();
     void writeTerminalLog(const QString &message);
