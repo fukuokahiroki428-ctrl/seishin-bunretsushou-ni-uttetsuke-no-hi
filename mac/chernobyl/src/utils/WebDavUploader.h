@@ -60,7 +60,7 @@ public:
     int failedCount() const { return m_failedCount.load(); }
 
 signals:
-    // 외부에서 로그 받기 위함 (MiyoBackend::log 로 라우팅)
+    // 외부에서 로그 받기 위함 (HanishikiBackend::log 로 라우팅)
     void logMessage(const QString &message, const QString &type);
 
 private:

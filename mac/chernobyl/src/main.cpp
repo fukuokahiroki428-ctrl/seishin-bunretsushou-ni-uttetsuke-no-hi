@@ -96,7 +96,14 @@ int main(int argc, char *argv[])
     //   폴더 이름은 ASCII 로 둔다. 일본어 폴더는 NAS·백업 경로에서 NFC/NFD 로
     //   어긋나 사고가 나기 쉽다(사용자에게 보이는 이름은 번들이 따로 갖는다).
     app.setApplicationName(QStringLiteral(APP_NAME_ASCII));
-    app.setOrganizationName("Miyo");
+    // ★ 조직 이름을 두지 않는다.
+    //   두면 데이터가 …/Application Support/Miyo/<앱> 처럼 한 겹 더 들어간다.
+    //   'Miyo' 는 이 앱이 카메라이던 시절의 흔적일 뿐 지금 이름과 아무 관계가 없어서,
+    //   폴더를 열어 본 사람이 무엇인지 알 수 없었다.
+    //   비워 두면 Qt 가 …/Application Support/<앱이름> 을 쓴다.
+    //   ★ 옛 위치(Miyo/<앱>)의 데이터는 아래 이사 코드가 찾아서 그대로 옮겨 온다 —
+    //     설정·토큰뿐 아니라 AI 모델 9GB·색인·크롬 프로필이 거기 있다.
+    app.setOrganizationName(QString());
 
     // ★ 앱 이름이 바뀌면 사용자 데이터 폴더도 바뀐다 — 통째로 이어받는다.
     //
@@ -113,18 +120,32 @@ int main(int argc, char *argv[])
     //   같은 디스크 안 rename 이라 9GB 라도 즉시 끝난다(복사가 아니다).
     {
         const QString mine = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-        const QString base = QFileInfo(mine).absolutePath();          // .../Miyo
+        const QString base = QFileInfo(mine).absolutePath();   // 조직 이름을 뺐으므로 …/Application Support
         const bool mineEmpty = !QFileInfo::exists(mine)
                                || QDir(mine).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot);
         if (mineEmpty) {
             QFileInfo best;
             qint64 bestTime = 0;
-            const auto dirs = QDir(base).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+
+            // 후보를 모은다.
+            //   ① base 의 형제 폴더 — 앱 이름만 바뀐 경우(…/Application Support/<옛이름>)
+            //   ② 옛 조직 폴더 안 — 조직 이름을 쓰던 시절(…/Application Support/Miyo/<앱>)
+            //      ★ 이게 없으면 조직 이름을 뺀 순간 옛 데이터를 못 찾는다.
+            //        거기엔 설정·토큰뿐 아니라 AI 모델 9GB·색인·크롬 프로필이 들어 있다.
+            QList<QFileInfo> cands = QDir(base).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+            for (const char *org : {"Miyo", "ABIWA"}) {
+                const QString orgDir = base + "/" + QString::fromLatin1(org);
+                if (QFileInfo::exists(orgDir))
+                    cands += QDir(orgDir).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+            }
+
+            const auto dirs = cands;
             for (const QFileInfo &d : dirs) {
                 if (d.absoluteFilePath() == QFileInfo(mine).absoluteFilePath()) continue;
                 // 이 앱이 쓰던 폴더인지 — 우리 흔적이 하나라도 있어야 한다.
                 //   (Miyo 아래에 다른 앱 폴더가 있어도 잘못 가져오지 않게)
-                static const char *marks[] = {"miyo_config.json", "llm", "python_env_arm64",
+                static const char *marks[] = {"hanishiki_config.json", "miyo_config.json",
+                                              "llm", "python_env_arm64",
                                               "script_overrides", "archive_index.db"};
                 bool ours = false;
                 for (const char *m : marks)

@@ -1,5 +1,5 @@
 #include "RealChromeCrawler.h"
-#include "core/MiyoBackend.h"
+#include "core/HanishikiBackend.h"
 #include "core/Common.h"
 #include "core/Config.h"
 #include <QCoreApplication>
@@ -32,7 +32,7 @@
 #include <QCryptographicHash>
 #include <QUrl>
 
-RealChromeCrawler::RealChromeCrawler(MiyoBackend *backend, QObject *parent)
+RealChromeCrawler::RealChromeCrawler(HanishikiBackend *backend, QObject *parent)
     : QObject(parent), m_backend(backend), m_nam(new QNetworkAccessManager(this))
 {
 }

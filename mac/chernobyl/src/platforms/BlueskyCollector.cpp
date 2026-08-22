@@ -1,5 +1,5 @@
 #include "BlueskyCollector.h"
-#include "core/MiyoBackend.h"
+#include "core/HanishikiBackend.h"
 #include "core/Common.h"
 
 #include <QThread>
@@ -19,7 +19,7 @@
 #include <QNetworkCookie>
 #include "xlsxdocument.h"
 
-BlueskyCollector::BlueskyCollector(MiyoBackend *backend, QObject *parent)
+BlueskyCollector::BlueskyCollector(HanishikiBackend *backend, QObject *parent)
     : QObject(parent)
     , m_backend(backend)
 {

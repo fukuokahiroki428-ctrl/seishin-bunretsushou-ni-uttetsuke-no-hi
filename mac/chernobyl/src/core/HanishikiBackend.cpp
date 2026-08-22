@@ -1,4 +1,4 @@
-#include "MiyoBackend.h"
+#include "HanishikiBackend.h"
 #include <QWindow>
 #include "MainWindow.h"
 #include "Config.h"
@@ -54,9 +54,9 @@ using FileHelper::sanitizeFilename;
 namespace {
 struct CollectionGuard {
     QSemaphore *sem;
-    MiyoBackend *backend;
+    HanishikiBackend *backend;
     QString platform;
-    CollectionGuard(QSemaphore *s, MiyoBackend *b, const QString &p) : sem(s), backend(b), platform(p) {
+    CollectionGuard(QSemaphore *s, HanishikiBackend *b, const QString &p) : sem(s), backend(b), platform(p) {
         if (!sem->tryAcquire(1, 50)) {
             if (backend) backend->log(QString("⏳ 다른 [%1] 수집 진행 중 — 큐에서 대기...").arg(platform), "info", platform);
             sem->acquire(1);
@@ -74,7 +74,7 @@ struct CollectionGuard {
 }
 
 // ★ Platform 별 capacity — 기능 특성에 맞춤
-QSemaphore* MiyoBackend::platformSem(const QString &platform)
+QSemaphore* HanishikiBackend::platformSem(const QString &platform)
 {
     QMutexLocker lock(&m_platformSemsMutex);
     // platform 별 기본 capacity (동시 작업 한도)
@@ -167,7 +167,7 @@ static void killCaptureBrowsers(const QString &needle)
 }
 #endif
 
-MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
+HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
     : QObject(parent)
     , m_window(window)
     , m_config(new Config(this))
@@ -267,7 +267,7 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
             //   Config::load 가 이름이 바뀐 옛 폴더에서 설정을 되살려 오는데, 여기서 먼저
             //   지워 버리면 되살릴 것이 없어진다(계정·쿠키·NAS 설정이 통째로 날아간다).
             //   순서에 기대지 않고, 설정이 남아 있는 폴더는 아예 건드리지 않는다.
-            if (QFile::exists(p + "/miyo_config.json")) {
+            if (QFile::exists(p + "/hanishiki_config.json") || QFile::exists(p + "/miyo_config.json")) {
                 log(QString("옛 폴더에 설정이 남아 있어 두었습니다: %1").arg(name), "info", "settings");
                 continue;
             }
@@ -303,13 +303,13 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
         }
     }
 
-    connect(this, &MiyoBackend::jsSignal, this, &MiyoBackend::executeJsMainThread);
-    connect(this, &MiyoBackend::logSignal, this, &MiyoBackend::appendLogMainThread);
+    connect(this, &HanishikiBackend::jsSignal, this, &HanishikiBackend::executeJsMainThread);
+    connect(this, &HanishikiBackend::logSignal, this, &HanishikiBackend::appendLogMainThread);
 
     // Log batch flush timer — 300ms 간격으로 모아서 한번에 전송 (UI 부하 감소)
     m_logFlushTimer = new QTimer(this);
     m_logFlushTimer->setInterval(300);
-    connect(m_logFlushTimer, &QTimer::timeout, this, &MiyoBackend::flushLogs);
+    connect(m_logFlushTimer, &QTimer::timeout, this, &HanishikiBackend::flushLogs);
     m_logFlushTimer->start();
 
     // Browser view signals → JS UI updates
@@ -346,7 +346,7 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     // [자동 유지보수] 주기적 메모리 모니터 — 5분마다 RSS 체크, 임계치 초과 시 경고 + 캐시 정리
     m_memoryMonitorTimer = new QTimer(this);
     m_memoryMonitorTimer->setInterval(5 * 60 * 1000);  // 5분
-    connect(m_memoryMonitorTimer, &QTimer::timeout, this, &MiyoBackend::memoryMonitorTick);
+    connect(m_memoryMonitorTimer, &QTimer::timeout, this, &HanishikiBackend::memoryMonitorTick);
     m_memoryMonitorTimer->start();
 
     // 앱 종료 직전 hook — 자식 프로세스 정리
@@ -355,7 +355,7 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     });
 }
 
-MiyoBackend::~MiyoBackend()
+HanishikiBackend::~HanishikiBackend()
 {
     // 内閣会 타이머 정리
     m_naikakukaiRunning = false;
@@ -401,7 +401,7 @@ MiyoBackend::~MiyoBackend()
 // 자동 유지보수
 // ─────────────────────────────────────────────
 
-void MiyoBackend::performStartupCleanup()
+void HanishikiBackend::performStartupCleanup()
 {
     if (!m_config) return;
     QString td = m_config->tempDir();
@@ -438,7 +438,7 @@ void MiyoBackend::performStartupCleanup()
     }
 }
 
-void MiyoBackend::killChildProcesses()
+void HanishikiBackend::killChildProcesses()
 {
     // TwitterCollector / BlueskyCollector / SiteCrawler 내부 QProcess 는
     // 각 collector 소멸자가 정리. 여기선 고아 상태(크래시 잔여)만 처리.
@@ -466,7 +466,7 @@ void MiyoBackend::killChildProcesses()
     closeAllTerminalLogs();
 }
 
-void MiyoBackend::memoryMonitorTick()
+void HanishikiBackend::memoryMonitorTick()
 {
     qint64 rssMB = -1;
 #ifdef Q_OS_WIN
@@ -516,7 +516,7 @@ void MiyoBackend::memoryMonitorTick()
 //         수집기는 이미 파일 존재 여부로 중복 스킵 → 신글만 자동 추가됨
 // ─────────────────────────────────────────────
 
-void MiyoBackend::startNaikakukai(const QString &configJson)
+void HanishikiBackend::startNaikakukai(const QString &configJson)
 {
     QJsonDocument doc = QJsonDocument::fromJson(configJson.toUtf8());
     if (doc.isNull() || !doc.isObject()) {
@@ -556,7 +556,7 @@ void MiyoBackend::startNaikakukai(const QString &configJson)
 
     if (!m_naikakukaiTimer) {
         m_naikakukaiTimer = new QTimer(this);
-        connect(m_naikakukaiTimer, &QTimer::timeout, this, &MiyoBackend::naikakukaiTick);
+        connect(m_naikakukaiTimer, &QTimer::timeout, this, &HanishikiBackend::naikakukaiTick);
     }
     m_naikakukaiTimer->setInterval(m_naikakukaiIntervalMin * 60 * 1000);
     m_naikakukaiTimer->start();
@@ -566,10 +566,10 @@ void MiyoBackend::startNaikakukai(const QString &configJson)
     runJs("setNaikakukaiRunning(true)");
 
     // 즉시 1회 실행 (30분 기다리지 말고)
-    QTimer::singleShot(1000, this, &MiyoBackend::naikakukaiTick);
+    QTimer::singleShot(1000, this, &HanishikiBackend::naikakukaiTick);
 }
 
-void MiyoBackend::stopNaikakukai()
+void HanishikiBackend::stopNaikakukai()
 {
     m_naikakukaiRunning = false;
     if (m_naikakukaiTimer) m_naikakukaiTimer->stop();
@@ -593,7 +593,7 @@ void MiyoBackend::stopNaikakukai()
 // NAS 자동 백업 — 로컬 다운로드 완료 후 NAS 마운트 폴더로 cp
 //   동기적 PUT (WebDAV) 와 다름: 그냥 파일 시스템 cp. 빠르고 안정.
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::setBackupConfig(bool enabled, const QString &path)
+void HanishikiBackend::setBackupConfig(bool enabled, const QString &path)
 {
     m_config->setBackupEnabled(enabled);
     if (!path.isEmpty()) m_config->setBackupPath(path);
@@ -634,7 +634,7 @@ void MiyoBackend::setBackupConfig(bool enabled, const QString &path)
     }
 }
 
-void MiyoBackend::pickBackupPath()
+void HanishikiBackend::pickBackupPath()
 {
     QStringList paths, items;
 #ifdef Q_OS_MACOS
@@ -746,7 +746,7 @@ void MiyoBackend::pickBackupPath()
     }, Qt::QueuedConnection);
 }
 
-void MiyoBackend::testBackup()
+void HanishikiBackend::testBackup()
 {
     QString path = m_config->backupPath();
     if (!m_config->backupEnabled() || path.isEmpty()) {
@@ -771,7 +771,7 @@ void MiyoBackend::testBackup()
 //   ★ /Volumes 만 보면 안 된다 — 마운트 도구마다 위치가 다르다. 특히 Mountain Duck 은
 //     ~/Library/Containers/io.mountainduck/.../Volumes.noindex/ 아래에 NFS 로 마운트하므로
 //     예전 워치독(/Volumes 접두사 검사)은 이 경우 한 번도 동작하지 않았다.
-QStringList MiyoBackend::networkMountPoints() const
+QStringList HanishikiBackend::networkMountPoints() const
 {
     QStringList out;
     QProcess p;
@@ -797,7 +797,7 @@ QStringList MiyoBackend::networkMountPoints() const
 //   ★ 반드시 별도 프로세스로 확인한다. 세션이 끊긴 네트워크 마운트에 stat() 을 걸면
 //     커널에서 무한 대기(uninterruptible)에 빠져 앱 스레드가 통째로 멈춘다.
 //     프로세스는 타임아웃 시 죽일 수 있어 앱이 함께 얼지 않는다.
-bool MiyoBackend::probeMountAlive(const QString &mountPoint, int timeoutMs)
+bool HanishikiBackend::probeMountAlive(const QString &mountPoint, int timeoutMs)
 {
     QProcess p;
     p.start("/usr/bin/stat", {"-f", "%z", mountPoint});
@@ -817,7 +817,7 @@ bool MiyoBackend::probeMountAlive(const QString &mountPoint, int timeoutMs)
 //      주기적으로 아주 작은 요청을 보내면 세션이 유휴 상태가 되지 않아 끊기지 않는다.
 //   ② 그래도 죽었으면(연속 2회 실패) 사용자에게 알리고 재마운트를 시도한다.
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::nasWatchdogTick()
+void HanishikiBackend::nasWatchdogTick()
 {
     if (!m_config) return;
     if (!m_config->nasAutoReconnect()) return;
@@ -869,7 +869,7 @@ void MiyoBackend::nasWatchdogTick()
     t->start();
 }
 
-void MiyoBackend::silentRemountWebDav()
+void HanishikiBackend::silentRemountWebDav()
 {
     if (!m_config) return;
     QString url  = m_config->webdavUrl();
@@ -907,7 +907,7 @@ void MiyoBackend::silentRemountWebDav()
     t->start();
 }
 
-void MiyoBackend::resyncAllFoldersToBackup()
+void HanishikiBackend::resyncAllFoldersToBackup()
 {
     // 전체 재sync 는 이제 backupNow 와 같은 rsync 폴더 통째 모드 호출 (사용자 의도 같음 — idempotent 전체 백업)
     backupNow();
@@ -918,7 +918,7 @@ void MiyoBackend::resyncAllFoldersToBackup()
 //   bundle 된 rclone binary 사용. 사용자의 WebDAV creds (m_config) 로 임시 config 생성.
 //   --transfers=8 --multi-thread-streams=4 --progress --stats=2s.
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::runRcloneBackup(const QStringList &srcDirs, const QString &destSubPath)
+void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString &destSubPath)
 {
     QString rclonePath = QCoreApplication::applicationDirPath() + "/../Resources/tools/rclone";
 #ifdef Q_OS_WIN
@@ -1098,7 +1098,7 @@ void MiyoBackend::runRcloneBackup(const QStringList &srcDirs, const QString &des
 //
 //   ★ 윈도우 트리에서 옮겨 왔다. 구현은 같게 두고 rclone 위치만 맥 배치에 맞췄다
 //     — 두 트리가 갈라지면 한쪽만 고쳐지고 다음 동기화 때 되돌아온다.
-void MiyoBackend::startRemoteBackup(const QString &configJson)
+void HanishikiBackend::startRemoteBackup(const QString &configJson)
 {
     QJsonObject c = QJsonDocument::fromJson(configJson.toUtf8()).object();
     const QString type = c.value("type").toString("webdav").trimmed().toLower();  // webdav|ftp|sftp|s3
@@ -1248,14 +1248,14 @@ void MiyoBackend::startRemoteBackup(const QString &configJson)
     t->start();
 }
 
-void MiyoBackend::stopRemoteBackup()
+void HanishikiBackend::stopRemoteBackup()
 {
     m_backupTerminalActive = false;  // 스레드 루프가 감지 → 진행 중 rclone terminate/kill
     log("🛑 원격 백업 중지 요청", "warning", "settings");
     runJs("if(window.setRemoteBackupBusy)setRemoteBackupBusy(false)");
 }
 
-void MiyoBackend::pickRemoteBackupSrc()
+void HanishikiBackend::pickRemoteBackupSrc()
 {
     QString dir = QFileDialog::getExistingDirectory(
         m_window, QStringLiteral("🌐 원격 백업 — 업로드할 로컬 폴더 선택"),
@@ -1270,7 +1270,7 @@ void MiyoBackend::pickRemoteBackupSrc()
 //   경로 미설정 시 안내. 모든 플랫폼 폴더 → backup 경로 통째 enqueue.
 // ═════════════════════════════════════════════════════════════════════════
 
-void MiyoBackend::backupNow()
+void HanishikiBackend::backupNow()
 {
     QString backupRoot = m_config->backupPath();
     if (backupRoot.isEmpty()) {
@@ -2121,7 +2121,7 @@ void MiyoBackend::backupNow()
 //   각 platform 수집 끝나면 자동 호출. 사용자 / 백업 검증용.
 //   대용량 (10만 파일+) 도 streaming 으로 처리 — 메모리 안 먹음.
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::writeDownloadManifest(const QString &dir, const QString &platform)
+void HanishikiBackend::writeDownloadManifest(const QString &dir, const QString &platform)
 {
     if (dir.isEmpty() || !QDir(dir).exists()) return;
 
@@ -2307,7 +2307,7 @@ void MiyoBackend::writeDownloadManifest(const QString &dir, const QString &platf
         "info", platform);
 }
 
-void MiyoBackend::logCollectionOptions(const QJsonObject &config, const QString &platform)
+void HanishikiBackend::logCollectionOptions(const QJsonObject &config, const QString &platform)
 {
     log(QString("━━━ [%1] 사용자 선택 옵션 ━━━").arg(platform.toUpper()), "info", platform);
     // 1) Boolean 옵션 (체크박스)
@@ -2375,7 +2375,7 @@ void MiyoBackend::logCollectionOptions(const QJsonObject &config, const QString 
 // exportConfig / importConfig — 사용자 입력 정보 (accounts/tokens/paths/forms) JSON
 //   파일 1개에 모든 설정 백업. 다른 PC 로 옮길 때 / 재설치 시 복원.
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::exportConfig()
+void HanishikiBackend::exportConfig()
 {
     QString defaultName = QString("chernobyl_config_%1.json")
         .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
@@ -2414,7 +2414,7 @@ void MiyoBackend::exportConfig()
         .arg(Common::jsStringLiteral(path).mid(1).chopped(1)).arg(sizeStr));
 }
 
-void MiyoBackend::importConfig()
+void HanishikiBackend::importConfig()
 {
     QString path = QFileDialog::getOpenFileName(m_window,
         "📂 사용자 정보 불러오기 — JSON 파일 선택",
@@ -2476,7 +2476,7 @@ void MiyoBackend::importConfig()
         .arg(root.size()));
 }
 
-void MiyoBackend::stopBackup()
+void HanishikiBackend::stopBackup()
 {
     bool wasManualActive = m_backupTerminalActive.load();
     bool wasAutoActive = m_backupRunning.load();
@@ -2528,7 +2528,7 @@ void MiyoBackend::stopBackup()
         "success", "settings");
 }
 
-void MiyoBackend::enqueueIntegrityCheck(const QString &localPath, const QString &platform)
+void HanishikiBackend::enqueueIntegrityCheck(const QString &localPath, const QString &platform)
 {
     // platform 명시 안 됐으면 ("auto"), 활성화된 platform 1개라도 있으면 검사
     if (platform == "auto" && m_integrityActivePlatforms.isEmpty()) return;
@@ -2547,13 +2547,13 @@ void MiyoBackend::enqueueIntegrityCheck(const QString &localPath, const QString 
     }
 }
 
-void MiyoBackend::setIntegrityActiveForPlatform(const QString &platform, bool enabled)
+void HanishikiBackend::setIntegrityActiveForPlatform(const QString &platform, bool enabled)
 {
     if (enabled) m_integrityActivePlatforms.insert(platform);
     else m_integrityActivePlatforms.remove(platform);
 }
 
-void MiyoBackend::integrityWorker()
+void HanishikiBackend::integrityWorker()
 {
     while (m_integrityRunning.load()) {
         IntegrityItem it;
@@ -2585,7 +2585,7 @@ void MiyoBackend::integrityWorker()
 //   10만개+ 파일 백업해도 메모리 거의 안 먹음. 한 줄 = 하나 경로.
 //   offset 파일로 다음 읽을 위치 추적 → 워커 stream 처리.
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::initBackupQueuePaths()
+void HanishikiBackend::initBackupQueuePaths()
 {
     if (!m_backupQueuePath.isEmpty()) return;
     QString base = Common::resolveTempBase(m_config ? m_config->tempDir() : QString());
@@ -2603,7 +2603,7 @@ void MiyoBackend::initBackupQueuePaths()
     }
 }
 
-void MiyoBackend::enqueueBackupItem(const QString &localPath, qint64 size)
+void HanishikiBackend::enqueueBackupItem(const QString &localPath, qint64 size)
 {
     // 호출자가 m_backupQueueMutex 잡고 있어야 함
     initBackupQueuePaths();
@@ -2619,7 +2619,7 @@ void MiyoBackend::enqueueBackupItem(const QString &localPath, qint64 size)
     m_backupTotalCount.fetch_add(1);
 }
 
-bool MiyoBackend::dequeueBackupItem(QString &outPath)
+bool HanishikiBackend::dequeueBackupItem(QString &outPath)
 {
     // 호출자가 m_backupQueueMutex 잡고 있어야 함
     initBackupQueuePaths();
@@ -2644,7 +2644,7 @@ bool MiyoBackend::dequeueBackupItem(QString &outPath)
     return !outPath.isEmpty();
 }
 
-void MiyoBackend::resetBackupQueueIfDrained()
+void HanishikiBackend::resetBackupQueueIfDrained()
 {
     // 호출자가 m_backupQueueMutex 잡고 있어야 함
     initBackupQueuePaths();
@@ -2662,7 +2662,7 @@ void MiyoBackend::resetBackupQueueIfDrained()
     }
 }
 
-void MiyoBackend::enqueueBackup(const QString &localPath)
+void HanishikiBackend::enqueueBackup(const QString &localPath)
 {
     // ★ 3중 안전망 — 사용자가 명시적으로 백업 켜야만 작동:
     //   1) config 의 backupEnabled = true 여야 함 (체크박스 ON 한 상태)
@@ -2681,7 +2681,7 @@ void MiyoBackend::enqueueBackup(const QString &localPath)
     emitBackupProgress();
 }
 
-void MiyoBackend::recalcBackupTotals()
+void HanishikiBackend::recalcBackupTotals()
 {
     // 큐 파일 한 번 스캔 — 남은 파일 각각의 size 합산 + done 더해서 total
     QMutexLocker lock(&m_backupQueueMutex);
@@ -2707,7 +2707,7 @@ void MiyoBackend::recalcBackupTotals()
     m_backupTotalCount = count + m_backupDoneCount.load();
 }
 
-void MiyoBackend::emitBackupProgress()
+void HanishikiBackend::emitBackupProgress()
 {
     // 200ms throttle — 너무 자주 UI 갱신 안 함
     qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -2723,7 +2723,7 @@ void MiyoBackend::emitBackupProgress()
     runJs(js);
 }
 
-void MiyoBackend::backupWorker()
+void HanishikiBackend::backupWorker()
 {
     while (m_backupRunning.load()) {
         QString item;
@@ -2944,7 +2944,7 @@ void MiyoBackend::backupWorker()
 // ═════════════════════════════════════════════════════════════════════════
 // 이메일 IMAP 감시 — 새 메일 매치 시 内閣会 즉시 실행
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::startEmailWatch(const QString &server, int port,
+void HanishikiBackend::startEmailWatch(const QString &server, int port,
                                   const QString &user, const QString &pass,
                                   const QString &filterFrom, const QString &filterSubject)
 {
@@ -2962,7 +2962,7 @@ void MiyoBackend::startEmailWatch(const QString &server, int port,
 
     if (!m_emailWatchTimer) {
         m_emailWatchTimer = new QTimer(this);
-        connect(m_emailWatchTimer, &QTimer::timeout, this, &MiyoBackend::emailWatchTick);
+        connect(m_emailWatchTimer, &QTimer::timeout, this, &HanishikiBackend::emailWatchTick);
     }
     m_emailWatchTimer->setInterval(30000);  // 30초
     m_emailWatchTimer->start();
@@ -2971,16 +2971,16 @@ void MiyoBackend::startEmailWatch(const QString &server, int port,
         .arg(filterSubject.isEmpty() ? "*" : filterSubject), "success", "naikakukai");
 
     // 즉시 1회 baseline (last_uid 초기화 용)
-    QTimer::singleShot(500, this, &MiyoBackend::emailWatchTick);
+    QTimer::singleShot(500, this, &HanishikiBackend::emailWatchTick);
 }
 
-void MiyoBackend::stopEmailWatch()
+void HanishikiBackend::stopEmailWatch()
 {
     if (m_emailWatchTimer) m_emailWatchTimer->stop();
     log("📧 이메일 감시 중지", "warning", "naikakukai");
 }
 
-void MiyoBackend::testEmailWatch()
+void HanishikiBackend::testEmailWatch()
 {
     if (m_emailServer.isEmpty()) {
         log("📧 먼저 시작 버튼으로 설정 저장", "warning", "naikakukai");
@@ -2990,7 +2990,7 @@ void MiyoBackend::testEmailWatch()
     emailWatchTick();
 }
 
-void MiyoBackend::emailWatchTick()
+void HanishikiBackend::emailWatchTick()
 {
     if (m_emailServer.isEmpty()) return;
 
@@ -3071,7 +3071,7 @@ void MiyoBackend::emailWatchTick()
     t->start();
 }
 
-void MiyoBackend::naikakukaiTick()
+void HanishikiBackend::naikakukaiTick()
 {
     if (!m_naikakukaiRunning || m_naikakukaiWatches.isEmpty()) return;
 
@@ -3170,7 +3170,7 @@ void MiyoBackend::naikakukaiTick()
     thread->start();
 }
 
-bool MiyoBackend::isAnyRunning() const
+bool HanishikiBackend::isAnyRunning() const
 {
     QMutexLocker lock(&m_runningMutex);
     for (auto it = m_isRunning.constBegin(); it != m_isRunning.constEnd(); ++it) {
@@ -3179,14 +3179,14 @@ bool MiyoBackend::isAnyRunning() const
     return false;
 }
 
-void MiyoBackend::executeJsMainThread(const QString &js)
+void HanishikiBackend::executeJsMainThread(const QString &js)
 {
     if (m_window && m_window->webView()) {
         m_window->webView()->page()->runJavaScript(js);
     }
 }
 
-void MiyoBackend::appendLogMainThread(const QString &message, const QString &type, const QString &platform)
+void HanishikiBackend::appendLogMainThread(const QString &message, const QString &type, const QString &platform)
 {
     if (!m_window || !m_window->webView()) return;
     // 배치 큐에 추가 — flushLogs()에서 모아서 전송
@@ -3210,7 +3210,7 @@ static QString escapeJsString(const QString &s)
     return out;
 }
 
-void MiyoBackend::flushLogs()
+void HanishikiBackend::flushLogs()
 {
     if (!m_window || !m_window->webView()) return;
     if (m_pendingLogs.isEmpty()) return;
@@ -3244,12 +3244,12 @@ void MiyoBackend::flushLogs()
     }
 }
 
-void MiyoBackend::runJs(const QString &js)
+void HanishikiBackend::runJs(const QString &js)
 {
     emit jsSignal(js);
 }
 
-void MiyoBackend::log(const QString &message, const QString &type, const QString &platform)
+void HanishikiBackend::log(const QString &message, const QString &type, const QString &platform)
 {
     QString p = platform.isEmpty() ? m_currentPlatform : platform;
     // JS log box는 platform 단위 (탭 하나에 모든 병렬 로그 표시)
@@ -3261,17 +3261,17 @@ void MiyoBackend::log(const QString &message, const QString &type, const QString
     }
 }
 
-void MiyoBackend::setThreadTrackKey(const QString &trackKey)
+void HanishikiBackend::setThreadTrackKey(const QString &trackKey)
 {
     QMutexLocker lock(&m_threadTrackKeyMutex);
     m_threadTrackKey[QThread::currentThreadId()] = trackKey;
 }
-void MiyoBackend::clearThreadTrackKey()
+void HanishikiBackend::clearThreadTrackKey()
 {
     QMutexLocker lock(&m_threadTrackKeyMutex);
     m_threadTrackKey.remove(QThread::currentThreadId());
 }
-QString MiyoBackend::currentThreadTrackKey() const
+QString HanishikiBackend::currentThreadTrackKey() const
 {
     QMutexLocker lock(&m_threadTrackKeyMutex);
     return m_threadTrackKey.value(QThread::currentThreadId());
@@ -3281,7 +3281,7 @@ QString MiyoBackend::currentThreadTrackKey() const
 // openBackupTerminalLog — 백업 전용 애니메이션 터미널.
 //   스피너 ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ + 컬러 ANSI + clear + tail -n 30 매 150ms refresh.
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::openBackupTerminalLog()
+void HanishikiBackend::openBackupTerminalLog()
 {
     QString platform = "backup";
     QString scriptDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_" + platform;
@@ -3390,7 +3390,7 @@ void MiyoBackend::openBackupTerminalLog()
 #endif
 }
 
-void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePath)
+void HanishikiBackend::openTerminalLog(const QString &platform, const QString &savePath)
 {
     // ★ .command 는 로컬 temp 에 (NAS/외장 마운트는 POSIX 실행권한 보존 X)
     //   사용자 tempDir 이 NAS 면 .command 실행 실패. 로컬 /tmp 사용.
@@ -3527,7 +3527,7 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
 #endif
 }
 
-void MiyoBackend::writeTerminalLog(const QString &message, const QString &platform)
+void HanishikiBackend::writeTerminalLog(const QString &message, const QString &platform)
 {
     // 1) 현재 스레드가 trackKey 등록했으면 (병렬 모드) 그 키의 터미널 파일에만 write
     QString trackKey = currentThreadTrackKey();
@@ -3558,7 +3558,7 @@ void MiyoBackend::writeTerminalLog(const QString &message, const QString &platfo
 //   (자동 "수리" 자체는 SelfRepair 의 결정론적 복구 루틴 + yt-dlp 자동 업데이트가
 //    수행하고, LLM 은 남은 고장의 원인 분석·조치 안내를 보탠다.)
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::llmDiagnoseIfBroken(const QString &platformName, const QString &trackKey)
+void HanishikiBackend::llmDiagnoseIfBroken(const QString &platformName, const QString &trackKey)
 {
     QString logPath = m_terminalLogPaths.value(trackKey);
     if (logPath.isEmpty()) logPath = m_terminalLogPaths.value(platformName);
@@ -3581,7 +3581,7 @@ void MiyoBackend::llmDiagnoseIfBroken(const QString &platformName, const QString
     // ★ this 를 워커 스레드에서 직접 만지지 않는다 — 진단(최대 ~40초 블로킹) 중 앱/백엔드가
     //   파괴되면 use-after-free. 결과 게시는 QPointer 확인 후 메인 스레드에서만 한다.
     //   (log()의 writeTerminalLog 가 m_terminalLogPaths 를 읽으므로 메인 스레드 경유가 맵 동시접근 레이스도 제거)
-    QPointer<MiyoBackend> self(this);
+    QPointer<HanishikiBackend> self(this);
     QThread *t = QThread::create([self, platformName, trackKey, tail]() {
         const QString prompt = QString("플랫폼 '%1' (트랙 %2) 수집 로그 꼬리다. 오류 원인과 조치를 진단하라:\n%3")
                                    .arg(platformName, trackKey, tail);
@@ -3595,7 +3595,7 @@ void MiyoBackend::llmDiagnoseIfBroken(const QString &platformName, const QString
     t->start(QThread::LowPriority);
 }
 
-void MiyoBackend::closeTerminalLog(const QString &platform)
+void HanishikiBackend::closeTerminalLog(const QString &platform)
 {
     QString path;
     if (!platform.isEmpty() && m_terminalLogPaths.contains(platform)) {
@@ -3613,7 +3613,7 @@ void MiyoBackend::closeTerminalLog(const QString &platform)
     }
 }
 
-void MiyoBackend::closeAllTerminalLogs()
+void HanishikiBackend::closeAllTerminalLogs()
 {
     // 모든 플랫폼별 터미널 로그에 [DONE] 마커 쓰기
     for (auto it = m_terminalLogPaths.begin(); it != m_terminalLogPaths.end(); ++it) {
@@ -3636,7 +3636,7 @@ void MiyoBackend::closeAllTerminalLogs()
     }
 }
 
-void MiyoBackend::updateStats(int posts, int media, const QString &status, const QString &platform)
+void HanishikiBackend::updateStats(int posts, int media, const QString &status, const QString &platform)
 {
     QString p = platform.isEmpty() ? m_currentPlatform : platform;
     // ★ 병렬 모드: 워커 스레드가 trackKey 등록했으면 platform 자리를 trackKey로 치환.
@@ -3658,7 +3658,7 @@ void MiyoBackend::updateStats(int posts, int media, const QString &status, const
 // 트랙별 캡쳐 Chrome 디버그 포트 — 한 번 배정하면 그 트랙에는 계속 같은 포트를 준다.
 //   재생성 때 포트가 바뀌면 RealChromeCrawler::start() 가 그 포트를 점유한 다른 트랙의
 //   Chrome 을 죽여, 병렬 수집이 서로를 무너뜨린다.
-int MiyoBackend::capturePortFor(const QString &trackKey)
+int HanishikiBackend::capturePortFor(const QString &trackKey)
 {
     if (trackKey.isEmpty()) return 9223;          // 단일 수집은 고정 포트
     QMutexLocker mapLock(&m_capChromeMapMutex);
@@ -3671,7 +3671,7 @@ int MiyoBackend::capturePortFor(const QString &trackKey)
     return port;
 }
 
-void MiyoBackend::notifyCollectionEnded(const QString &platform)
+void HanishikiBackend::notifyCollectionEnded(const QString &platform)
 {
     // 수집 스레드 종료 시 호출 — JS 가 멀티 진행 여부를 보고 시작/정지 버튼을 안전하게 리셋.
     //   (단일 수집: 즉시 리셋. 병렬: 마지막 트랙 종료 시 리셋.)
@@ -3711,12 +3711,12 @@ void MiyoBackend::notifyCollectionEnded(const QString &platform)
     }
 }
 
-void MiyoBackend::showLog(const QString &message)
+void HanishikiBackend::showLog(const QString &message)
 {
     log(message, "warning");
 }
 
-void MiyoBackend::loadConfig()
+void HanishikiBackend::loadConfig()
 {
     // 저장된 파일명 규칙을 적용 (윈도우 호환 / 유닉스 원문 보존)
     FileHelper::setUnixFilenames(m_config->unixFilenames());
@@ -3759,7 +3759,7 @@ void MiyoBackend::loadConfig()
     // ★ NAS watchdog 자동 시작 — 30초마다 마운트 체크 + 자동 재연결
     if (!m_nasWatchdogTimer) {
         m_nasWatchdogTimer = new QTimer(this);
-        connect(m_nasWatchdogTimer, &QTimer::timeout, this, &MiyoBackend::nasWatchdogTick);
+        connect(m_nasWatchdogTimer, &QTimer::timeout, this, &HanishikiBackend::nasWatchdogTick);
         m_nasWatchdogTimer->start(30000);  // 30초
     }
 
@@ -3806,7 +3806,7 @@ void MiyoBackend::loadConfig()
     });
 }
 
-void MiyoBackend::saveConfig(const QString &configJson)
+void HanishikiBackend::saveConfig(const QString &configJson)
 {
     QJsonDocument doc = QJsonDocument::fromJson(configJson.toUtf8());
     if (doc.isNull()) return;
@@ -3815,7 +3815,7 @@ void MiyoBackend::saveConfig(const QString &configJson)
     m_config->save();
 }
 
-void MiyoBackend::saveFormData(const QString &formJson)
+void HanishikiBackend::saveFormData(const QString &formJson)
 {
     QJsonDocument doc = QJsonDocument::fromJson(formJson.toUtf8());
     if (doc.isNull()) return;
@@ -3823,7 +3823,7 @@ void MiyoBackend::saveFormData(const QString &formJson)
     m_config->save();
 }
 
-void MiyoBackend::loadFormData()
+void HanishikiBackend::loadFormData()
 {
     QJsonObject data = m_config->formData();
     if (data.isEmpty()) return;
@@ -3833,7 +3833,7 @@ void MiyoBackend::loadFormData()
     runJs(QString("restoreFormData(decodeURIComponent(escape(atob('%1'))))").arg(b64));
 }
 
-void MiyoBackend::browsePath(const QString &platform)
+void HanishikiBackend::browsePath(const QString &platform)
 {
     // ★ 시작 디렉토리 /Volumes — Finder 처럼 NAS/외장 목록부터 보임
     QString startDir = QDir("/Volumes").exists() ? "/Volumes" : QDir::homePath();
@@ -3846,7 +3846,7 @@ void MiyoBackend::browsePath(const QString &platform)
 // ★ 모든 플랫폼 저장 경로를 NAS 로 일괄 변경
 //   마운트된 첫 NAS/외장 자동 감지 → 각 플랫폼 input 에 /Volumes/X/<Platform>/ 자동 입력 + 저장
 // (QInputDialog include는 위 pickMountedVolume 에서 이미 들어옴)
-void MiyoBackend::setAllPathsToNas()
+void HanishikiBackend::setAllPathsToNas()
 {
     QString chosenPath;
     QStringList paths, items;
@@ -3938,7 +3938,7 @@ void MiyoBackend::setAllPathsToNas()
 // 저장 모드 — local / nas / external
 //   체크박스 한 번이면 모든 플랫폼 일괄 NAS/외장 사용 + 개별 input 숨김
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::setStorageMode(const QString &mode)
+void HanishikiBackend::setStorageMode(const QString &mode)
 {
     if (mode == "local") {
         // 로컬 모드 — 각 플랫폼 input 다시 보임 + 저장
@@ -4073,7 +4073,7 @@ void MiyoBackend::setStorageMode(const QString &mode)
     }, Qt::QueuedConnection);
 }
 
-void MiyoBackend::openFolder(const QString &path)
+void HanishikiBackend::openFolder(const QString &path)
 {
     QString folderPath = path;
     if (folderPath.startsWith(QLatin1Char('~'))) folderPath.replace(0, 1, QDir::homePath());
@@ -4088,7 +4088,7 @@ void MiyoBackend::openFolder(const QString &path)
 #endif
 }
 
-void MiyoBackend::pasteToField(const QString &fieldId)
+void HanishikiBackend::pasteToField(const QString &fieldId)
 {
     QString text = QApplication::clipboard()->text().trimmed();
     if (!text.isEmpty()) {
@@ -4099,7 +4099,7 @@ void MiyoBackend::pasteToField(const QString &fieldId)
     }
 }
 
-void MiyoBackend::pasteClipboard()
+void HanishikiBackend::pasteClipboard()
 {
     QString text = QApplication::clipboard()->text().trimmed();
     if (!text.isEmpty()) {
@@ -4110,9 +4110,9 @@ void MiyoBackend::pasteClipboard()
 // ★ openExternalApp 제거됨 — anipo/AINU companion apps 더 이상 번들/사용 안 함.
 
 // No-ops: everything is now inline in the main app
-void MiyoBackend::openYoutubeWindow() {}
-void MiyoBackend::openDiscordWindow() {}
-void MiyoBackend::openInstagramWindow() {}
+void HanishikiBackend::openYoutubeWindow() {}
+void HanishikiBackend::openDiscordWindow() {}
+void HanishikiBackend::openInstagramWindow() {}
 
 // Helper: find bundled tool path, fallback to system
 static QString findBundledTool(const QString &name)
@@ -4149,7 +4149,7 @@ static QProcessEnvironment bundledEnv()
     return Common::bundledProcessEnv();
 }
 
-void MiyoBackend::startCollection(const QString &configJson)
+void HanishikiBackend::startCollection(const QString &configJson)
 {
     // [DEBUG] window._debugLogsEnabled가 true일 때만 [CPP] 라인 출력 — 직접 runJs로 호출
     auto dbg = [this](const QString &msg, const QString &platform = "twitter") {
@@ -4405,7 +4405,7 @@ void MiyoBackend::startCollection(const QString &configJson)
     log(QString("수집 시작 (%1)").arg(trackKey), "info", platformName);
 }
 
-void MiyoBackend::stopCollection(const QString &platformName)
+void HanishikiBackend::stopCollection(const QString &platformName)
 {
     // 1) 플래그 즉시 내림 (모든 폴링 지점에서 다음 체크 시 종료)
     //    병렬 모드에서는 platform#0, platform#1, ... 도 함께 false로 내려야 함
@@ -4518,7 +4518,7 @@ void MiyoBackend::stopCollection(const QString &platformName)
 // ═════════════════════════════════════════════════════════════════════════
 // 디버그 진단 — 설정 탭의 진단 버튼들이 호출
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::getDiagnosticInfo()
+void HanishikiBackend::getDiagnosticInfo()
 {
     QString info;
 #ifdef Q_OS_MACOS
@@ -4540,7 +4540,7 @@ void MiyoBackend::getDiagnosticInfo()
     runJs(QString("if(window.onDiagInfo) onDiagInfo('%1');").arg(info));
 }
 
-void MiyoBackend::killZombieChromes()
+void HanishikiBackend::killZombieChromes()
 {
     // 좀비 정리 대상:
     //   1) chrome_capture_profile (사용자 Chrome args 매치) — 기존
@@ -4581,13 +4581,13 @@ void MiyoBackend::killZombieChromes()
 // ═════════════════════════════════════════════════════════════════════════
 // WebDAV NAS 업로드 — Synology 등
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::setWebDavConfig(const QString &url, const QString &user, const QString &pass, bool enabled)
+void HanishikiBackend::setWebDavConfig(const QString &url, const QString &user, const QString &pass, bool enabled)
 {
     setNasConfig(url, user, pass, m_config->sftpKeyFile(), enabled);
 }
 
 // NAS 업로드 설정 — WebDAV(https://) 와 SFTP(sftp://) 를 주소 하나로 받는다.
-void MiyoBackend::setNasConfig(const QString &url, const QString &user, const QString &pass,
+void HanishikiBackend::setNasConfig(const QString &url, const QString &user, const QString &pass,
                                const QString &keyFile, bool enabled)
 {
     m_config->setWebdavUrl(url);
@@ -4610,7 +4610,7 @@ void MiyoBackend::setNasConfig(const QString &url, const QString &user, const QS
         "success", "settings");
 }
 
-void MiyoBackend::setApiOverride(const QString &key, const QString &value)
+void HanishikiBackend::setApiOverride(const QString &key, const QString &value)
 {
     if (key.trimmed().isEmpty()) { log("키가 비었습니다.", "warning", "settings"); return; }
     if (Common::setApiOverride(key.trimmed(), value.trimmed())) {
@@ -4624,14 +4624,14 @@ void MiyoBackend::setApiOverride(const QString &key, const QString &value)
     getApiOverrides();
 }
 
-void MiyoBackend::getApiOverrides()
+void HanishikiBackend::getApiOverrides()
 {
     runJs(QString("onApiOverrides(%1)").arg(QString::fromUtf8(
         QJsonDocument(QJsonArray{Common::apiOverridesJson(), Common::apiOverridesPath()})
             .toJson(QJsonDocument::Compact))));
 }
 
-void MiyoBackend::openApiOverridesFile()
+void HanishikiBackend::openApiOverridesFile()
 {
     const QString p = Common::apiOverridesPath();
     if (!QFileInfo::exists(p)) Common::setApiOverride("_note", "여기에 twitter.userTweets 같은 키를 넣으면 코드 기본값 대신 사용됩니다");
@@ -4639,7 +4639,7 @@ void MiyoBackend::openApiOverridesFile()
     log(QString("API 상수 파일 위치: %1").arg(p), "info", "settings");
 }
 
-void MiyoBackend::setUnixFilenames(bool on)
+void HanishikiBackend::setUnixFilenames(bool on)
 {
     m_config->setUnixFilenames(on);
     m_config->save();
@@ -4653,7 +4653,7 @@ void MiyoBackend::setUnixFilenames(bool on)
 // SFTP 연결 확인 — 번들 rclone 으로 원격 폴더를 실제로 읽어 본다.
 //   "붙기만" 확인하지 않고 경로까지 읽는 이유: WebDAV 쪽에서 OPTIONS 로 확인했다가
 //   경로가 틀려도 성공이라 해놓고 업로드가 전부 실패한 전례가 있다.
-void MiyoBackend::testSftpConnection(const QString &url, const QString &user, const QString &pass)
+void HanishikiBackend::testSftpConnection(const QString &url, const QString &user, const QString &pass)
 {
     QString rclone = QCoreApplication::applicationDirPath() + "/../Resources/tools/rclone";
 #ifdef Q_OS_WIN
@@ -4738,7 +4738,7 @@ void MiyoBackend::testSftpConnection(const QString &url, const QString &user, co
     t->start();
 }
 
-void MiyoBackend::testWebDavConnection()
+void HanishikiBackend::testWebDavConnection()
 {
     QString url  = m_config->webdavUrl();
     QString user = m_config->webdavUser();
@@ -4832,7 +4832,7 @@ void MiyoBackend::testWebDavConnection()
     t->start();
 }
 
-void MiyoBackend::enqueueWebDavUpload(const QString &localPath)
+void HanishikiBackend::enqueueWebDavUpload(const QString &localPath)
 {
     if (m_webdav && m_webdav->isEnabled()) {
         m_webdav->enqueue(localPath);
@@ -4848,7 +4848,7 @@ void MiyoBackend::enqueueWebDavUpload(const QString &localPath)
 //   마운트되면 /Volumes/<공유폴더> 생성 + 사이드바 표시.
 //   사용자가 그 폴더를 저장 경로로 선택하면 다운로드가 NAS 로 직행.
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::mountWebDavInFinder()
+void HanishikiBackend::mountWebDavInFinder()
 {
     QString url  = m_config->webdavUrl();
     QString user = m_config->webdavUser();
@@ -4938,7 +4938,7 @@ void MiyoBackend::mountWebDavInFinder()
 //     않았다(툼블러 OAuth 안내의 링크 두 개). 오류도 안 뜨니 "링크가 죽었다" 로만 보인다.
 //   http/https 만 연다 — 번들 HTML 이라 위험할 일은 없지만, file:// 같은 다른 스킴을
 //   여는 통로를 만들어 둘 이유도 없다.
-void MiyoBackend::openUrl(const QString &url)
+void HanishikiBackend::openUrl(const QString &url)
 {
     const QUrl u(url.trimmed());
     const QString sc = u.scheme().toLower();
@@ -4949,7 +4949,7 @@ void MiyoBackend::openUrl(const QString &url)
     QDesktopServices::openUrl(u);
 }
 
-void MiyoBackend::openSecurityPrefs()
+void HanishikiBackend::openSecurityPrefs()
 {
 #ifdef Q_OS_MACOS
     // macOS 13+ : 시스템 설정 → 개인정보 보호 및 보안 → 파일 및 폴더
@@ -4962,7 +4962,7 @@ void MiyoBackend::openSecurityPrefs()
 // 마운트된 볼륨 목록 (NAS/외장/CD/USB 등) — UI 드롭다운 채움용
 //   network=true 표시: WebDAV/SMB/AFP/NFS 등 (df 의 fstype 으로 판정)
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::listMountedVolumes()
+void HanishikiBackend::listMountedVolumes()
 {
     qDebug() << "[NAS] listMountedVolumes called";
     QJsonArray vols;
@@ -5018,7 +5018,7 @@ void MiyoBackend::listMountedVolumes()
 // Qt native dialog 로 마운트된 볼륨 선택 → input 직접 갱신
 // ═════════════════════════════════════════════════════════════════════════
 #include <QInputDialog>
-void MiyoBackend::pickMountedVolume(const QString &targetInputId)
+void HanishikiBackend::pickMountedVolume(const QString &targetInputId)
 {
     qDebug() << "[pickMountedVolume] called targetInputId=" << targetInputId;
     log(QString("[NAS] pickMountedVolume(%1) 호출됨").arg(targetInputId), "info", "settings");
@@ -5133,7 +5133,7 @@ void MiyoBackend::pickMountedVolume(const QString &targetInputId)
     }, Qt::QueuedConnection);
 }
 
-void MiyoBackend::showSystemNotification(const QString &title, const QString &body)
+void HanishikiBackend::showSystemNotification(const QString &title, const QString &body)
 {
 #ifdef Q_OS_MACOS
     // 작은따옴표 escape
@@ -5150,7 +5150,7 @@ void MiyoBackend::showSystemNotification(const QString &title, const QString &bo
 #endif
 }
 
-void MiyoBackend::checkNewPosts(const QString &platformName)
+void HanishikiBackend::checkNewPosts(const QString &platformName)
 {
     if (platformName == "twitter") {
         if (!m_twitterCollector) {
@@ -5187,7 +5187,7 @@ void MiyoBackend::checkNewPosts(const QString &platformName)
     }
 }
 
-void MiyoBackend::startYoutube(const QString &configJson)
+void HanishikiBackend::startYoutube(const QString &configJson)
 {
     QJsonDocument doc = QJsonDocument::fromJson(configJson.toUtf8());
     if (doc.isNull()) return;
@@ -5216,7 +5216,7 @@ void MiyoBackend::startYoutube(const QString &configJson)
     thread->start();
 }
 
-void MiyoBackend::stopYoutube()
+void HanishikiBackend::stopYoutube()
 {
     m_isRunning["youtube"] = false;
     // Signal terminal script to stop — 마지막 config의 path에서 찾기
@@ -5262,7 +5262,7 @@ void MiyoBackend::stopYoutube()
 }
 
 // ───────── 니코니코동화(니코동) — yt-dlp 파이프라인 재사용 (platform="niconico") ─────────
-void MiyoBackend::startNiconico(const QString &configJson)
+void HanishikiBackend::startNiconico(const QString &configJson)
 {
     QJsonDocument doc = QJsonDocument::fromJson(configJson.toUtf8());
     if (doc.isNull()) return;
@@ -5283,7 +5283,7 @@ void MiyoBackend::startNiconico(const QString &configJson)
     thread->start();
 }
 
-void MiyoBackend::stopNiconico()
+void HanishikiBackend::stopNiconico()
 {
     m_isRunning["niconico"] = false;   // 모니터 루프 즉시 탈출
     // 터미널 스크립트에 stop 신호 (스크립트가 STOP_MARKER 폴링하며 자기 yt-dlp 만 kill — 동시 youtube 보호)
@@ -5297,7 +5297,7 @@ void MiyoBackend::stopNiconico()
     runJs("var _e=document.getElementById('niconico-progress-fill'); if(_e)_e.style.width='0%';");
 }
 
-void MiyoBackend::analyzeYoutube(const QString &url)
+void HanishikiBackend::analyzeYoutube(const QString &url)
 {
     QThread *thread = QThread::create([this, url]() {
         QStringList urls;
@@ -5360,7 +5360,7 @@ void MiyoBackend::analyzeYoutube(const QString &url)
 //
 // 첫 호출에서만 cookies를 cookieStore에 주입한다 (이후엔 재사용 — 매번 주입하면 느림).
 
-bool MiyoBackend::captureRealTweetPage(const QString &tweetUrl,
+bool HanishikiBackend::captureRealTweetPage(const QString &tweetUrl,
                                        const QString &saveDir,
                                        const QString &filename,
                                        const QList<QNetworkCookie> &cookies,
@@ -5493,7 +5493,7 @@ bool MiyoBackend::captureRealTweetPage(const QString &tweetUrl,
 // 실제 Chrome을 CDP로 조종하면 사용자의 로그인 세션 + 일반적인 fingerprint를 그대로 써서
 // 정상 페이지가 받아진다. m_captureChrome 인스턴스를 한 번 띄우면 batch 내내 재사용.
 
-bool MiyoBackend::captureRealPageCDP(const QString &url,
+bool HanishikiBackend::captureRealPageCDP(const QString &url,
                                       const QString &saveDir,
                                       const QString &filename,
                                       int waitMs,
@@ -5972,7 +5972,7 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
 //   각 캡쳐 호출 시 captureRealPageCDPLoginAware 가 자동으로 호출해서
 //   기존 cookies 인자와 병합 → 사용자는 매번 따로 쿠키 빌드 안 해도 됨.
 // ═════════════════════════════════════════════════════════════════════════
-QList<QNetworkCookie> MiyoBackend::cookiesForCapture(const QString &platform, const QJsonObject &config) const
+QList<QNetworkCookie> HanishikiBackend::cookiesForCapture(const QString &platform, const QJsonObject &config) const
 {
     QList<QNetworkCookie> out;
     if (platform.isEmpty()) return out;
@@ -6067,7 +6067,7 @@ QList<QNetworkCookie> MiyoBackend::cookiesForCapture(const QString &platform, co
 // ═════════════════════════════════════════════════════════════════════════
 // captureRealPageCDPLoginAware — 로그인 페이지 감지 + 사용자 GUI 확인 대기 후 캡쳐
 // ═════════════════════════════════════════════════════════════════════════
-bool MiyoBackend::captureRealPageCDPLoginAware(const QString &url,
+bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
                                                 const QString &saveDir,
                                                 const QString &filename,
                                                 const QString &loginCheckJs,
@@ -6281,7 +6281,7 @@ bool MiyoBackend::captureRealPageCDPLoginAware(const QString &url,
     return captureRealPageCDP(url, saveDir, filename, waitMs, effectiveCookies);
 }
 
-void MiyoBackend::confirmLoginDone(const QString &platform)
+void HanishikiBackend::confirmLoginDone(const QString &platform)
 {
     QString p = platform.isEmpty() ? "general" : platform;
     QMutexLocker lock(&m_loginPauseMutex);
@@ -6292,7 +6292,7 @@ void MiyoBackend::confirmLoginDone(const QString &platform)
     }
 }
 
-void MiyoBackend::injectCdpCookies(const QList<QNetworkCookie> &cookies)
+void HanishikiBackend::injectCdpCookies(const QList<QNetworkCookie> &cookies)
 {
     if (cookies.isEmpty()) return;
     // QNetworkCookie 리스트 → CDP Network.setCookie 형식 JsonArray 변환
@@ -6333,7 +6333,7 @@ void MiyoBackend::injectCdpCookies(const QList<QNetworkCookie> &cookies)
 
 // ===== Web Crawl Engine (API 대체 수집 — 정책 변경 대비) =====
 
-void MiyoBackend::runWebCrawlCollection(const QJsonObject &config)
+void HanishikiBackend::runWebCrawlCollection(const QJsonObject &config)
 {
     // ★ 워커 스레드 차단용 세마포어. 다중대상 시나리오에서 1번째 세션이 다 끝나기
     //    전에 워커 스레드가 리턴 → m_isRunning[platform]=false → 메인 스레드의 스크롤
@@ -6943,7 +6943,7 @@ void MiyoBackend::runWebCrawlCollection(const QJsonObject &config)
 //   useUserProfile — true면 사용자 기본 Chrome 프로필 사용 (로그인 공유)
 //                    false면 임시 프로필 (기본값, 다른 Chrome과 충돌 방지)
 
-void MiyoBackend::runRealChromeCollection(const QJsonObject &config)
+void HanishikiBackend::runRealChromeCollection(const QJsonObject &config)
 {
     // ★ 워커 스레드를 차단하기 위한 세마포어.
     //    다중대상 시나리오에서 비동기 체인이 끝나기 전에 워커 스레드가 리턴하면
@@ -7214,7 +7214,7 @@ void MiyoBackend::runRealChromeCollection(const QJsonObject &config)
 //   트위터 탭의 로그/중지 버튼/실행상태와 일관되게 platform="twitter" 로 동작.
 // ═══════════════════════════════════════════════════════════════════════════
 // 단일 스페이스 URL → yt-dlp 다운로드. 스페이스 자동탐지(전체 수집)에서도 재사용.
-bool MiyoBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir, const bool *running)
+bool HanishikiBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir, const bool *running)
 {
     const QString url = urlIn.trimmed();
     if (url.isEmpty()) return false;
@@ -7282,7 +7282,7 @@ bool MiyoBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir, 
     return ok;
 }
 
-void MiyoBackend::runTwitterSpace(const QJsonObject &config)
+void HanishikiBackend::runTwitterSpace(const QJsonObject &config)
 {
     const QString url = config["target"].toString().trimmed();
     if (url.isEmpty()) {
@@ -7295,7 +7295,7 @@ void MiyoBackend::runTwitterSpace(const QJsonObject &config)
     downloadSpaceUrl(url, savePath + "/twitter/spaces");
 }
 
-void MiyoBackend::runTwitterCollection(const QJsonObject &config)
+void HanishikiBackend::runTwitterCollection(const QJsonObject &config)
 {
     CollectionGuard _cg(platformSem("twitter"), this, "twitter");
     // ★ 스페이스(오디오 라이브) — twikit 경로가 아니라 yt-dlp 로 직접 다운로드
@@ -7349,7 +7349,7 @@ void MiyoBackend::runTwitterCollection(const QJsonObject &config)
     m_twitterCollector->collect(enrichedConfig, m_isRunning["twitter"]);
 }
 
-void MiyoBackend::runBlueskyCollection(const QJsonObject &config)
+void HanishikiBackend::runBlueskyCollection(const QJsonObject &config)
 {
     CollectionGuard _cg(platformSem("bluesky"), this, "bluesky");
     setIntegrityActiveForPlatform("bluesky", config["integrityCheck"].toBool(false));
@@ -7386,7 +7386,7 @@ void MiyoBackend::runBlueskyCollection(const QJsonObject &config)
     m_blueskyCollector->collect(enrichedConfig, m_isRunning["bluesky"]);
 }
 
-void MiyoBackend::runDiscordCollection(const QJsonObject &config)
+void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
 {
     CollectionGuard _cg(platformSem("discord"), this, "discord");
     if (config["method"].toString() == "chrome") {
@@ -8255,7 +8255,7 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
     }
 }
 
-void MiyoBackend::runInstagramCollection(const QJsonObject &config)
+void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
 {
     CollectionGuard _cg(platformSem("instagram"), this, "instagram");
     setIntegrityActiveForPlatform("instagram", config["integrityCheck"].toBool(false));
@@ -9167,7 +9167,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     }
 }
 
-void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
+void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
 {
     // ★ platform: "youtube"(기본) 또는 "niconico" — yt-dlp 파이프라인 공용 (니코동도 yt-dlp 가 처리).
     const QString platform = config.value("platform").toString().isEmpty()
@@ -9689,7 +9689,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 // ── Pixiv ──
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-void MiyoBackend::runPixivCollection(const QJsonObject &config)
+void HanishikiBackend::runPixivCollection(const QJsonObject &config)
 {
     CollectionGuard _cg(platformSem("pixiv"), this, "pixiv");
     setIntegrityActiveForPlatform("pixiv", config["integrityCheck"].toBool(false));
@@ -10857,7 +10857,7 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
 // ── Disk / TempDir Settings ──
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-void MiyoBackend::browseTempDir()
+void HanishikiBackend::browseTempDir()
 {
     QString dir = QFileDialog::getExistingDirectory(m_window, "임시 저장 디스크 선택");
     if (!dir.isEmpty()) {
@@ -10865,7 +10865,7 @@ void MiyoBackend::browseTempDir()
     }
 }
 
-void MiyoBackend::browseSecondaryPath()
+void HanishikiBackend::browseSecondaryPath()
 {
     QString dir = QFileDialog::getExistingDirectory(m_window, "보조 저장 경로 선택 (1번 가득 찼을 때 사용)");
     if (!dir.isEmpty()) {
@@ -10875,7 +10875,7 @@ void MiyoBackend::browseSecondaryPath()
     }
 }
 
-void MiyoBackend::getFreeSpaceGB(const QString &path)
+void HanishikiBackend::getFreeSpaceGB(const QString &path)
 {
     QString p = path;
     if (p.startsWith(QLatin1Char('~'))) p.replace(0, 1, QDir::homePath());
@@ -10884,7 +10884,7 @@ void MiyoBackend::getFreeSpaceGB(const QString &path)
     runJs(QString("onSecondaryFreeSpaceResult(%1)").arg(gb, 0, 'f', 2));
 }
 
-void MiyoBackend::setTempDir(const QString &path)
+void HanishikiBackend::setTempDir(const QString &path)
 {
     m_config->setTempDir(path);
     m_config->save();
@@ -10909,7 +10909,7 @@ void MiyoBackend::setTempDir(const QString &path)
 // ── trad (steganography: hide files in PNG) ──
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-void MiyoBackend::getTradCoverBase64()
+void HanishikiBackend::getTradCoverBase64()
 {
     QString coverPath = m_config->tradCoverPath();
     QFile coverFile;
@@ -10928,7 +10928,7 @@ void MiyoBackend::getTradCoverBase64()
     }
 }
 
-void MiyoBackend::selectTradCover()
+void HanishikiBackend::selectTradCover()
 {
     QString path = QFileDialog::getOpenFileName(m_window, "커버 이미지 선택", QString(), "Images (*.png *.jpg *.jpeg)");
     if (path.isEmpty()) return;
@@ -10939,7 +10939,7 @@ void MiyoBackend::selectTradCover()
     log("커버 변경: " + path, "success", "trad");
 }
 
-void MiyoBackend::selectTradFiles()
+void HanishikiBackend::selectTradFiles()
 {
     QStringList files = QFileDialog::getOpenFileNames(m_window, "파일 선택");
     if (files.isEmpty()) return;
@@ -10961,7 +10961,7 @@ void MiyoBackend::selectTradFiles()
     log(QString("%1개 파일 선택").arg(files.size()), "info", "trad");
 }
 
-void MiyoBackend::selectTradFolder()
+void HanishikiBackend::selectTradFolder()
 {
     QString dir = QFileDialog::getExistingDirectory(m_window, "폴더 선택");
     if (dir.isEmpty()) return;
@@ -10990,13 +10990,13 @@ void MiyoBackend::selectTradFolder()
     log(QString("폴더에서 %1개 파일 추가: %2").arg(fileArray.size()).arg(dir), "info", "trad");
 }
 
-void MiyoBackend::stopTrad()
+void HanishikiBackend::stopTrad()
 {
     m_tradCancelled.store(true);
     log("중단 요청됨", "warning", "trad");
 }
 
-void MiyoBackend::startTrad(const QString &configJson)
+void HanishikiBackend::startTrad(const QString &configJson)
 {
     m_tradCancelled.store(false);
     QJsonObject config = QJsonDocument::fromJson(configJson.toUtf8()).object();
@@ -11951,7 +11951,7 @@ void MiyoBackend::startTrad(const QString &configJson)
     thread->start();
 }
 
-void MiyoBackend::extractTrad(const QString &configJson)
+void HanishikiBackend::extractTrad(const QString &configJson)
 {
     QJsonObject config = QJsonDocument::fromJson(configJson.toUtf8()).object();
 
@@ -12733,12 +12733,12 @@ void MiyoBackend::extractTrad(const QString &configJson)
 // ── Browser (crawl embedded browser) ──
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-void MiyoBackend::showBrowser(bool show)
+void HanishikiBackend::showBrowser(bool show)
 {
     m_window->showBrowser(show);
 }
 
-void MiyoBackend::browserNavigate(const QString &url)
+void HanishikiBackend::browserNavigate(const QString &url)
 {
     auto *view = m_window->browserView();
     if (!view) return;
@@ -12749,31 +12749,31 @@ void MiyoBackend::browserNavigate(const QString &url)
     view->setUrl(QUrl(finalUrl));
 }
 
-void MiyoBackend::browserBack()
+void HanishikiBackend::browserBack()
 {
     auto *view = m_window->browserView();
     if (view) view->back();
 }
 
-void MiyoBackend::browserForward()
+void HanishikiBackend::browserForward()
 {
     auto *view = m_window->browserView();
     if (view) view->forward();
 }
 
-void MiyoBackend::browserRefresh()
+void HanishikiBackend::browserRefresh()
 {
     auto *view = m_window->browserView();
     if (view) view->reload();
 }
 
-void MiyoBackend::browserStop()
+void HanishikiBackend::browserStop()
 {
     auto *view = m_window->browserView();
     if (view) view->stop();
 }
 
-void MiyoBackend::crawlerContinueAfterLogin()
+void HanishikiBackend::crawlerContinueAfterLogin()
 {
     if (m_crawler && m_crawler->isWaitingForLogin()) {
         m_crawler->continueAfterLogin();
@@ -12782,7 +12782,7 @@ void MiyoBackend::crawlerContinueAfterLogin()
     }
 }
 
-void MiyoBackend::downloadPageMedia(const QString &configJson)
+void HanishikiBackend::downloadPageMedia(const QString &configJson)
 {
     auto *view = m_window->browserView();
     if (!view || !view->page()) {
@@ -12886,7 +12886,7 @@ void MiyoBackend::downloadPageMedia(const QString &configJson)
 // ── System / Maintenance ──
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-void MiyoBackend::getSystemInfo()
+void HanishikiBackend::getSystemInfo()
 {
     QThread *thread = QThread::create([this]() {
         QString python = Common::bundledPythonPath();
@@ -13044,7 +13044,7 @@ void MiyoBackend::getSystemInfo()
     thread->start();
 }
 
-void MiyoBackend::updateModules()
+void HanishikiBackend::updateModules()
 {
     if (m_pythonBusy.load()) {
         log("Python 작업 진행 중 — 모듈 업데이트 대기", "info", "settings");
@@ -13119,7 +13119,7 @@ void MiyoBackend::updateModules()
 // ★ 앱 내부(번들)에 모듈을 설치하면 codesign 봉인이 깨진다 → 설치 직후 자동 재서명해 복구.
 //   활성 python_env 가 번들 안일 때만 동작(외부 복사본을 쓰는 경우엔 서명과 무관하므로 무동작).
 //   워커 스레드에서 호출해도 안전하도록 동기 실행하며, 진행/결과를 로그로 알린다.
-void MiyoBackend::resealBundleAfterInstall(const QString &why)
+void HanishikiBackend::resealBundleAfterInstall(const QString &why)
 {
     const QString app = Common::appBundlePath();
     if (app.isEmpty()) return;                                   // 번들 실행이 아님(개발 빌드)
@@ -13210,7 +13210,7 @@ static QStringList bundledLlmModelHeads()
     return heads;
 }
 
-void MiyoBackend::getLlmStatus()
+void HanishikiBackend::getLlmStatus()
 {
     const QString dir = llmDir();
     const bool online = (m_config && m_config->aiOnline());
@@ -13249,7 +13249,7 @@ void MiyoBackend::getLlmStatus()
 //  ★ 대상은 반드시 이 세 함수로만 정한다. 예전엔 "http://127.0.0.1:8737" 이
 //    17곳에 흩어져 있었고, 그중 하나만 빠뜨리면 "대화는 온라인인데 상태 표시는
 //    로컬" 같은 어긋남이 조용히 생긴다.
-QString MiyoBackend::llmBase() const
+QString HanishikiBackend::llmBase() const
 {
     if (m_config && m_config->aiOnline()) {
         QString b = m_config->aiBaseUrl().trimmed();
@@ -13261,7 +13261,7 @@ QString MiyoBackend::llmBase() const
     return QStringLiteral("http://127.0.0.1:8737");
 }
 
-QMap<QString, QString> MiyoBackend::llmHeaders() const
+QMap<QString, QString> HanishikiBackend::llmHeaders() const
 {
     QMap<QString, QString> h;
     if (m_config && m_config->aiOnline()) {
@@ -13271,13 +13271,13 @@ QMap<QString, QString> MiyoBackend::llmHeaders() const
     return h;   // 로컬 서버는 인증이 없다
 }
 
-QString MiyoBackend::llmOnlineModel() const
+QString HanishikiBackend::llmOnlineModel() const
 {
     if (m_config && m_config->aiOnline()) return m_config->aiModel().trimmed();
     return QString();
 }
 
-void MiyoBackend::setAiMode(const QString &mode)
+void HanishikiBackend::setAiMode(const QString &mode)
 {
     if (!m_config) return;
     const QString m = (mode == "online") ? "online" : "local";
@@ -13288,7 +13288,7 @@ void MiyoBackend::setAiMode(const QString &mode)
     getLlmStatus();
 }
 
-void MiyoBackend::setAiOnlineConfig(const QString &baseUrl, const QString &apiKey, const QString &model)
+void HanishikiBackend::setAiOnlineConfig(const QString &baseUrl, const QString &apiKey, const QString &model)
 {
     if (!m_config) return;
     m_config->setAiBaseUrl(baseUrl.trimmed());
@@ -13299,7 +13299,7 @@ void MiyoBackend::setAiOnlineConfig(const QString &baseUrl, const QString &apiKe
     log("온라인 AI 설정을 저장했습니다.", "success", "settings");
 }
 
-void MiyoBackend::getAiConfig()
+void HanishikiBackend::getAiConfig()
 {
     if (!m_config) return;
     QJsonObject o;
@@ -13312,7 +13312,7 @@ void MiyoBackend::getAiConfig()
               .arg(QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))));
 }
 
-void MiyoBackend::testAiOnline()
+void HanishikiBackend::testAiOnline()
 {
     if (!m_config) return;
     if (!m_config->aiOnline()) { runJs("if(window.onAiTestResult)onAiTestResult(false,'온라인 모드가 아닙니다')"); return; }
@@ -13329,7 +13329,7 @@ void MiyoBackend::testAiOnline()
               .arg(ok ? "true" : "false", msg));
 }
 
-void MiyoBackend::startLocalLlm(const QString &modelHint)
+void HanishikiBackend::startLocalLlm(const QString &modelHint)
 {
     if (m_llmProc && m_llmProc->state() != QProcess::NotRunning) {
         log("로컬 AI 가 이미 실행 중입니다.", "info", "settings");
@@ -13439,7 +13439,7 @@ void MiyoBackend::startLocalLlm(const QString &modelHint)
     t->start(QThread::LowPriority);
 }
 
-void MiyoBackend::stopLocalLlm()
+void HanishikiBackend::stopLocalLlm()
 {
     bool stopped = false;
     if (m_llmProc && m_llmProc->state() != QProcess::NotRunning) {
@@ -13457,7 +13457,7 @@ void MiyoBackend::stopLocalLlm()
 }
 
 // 8737 을 점유한 llama-server 를 찾아 종료한다(우리가 띄운 것이 아니어도).
-bool MiyoBackend::killLlmOnPort()
+bool HanishikiBackend::killLlmOnPort()
 {
     QProcess find;
 #ifdef Q_OS_WIN
@@ -13496,7 +13496,7 @@ static QString webSearchSnippets(const QString &apiKey, const QString &query);  
 //   ("트위터가 안 돼요" → 토큰이 있나? 캡쳐가 켜져 있나? 저장 위치는?).
 //   그것을 모르면 AI 는 일반론만 답한다(실제로 "트위터 앱을 열어 권한을 허용하세요"
 //   같은, 이 앱과 상관없는 답이 나왔다).
-QString MiyoBackend::appStateBrief() const
+QString HanishikiBackend::appStateBrief() const
 {
     if (!m_config) return QString();
     QStringList out;
@@ -13525,7 +13525,7 @@ QString MiyoBackend::appStateBrief() const
     return out.join('\n');
 }
 
-void MiyoBackend::llmChat(const QString &historyJson)
+void HanishikiBackend::llmChat(const QString &historyJson)
 {
     const QJsonArray history = QJsonDocument::fromJson(historyJson.toUtf8()).array();
     QThread *t = QThread::create([this, history]() {
@@ -13623,7 +13623,7 @@ void MiyoBackend::llmChat(const QString &historyJson)
 //   REPL 은 stdlib(json/urllib/sys/os) 만 쓰는 python 클라이언트 → 번들/시스템
 //   python 아무거나 실행 가능. 서버가 꺼져 있으면 먼저 기동하고 REPL 이 폴링 대기.
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::openLlmTerminal()
+void HanishikiBackend::openLlmTerminal()
 {
     // ★ 이 터미널은 로컬 전용이다. 온라인(API)으로 쓰고 있어도 여기서는 번들 로컬
     //   AI 가 뜬다 — 온라인으로 붙이려면 생성되는 파이썬 스크립트에 API 키를 적어
@@ -13835,24 +13835,24 @@ if __name__ == "__main__":
 //     이미 우회하고 있었는데 이동은 빠져 있었다.
 //   startSystemMove() 는 OS 의 이동 루프를 그대로 쓴다 — 스냅·다중 모니터·
 //   Mission Control 이 네이티브와 똑같이 동작한다.
-void MiyoBackend::winStartMove()
+void HanishikiBackend::winStartMove()
 {
     if (m_window && m_window->windowHandle())
         m_window->windowHandle()->startSystemMove();
 }
 
-void MiyoBackend::setWindowChrome(bool dark)
+void HanishikiBackend::setWindowChrome(bool dark)
 {
     if (m_window) m_window->setChromeTheme(dark);
 }
 
 // 드롭다운에서 모델을 바꾸면 호출 — 이후 자동기동(터미널/채팅/자동수리)이 이 모델을 쓴다.
-void MiyoBackend::setLlmModel(const QString &hint)
+void HanishikiBackend::setLlmModel(const QString &hint)
 {
     m_llmModelHint = hint;
 }
-void MiyoBackend::setSearchKey(const QString &key) { m_searchKey = key.trimmed(); }
-void MiyoBackend::setLlmUseWeb(bool on) { m_llmUseWeb = on; }
+void HanishikiBackend::setSearchKey(const QString &key) { m_searchKey = key.trimmed(); }
+void HanishikiBackend::setLlmUseWeb(bool on) { m_llmUseWeb = on; }
 
 // ═════════════════════════════════════════════════════════════════════════
 // AI 스크립트 자가수리 (안전) — 편집가능 파이썬 스크립트를 AI 가 고쳐 적용하되
@@ -13867,7 +13867,7 @@ static const QStringList kEditableScripts = {
     //   빌드할 필요가 없다(앱은 파일을 그때그때 읽어 실행한다).
     "archive_ask.py", "archive_index.py"};
 
-void MiyoBackend::getScriptSource(const QString &name)
+void HanishikiBackend::getScriptSource(const QString &name)
 {
     QString src; bool isOv = false;
     if (kEditableScripts.contains(name)) {
@@ -13881,7 +13881,7 @@ void MiyoBackend::getScriptSource(const QString &name)
 }
 
 // 백업 → override 에 쓰기 → py_compile 검증 → 실패 시 원복. 성공 true.
-bool MiyoBackend::applyScriptPatchImpl(const QString &name, const QString &newContent, QString &err)
+bool HanishikiBackend::applyScriptPatchImpl(const QString &name, const QString &newContent, QString &err)
 {
     if (!kEditableScripts.contains(name)) { err = "편집 불가 스크립트"; return false; }
     if (newContent.trimmed().isEmpty()) { err = "빈 내용"; return false; }
@@ -13922,7 +13922,7 @@ bool MiyoBackend::applyScriptPatchImpl(const QString &name, const QString &newCo
     return true;
 }
 
-void MiyoBackend::aiPatchScript(const QString &name, const QString &newContent)
+void HanishikiBackend::aiPatchScript(const QString &name, const QString &newContent)
 {
     QString err;
     if (applyScriptPatchImpl(name, newContent, err))
@@ -13932,7 +13932,7 @@ void MiyoBackend::aiPatchScript(const QString &name, const QString &newContent)
     getScriptSource(name);
 }
 
-void MiyoBackend::revertScript(const QString &name)
+void HanishikiBackend::revertScript(const QString &name)
 {
     if (!kEditableScripts.contains(name)) return;
     const QString ov = Common::scriptOverrideDir() + "/" + name;
@@ -13945,7 +13945,7 @@ void MiyoBackend::revertScript(const QString &name)
 
 // AI 에게 스크립트 전체 파일을 다시 쓰게 해서 반환. 동기(블로킹 HTTP) — 워커 스레드에서만 호출.
 //  실패/빈 응답이면 빈 문자열. LLM 기동은 호출자가 보장한다.
-QString MiyoBackend::aiRewriteScriptSync(const QString &name, const QString &problem)
+QString HanishikiBackend::aiRewriteScriptSync(const QString &name, const QString &problem)
 {
     QString src;
     { QFile f(Common::activeToolScriptPath(name)); if (f.open(QIODevice::ReadOnly)) { src = QString::fromUtf8(f.readAll()); f.close(); } }
@@ -13970,7 +13970,7 @@ QString MiyoBackend::aiRewriteScriptSync(const QString &name, const QString &pro
 }
 
 // AI 가 스크립트를 읽고 문제를 반영해 '전체 파일'을 다시 써서 안전 적용.
-void MiyoBackend::aiFixScript(const QString &name, const QString &problem)
+void HanishikiBackend::aiFixScript(const QString &name, const QString &problem)
 {
     if (!kEditableScripts.contains(name)) { log("편집 불가 스크립트", "error", "settings"); return; }
     if (m_scriptFixBusy.exchange(true)) { log("AI 스크립트 수리가 이미 진행 중입니다.", "warning", "settings"); return; }
@@ -14073,7 +14073,7 @@ static QString archiveDbPath()
            + "/archive_index.db";
 }
 
-void MiyoBackend::archiveStatus()
+void HanishikiBackend::archiveStatus()
 {
     QJsonObject o;
     const QString db = archiveDbPath();
@@ -14126,7 +14126,7 @@ void MiyoBackend::archiveStatus()
     cnt->start();
 }
 
-void MiyoBackend::archiveIndex(const QString &root)
+void HanishikiBackend::archiveIndex(const QString &root)
 {
     if (m_archiveProc && m_archiveProc->state() != QProcess::NotRunning) {
         log("색인이 이미 진행 중입니다.", "warning", "settings");
@@ -14186,7 +14186,7 @@ void MiyoBackend::archiveIndex(const QString &root)
     archiveStatus();
 }
 
-void MiyoBackend::archiveIndexCancel()
+void HanishikiBackend::archiveIndexCancel()
 {
     if (!m_archiveProc || m_archiveProc->state() == QProcess::NotRunning) {
         log("진행 중인 색인이 없습니다.", "info", "settings");
@@ -14199,7 +14199,7 @@ void MiyoBackend::archiveIndexCancel()
     log("색인을 중단했습니다. 다시 시작하면 이어서 합니다.", "info", "settings");
 }
 
-void MiyoBackend::archiveAsk(const QString &question)
+void HanishikiBackend::archiveAsk(const QString &question)
 {
     const QString q = question.trimmed();
     if (q.isEmpty()) return;
@@ -14233,7 +14233,7 @@ void MiyoBackend::archiveAsk(const QString &question)
     p->start();
 }
 
-void MiyoBackend::autoRepair()
+void HanishikiBackend::autoRepair()
 {
     if (m_autoRepairBusy.exchange(true)) {
         log("AI 자동 수리가 이미 진행 중입니다.", "warning", "settings");
@@ -14431,7 +14431,7 @@ void MiyoBackend::autoRepair()
     t->start(QThread::LowPriority);
 }
 
-void MiyoBackend::upgradePython()
+void HanishikiBackend::upgradePython()
 {
     if (m_pythonBusy.exchange(true)) {
         log("Python 작업이 이미 진행 중입니다.", "warning", "settings");
@@ -14686,7 +14686,7 @@ void MiyoBackend::upgradePython()
     thread->start();
 }
 
-void MiyoBackend::repairPython()
+void HanishikiBackend::repairPython()
 {
     if (m_pythonBusy.exchange(true)) {
         log("Python 작업이 이미 진행 중입니다.", "warning", "settings");
@@ -14809,7 +14809,7 @@ void MiyoBackend::repairPython()
     thread->start();
 }
 
-void MiyoBackend::refreshTwitterTokens()
+void HanishikiBackend::refreshTwitterTokens()
 {
     log("Chrome에서 Twitter 토큰 추출 중...", "info", "settings");
     runJs("setTokenRefreshing(true)");
@@ -14900,7 +14900,7 @@ void MiyoBackend::refreshTwitterTokens()
     thread->start();
 }
 
-void MiyoBackend::refreshInstagramSession()
+void HanishikiBackend::refreshInstagramSession()
 {
     log("Chrome에서 Instagram 세션 추출 중...", "info", "settings");
     runJs("setIgSessionRefreshing(true)");
@@ -15007,7 +15007,7 @@ void MiyoBackend::refreshInstagramSession()
 }
 
 // Instagram 세션 자동 갱신 (Chrome에서 추출) - 수집 중 401 시 호출
-QString MiyoBackend::extractInstagramSessionSync()
+QString HanishikiBackend::extractInstagramSessionSync()
 {
     // ★ Instagram API 는 sessionid 외에도 csrftoken, ds_user_id, ig_did 같은
     //   다른 쿠키들을 검증. 모두 추출해서 합친 Cookie header 반환.
@@ -15053,7 +15053,7 @@ QString MiyoBackend::extractInstagramSessionSync()
     return QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
 }
 
-void MiyoBackend::refreshPixivSession()
+void HanishikiBackend::refreshPixivSession()
 {
     log("Chrome에서 Pixiv 세션 추출 중...", "info", "settings");
     runJs("setPixivRefreshing(true)");
@@ -15133,7 +15133,7 @@ void MiyoBackend::refreshPixivSession()
 // ═════════════════════════════════════════════════════════════════════════
 // Pixiv Fanbox — 멤버십 컨텐츠 자동 추출 (FANBOXSESSID)
 // ═════════════════════════════════════════════════════════════════════════
-void MiyoBackend::refreshFanboxSession()
+void HanishikiBackend::refreshFanboxSession()
 {
     log("Chrome에서 Fanbox 세션 추출 중...", "info", "settings");
     runJs("var b=document.getElementById('fanbox-session-refresh-btn');if(b){b.disabled=true;b.dataset._origText=b.dataset._origText||b.textContent;b.textContent='추출 중...';}");
@@ -15227,7 +15227,7 @@ void MiyoBackend::refreshFanboxSession()
     t->start();
 }
 
-void MiyoBackend::runFanboxCollection(const QJsonObject &config)
+void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
 {
     CollectionGuard _cg(platformSem("fanbox"), this, "fanbox");
     setIntegrityActiveForPlatform("fanbox", config["integrityCheck"].toBool(false));
@@ -15438,7 +15438,7 @@ void MiyoBackend::runFanboxCollection(const QJsonObject &config)
     updateStats(postCount, mediaCount, "완료", "fanbox");
 }
 
-void MiyoBackend::refreshDiscordToken()
+void HanishikiBackend::refreshDiscordToken()
 {
     log("Chrome에서 Discord 토큰 추출 중...", "info", "settings");
     runJs("setDiscordRefreshing(true)");
@@ -15551,7 +15551,7 @@ void MiyoBackend::refreshDiscordToken()
 // 범용 Chrome 도메인 쿠키 추출기
 // 특정 도메인의 모든 쿠키를 복호화 → "name=value; name=value" 형태로 HTML 필드에 주입
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-void MiyoBackend::refreshDomainCookies(const QString &domain, const QString &fieldId,
+void HanishikiBackend::refreshDomainCookies(const QString &domain, const QString &fieldId,
                                         const QString &platform, const QString &label,
                                         const QString &busyJsFn)
 {
@@ -15633,7 +15633,7 @@ void MiyoBackend::refreshDomainCookies(const QString &domain, const QString &fie
     thread->start();
 }
 
-void MiyoBackend::refreshTumblrCookie()
+void HanishikiBackend::refreshTumblrCookie()
 {
     // Tumblr API는 developer API Key(consumer key)가 필수 → 브라우저에서 추출 불가
     // 대신 tumblr.com 세션 쿠키를 추출해서 참고용으로 저장 (로그인 상태 유지시 내부 API 활용 가능)
@@ -15643,17 +15643,17 @@ void MiyoBackend::refreshTumblrCookie()
     refreshDomainCookies("tumblr.com", "tumblr-apikey-cookie-hint", "tumblr", "Tumblr", "setTumblrRefreshing");
 }
 
-void MiyoBackend::refreshSpinSpinCookie()
+void HanishikiBackend::refreshSpinSpinCookie()
 {
     refreshDomainCookies("spin-spin.com", "spinspin-cookie", "spinspin", "SpinSpin", "setSpinSpinRefreshing");
 }
 
-void MiyoBackend::refreshAskedCookie()
+void HanishikiBackend::refreshAskedCookie()
 {
     refreshDomainCookies("asked.kr", "asked-cookie", "asked", "Asked", "setAskedRefreshing");
 }
 
-void MiyoBackend::refreshAllTokens()
+void HanishikiBackend::refreshAllTokens()
 {
     refreshTwitterTokens();
     refreshInstagramSession();
@@ -15667,7 +15667,7 @@ void MiyoBackend::refreshAllTokens()
     log("Bluesky: 핸들 + 앱 비밀번호는 브라우저에 저장되지 않아 자동 추출 불가. 수동 입력 필요.", "info", "settings");
 }
 
-void MiyoBackend::writeStartupLog()
+void HanishikiBackend::writeStartupLog()
 {
     QString logDir = m_config->tempDir();
     if (logDir.isEmpty()) logDir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/ABIWA";
@@ -15737,7 +15737,7 @@ void MiyoBackend::writeStartupLog()
 // ── Tumblr Collector (API v2) — Twitter 스타일 저장 ──
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-void MiyoBackend::runTumblrCollection(const QJsonObject &config)
+void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
 {
     CollectionGuard _cg(platformSem("tumblr"), this, "tumblr");
     setIntegrityActiveForPlatform("tumblr", config["integrityCheck"].toBool(false));
@@ -16094,7 +16094,7 @@ void MiyoBackend::runTumblrCollection(const QJsonObject &config)
 //        next, isLast}
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-void MiyoBackend::runSpinSpinCollection(const QJsonObject &config)
+void HanishikiBackend::runSpinSpinCollection(const QJsonObject &config)
 {
     CollectionGuard _cg(platformSem("spinspin"), this, "spinspin");
     setIntegrityActiveForPlatform("spinspin", config["integrityCheck"].toBool(false));
@@ -16845,7 +16845,7 @@ QJsonObject parseNuxtFlexible(const QString &nuxtStr)
 
 } // anonymous namespace
 
-void MiyoBackend::runAskedCollection(const QJsonObject &config)
+void HanishikiBackend::runAskedCollection(const QJsonObject &config)
 {
     CollectionGuard _cg(platformSem("asked"), this, "asked");
     setIntegrityActiveForPlatform("asked", config["integrityCheck"].toBool(false));
@@ -17404,7 +17404,7 @@ void MiyoBackend::runAskedCollection(const QJsonObject &config)
 // ── 経済産業省 / Site Crawler (웹사이트 크롤링) ──
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-void MiyoBackend::runCrawlCollection(const QJsonObject &config)
+void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
 {
     // ★ "실제 Chrome (CDP)" 모드 — 사용자 Chrome 프로필로 navigate → SingleFile 캡쳐 (모든 자원 인라인)
     //   QWebEngine으로는 봇 탐지 / JS-shell 페이지 → 실제 Chrome으로 우회.

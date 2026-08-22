@@ -1,25 +1,23 @@
 #!/bin/sh
 # ★ .pyc 를 서명된 앱 번들 안에 쓰면 codesign 봉인이 깨져 macOS 가 앱을 죽인다.
 #   → 쓰기가능 python_env 를 '먼저' 쓰고, 어떤 경우에도 bytecode 를 남기지 않는다.
-# ★ 앱 이름이 Chernobyl → Predormition → Hanishiki 로 두 번 바뀌었다.
-#   그때마다 사용자 데이터 폴더(Miyo/<앱이름>)가 옮겨가는데, 여기 이름을 손으로
-#   적어 두었더니 개명할 때마다 '앱에서 Python 을 올려도 그 환경을 못 쓰는'
-#   고장이 되살아났다. 실제로 이번에도 Miyo/Hanishiki 가 빠져 있었다.
-#   → 이름을 적지 않고 Miyo/ 밑을 훑는다. 다음에 또 바뀌어도 안 깨진다.
-#     최신 것부터 쓰도록 갱신 시각 역순으로 본다.
+# ★ 앱 이름도 데이터 폴더 위치도 여러 번 바뀌었다.
+#     이름  : カメラ → Chernobyl → Predormition → Hanishiki
+#     위치  : …/Application Support/Miyo/<앱>  →  …/Application Support/<앱>
+#   여기에 이름이나 위치를 손으로 적어 두면 그때마다 '앱에서 Python 을 올려도
+#   그 환경을 못 쓰는' 고장이 되살아난다(실제로 두 번 겪었다).
+#   → 적지 않고 양쪽을 훑는다. 갱신 시각 역순이라 지금 쓰는 것이 먼저 잡힌다.
 export PYTHONDONTWRITEBYTECODE=1
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-MIYO="$HOME/Library/Application Support/Miyo"
-if [ -d "$MIYO" ]; then
-  # -t: 최근에 손댄 앱 폴더가 먼저. 현재 쓰는 앱이 대개 가장 최신이다.
-  for D in $(ls -1dt "$MIYO"/*/ 2>/dev/null); do
-    for E in python_env_arm64 python_env; do
-      P="$D$E/bin/python3"
-      [ -x "$P" ] && exec "$P" -m yt_dlp "$@"
-    done
+SUP="$HOME/Library/Application Support"
+# 새 위치(조직 폴더 없음) 와 옛 위치(Miyo/ 밑) 를 모두 후보로.
+for D in $(ls -1dt "$SUP"/*/ "$SUP"/Miyo/*/ 2>/dev/null); do
+  for E in python_env_arm64 python_env; do
+    P="$D$E/bin/python3"
+    [ -x "$P" ] && exec "$P" -m yt_dlp "$@"
   done
-fi
+done
 
 for P in \
   "$DIR/../Resources/python_env/bin/python3" \

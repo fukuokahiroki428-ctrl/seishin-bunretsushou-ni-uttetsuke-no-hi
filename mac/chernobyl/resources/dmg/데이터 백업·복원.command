@@ -5,7 +5,7 @@
 #  앱이 사용자 폴더에 두는 것들을 다른 디스크로 통째 옮겨 두거나, 되돌립니다.
 #
 #      ~/Library/Application Support/Miyo/<앱>/
-#        miyo_config.json      설정·계정 토큰      ← 가장 중요
+#        hanishiki_config.json 설정·계정 토큰      ← 가장 중요 (옛 이름: miyo_config.json)
 #        llm/                  AI 엔진·모델 (9GB 넘을 수 있음)
 #        archive_index.db      산출물 색인
 #        script_overrides/     AI 가 고친 스크립트
@@ -21,7 +21,16 @@
 set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
-BASE="$HOME/Library/Application Support/Miyo"
+# ★ 데이터 폴더 위치.
+#   지금은 조직 폴더 없이 …/Application Support/<앱> 을 쓴다.
+#   예전엔 …/Application Support/Miyo/<앱> 이었다('Miyo' 는 카메라 시절 흔적).
+#   앱이 기동할 때 옛 위치를 새 위치로 옮기지만, 아직 한 번도 안 띄웠으면
+#   옛 위치에 그대로 있다. 둘 다 본다 — 새 것을 먼저.
+data_dir_for() {   # $1 = 앱 이름(ASCII)
+    local sup="$HOME/Library/Application Support"
+    if [ -d "$sup/$1" ]; then echo "$sup/$1"; else echo "$sup/Miyo/$1"; fi
+}
+BASE="$HOME/Library/Application Support"
 
 # 한 줄 읽기 — 더블클릭(Terminal)과 파이프 실행 양쪽에서 동작하게.
 #   [ -r /dev/tty ] 가 참인데 실제로 열면 실패하는 경우가 있어 '열어 보고' 판단한다.
@@ -51,7 +60,7 @@ if [ -z "$DATA_NAME" ]; then
     [ "$N" = "1" ] && DATA_NAME="$(basename "$(/bin/ls -1d "$BASE"/*/ | head -1)")"
 fi
 [ -z "$DATA_NAME" ] && DATA_NAME="Hanishiki"
-DIR="$BASE/$DATA_NAME"
+DIR="$(data_dir_for "$DATA_NAME")"
 
 echo ""
 echo "  ハンイシキ — 데이터 백업 · 복원"
@@ -138,7 +147,7 @@ do_backup() {
     [ "$A" = "$B" ] && echo "✔" || { echo "✘ 불일치"; echo "  ✘ 검증 실패 — 원본을 지우지 마십시오."; return 1; }
 
     local ok=1
-    for f in miyo_config.json api_overrides.json archive_index.db; do
+    for f in hanishiki_config.json miyo_config.json api_overrides.json archive_index.db; do
         [ -f "$DIR/$f" ] || continue
         local h1 h2
         h1="$(shasum -a256 "$DIR/$f" 2>/dev/null | cut -d' ' -f1)"

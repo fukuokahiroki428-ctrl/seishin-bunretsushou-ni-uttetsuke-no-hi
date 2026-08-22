@@ -438,7 +438,9 @@ inline QString checkEnvironment()
 
     // 4) 설정 파일 권한 — NAS 비밀번호·쿠키·토큰이 들어 있다.
     {
-        const QString cfg = appData + "/miyo_config.json";
+        // 이름이 바뀌는 중이라 둘 다 본다(하나만 보면 '설정 없음' 오경보가 난다).
+        QString cfg = appData + "/hanishiki_config.json";
+        if (!QFile::exists(cfg)) cfg = appData + "/miyo_config.json";
         if (QFile::exists(cfg)) {
             const QFile::Permissions pm = QFile::permissions(cfg);
             const bool others = pm & (QFile::ReadGroup | QFile::ReadOther);

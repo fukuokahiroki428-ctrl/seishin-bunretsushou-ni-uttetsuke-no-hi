@@ -8,7 +8,7 @@
 #      ~/Library/Application Support/Miyo/<앱>/
 #        llm/                  AI 엔진·모델 (최대 9GB 넘음)
 #        archive_index.db      산출물 색인 (수백 MB)
-#        miyo_config.json      설정·계정 토큰
+#        hanishiki_config.json 설정·계정 토큰 (옛 이름: miyo_config.json)
 #        chrome_capture_profile*/  캡쳐용 크롬 프로필(로그인 상태)
 #        script_overrides/     AI 가 고친 스크립트
 #        tools/                yt-dlp 자동 갱신본
@@ -42,7 +42,16 @@ for CAND in "$SELF_DIR"/*.app "/Applications"/*.app "$HOME/Applications"/*.app; 
     esac
 done
 
-BASE="$HOME/Library/Application Support/Miyo"
+# ★ 데이터 폴더 위치.
+#   지금은 조직 폴더 없이 …/Application Support/<앱> 을 쓴다.
+#   예전엔 …/Application Support/Miyo/<앱> 이었다('Miyo' 는 카메라 시절 흔적).
+#   앱이 기동할 때 옛 위치를 새 위치로 옮기지만, 아직 한 번도 안 띄웠으면
+#   옛 위치에 그대로 있다. 둘 다 본다 — 새 것을 먼저.
+data_dir_for() {   # $1 = 앱 이름(ASCII)
+    local sup="$HOME/Library/Application Support"
+    if [ -d "$sup/$1" ]; then echo "$sup/$1"; else echo "$sup/Miyo/$1"; fi
+}
+BASE="$HOME/Library/Application Support"
 
 echo ""
 echo "  ハンイシキ — 앱 밖에 설치된 것들 지우기"
@@ -70,7 +79,7 @@ if [ -z "$DATA_NAME" ]; then
     fi
 fi
 
-DIR="$BASE/$DATA_NAME"
+DIR="$(data_dir_for "$DATA_NAME")"
 if [ ! -d "$DIR" ]; then
     echo "  지울 것이 없습니다 — $DIR 가 없습니다."
     echo ""; echo "  창을 닫으셔도 됩니다."; echo ""
@@ -94,7 +103,7 @@ echo "  무엇을 지울까요?"
 echo ""
 echo "    1) AI 모델만        llm/ 만 치웁니다. 설정·토큰·색인은 그대로 둡니다."
 echo "                        (용량만 비우고 계속 쓰실 때)"
-echo "    2) 설정만 남기고    miyo_config.json 만 남기고 나머지를 치웁니다."
+echo "    2) 설정만 남기고    설정 파일만 남기고 나머지를 치웁니다."
 echo "                        (토큰을 다시 넣지 않아도 되게)"
 echo "    3) 전부            폴더째 치웁니다. 완전히 새로 설치한 상태가 됩니다."
 echo "    0) 그만둔다"
@@ -137,7 +146,7 @@ case "$CHOICE" in
         echo "  설정만 남기고 치웁니다…"
         for item in "$DIR"/*; do
             [ -e "$item" ] || continue
-            [ "$(basename "$item")" = "miyo_config.json" ] && continue
+            case "$(basename "$item")" in hanishiki_config.json|miyo_config.json) continue ;; esac
             move_to_trash "$item"
         done
         ;;

@@ -12,7 +12,7 @@
 #include <windows.h>
 #endif
 
-class MiyoBackend;
+class HanishikiBackend;
 class PenBackend;
 
 class MainWindow : public QMainWindow
@@ -25,7 +25,7 @@ public:
 
     QWebEngineView *webView() const { return m_webView; }
     QWebEngineView *browserView() const { return m_browserView; }
-    MiyoBackend *backend() const { return m_backend; }
+    HanishikiBackend *backend() const { return m_backend; }
 
     // Sleep prevention for background downloads
     void holdAwake();
@@ -55,7 +55,7 @@ private:
     QWebEngineView *m_browserView = nullptr;
     QMainWindow *m_browserWindow = nullptr;
     QWebChannel *m_channel = nullptr;
-    MiyoBackend *m_backend = nullptr;
+    HanishikiBackend *m_backend = nullptr;
     PenBackend *m_penBackend = nullptr;
     QMenu *m_dockMenu = nullptr;
 

@@ -53,7 +53,10 @@ echo "앱 위치: $APP"
 #   설치는 끝났다고 나오는데 AI 는 계속 꺼져 있는, 원인이 안 보이는 고장이 된다.
 #   (실제로 그 상태였다 — 이 줄이 $APP_NAME 을 쓰고 있었다.)
 DATA_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist" 2>/dev/null || echo "$APP_NAME")"
-LLM_DIR="$HOME/Library/Application Support/Miyo/$DATA_NAME/llm"
+# 새 위치(조직 폴더 없음) 우선, 없으면 옛 Miyo/ 밑.
+_sup="$HOME/Library/Application Support"
+if [ -d "$_sup/$DATA_NAME" ]; then LLM_DIR="$_sup/$DATA_NAME/llm"
+else                              LLM_DIR="$_sup/Miyo/$DATA_NAME/llm"; fi
 echo "설치 위치: $LLM_DIR"
 echo "  (앱을 다시 설치해도 지워지지 않는 자리입니다)"
 

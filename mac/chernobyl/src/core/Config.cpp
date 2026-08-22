@@ -50,7 +50,19 @@ QString Config::defaultConfigPath()
     //   외부 저장하면 번들은 read-only 유지 → 서명 유효 → macOS 권한 영구 유지.
     QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(dataDir);
-    return dataDir + "/miyo_config.json";
+    // ★ 이름을 바꾸되 옛 파일을 잃지 않는다.
+    //   그냥 새 이름만 쓰면 설정·계정 토큰이 통째로 사라진 것처럼 보인다.
+    //   옛 파일이 있고 새 파일이 없을 때 딱 한 번 옮긴다(rename — 복사가 아니다).
+    //   옮기지 못하면(권한 등) 옛 파일을 그대로 쓴다 — 잃는 것보다 낫다.
+    const QString cur = dataDir + "/hanishiki_config.json";
+    const QString old = dataDir + "/miyo_config.json";
+    if (!QFileInfo::exists(cur) && QFileInfo::exists(old)) {
+        if (QFile::rename(old, cur))
+            qInfo() << "[config] 설정 파일 이름 옮김: miyo_config.json → hanishiki_config.json";
+        else
+            return old;
+    }
+    return cur;
 }
 
 QString Config::backupConfigPath()
