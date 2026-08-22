@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bluesky collection daemon for カメラ - based on AINU (ainu_smart.py).
+"""Bluesky collection daemon for ハンイシキ - based on AINU (ainu_smart.py).
 
 Usage: python3 bluesky_daemon.py '{"handle":"...","password":"..."}'
 Then send JSON commands on stdin, receive JSON responses on stdout.

@@ -334,7 +334,7 @@ if(APPLE)
     #   --deep 서명을 일부러 피하고 inside-out 으로 서명한다(애플도 --deep 은 배포용이
     #   아니라고 한다). 두 방식이 갈려 있으면 런타임 재서명만 미묘하게 다른 결과를 낸다.
     #   → 빌드가 쓰는 바로 그 스크립트를 번들에 넣고, 런타임도 같은 것을 부른다.
-    foreach(_sf codesign_app.sh predormition.entitlements)
+    foreach(_sf codesign_app.sh hanishiki.entitlements)
         if(EXISTS "${CMAKE_SOURCE_DIR}/${_sf}")
             add_custom_command(TARGET Miyo POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -391,15 +391,6 @@ if(APPLE)
         COMMENT "Bundling Python venv (twikit, httpx, atproto)"
     )
 
-    # Chernobyl.png
-    set(CHERNOBYL_PATH "${CMAKE_SOURCE_DIR}/../Chernobyl.png")
-    if(EXISTS "${CHERNOBYL_PATH}")
-        add_custom_command(TARGET Miyo POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${CHERNOBYL_PATH}" "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/Chernobyl.png"
-            COMMENT "Bundling Chernobyl.png"
-        )
-    endif()
 
     # Fix QtWebEngineProcess
     add_custom_command(TARGET Miyo POST_BUILD
