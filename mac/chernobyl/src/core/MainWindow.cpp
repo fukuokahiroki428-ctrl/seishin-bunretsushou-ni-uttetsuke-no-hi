@@ -352,13 +352,20 @@ void MainWindow::closeEvent(QCloseEvent *event)
         m_backend->closeAllTerminalLogs();
     }
 
-    // macOS: Terminal.app에서 ABIWA/カメラ 관련 탭/창 닫기
+    // macOS: 이 앱이 띄운 Terminal.app 탭/창 닫기.
+    //   ★ 제목으로 찾으므로 '지금 이름' 이 반드시 목록에 있어야 한다.
+    //     앱 이름이 カメラ → Chernobyl → Predormition → ハンイシキ 로 바뀌는 동안
+    //     여기가 옛 이름에 멈춰 있으면, 정작 지금 띄운 터미널을 못 닫는다.
+    //     옛 이름도 함께 둔다 — 예전 판이 남긴 창까지 정리하려면 필요하다.
 #ifdef Q_OS_MACOS
     QProcess::startDetached("/usr/bin/osascript", {"-e",
         "tell application \"Terminal\"\n"
         "  repeat with w in windows\n"
         "    repeat with t in tabs of w\n"
-        "      if name of t contains \"miyo_\" or name of t contains \"ABIWA\" or name of t contains \"カメラ\" then\n"
+        "      if name of t contains \"miyo_\" or name of t contains \"ABIWA\""
+        "         or name of t contains \"" APP_NAME_DISPLAY "\""
+        "         or name of t contains \"" APP_NAME_ASCII "\""
+        "         or name of t contains \"カメラ\" or name of t contains \"Predormition\" then\n"
         "        do script \"exit\" in t\n"
         "      end if\n"
         "    end repeat\n"

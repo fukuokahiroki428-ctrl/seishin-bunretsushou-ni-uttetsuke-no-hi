@@ -13,13 +13,29 @@
 #    codesign 은 실행 파일이 /usr/bin/codesign 이므로 절대 걸리지 않는다.
 #
 #  사용:
-#    ./kill_app.sh                      # /Applications 에 설치된 앱
-#    ./kill_app.sh build/Predormition.app   # 특정 번들
+#    ./kill_app.sh                          # 설치본·빌드본을 자동으로 찾음
+#    ./kill_app.sh "build/ハンイシキ.app"   # 특정 번들
 # ═══════════════════════════════════════════════════════════════════════════
 set -e
 cd "$(dirname "$0")"
 
-APP="${1:-/Applications/Predormition.app}"
+# ★ 기본값에 앱 이름을 박지 않는다.
+#   예전엔 /Applications/Predormition.app 이었다. 개명 뒤로는 인자 없이 부르면
+#   있지도 않은 앱을 찾아 "실행 중인 앱이 없습니다" 로 조용히 끝났다.
+#   빌드 산출물 → 설치본 순으로 실제 있는 것을 찾는다.
+if [ -n "${1:-}" ]; then
+    APP="$1"
+else
+    APP=""
+    for _c in build/*.app /Applications/*.app "$HOME/Applications"/*.app; do
+        [ -d "$_c" ] || continue
+        _id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$_c/Contents/Info.plist" 2>/dev/null || echo '')"
+        case "$_id" in
+            com.hanishiki.*|com.miyo.*|com.predormition.*) APP="$_c"; break ;;
+        esac
+    done
+    [ -z "$APP" ] && { echo "종료할 앱을 찾지 못했습니다. 경로를 인자로 주십시오."; exit 0; }
+fi
 [ -d "$APP" ] || { echo "번들이 없습니다: $APP"; exit 1; }
 
 NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist" 2>/dev/null || basename "$APP" .app)"

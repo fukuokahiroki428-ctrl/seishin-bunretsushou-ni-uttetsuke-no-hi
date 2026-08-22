@@ -32,9 +32,19 @@ ENDPOINT_NAMES = [
     "ListLatestTweetsTimeline", "CommunityTweetsTimeline",
 ]
 
+# ★ 앱의 데이터 폴더 안에 둔다.
+#   예전엔 "~/Library/Application Support/カメラ" 였다 — 앱 이름이
+#   カメラ → Chernobyl → Predormition → ハンイシキ 로 바뀌는 동안 여기만
+#   최초 이름에 멈춰 있었다. Miyo/ 밑도 아니라서, 앱이 쓰는 폴더와 완전히
+#   다른 곳에 캐시가 쌓이고 있었다(앱을 지워도 남고, 백업·정리 도구도 못 본다).
+#   앱은 QStandardPaths::AppDataLocation → ~/Library/Application Support/Miyo/<앱>
+#   을 쓴다. 앱 이름(ASCII)은 환경변수로 받고, 못 받으면 지금 이름으로 물러선다.
+_app_name = os.environ.get("MIYO_APP_NAME", "Hanishiki")
 _hash_cache_path = os.path.join(
-    os.path.expanduser("~"), "Library", "Application Support", "カメラ", "graphql_hashes.json"
+    os.path.expanduser("~"), "Library", "Application Support", "Miyo", _app_name,
+    "graphql_hashes.json"
 )
+os.makedirs(os.path.dirname(_hash_cache_path), exist_ok=True)
 
 
 def _load_cached_hashes():

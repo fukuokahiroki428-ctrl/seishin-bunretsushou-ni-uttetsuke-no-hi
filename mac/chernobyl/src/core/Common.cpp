@@ -816,6 +816,13 @@ QProcessEnvironment bundledProcessEnv()
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     QString appDir = QCoreApplication::applicationDirPath();
 
+    // ★ 번들 파이썬 스크립트도 앱과 같은 데이터 폴더를 쓰게 한다.
+    //   스크립트가 경로를 스스로 지으면 앱 이름이 바뀔 때마다 갈라진다.
+    //   실제로 twitter_daemon.py 는 최초 이름("~/Library/Application Support/カメラ")에
+    //   멈춰 있어서, Miyo/ 밑도 아닌 곳에 캐시를 쌓고 있었다(앱을 지워도 남고
+    //   백업·정리 도구도 못 본다). 이름을 여기서 한 번만 넘긴다.
+    env.insert("MIYO_APP_NAME", QStringLiteral(APP_NAME_ASCII));
+
 #ifdef Q_OS_WIN
     // Windows: add exe dir to PATH for bundled tools
     QString path = appDir + ";" + env.value("PATH");
