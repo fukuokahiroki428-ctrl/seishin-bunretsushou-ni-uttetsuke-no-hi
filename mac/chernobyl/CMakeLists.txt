@@ -433,14 +433,6 @@ if(APPLE)
     #   필요해지면 별도 외부 폴더에서 실행하면 됨.
 
     # miyo_cli
-    set(MIYO_CLI_PATH "${CMAKE_SOURCE_DIR}/../miyo_cli")
-    if(EXISTS "${MIYO_CLI_PATH}")
-        add_custom_command(TARGET Hanishiki POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${MIYO_CLI_PATH}" "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/miyo_cli"
-            COMMENT "Bundling miyo_cli"
-        )
-    endif()
 
     # ★ requirements.txt 번들 — Python 업그레이드 시 이 파일을 읽어 패키지를 다시 깐다.
     #   없으면 코드 안 최소 목록으로 폴백하지만 버전 고정이 사라지므로 반드시 넣는다.

@@ -37,6 +37,7 @@
 
 설정과 수집물이 있는 곳
 ────────────────────────────────────────────────────────
-~/Library/Application Support/Miyo/Hanishiki
+~/Library/Application Support/Hanishiki
+(예전 판에서 올라오셨다면 Miyo/Hanishiki 에 있던 것이 자동으로 옮겨집니다)
 
 새 판으로 덮어써도 이 폴더는 그대로 유지됩니다.
