@@ -420,6 +420,10 @@ void HanishikiBackend::performStartupCleanup()
     }
 
     // 2) 이전 세션 잔여 스크립트 / status 파일 즉시 삭제
+    // ★ 임시 파일 이름의 'miyo_' 접두사는 일부러 그대로 둔다.
+    //   만드는 쪽과 지우는 쪽이 같은 접두사로 짝을 이루고 있어서, 이름을 바꾸면
+    //   양쪽을 동시에 고쳐야 하고 그래도 예전 판이 남긴 파일은 영영 안 지워진다.
+    //   사용자 화면에 뜨는 이름이 아니라 임시 파일이라 바꿀 실익이 없다.
     QStringList stalePatterns = {"miyo_*.command", "miyo_*.bat",
                                  "miyo_*status.txt", "miyo_*status.txt.stop",
                                  "*.daemon.log"};

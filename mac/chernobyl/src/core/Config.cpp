@@ -113,12 +113,15 @@ void Config::load(const QString &filePath)
         //   것을 가져온다 — 앞으로 이름이 또 바뀌어도 이어진다.
         {
             const QString mine = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-            QDir siblings(QFileInfo(mine).absolutePath());   // .../Miyo
+            // 조직 폴더를 뺐으므로 여기는 .../Application Support 다(폴더가 100개 넘는다).
+            //   설정 파일 이름으로만 거르므로 남의 앱을 잘못 집지 않는다.
+            QDir siblings(QFileInfo(mine).absolutePath());
             QFileInfoList found;
             const auto dirs = siblings.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
             for (const QFileInfo &d : dirs) {
                 if (d.absoluteFilePath() == QFileInfo(mine).absoluteFilePath()) continue;  // 내 폴더
-                const QFileInfo cfg(d.absoluteFilePath() + "/miyo_config.json");
+                QFileInfo cfg(d.absoluteFilePath() + "/hanishiki_config.json");
+                if (!cfg.exists()) cfg = QFileInfo(d.absoluteFilePath() + "/miyo_config.json");
                 if (cfg.exists() && cfg.size() > 0) found << cfg;
             }
             std::sort(found.begin(), found.end(), [](const QFileInfo &a, const QFileInfo &b) {
