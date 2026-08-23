@@ -150,11 +150,37 @@ int main(int argc, char *argv[])
             roaming + "/Miyo/Chernobyl",      // 그 전 이름
             roaming + "/Chernobyl",           // 조직명이 없던 더 이전
         };
-        if (!QFileInfo::exists(appData)) {
+        // ★ '새 자리가 없을 때만' 으로는 부족하다.
+        //   실측: 이 기계의 %APPDATA%\Predormition 에는 예전 버그가 남긴 로그 파일 하나가
+        //   이미 있었다(조직명을 정하기 전에 첫 메시지가 찍히던 시절의 잔재, 2026-08-08).
+        //   폴더가 '존재'한다는 이유로 이전이 통째로 건너뛰어지고, 앱은 설정도 python_env 도
+        //   없는 빈 폴더를 쓰게 된다 — 옛 자리에 11,951개 파일을 두고서.
+        //
+        //   그래서 '설정 파일이 있는가' 로 본다. miyo_config.json 은 우리만 쓰는 이름이고,
+        //   앱이 한 번이라도 떴으면 반드시 있다. 없으면 아직 이사 전이다.
+        //   ※ 맥 쪽은 이 판별을 폴더 이름 목록으로 넓혔다가 남의 앱 폴더를 가져가는 사고를
+        //     냈다(b121906). 여기서는 옛 자리 목록이 세 개로 고정이라 그 위험은 없지만,
+        //     판별 기준은 같은 이유로 설정 파일 하나로 좁힌다.
+        const bool alreadyMoved = QFileInfo::exists(appData + "/miyo_config.json");
+        if (!alreadyMoved) {
             for (const QString &oldDir : olds) {
                 if (!QFileInfo::exists(oldDir)) continue;
                 QDir().mkpath(QFileInfo(appData).absolutePath());
+                // 잔재 폴더가 있으면 rename 이 실패한다 — 옆으로 치우고 옮긴 뒤 안의 것을 되돌린다.
+                QString parked;
+                if (QFileInfo::exists(appData)) {
+                    parked = appData + ".before-migration";
+                    QDir(parked).removeRecursively();
+                    if (!QDir().rename(appData, parked)) parked.clear();
+                }
                 if (QDir().rename(oldDir, appData)) {
+                    // 치워 둔 잔재(옛 로그 등)를 새 폴더 안으로 되돌린다. 실패해도 치명적이지 않다.
+                    if (!parked.isEmpty()) {
+                        QDir pd(parked);
+                        for (const QString &f : pd.entryList(QDir::Files | QDir::Hidden))
+                            QFile::rename(parked + "/" + f, appData + "/" + f);
+                        pd.removeRecursively();
+                    }
                     qInfo() << "[startup] user data migrated:" << oldDir << "->" << appData;
                     // 비어 버린 옛 조직 폴더는 치운다 (안에 다른 앱이 있으면 rmdir 이 실패하므로 안전)
                     QDir().rmdir(roaming + "/Miyo");
