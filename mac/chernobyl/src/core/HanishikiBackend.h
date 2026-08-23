@@ -75,7 +75,7 @@ public slots:
     void getLlmStatus();                            // JS onLlmStatus(json) 로 상태·모델목록 통지
     QString appStateBrief() const;   // 대화에 넘길 앱 설정 요약(진단서엔 없는 것)
     void llmChat(const QString &historyJson);       // 로컬 AI 와 대화(수리 도우미) — JS onLlmReply(text)
-    void openLlmTerminal();                          // 오픈클로를 Terminal.app 대화형 REPL 로 띄움
+    void openLlmTerminal();                          // ハニワ를 Terminal.app 대화형 REPL 로 띄움
     void winStartMove();                             // 상단 띠 드래그 → 창 이동(네이티브 스냅 유지)
     void setWindowChrome(bool dark);                 // 웹 테마 토글 → 네이티브 창 색/외관 동기화(타이틀바 띠 숨김)
     void setLlmModel(const QString &hint);           // 드롭다운 선택 모델 기억 (자동기동 경로가 이걸 사용)
@@ -184,6 +184,7 @@ public slots:
     void showSystemNotification(const QString &title, const QString &body);
 
     // 디버그 진단 — 설정 탭에서 호출
+    Q_INVOKABLE void getAppInfo();                   // JS onAppInfo(json) — 이름/판/만든 곳
     Q_INVOKABLE void getDiagnosticInfo();
     Q_INVOKABLE void killZombieChromes();
 
@@ -199,7 +200,7 @@ public slots:
     // false(기본)면 윈도우 호환(전각 치환)으로 NTFS·exFAT·윈도우 NAS 에서도 저장된다.
     Q_INVOKABLE void setUnixFilenames(bool on);
     // ★ 시간이 지나면 바뀌는 외부 서비스 상수(X 의 GraphQL query ID·Bearer 등)를 재빌드 없이 교체.
-    //   오픈클로(로컬 AI)가 수집 실패를 진단해 스스로 갱신할 수 있는 지점이기도 하다.
+    //   ハニワ(로컬 AI)가 수집 실패를 진단해 스스로 갱신할 수 있는 지점이기도 하다.
     Q_INVOKABLE void setApiOverride(const QString &key, const QString &value);
     Q_INVOKABLE void getApiOverrides();      // JS onApiOverrides(json, path)
     Q_INVOKABLE void openApiOverridesFile(); // 파일을 직접 편집하도록 열기

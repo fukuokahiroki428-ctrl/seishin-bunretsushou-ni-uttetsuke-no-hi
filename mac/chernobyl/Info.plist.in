@@ -22,6 +22,13 @@
     <string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
     <key>CFBundleVersion</key>
     <string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+    <!-- 만든 곳. CMakeLists 의 APP_VENDOR 한 곳에서 온다.
+         숫자 버전(CFBundleShortVersionString)은 macOS 의 판올림 판단용이라
+         숫자로 두고, 사람에게 보이는 판 이름(上野)은 아래 정보 문자열에 담는다. -->
+    <key>NSHumanReadableCopyright</key>
+    <string>${MACOSX_BUNDLE_COPYRIGHT}</string>
+    <key>CFBundleGetInfoString</key>
+    <string>${MACOSX_BUNDLE_INFO_STRING}</string>
     <!-- 이 값은 build.sh 가 빌드 끝에 실측값으로 덮어쓴다(codesign 앞에서).
          여기 적힌 값은 오래 방치된 손 입력이었고, 실제로는 26.0 이 필요했다
          (Homebrew 로 받은 Qt·icu 등이 그 macOS 에서 만들어졌기 때문).

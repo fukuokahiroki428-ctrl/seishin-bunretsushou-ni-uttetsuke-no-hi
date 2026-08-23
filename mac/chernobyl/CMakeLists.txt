@@ -25,9 +25,16 @@ else()
     set(PREDORMITION_CODENAME "")
 endif()
 message(STATUS "판 이름: ${PREDORMITION_CODENAME} (내부 ${PREDORMITION_VERSION})")
+
+# ── 만든 곳 ────────────────────────────────────────────────────────────────
+#   여기 한 줄이 단일 출처다. 앱 정보 화면·Info.plist(저작권/정보 문자열)가
+#   모두 이 값을 쓴다. 두 군데에 적으면 한쪽만 바뀌는 일이 또 생긴다.
+set(APP_VENDOR "ishikawa-Illusion")
+
 add_compile_definitions(
     PREDORMITION_CODENAME="${PREDORMITION_CODENAME}"
-    PREDORMITION_VERSION_STR="${PREDORMITION_VERSION}")
+    PREDORMITION_VERSION_STR="${PREDORMITION_VERSION}"
+    APP_VENDOR_NAME="${APP_VENDOR}")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -225,6 +232,11 @@ if(APPLE)
         MACOSX_BUNDLE_ICON_FILE "${APP_ICON}"
         MACOSX_BUNDLE_GUI_IDENTIFIER "${APP_ID}"
         MACOSX_BUNDLE_BUNDLE_NAME "${APP_DISPLAY_NAME}"
+        # ★ 이 두 값은 Info.plist.in 의 ${MACOSX_BUNDLE_COPYRIGHT} /
+        #   ${MACOSX_BUNDLE_INFO_STRING} 로 치환된다(CMake 가 대상 속성에서 읽는다).
+        #   Finder 의 '정보 가져오기' 와 앱 정보 화면에 만든 곳이 보이게 하는 자리.
+        MACOSX_BUNDLE_COPYRIGHT "${APP_VENDOR}"
+        MACOSX_BUNDLE_INFO_STRING "${APP_DISPLAY_NAME} ${PREDORMITION_CODENAME} — ${APP_VENDOR}"
         OUTPUT_NAME "${APP_NAME}"
     )
 

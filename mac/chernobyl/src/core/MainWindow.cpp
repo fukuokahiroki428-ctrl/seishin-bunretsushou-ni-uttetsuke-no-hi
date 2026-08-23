@@ -539,7 +539,7 @@ void MainWindow::applyDarkTitlebar()
     SEL setAppearanceSel = sel_registerName("setAppearance:");
     reinterpret_cast<void (*)(id, SEL, id)>(objc_msgSend)(app, setAppearanceSel, lightAppearance);
 
-    // ★ 통합(일체형) 타이틀바 — Claude 데스크톱처럼 흰 타이틀바 띠를 없애고 콘텐츠가
+    // ★ 통합(일체형) 타이틀바 — 흰 타이틀바 띠를 없애고 콘텐츠가
     //   창 최상단까지 올라오게 한다. 신호등(빨/노/초) 버튼은 콘텐츠 위에 떠 있고,
     //   그 자리는 .sidebar-header 의 padding-top:52px 가 이미 비워 두었다.
     //     titlebarAppearsTransparent=YES + titleVisibility=Hidden + FullSizeContentView

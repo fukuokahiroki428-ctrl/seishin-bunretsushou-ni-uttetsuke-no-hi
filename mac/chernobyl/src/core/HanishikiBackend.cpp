@@ -22,6 +22,7 @@ using FileHelper::sanitizeFilename;
 #include <QClipboard>
 #include <QFileDialog>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QDesktopServices>
 #include <QInputDialog>
 #include <QProcess>
@@ -4626,6 +4627,25 @@ void HanishikiBackend::setApiOverride(const QString &key, const QString &value)
         log(QString("❌ %1 저장 실패 (쓰기 권한 확인)").arg(key), "error", "settings");
     }
     getApiOverrides();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getAppInfo — 앱 정보 화면에 보일 값을 JS 로 넘긴다.
+//   ★ 여기서 값을 만들어 내지 않는다. 전부 빌드 때 박힌 매크로(단일 출처)를 그대로
+//     읽는다. 예전엔 HTML 에 이름과 버전을 손으로 적어 두어서, 이름이 네 번 바뀌는
+//     동안 화면만 옛 이름(カメラ·4.0.0)을 가리켰다.
+//   ★ 사용자에게 보이는 판은 한자 이름(上野)이다. 숫자는 기계용이라 진단 정보에만 둔다.
+void HanishikiBackend::getAppInfo()
+{
+    const QString codename = QStringLiteral(PREDORMITION_CODENAME);
+    QJsonObject o{
+        {"name",     QStringLiteral(APP_NAME_DISPLAY)},
+        {"edition",  codename.isEmpty() ? QStringLiteral("-") : codename},
+        {"vendor",   QStringLiteral(APP_VENDOR_NAME)},
+        {"build",    QStringLiteral(PREDORMITION_VERSION_STR)},
+    };
+    runJs(QString("onAppInfo(%1)").arg(QString::fromUtf8(
+        QJsonDocument(o).toJson(QJsonDocument::Compact))));
 }
 
 void HanishikiBackend::getApiOverrides()
@@ -13533,7 +13553,7 @@ void HanishikiBackend::llmChat(const QString &historyJson)
 {
     const QJsonArray history = QJsonDocument::fromJson(historyJson.toUtf8()).array();
     QThread *t = QThread::create([this, history]() {
-        // ★ 자율 자가수리 라우팅 — 사용자가 '코드 점검/수리'를 부탁하면, 대화 응답 대신 오픈클로가
+        // ★ 자율 자가수리 라우팅 — 사용자가 '코드 점검/수리'를 부탁하면, 대화 응답 대신 ハニワ가
         //   스스로 앱을 점검·수리한다(자동 자가수리 발동). 소소한 잡담/질문은 그대로 대화로 처리.
         {
             QString lastUser;
@@ -13576,7 +13596,7 @@ void HanishikiBackend::llmChat(const QString &historyJson)
             if (f.open(QIODevice::ReadOnly)) { report = QString::fromUtf8(f.readAll()).left(2000); f.close(); }
         }
         const QString sys = QString(
-            "너는 이 컴퓨터 안에서(인터넷 없이) 돌아가는 로컬 AI '오픈클로'야. 무엇이든 자유롭게 대화하는 "
+            "너는 이 컴퓨터 안에서(인터넷 없이) 돌아가는 로컬 AI 'ハニワ'야. 무엇이든 자유롭게 대화하는 "
             "친근한 AI 비서지 — 질문 답하기, 아이디어 내기, 글쓰기, 번역, 코드, 그냥 잡담까지 뭐든 편하게 도와줘. "
             "부드러운 존댓말로 자연스럽고 사람스럽게, 설명서 같은 딱딱한 말투는 피하고. 이모지도 가끔 써도 좋아. "
             "너는 마침 " + QStringLiteral(APP_NAME_DISPLAY) + "(소셜 미디어 아카이빙) 앱 안에 들어와 있어서 그 앱 문제도 도울 수 있어 — 수집이 "
@@ -13621,7 +13641,7 @@ void HanishikiBackend::llmChat(const QString &historyJson)
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// openLlmTerminal — 오픈클로(로컬 LLM)를 Terminal.app 대화형 REPL 로 띄운다.
+// openLlmTerminal — ハニワ(로컬 LLM)를 Terminal.app 대화형 REPL 로 띄운다.
 //   기존 openTerminalLog 는 로그를 tail 하는 '단방향' 뷰어였다. 이건 사용자가
 //   직접 타이핑해 로컬 AI 와 대화하는 '양방향' 셸 (127.0.0.1:8737 /v1/chat).
 //   REPL 은 stdlib(json/urllib/sys/os) 만 쓰는 python 클라이언트 → 번들/시스템
@@ -13640,24 +13660,24 @@ void HanishikiBackend::openLlmTerminal()
 
     // 1) 서버가 꺼져 있으면 먼저 기동 (REPL 이 준비될 때까지 폴링하므로 논블로킹)
     if (!(m_llmProc && m_llmProc->state() != QProcess::NotRunning)) {
-        log("🖥 오픈클로 터미널 — AI 서버를 기동합니다 (모델 로딩에 수 초 소요)...", "info", "settings");
+        log("🖥 ハニワ 터미널 — AI 서버를 기동합니다 (모델 로딩에 수 초 소요)...", "info", "settings");
         startLocalLlm(m_llmModelHint);   // 드롭다운에서 고른 모델로 기동
     } else {
-        log("🖥 오픈클로 터미널을 엽니다...", "info", "settings");
+        log("🖥 ハニワ 터미널을 엽니다...", "info", "settings");
     }
 
     const QString base = Common::resolveTempBase(m_config ? m_config->tempDir() : QString());
-    const QString dir  = base + "/abiwa_openclaude";
+    const QString dir  = base + "/abiwa_haniwa";
     QDir().mkpath(dir);
 
-    const QString replPath   = dir + "/openclaude_repl.py";
+    const QString replPath   = dir + "/haniwa_repl.py";
     const QString reportPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
                                + "/selfrepair/last_report.txt";
 
     // ── 대화형 REPL 클라이언트 (stdlib only) — SSE 스트리밍으로 토큰 실시간 출력 ──
     static const char *REPL_PY = R"PYEOF(#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 오픈클로 대화형 터미널 — @@APPNAME@@ 내장 로컬 LLM 클라이언트.
+# ハニワ 대화형 터미널 — @@APPNAME@@ 내장 로컬 LLM 클라이언트.
 # 127.0.0.1:8737 (llama-server, OpenAI 호환) 와 SSE 스트리밍으로 대화한다.
 import json, os, sys, time, urllib.request
 try:
@@ -13666,7 +13686,7 @@ except Exception:
     pass
 
 BASE   = "http://127.0.0.1:8737"
-REPORT = os.environ.get("OPENCLAUDE_REPORT", "")
+REPORT = os.environ.get("HANIWA_REPORT", "")
 C = {"reset":"\033[0m","dim":"\033[90m","user":"\033[1;35m","ai":"\033[1;36m",
      "ok":"\033[1;32m","warn":"\033[1;33m","err":"\033[1;31m","brand":"\033[1;35m"}
 
@@ -13689,7 +13709,7 @@ def report_text():
             pass
     return "(보고서 없음)"
 
-SYS = ("너는 이 컴퓨터 안에서(인터넷 없이) 돌아가는 로컬 AI '오픈클로'야. 무엇이든 자유롭게 대화하는 친근한 "
+SYS = ("너는 이 컴퓨터 안에서(인터넷 없이) 돌아가는 로컬 AI 'ハニワ'야. 무엇이든 자유롭게 대화하는 친근한 "
        "AI 비서지 — 질문 답하기, 아이디어, 글쓰기, 번역, 코드, 잡담까지 뭐든 편하게 도와줘. 부드러운 존댓말로 "
        "자연스럽고 사람스럽게, 딱딱한 설명서 말투는 피하고. 마침 카메라(소셜 미디어 아카이빙) 앱 안에 있어서 "
        "그 앱 문제도 도울 수 있어 — 수집이 안 되면 원인을 짚고 설정→환경 복구·모듈 업데이트·토큰 추출·"
@@ -13723,9 +13743,13 @@ def stream(messages):
 
 def main():
     os.system("clear")
-    print(C["brand"] + "  +-----------------------------------------------+")
-    print("  |   오픈클로 - 카메라 내장 로컬 AI (오프라인)      |")
-    print("  +-----------------------------------------------+" + C["reset"])
+    # ★ 박스 폭을 손으로 맞추지 않는다. 앱 이름이 바뀔 때마다(カメラ→…→@@APPNAME@@)
+    #   여기 공백 개수가 따라오지 못해 배너가 어긋난 채 방치됐다. 폭을 계산해서 채운다.
+    _t = "ハニワ - @@APPNAME@@ 내장 로컬 AI (오프라인)"
+    _w = sum(2 if ord(ch) > 0x2E7F else 1 for ch in _t)
+    print(C["brand"] + "  +" + "-" * 47 + "+")
+    print("  |   " + _t + " " * max(1, 44 - _w) + "|")
+    print("  +" + "-" * 47 + "+" + C["reset"])
     print(C["dim"] + "  엔드포인트 127.0.0.1:8737 · 종료: exit / quit / 종료 / Ctrl-D" + C["reset"])
     sys.stdout.write(C["dim"] + "  AI 준비 대기 중" + C["reset"]); sys.stdout.flush()
     if not ready():
@@ -13748,11 +13772,11 @@ def main():
         if u.lower() in ("exit","quit") or u in ("종료","끝"):
             break
         messages.append({"role":"user","content":user})
-        sys.stdout.write(C["ai"] + "오픈클로 > " + C["reset"]); sys.stdout.flush()
+        sys.stdout.write(C["ai"] + "ハニワ > " + C["reset"]); sys.stdout.flush()
         reply = stream(messages)
         print()
         messages.append({"role":"assistant","content":reply})
-    print(C["dim"] + "\n  오픈클로를 종료합니다. 터미널을 닫아도 됩니다." + C["reset"])
+    print(C["dim"] + "\n  ハニワ를 종료합니다. 터미널을 닫아도 됩니다." + C["reset"])
 
 if __name__ == "__main__":
     main()
@@ -13763,20 +13787,20 @@ if __name__ == "__main__":
         QString repl = QString::fromUtf8(REPL_PY);
         repl.replace(QStringLiteral("@@APPNAME@@"), QStringLiteral(APP_NAME_DISPLAY));
         if (f.open(QIODevice::WriteOnly | QIODevice::Text)) { f.write(repl.toUtf8()); f.close(); }
-        else { log("❌ 오픈클로 REPL 파일 생성 실패", "error", "settings"); return; }
+        else { log("❌ ハニワ REPL 파일 생성 실패", "error", "settings"); return; }
     }
 
 #ifdef Q_OS_WIN
     const QString bundlePyW   = Common::bundledResourcesDir() + "/python_env/python.exe";
-    QString scriptPath = dir + "/openclaude.bat";
+    QString scriptPath = dir + "/haniwa.bat";
     QFile script(scriptPath);
     if (script.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QString c;
         c += "@echo off\r\n";
         c += "chcp 65001 >nul\r\n";
-        c += "title 오픈클로 - 카메라 로컬 AI\r\n";
+        c += QString("title ハニワ - %1 로컬 AI\r\n").arg(QStringLiteral(APP_NAME_DISPLAY));
         c += "set PYTHONDONTWRITEBYTECODE=1\r\n";
-        c += "set OPENCLAUDE_REPORT=" + QDir::toNativeSeparators(reportPath) + "\r\n";
+        c += "set HANIWA_REPORT=" + QDir::toNativeSeparators(reportPath) + "\r\n";
         c += "set REPL=" + QDir::toNativeSeparators(replPath) + "\r\n";
         c += "for %%P in (\"" + QDir::toNativeSeparators(bundlePyW) + "\") do if exist \"%%~P\" (\"%%~P\" \"%REPL%\" & goto :done)\r\n";
         c += "python \"%REPL%\"\r\n";
@@ -13786,7 +13810,7 @@ if __name__ == "__main__":
         script.write(c.toUtf8());
         script.close();
     }
-    QProcess::startDetached("cmd.exe", {"/c", "start", "오픈클로", QDir::toNativeSeparators(scriptPath)});
+    QProcess::startDetached("cmd.exe", {"/c", "start", "ハニワ", QDir::toNativeSeparators(scriptPath)});
 #else
     // python 후보: 쓰기가능 env → 번들(arch) → 번들 → 시스템 (전부 앱 내부 우선)
     // 외부 복사본은 더 이상 쓰지 않는다(activePythonEnvDir 이 앱 내부 고정).
@@ -13795,13 +13819,13 @@ if __name__ == "__main__":
     const QString userPy    = Common::activePythonEnvDir() + "/bin/python3";
     const QString bundlePyA = Common::bundledResourcesDir() + "/python_env_arm64/bin/python3";
     const QString bundlePy  = Common::bundledResourcesDir() + "/python_env/bin/python3";
-    QString scriptPath = dir + "/openclaude.command";
+    QString scriptPath = dir + "/haniwa.command";
     QFile script(scriptPath);
     if (script.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QString c;
         c += "#!/bin/bash\n";
         c += "export PYTHONDONTWRITEBYTECODE=1\n";       // 번들 python 이면 __pycache__ 로 서명 봉인 깨짐 방지
-        c += "export OPENCLAUDE_REPORT='" + reportPath + "'\n";
+        c += "export HANIWA_REPORT='" + reportPath + "'\n";
         c += "REPL='" + replPath + "'\n";
         c += "for P in '" + userPy + "' '" + bundlePyA + "' '" + bundlePy + "' /usr/bin/python3; do\n";
         c += "  if [ -x \"$P\" ]; then exec \"$P\" \"$REPL\"; fi\n";
@@ -13978,7 +14002,7 @@ void HanishikiBackend::aiFixScript(const QString &name, const QString &problem)
 {
     if (!kEditableScripts.contains(name)) { log("편집 불가 스크립트", "error", "settings"); return; }
     if (m_scriptFixBusy.exchange(true)) { log("AI 스크립트 수리가 이미 진행 중입니다.", "warning", "settings"); return; }
-    log(QString("🤖 오픈클로가 %1 을(를) 읽고 수정안을 만드는 중...").arg(name), "info", "settings");
+    log(QString("🤖 ハニワ가 %1 을(를) 읽고 수정안을 만드는 중...").arg(name), "info", "settings");
 
     QThread *t = QThread::create([this, name, problem]() {
         const QString base = llmBase();
@@ -13991,7 +14015,7 @@ void HanishikiBackend::aiFixScript(const QString &name, const QString &problem)
         QMetaObject::invokeMethod(this, [this, name, out]() {
             if (out.trimmed().isEmpty()) { log("⚠️ AI 가 수정안을 만들지 못했습니다.", "warning", "settings"); }
             else { QString err; if (applyScriptPatchImpl(name, out, err))
-                       log(QString("✅ 오픈클로가 %1 을(를) 고쳐 적용했습니다(문법검증 통과). 문제 있으면 '원본으로 초기화'.").arg(name), "success", "settings");
+                       log(QString("✅ ハニワ가 %1 을(를) 고쳐 적용했습니다(문법검증 통과). 문제 있으면 '원본으로 초기화'.").arg(name), "success", "settings");
                    else log(QString("❌ AI 수정안이 문법검증에서 걸려 적용 안 함(안전). 사유: %1").arg(err), "error", "settings"); }
             getScriptSource(name);
             m_scriptFixBusy = false;
@@ -14265,7 +14289,7 @@ void HanishikiBackend::autoRepair()
         }
 
         // 1.5) ★ 코드 자가수리 — 편집가능 스크립트 문법(py_compile)을 자동 점검하고, 깨진 스크립트는
-        //       오픈클로가 스스로 코드를 다시 써서 고친다. 백업·문법검증·실패 시 자동 원복(안전).
+        //       ハニワ가 스스로 코드를 다시 써서 고친다. 백업·문법검증·실패 시 자동 원복(안전).
         say("info", "앱 스크립트 코드를 점검하는 중입니다…");
         {
             QStringList broken, fixed, kept;
@@ -14281,7 +14305,7 @@ void HanishikiBackend::autoRepair()
                 if (pc.exitStatus() == QProcess::NormalExit && pc.exitCode() == 0) continue;  // 문법 정상
                 const QString err = QString::fromUtf8(pc.readAllStandardError()).left(400);
                 broken << sc;
-                say("run", "🩺 " + sc + " 문법 오류 감지 → 오픈클로가 코드 수리 시도");
+                say("run", "🩺 " + sc + " 문법 오류 감지 → ハニワ가 코드 수리 시도");
                 const QString newSrc = aiRewriteScriptSync(sc, "파이썬 문법 오류(py_compile 실패):\n" + err);
                 if (newSrc.trimmed().isEmpty()) { say("error", "⚠️ " + sc + " — AI 가 수정안을 만들지 못함"); continue; }
                 QString e2;

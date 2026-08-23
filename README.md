@@ -48,7 +48,7 @@
 ├── mac/
 │   └── chernobyl/      # macOS ハンイシキ 소스 (Qt6 C++) — 폴더 이름은 옛 이름 그대로
 ├── windows/            # Windows Predormition 소스 (Qt6 C++) + GitHub Actions 빌드
-├── design-system/      # Darkroom v2 디자인 시스템 카드 (claude.ai/design 동기화)
+├── design-system/      # Darkroom v2 디자인 시스템 카드
 └── README.md
 ```
 

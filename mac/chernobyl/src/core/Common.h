@@ -54,7 +54,7 @@ QString activeToolScriptPath(const QString &name); // override 있으면 그것,
 //     - 값은 쓰기가능 위치의 api_overrides.json 에 저장된다.
 //     - 없으면 코드에 박힌 기본값을 그대로 쓴다(동작 무변화).
 //   X 가 query ID 를 회전시키면 예전엔 앱을 다시 빌드해야 했다 — 이제 이 파일만 고치면 되고,
-//   로컬 AI(오픈클로)나 사용자가 설정 화면에서 바로 바꿀 수 있다.
+//   로컬 AI(ハニワ)나 사용자가 설정 화면에서 바로 바꿀 수 있다.
 QString apiOverride(const QString &key, const QString &builtinDefault);
 bool setApiOverride(const QString &key, const QString &value);   // 빈 값이면 해당 키 삭제(기본값 복귀)
 QString apiOverridesPath();

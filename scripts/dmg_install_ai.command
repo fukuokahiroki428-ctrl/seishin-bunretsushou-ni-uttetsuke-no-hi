@@ -21,7 +21,7 @@ HF="https://huggingface.co/Qwen"
 
 echo ""
 echo "════════════════════════════════════════════"
-echo "  $APP_NAME — 로컬 AI(오픈클로) 설치"
+echo "  $APP_NAME — 로컬 AI(ハニワ) 설치"
 echo "════════════════════════════════════════════"
 echo ""
 
