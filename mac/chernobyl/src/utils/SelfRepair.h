@@ -513,8 +513,16 @@ inline QString runStartupMaintenance()
             vf.start("/usr/bin/codesign", {"--verify", "--deep", "--strict", app});
             vf.waitForFinished(300000);
             if (vf.exitCode() != 0) {
+                // ★ 이 줄은 report 에만 담으면 안 된다. 보고서는 진단이 다 끝난 뒤에야
+                //   한꺼번에 출력된다(맨 아래 qInfo). 그런데 재서명은 1분쯤 걸린다.
+                //   그동안 화면에도 로그에도 아무 것도 안 뜨니, 사용자는 앱이 그냥
+                //   멈춘 줄 알고 끈다. 끄면 재서명이 중간에 잘려 번들이 오히려
+                //   무효 상태로 남는다(실측: 시작 9초 → 완주 60초, 중간에 끊기면 무효).
+                //   그러니 지금 당장 밖으로 내보낸다.
+                qInfo().noquote() << "[SEAL] 코드 서명 봉인이 깨져 있습니다 — 지금 복구합니다."
+                                     " 1분쯤 걸립니다. 끝날 때까지 앱을 끄지 마십시오.";
                 report += "[SEAL] 코드 서명 봉인이 깨져 있습니다 — 자동 복구를 시도합니다"
-                          " (번들이 커서 수 분 걸릴 수 있습니다)…\n";
+                          " (1분쯤 걸립니다 — 끄지 마십시오)…\n";
                 QString serr;
                 if (Common::resealAppBundle(&serr))
                     report += "[SEAL] ✅ 서명 복구 완료.\n";

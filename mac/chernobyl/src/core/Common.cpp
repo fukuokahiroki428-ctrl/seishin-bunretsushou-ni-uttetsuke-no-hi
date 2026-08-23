@@ -1,4 +1,5 @@
 #include "Common.h"
+#include <QLockFile>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QTimeZone>
@@ -604,6 +605,18 @@ bool resealAppBundle(QString *err)
     const QString signer = bundledToolsDir() + "/codesign_app.sh";
     if (!QFile::exists(signer)) {
         if (err) *err = QString("재서명 도구가 번들에 없습니다: %1").arg(signer);
+        return false;
+    }
+
+    // ★ 재서명은 한 번에 하나만. 같은 번들에 codesign 두 개가 동시에 붙으면
+    //   서로의 중간 결과를 덮어써서 번들이 확실히 망가진다. 앱을 두 개 띄우거나,
+    //   앞선 재서명이 아직 끝나지 않았는데 또 시작하는 경우가 실제로 있다.
+    //   잠금은 번들 밖(임시 폴더)에 둔다 — 번들 안에 파일을 만들면 그것이 또 봉인을 깬다.
+    QLockFile lock(QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                   + "/hanishiki_reseal.lock");
+    lock.setStaleLockTime(30 * 60 * 1000);      // 30분이면 죽은 잠금으로 본다
+    if (!lock.tryLock(0)) {
+        if (err) *err = "다른 재서명이 이미 진행 중입니다 — 그것이 끝나기를 기다리십시오.";
         return false;
     }
 
