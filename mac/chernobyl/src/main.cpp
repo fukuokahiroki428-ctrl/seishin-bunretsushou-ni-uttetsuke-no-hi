@@ -142,11 +142,20 @@ int main(int argc, char *argv[])
             const auto dirs = cands;
             for (const QFileInfo &d : dirs) {
                 if (d.absoluteFilePath() == QFileInfo(mine).absoluteFilePath()) continue;
-                // 이 앱이 쓰던 폴더인지 — 우리 흔적이 하나라도 있어야 한다.
-                //   (Miyo 아래에 다른 앱 폴더가 있어도 잘못 가져오지 않게)
-                static const char *marks[] = {"hanishiki_config.json", "miyo_config.json",
-                                              "llm", "python_env_arm64",
-                                              "script_overrides", "archive_index.db"};
+                // 이 앱이 쓰던 폴더인지 판별한다.
+                //
+                //   ★ 반드시 '우리만 쓰는' 이름으로 봐야 한다.
+                //     예전엔 llm / python_env_arm64 / script_overrides 같은 흔한 이름도
+                //     표식에 넣고 '하나라도 맞으면' 우리 것으로 봤다. 조직 폴더를 쓰던
+                //     시절엔 Miyo 아래만 훑어서 문제가 없었지만, 조직 폴더를 빼면서
+                //     Application Support 전체(이 맥에서만 103개)를 훑게 됐다.
+                //     그 상태로 두면 'llm' 폴더를 가진 다른 앱을 우리 것으로 오인해
+                //     그 앱의 데이터 폴더를 통째로 우리 이름으로 rename 해 버린다.
+                //     남의 앱을 부수는 사고다.
+                //
+                //   → 설정 파일이 있는 폴더만 인정한다. 이 이름은 우리만 쓴다.
+                //     (앱이 한 번이라도 떴으면 반드시 있다. 없으면 가져올 것도 없다.)
+                static const char *marks[] = {"hanishiki_config.json", "miyo_config.json"};
                 bool ours = false;
                 for (const char *m : marks)
                     if (QFileInfo::exists(d.absoluteFilePath() + "/" + QString::fromLatin1(m))) { ours = true; break; }

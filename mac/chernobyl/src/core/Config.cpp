@@ -55,14 +55,22 @@ QString Config::defaultConfigPath()
     //   옛 파일이 있고 새 파일이 없을 때 딱 한 번 옮긴다(rename — 복사가 아니다).
     //   옮기지 못하면(권한 등) 옛 파일을 그대로 쓴다 — 잃는 것보다 낫다.
     const QString cur = dataDir + "/hanishiki_config.json";
-    const QString old = dataDir + "/miyo_config.json";
-    if (!QFileInfo::exists(cur) && QFileInfo::exists(old)) {
-        if (QFile::rename(old, cur))
-            qInfo() << "[config] 설정 파일 이름 옮김: miyo_config.json → hanishiki_config.json";
-        else
-            return old;
+    const QString prev = dataDir + "/miyo_config.json";
+    // ★ 이 함수는 여러 곳에서 불린다. rename 을 매번 시도하지 않도록 한 번만 판단한다.
+    //   (두 스레드가 동시에 들어와도 rename 은 원자적이라 한쪽만 성공하고 나머지는
+    //    이미 옮겨진 상태를 본다 — 어느 쪽이든 cur 을 돌려주면 맞다.)
+    static bool checked = false;
+    static bool useOld  = false;
+    if (!checked) {
+        checked = true;
+        if (!QFileInfo::exists(cur) && QFileInfo::exists(prev)) {
+            if (QFile::rename(prev, cur))
+                qInfo() << "[config] 설정 파일 이름 옮김: miyo_config.json → hanishiki_config.json";
+            else
+                useOld = true;   // 옮기지 못하면 옛 파일을 그대로 쓴다 — 잃는 것보다 낫다
+        }
     }
-    return cur;
+    return useOld ? prev : cur;
 }
 
 QString Config::backupConfigPath()
@@ -70,7 +78,13 @@ QString Config::backupConfigPath()
     // 백업: 같은 디렉토리에 .backup.json 으로 (이전 in-bundle 호환용 path 변환)
     QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(dataDir);
-    return dataDir + "/miyo_config.backup.json";
+    // 새 이름을 쓰되, 옛 백업이 있고 새것이 없으면 그것을 쓴다.
+    //   백업은 설정이 깨졌을 때만 읽히는 최후 수단이라, 이름만 바꿔 놓고
+    //   옛 파일을 못 읽으면 정작 필요한 순간에 없는 것이 된다.
+    const QString cur = dataDir + "/hanishiki_config.backup.json";
+    const QString prev = dataDir + "/miyo_config.backup.json";
+    if (!QFileInfo::exists(cur) && QFileInfo::exists(prev)) return prev;
+    return cur;
 }
 
 void Config::load(const QString &filePath)
