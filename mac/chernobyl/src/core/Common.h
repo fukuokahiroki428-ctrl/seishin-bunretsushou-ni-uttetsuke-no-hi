@@ -102,7 +102,13 @@ QString checkFileIntegrity(const QString &filePath);
 // macOS: Contents/Resources/
 // Windows: <exe_dir>/
 QString bundledResourcesDir();
-QStringList bundledRequirements();   // 번들 requirements.txt 의 패키지 목록(버전 고정 포함)
+// requirements.txt 의 패키지 목록.
+//   stripPins=false : 'yt-dlp==2026.7.4' 그대로. 환경을 '다시 만들' 때 쓴다(재현성).
+//   stripPins=true  : 'yt-dlp' 만. '최신으로 올릴' 때 쓴다.
+// ★ 예전엔 이 구분이 없어서 갱신도 고정본을 그대로 pip 에 넘겼다.
+//   pip 는 "Requirement already satisfied" 로 끝내고, 앱은 그걸 "최신" 이라고
+//   보고했다. 실제로는 한 판도 올라가지 않는데 올라간 줄 알게 되는 형태였다.
+QStringList bundledRequirements(bool stripPins = false);   // 번들 requirements.txt 의 패키지 목록(버전 고정 포함)
 
 
 // Get list of Python candidates (bundled first, then system fallbacks)

@@ -13083,7 +13083,13 @@ void HanishikiBackend::updateModules()
         //   업그레이드하면 Instagram 쿠키 추출이 조용히 죽었다. 버전 고정도 없어서
         //   업그레이드마다 최신판을 받아 오던 것도 문제였다(pin 의 취지가 무너진다).
         //   번들된 requirements.txt 를 읽어 한 곳에서만 관리한다.
-        QStringList packages = Common::bundledRequirements();
+        // ★ 여기는 '최신으로 올리는' 자리라 버전 고정을 떼고 넘긴다.
+        //   예전엔 'yt-dlp==2026.7.4' 를 그대로 넘겨서 pip 가 늘
+        //   "Requirement already satisfied" 로 끝냈고, 앱은 그걸 "최신" 이라고
+        //   적었다. 화면 문구는 '최신 버전으로 업데이트' 인데 실제로는 한 판도
+        //   올라가지 않았다 — 가장 알아채기 어려운 형태의 고장이다.
+        //   (환경을 '다시 만드는' 쪽은 고정본 그대로 쓴다 — 재현성이 거기선 목적이다)
+        QStringList packages = Common::bundledRequirements(/*stripPins=*/true);
 
         int updated = 0;
         int failed = 0;
@@ -15681,10 +15687,15 @@ void HanishikiBackend::refreshAllTokens()
 void HanishikiBackend::writeStartupLog()
 {
     QString logDir = m_config->tempDir();
-    if (logDir.isEmpty()) logDir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/ABIWA";
+    // ★ 디스크가 아직 설정되지 않았을 때의 자리. 예전엔 여기가 Documents/ABIWA 였다 —
+    //   앱 이름이 네 번 바뀌는 동안 이 한 줄만 첫 이름에 머물러서, 새로 설치한 사람의
+    //   문서 폴더에 난데없이 'ABIWA' 가 생겼다(실제로 생겨 있었다).
+    //   이름을 손으로 적지 않는다. 앱 데이터 폴더 밑에 둔다 — 이름이 또 바뀌어도 따라온다.
+    if (logDir.isEmpty())
+        logDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/logs";
     QDir().mkpath(logDir);
 
-    QString logPath = logDir + "/abiwa_system.log";
+    QString logPath = logDir + "/system.log";
     QFile f(logPath);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return;
 

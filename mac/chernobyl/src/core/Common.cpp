@@ -737,38 +737,57 @@ void ensureYtDlpReady(bool autoUpdate)
         }
     }
 
-    if (!autoUpdate) return;  // ★ 사용자가 명시적으로 켜야만 GitHub 다운로드 시도
+    if (!autoUpdate) return;   // 꺼 두면 확인조차 하지 않는다
 
-    // 2) 백그라운드로 yt-dlp 자체 --update 호출 (stable 채널)
-    //    yt-dlp 는 자체적으로 GitHub Release 의 SHA256SUMS 비교 → 변조 시 거부.
-    //    실패해도 기존 binary 유지.
-    if (!QFile::exists(userBin)) return;
+    // ── 2) 새 판이 있는지 '확인만' 한다 ────────────────────────────────────
+    //
+    // ★ 예전엔 여기서 `yt-dlp --update-to stable` 을 불렀다. 그것은 이 앱에서
+    //   구조적으로 절대 성공할 수 없는 호출이었다.
+    //     · 번들 yt-dlp 는 단일 실행파일이 아니라 번들 파이썬의 패키지다.
+    //       tools/yt-dlp 는 `python -m yt_dlp` 로 넘기는 1.3KB 셸 래퍼일 뿐이다.
+    //     · 그래서 yt-dlp 의 자체 갱신기는 variant 를 unknown 으로 보고
+    //       "manual build 나 패키지 관리자로 설치했으니 그쪽으로 갱신하라" 며 거부한다.
+    //   그런데 그 뒤의 sanity check 는 `--version` 이 여전히 잘 나오니 통과했고,
+    //   실패를 알리는 곳도 없었다. 결과: 장기지원의 핵심 장치가 몇 달 동안
+    //   아무 일도 하지 않으면서 '정상' 으로 보였다.
+    //
+    // ★ 그러면 왜 여기서 바로 pip 로 올리지 않나.
+    //   패키지가 앱 번들 안에 있어서, 올리는 순간 codesign 봉인이 깨진다.
+    //   그러면 다음 기동 때 자동 재서명(1분 남짓)이 돌고, 그 동안 앱을 끄면
+    //   번들이 무효로 남는다. 기동할 때마다 조용히 그 위험을 감수할 일이 아니다.
+    //   → 확인은 자동으로, 적용은 사용자가 '모듈 업데이트' 를 눌러서.
+    //     확인은 하루 한 번이면 충분하다.
+    const QString stampPath =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/ytdlp_check.stamp";
+    {
+        QFileInfo st(stampPath);
+        if (st.exists() && st.lastModified().secsTo(QDateTime::currentDateTime()) < 24 * 3600)
+            return;                     // 오늘 이미 확인했다
+    }
+
+    const QString python = bundledPythonPath();
+    if (python.isEmpty() || !QFile::exists(python)) return;
 
     QProcess *p = new QProcess();
-    p->setProgram(userBin);
-    p->setArguments({"--update-to", "stable", "--no-warnings", "--quiet"});
+    p->setProcessEnvironment(bundledProcessEnv());
+    p->setProgram(python);
+    // --dry-run 이라 아무것도 설치하지 않는다. 봉인도 그대로다.
+    p->setArguments({"-m", "pip", "install", "--upgrade", "--no-input",
+                     "--dry-run", "--quiet", "--report", "-", "yt-dlp"});
     QObject::connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-        p, [p, userBin, bundled](int code, QProcess::ExitStatus) {
-            // 3) 업데이트 후 sanity check — yt-dlp --version 정상 출력 확인
-            QProcess verify;
-            verify.start(userBin, {"--version"});
-            verify.waitForFinished(5000);
-            QString ver = QString::fromUtf8(verify.readAllStandardOutput()).trimmed();
-            // 정상 버전 패턴: 2024.xx.xx 또는 2025.xx.xx 형식
-            QRegularExpression verRe(R"(^\d{4}\.\d{1,2}\.\d{1,2})");
-            bool valid = verRe.match(ver).hasMatch();
-            if (!valid) {
-                // 의심스러움 — 번들로 복원
-                QFile::remove(userBin);
-                if (!bundled.isEmpty()) {
-                    QFile::copy(bundled, userBin);
-                    QFile::setPermissions(userBin,
-                        QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner |
-                        QFileDevice::ReadGroup | QFileDevice::ExeGroup |
-                        QFileDevice::ReadOther | QFileDevice::ExeOther);
-                }
+        p, [p, stampPath](int, QProcess::ExitStatus) {
+            const QString out = QString::fromUtf8(p->readAllStandardOutput());
+            // 올릴 것이 있으면 리포트에 yt-dlp 가 '설치 대상' 으로 들어온다.
+            static const QRegularExpression verRe(R"RX("name":\s*"yt[-_]dlp".*?"version":\s*"([^"]+)")RX",
+                                                  QRegularExpression::DotMatchesEverythingOption);
+            const auto m = verRe.match(out);
+            if (m.hasMatch()) {
+                qInfo().noquote()
+                    << QString("[yt-dlp] 새 판이 있습니다: %1 — 설정 → '모듈 업데이트' 를 누르면 올라갑니다.")
+                           .arg(m.captured(1));
             }
-            (void)code;
+            QFile stamp(stampPath);
+            if (stamp.open(QIODevice::WriteOnly | QIODevice::Text)) { stamp.write("ok"); stamp.close(); }
             p->deleteLater();
         });
     p->start();
@@ -797,8 +816,14 @@ QStringList pythonCandidates()
 //   (browser_cookie3·cryptography 누락 → Python 업그레이드 후 쿠키 추출이 조용히 죽음).
 //   버전 고정(==)도 그대로 살려 넘긴다 — 고정해 둔 취지가 업그레이드 때 무너지지 않게.
 //   파일을 못 찾으면 빈 목록이 아니라 최소 필수 목록을 돌려준다(전부 실패보다 낫다).
-QStringList bundledRequirements()
+QStringList bundledRequirements(bool stripPins)
 {
+    // 'pkg[extra]==1.2.3 ; marker' → 'pkg[extra]'
+    auto nameOnly = [](const QString &line) {
+        static const QRegularExpression re(R"(^([A-Za-z0-9._\-]+(?:\[[^\]]+\])?))");
+        const auto m = re.match(line);
+        return m.hasMatch() ? m.captured(1) : line;
+    };
     QStringList out;
     QStringList cands;
     cands << bundledResourcesDir() + "/requirements.txt"
@@ -810,7 +835,7 @@ QStringList bundledRequirements()
         while (!f.atEnd()) {
             QString line = QString::fromUtf8(f.readLine()).trimmed();
             if (line.isEmpty() || line.startsWith('#')) continue;
-            out << line;
+            out << (stripPins ? nameOnly(line) : line);
         }
         f.close();
         if (!out.isEmpty()) {
