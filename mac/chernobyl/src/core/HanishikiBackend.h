@@ -11,6 +11,7 @@
 #include <QHash>
 #include <QThread>
 #include <atomic>
+#include <memory>
 
 class MainWindow;
 class Config;
@@ -44,7 +45,8 @@ public:
 
     // 단일 스페이스 URL 을 outDir 에 yt-dlp 로 다운로드(스페이스 자동탐지에서도 재사용). 성공 시 true.
     //   running: 중지 판단용 실행 플래그(병렬 트랙 flag). nullptr 이면 platformRunning("twitter") 사용.
-    bool downloadSpaceUrl(const QString &url, const QString &outDir, const bool *running = nullptr);
+    bool downloadSpaceUrl(const QString &url, const QString &outDir,
+                          const std::atomic<bool> *running = nullptr);
 
 signals:
     void jsSignal(const QString &js);
@@ -272,9 +274,23 @@ private:
     MainWindow *m_window;
     Config *m_config;
     HttpClient *m_http;
-    QMap<QString, bool> m_isRunning;
+    // ★ 중지 플래그 — 왜 이렇게 생겼나.
+    //   예전에는 QMap<QString,bool> 하나였고, m_runningMutex 로 지킨다고 적혀 있었다.
+    //   그런데 실제로 뮤텍스를 잡는 곳은 몇 군데뿐이고, 수집기 8개(twitter·bluesky·
+    //   discord·instagram·pixiv·fanbox·spinspin·crawl)는 워커 스레드에서 맵을 맨손으로
+    //   읽고 썼다. 한쪽만 잠그는 자물쇠는 잠그지 않은 것과 같다. 결과는 두 가지였다.
+    //     · 중지가 안 먹는다 — 평범한 bool 을 동기화 없이 돌려 읽으면 최적화가 값을
+    //       레지스터에 올려 둘 수 있어, 워커가 바뀐 값을 영영 못 본다.
+    //     · 병렬 수집에서 죽는다 — 워커가 m_isRunning[새키]=true 로 노드를 끼워 넣는
+    //       동안 GUI 스레드가 같은 맵을 순회한다(stopCollection·완료 콜백).
+    //   또 하나, HttpClient 와 수집기에 &m_isRunning[키] 로 '맵 노드의 주소' 를 넘겼다.
+    //   맵이 바뀌어도 노드 주소가 살아 있기를 기대하는 코드였다.
+    //   → 값을 맵 노드에 두지 않는다. 키마다 shared_ptr 로 원자 플래그를 따로 두고,
+    //     맵에는 그 포인터만 담는다. 맵이 커지든 줄든 플래그는 제자리에 살아 있고,
+    //     읽고 쓰는 것은 std::atomic 이라 스레드 사이에서 반드시 보인다.
+    mutable QMap<QString, std::shared_ptr<std::atomic<bool>>> m_runFlags;
     QMap<QString, bool> m_stopRequested;  // 사용자가 명시적으로 중지 버튼을 눌렀는지 추적
-    mutable QMutex m_runningMutex;  // m_isRunning 쓰레드 안전 보호
+    mutable QMutex m_runningMutex;  // m_runFlags(맵 구조) 보호. 플래그 값 자체는 atomic.
     QMutex m_realCaptureMutex;       // captureRealTweetPage 직렬화 (브라우저 단일 인스턴스)
     bool m_realCaptureCookiesInjected = false;  // 첫 캡쳐 시 한 번만 쿠키 주입
     // 병렬 다중대상에서 워커 스레드가 자기 trackKey("twitter#0", "twitter#1", ...)를
@@ -300,14 +316,52 @@ private:
     QString aiRewriteScriptSync(const QString &name, const QString &problem); // AI 가 스크립트 전체 재작성(동기, 워커스레드 전용)
     void resealBundleAfterInstall(const QString &why);  // 앱 내부(번들) 설치 후 codesign 봉인 자동 복구
 
-    // 쓰레드 안전 m_isRunning 접근
-    bool platformRunning(const QString &p) const {
+    // 쓰레드 안전 중지 플래그 접근 — 맵을 직접 만지는 코드는 이제 없어야 한다.
+    //   runFlag() 는 없으면 만들어서 준다. HttpClient·수집기에 넘길 '죽지 않는'
+    //   포인터가 필요한 자리에서 쓴다.
+    std::shared_ptr<std::atomic<bool>> runFlag(const QString &key) const {
         QMutexLocker lock(&m_runningMutex);
-        return m_isRunning.value(p, false);
+        auto it = m_runFlags.find(key);
+        if (it == m_runFlags.end())
+            it = m_runFlags.insert(key, std::make_shared<std::atomic<bool>>(false));
+        return it.value();
+    }
+    bool platformRunning(const QString &p, bool dflt = false) const {
+        QMutexLocker lock(&m_runningMutex);
+        auto it = m_runFlags.constFind(p);
+        return it == m_runFlags.constEnd() ? dflt : it.value()->load();
     }
     void setPlatformRunning(const QString &p, bool v) {
         QMutexLocker lock(&m_runningMutex);
-        m_isRunning[p] = v;
+        auto it = m_runFlags.find(p);
+        if (it == m_runFlags.end()) m_runFlags.insert(p, std::make_shared<std::atomic<bool>>(v));
+        else it.value()->store(v);
+    }
+    bool platformKnown(const QString &p) const {
+        QMutexLocker lock(&m_runningMutex);
+        return m_runFlags.contains(p);
+    }
+    // 순회가 필요한 곳은 맵을 빌려 주지 않고 키 목록만 복사해 준다.
+    // 순회 도중 워커가 새 키를 끼워 넣어도 안전하다.
+    QStringList runFlagKeys() const {
+        QMutexLocker lock(&m_runningMutex);
+        return m_runFlags.keys();
+    }
+    // platform 또는 platform#N 중 하나라도 돌고 있나.
+    bool anyRunningFor(const QString &platform, const QString &except = QString()) const {
+        const QString prefix = platform + "#";
+        const QStringList keys = runFlagKeys();
+        for (const QString &k : keys) {
+            if (k == except) continue;
+            if (k == platform || k.startsWith(prefix)) { if (platformRunning(k)) return true; }
+        }
+        return false;
+    }
+    void stopAllFor(const QString &platform) {
+        const QString prefix = platform + "#";
+        const QStringList keys = runFlagKeys();
+        for (const QString &k : keys)
+            if (k == platform || k.startsWith(prefix)) setPlatformRunning(k, false);
     }
     QString m_currentPlatform;
 

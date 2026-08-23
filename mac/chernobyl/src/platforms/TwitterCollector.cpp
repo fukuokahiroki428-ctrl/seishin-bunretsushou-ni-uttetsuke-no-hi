@@ -1936,7 +1936,7 @@ void TwitterCollector::saveProfileExcel(const QString &saveDir, const QString &t
     }
 }
 
-void TwitterCollector::handleRateLimit(const QJsonArray &accounts, int &currentIdx, bool &isRunning)
+void TwitterCollector::handleRateLimit(const QJsonArray &accounts, int &currentIdx, const std::atomic<bool> &isRunning)
 {
     // ── 계정별 Rate Limit 추적 + 무한 순환 ──
     m_consecutiveOk = 0;
@@ -2189,7 +2189,7 @@ void TwitterCollector::captureTweet(const QJsonObject &tweet, const QString &cap
 //    저장된 _complete.xlsx 의 text(3)/urls(19)/quoted_tweet_url(25) 컬럼을 스캔한다.
 //    (트위터는 "유저의 과거 스페이스 목록" API 가 없어, 타임라인에 공유된 것 + 녹화본만 가능)
 void TwitterCollector::collectSpacesFromTimeline(const QJsonObject &config, const QString &target,
-                                                 const QString &userDir, bool &isRunning)
+                                                 const QString &userDir, const std::atomic<bool> &isRunning)
 {
     Q_UNUSED(config);
     if (!isRunning) return;
@@ -2242,7 +2242,7 @@ void TwitterCollector::collectSpacesFromTimeline(const QJsonObject &config, cons
 //    _complete.xlsx 에서 author_username(7)==target 이고 in_reply_to(23)==target 인 행의
 //    conversation_id(22) 를 스레드 루트로 간주(트위터 conversation_id == 루트 트윗 id).
 void TwitterCollector::collectThreadsAuto(const QJsonObject &config, const QString &target,
-                                          const QString &userDir, bool &isRunning)
+                                          const QString &userDir, const std::atomic<bool> &isRunning)
 {
     if (!isRunning) return;
     const QString completePath = userDir + "/" + target + "_complete.xlsx";
@@ -2300,7 +2300,7 @@ void TwitterCollector::collectThreadsAuto(const QJsonObject &config, const QStri
     m_backend->log(QString("🧵 스레드 자동탐지 완료: %1개 재구성.").arg(done), "success", "twitter");
 }
 
-void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
+void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool> &isRunning)
 {
     // 중지 시 진행 중인 미디어 다운로드를 즉시 끊기 위해 HttpClient에 '진행 플래그' 연결
     if (m_http) m_http->setRunFlag(&isRunning);
@@ -5137,7 +5137,7 @@ void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
     stopDaemon();
 }
 
-void TwitterCollector::checkNewPosts(const QJsonObject &config, bool &isRunning)
+void TwitterCollector::checkNewPosts(const QJsonObject &config, const std::atomic<bool> &isRunning)
 {
     if (m_newestTweetId.isEmpty()) {
         m_backend->log("아직 수집된 트윗이 없습니다", "warning", "twitter");

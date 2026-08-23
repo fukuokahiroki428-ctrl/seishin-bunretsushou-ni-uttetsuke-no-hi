@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <atomic>
 #include <QString>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -98,7 +99,7 @@ private:
     struct CrawlItem { QString url; int depth; };
     QQueue<CrawlItem> m_queue;
     CrawlItem m_current;
-    bool m_running = false;
+    std::atomic<bool> m_running = false;
 
     // Visited / downloaded tracking
     QSet<QString> m_visited;

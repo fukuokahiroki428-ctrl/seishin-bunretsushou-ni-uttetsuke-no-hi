@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <atomic>
 #include <QString>
 #include <QJsonObject>
 #include <QProcess>
@@ -15,14 +16,14 @@ public:
     explicit BlueskyCollector(HanishikiBackend *backend, QObject *parent = nullptr);
     ~BlueskyCollector() override;
 
-    void collect(const QJsonObject &config, bool &isRunning);
+    void collect(const QJsonObject &config, const std::atomic<bool> &isRunning);
     void stopDaemon();
     qint64 daemonPid() const { return m_daemon ? m_daemon->processId() : 0; }
 
 private:
     bool startDaemon(const QString &handle, const QString &password, QJsonObject customInitArgs = QJsonObject());
     bool startDaemonMulti(const QJsonArray &accounts);
-    QJsonObject sendCommand(const QJsonObject &cmd, bool &isRunning, int timeoutMs = 600000);
+    QJsonObject sendCommand(const QJsonObject &cmd, const std::atomic<bool> &isRunning, int timeoutMs = 600000);
     void processOutputLines(const QByteArray &data);
     // ★ 다운로드 끝나면 user 폴더 root 에 gallery.html 자동 생성 — 모든 미디어 grid 로 한눈에
     void generateMediaGallery(const QString &userDir, const QString &handle);

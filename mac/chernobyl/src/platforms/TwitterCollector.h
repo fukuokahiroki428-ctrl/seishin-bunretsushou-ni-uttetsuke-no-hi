@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <atomic>
 #include <QString>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -21,8 +22,8 @@ public:
     explicit TwitterCollector(HanishikiBackend *backend, QObject *parent = nullptr);
     ~TwitterCollector() override;
 
-    void collect(const QJsonObject &config, bool &isRunning);
-    void checkNewPosts(const QJsonObject &config, bool &isRunning);
+    void collect(const QJsonObject &config, const std::atomic<bool> &isRunning);
+    void checkNewPosts(const QJsonObject &config, const std::atomic<bool> &isRunning);
     void stopDaemon();
     // 외부(HanishikiBackend)에서 중지 시 프로세스를 즉시 죽이기 위해 노출
     qint64 daemonPid() const { return m_daemon ? m_daemon->processId() : 0; }
@@ -59,8 +60,8 @@ private:
     QPair<QJsonArray, QString> getUserTweets(const QString &userId, const QString &cursor = QString());
     QPair<QJsonArray, QString> getTweetDetail(const QString &tweetId, const QString &cursor = QString());
     // 전체 수집(all) 후속 자동탐지 — 저장된 _complete.xlsx 를 스캔
-    void collectSpacesFromTimeline(const QJsonObject &config, const QString &target, const QString &userDir, bool &isRunning);
-    void collectThreadsAuto(const QJsonObject &config, const QString &target, const QString &userDir, bool &isRunning);
+    void collectSpacesFromTimeline(const QJsonObject &config, const QString &target, const QString &userDir, const std::atomic<bool> &isRunning);
+    void collectThreadsAuto(const QJsonObject &config, const QString &target, const QString &userDir, const std::atomic<bool> &isRunning);
     QPair<QJsonArray, QString> getLikes(const QString &userId, const QString &cursor = QString());
     QPair<QJsonArray, QString> getBookmarks(const QString &cursor = QString());
     QPair<QJsonArray, QString> getHighlights(const QString &userId, const QString &cursor = QString());
@@ -90,7 +91,7 @@ private:
     void saveExcelStreaming(const QString &saveDir, const QString &target, DiskJsonBuffer &buffer, const QString &suffix = "tweets");
 
     // Rate limit handling
-    void handleRateLimit(const QJsonArray &accounts, int &currentIdx, bool &isRunning);
+    void handleRateLimit(const QJsonArray &accounts, int &currentIdx, const std::atomic<bool> &isRunning);
 
     // 통합 캡쳐 헬퍼 — 모든 type 분기에서 호출
     //   tweet: GraphQL/timeline에서 받은 단일 트윗 객체 (legacy + core 포함)

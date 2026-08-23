@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <atomic>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkProxy>
@@ -64,7 +65,9 @@ public:
     // 외부 '진행 중' 플래그 — 포인터가 가리키는 값이 false가 되면
     // 현재 네트워크 요청을 100ms 이내에 abort 하여 상위 루프가 즉시 빠져나가게 함.
     // 플래그 소유자가 포인터 수명을 관리해야 함(일반적으로 수집 스레드 스택).
-    void setRunFlag(const bool *flag) { m_runFlag = flag; }
+    // ★ 평범한 bool 포인터였다. 그 bool 은 다른 스레드가 바꾸는 값이라
+//   동기화 없이 읽으면 바뀐 것을 못 볼 수 있었다(중지가 안 먹던 원인).
+void setRunFlag(const std::atomic<bool> *flag) { m_runFlag = flag; }
 
 private:
     QNetworkAccessManager *m_nam;
@@ -72,7 +75,7 @@ private:
     int m_downloadTimeout = 120000; // 2 minutes for file downloads
     int m_rateLimitMs = 0;
     qint64 m_lastRequestTime = 0;
-    const bool *m_runFlag = nullptr;  // nullptr 이면 폴링 비활성
+    const std::atomic<bool> *m_runFlag = nullptr;  // nullptr 이면 폴링 비활성
 
     HttpResponse executeRequest(QNetworkReply *reply);
     void applyHeaders(QNetworkRequest &request, const QMap<QString, QString> &headers);
