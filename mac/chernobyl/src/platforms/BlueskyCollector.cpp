@@ -72,6 +72,10 @@ bool BlueskyCollector::startDaemon(const QString &handle, const QString &passwor
         initArgs["handle"] = handle;
         initArgs["password"] = password;
     }
+    // ★ 자격증명을 명령줄로 넘기지 않는다.
+    //   macOS 에서 프로세스 명령줄은 ps 로 같은 기계의 아무 프로세스나 읽을 수 있다.
+    //   예전에는 여기 JSON 에 앱 비밀번호 이 그대로 들어가 ps 출력에 찍혔다(실제로 확인했다).
+    //   데몬은 어차피 stdin 으로 명령을 주고받으므로, 첫 줄로 넘긴다.
     QString argsJson = QString::fromUtf8(QJsonDocument(initArgs).toJson(QJsonDocument::Compact));
 
     m_daemon = new QProcess(this);
@@ -81,8 +85,11 @@ bool BlueskyCollector::startDaemon(const QString &handle, const QString &passwor
     QStringList pythons = Common::pythonCandidates();
     bool started = false;
     for (const auto &python : pythons) {
-        m_daemon->start(python, {scriptPath, argsJson});
+        m_daemon->start(python, {scriptPath, QStringLiteral("--stdin-args")});
         if (m_daemon->waitForStarted(5000)) {
+            // 첫 줄 = 초기화 인자. 이후 줄은 평소대로 명령 통로.
+            m_daemon->write(argsJson.toUtf8() + "\n");
+            m_daemon->waitForBytesWritten(3000);
             started = true;
             m_backend->log("Daemon: " + python, "info", "bluesky");
             break;

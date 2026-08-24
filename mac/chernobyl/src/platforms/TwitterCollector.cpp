@@ -93,6 +93,10 @@ bool TwitterCollector::startDaemon()
     QJsonObject initArgs;
     initArgs["auth_token"] = m_authToken;
     initArgs["ct0"] = m_ct0;
+    // ★ 자격증명을 명령줄로 넘기지 않는다.
+    //   macOS 에서 프로세스 명령줄은 ps 로 같은 기계의 아무 프로세스나 읽을 수 있다.
+    //   예전에는 여기 JSON 에 auth_token·ct0 세션 자격증명 이 그대로 들어가 ps 출력에 찍혔다(실제로 확인했다).
+    //   데몬은 어차피 stdin 으로 명령을 주고받으므로, 첫 줄로 넘긴다.
     QString argsJson = QString::fromUtf8(QJsonDocument(initArgs).toJson(QJsonDocument::Compact));
 
     m_daemon = new QProcess();  // 부모 없음 — 워커 스레드에서 생성되므로 this(메인스레드) 지정하면 크래시
@@ -103,8 +107,11 @@ bool TwitterCollector::startDaemon()
 
     bool started = false;
     for (const auto &python : pythons) {
-        m_daemon->start(python, {scriptPath, argsJson});
+        m_daemon->start(python, {scriptPath, QStringLiteral("--stdin-args")});
         if (m_daemon->waitForStarted(5000)) {
+            // 첫 줄 = 초기화 인자. 이후 줄은 평소대로 명령 통로.
+            m_daemon->write(argsJson.toUtf8() + "\n");
+            m_daemon->waitForBytesWritten(3000);
             started = true;
             m_backend->log("Daemon: using "+ python, "info", "twitter");
             break;
@@ -361,8 +368,11 @@ bool TwitterCollector::initTransactionIds()
     QStringList pythons = Common::pythonCandidates();
     bool started = false;
     for (const auto &python : pythons) {
-        proc.start(python, {scriptPath, argsJson});
+        // 자격증명은 stdin 으로 — 명령줄은 ps 로 남이 읽는다.
+        proc.start(python, {scriptPath, QStringLiteral("--stdin-args")});
         if (proc.waitForStarted(5000)) {
+            proc.write(argsJson.toUtf8());
+            proc.closeWriteChannel();
             started = true;
             m_backend->log("TID: using "+ python, "info", "twitter");
             break;
@@ -459,8 +469,13 @@ QJsonObject TwitterCollector::callTwikitApi(const QJsonObject &args)
     QStringList pyList = Common::pythonCandidates();
     bool pyStarted = false;
     for (const auto &py : pyList) {
-        proc.start(py, {scriptPath, argsJson});
-        if (proc.waitForStarted(5000)) { pyStarted = true; break; }
+        // 자격증명은 stdin 으로 — 명령줄은 ps 로 남이 읽는다.
+        proc.start(py, {scriptPath, QStringLiteral("--stdin-args")});
+        if (proc.waitForStarted(5000)) {
+            proc.write(argsJson.toUtf8());
+            proc.closeWriteChannel();
+            pyStarted = true; break;
+        }
     }
     if (!pyStarted) {
         return QJsonObject{{"error", "Python not found"}};

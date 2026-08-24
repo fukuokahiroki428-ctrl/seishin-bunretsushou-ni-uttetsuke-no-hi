@@ -21,7 +21,7 @@ Commands:
   {"action":"quit"}
 """
 
-import sys, json, os, time, asyncio, re, subprocess, shutil
+import os, sys, json, time, asyncio, re, subprocess, shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,12 +31,42 @@ def log(msg):
 def progress(count, media_count=0, status="수집 중..."):
     print(json.dumps({"progress": {"count": count, "media": media_count, "status": status}}), flush=True)
 
-def main():
-    if len(sys.argv) < 2:
-        print(json.dumps({"error": "Usage: bluesky_daemon.py '{\"handle\":\"...\",\"password\":\"...\"}'"}), flush=True)
-        sys.exit(1)
 
-    init_args = json.loads(sys.argv[1])
+def _read_init_line():
+    """첫 줄만 원시 fd 에서 읽는다.
+    ★ sys.stdin.readline() 을 쓰면 안 된다. 파이썬의 버퍼가 줄 너머까지 미리 읽어
+      버려서, 그 뒤 명령 루프(asyncio 는 fd 0 을 직접 붙인다)가 첫 명령을 잃는다.
+      한 줄은 수백 바이트뿐이라 한 글자씩 읽어도 비용이 없다."""
+    buf = b""
+    while True:
+        ch = os.read(0, 1)
+        if not ch or ch == b"\n":
+            break
+        buf += ch
+    return buf.decode("utf-8", "replace")
+
+
+def _load_init_args(usage):
+    """자격증명을 받는다.
+    ★ 예전에는 JSON 을 argv 로 받았다. macOS 에서 명령줄은 ps 로 같은 기계의 아무
+      프로세스나 읽을 수 있어서, 앱 비밀번호와 세션 토큰이 그대로 노출됐다
+      (실제로 ps 출력에 찍히는 것을 확인했다).
+      이제 stdin 첫 줄로 받는다. 뒤이은 명령 통로는 그대로다.
+      argv 경로는 손으로 시험할 때를 위해 남겨 두되, 그 쓰임은 노출된다."""
+    if len(sys.argv) >= 2 and sys.argv[1] == "--stdin-args":
+        line = _read_init_line()
+        if not line.strip():
+            print(json.dumps({"error": "init args not received on stdin"}), flush=True)
+            sys.exit(1)
+        return json.loads(line)
+    if len(sys.argv) >= 2:
+        return json.loads(sys.argv[1])
+    print(json.dumps({"error": usage}), flush=True)
+    sys.exit(1)
+
+
+def main():
+    init_args = _load_init_args("Usage: bluesky_daemon.py --stdin-args  (init JSON on first stdin line)")
 
     # Support multiple accounts: {"accounts":[{"handle":"...","password":"..."},...]}
     # or single account: {"handle":"...","password":"..."}
