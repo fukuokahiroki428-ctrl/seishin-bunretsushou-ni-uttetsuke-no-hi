@@ -132,8 +132,20 @@ set(RESOURCES resources/hanishiki.qrc)
 
 if(APPLE)
     # macOS bundle settings
+    # ★ 두 값은 쓰임이 다르다. 예전에 나는 이 둘을 뭉뚱그려 "숫자를 바꾸면 판올림
+    #   감지가 깨진다" 고 적었는데, 정확하지 않았다.
+    #     CFBundleVersion             — 기계용. 같은 번들 ID 가 여러 벌 있을 때
+    #                                   Launch Services 가 이 값으로 어느 것을 쓸지 고른다.
+    #                                   그러니 반드시 숫자로 둔다.
+    #     CFBundleShortVersionString  — 사람용. Finder 의 '정보 가져오기' 에 그대로 뜬다.
+    #                                   비교에 쓰이지 않으므로 판 이름(한자)을 넣어도 된다.
+    #   이 앱의 판 이름은 上野 다. 사람이 보는 자리에는 그 이름이 뜨는 것이 맞다.
     set(MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION})
-    set(MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION})
+    if(PREDORMITION_CODENAME)
+        set(MACOSX_BUNDLE_SHORT_VERSION_STRING "${PREDORMITION_CODENAME}")
+    else()
+        set(MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION})
+    endif()
 
     add_executable(Hanishiki MACOSX_BUNDLE
         src/main.cpp
@@ -216,7 +228,12 @@ if(APPLE)
         set(APP_ICON "app.icns")
     endif()
     if(NOT APP_ID)
-        set(APP_ID "com.miyo.app")
+        # ★ 번들 ID 는 macOS 가 이 앱을 알아보는 이름이다. 디스크·자동화·화면녹화
+        #   같은 허가가 전부 이 값에 매여 있어서, 바꾸면 허가가 초기화되고 사용자가
+        #   다시 허용해야 한다. 그래서 이름이 네 번 바뀌는 동안에도 com.miyo.app 에
+        #   머물러 있었다. 2026-08-25 사용자 결정으로 이름을 맞춘다.
+        #   (옛 ID 로 남은 허가 항목은 시스템 설정에 따로 남을 수 있다)
+        set(APP_ID "com.hanishiki.app")
     endif()
 
     # ★ 앱 이름을 코드에 박지 않는다 — 지금까지 main.cpp·백엔드·설치기에 각각

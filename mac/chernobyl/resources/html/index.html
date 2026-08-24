@@ -2546,7 +2546,6 @@
                         </p>
                         <div style="font-size:12px;color:var(--text-secondary);margin-top:8px;">
                             만든 곳 · <b id="about-vendor" style="color:var(--text-primary);">—</b>
-                            <span id="about-build" style="color:var(--text-tertiary);margin-left:8px;"></span>
                         </div>
                     </div>
 
@@ -5475,7 +5474,6 @@
             set('about-name', o.name || '-');
             set('about-edition', o.edition || '-');
             set('about-vendor', o.vendor || '-');
-            set('about-build', o.build ? ('내부 ' + o.build) : '');
         }
 
         function onApiOverrides(arr) {

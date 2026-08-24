@@ -32,19 +32,29 @@ ENDPOINT_NAMES = [
     "ListLatestTweetsTimeline", "CommunityTweetsTimeline",
 ]
 
-# ★ 앱의 데이터 폴더 안에 둔다.
-#   예전엔 "~/Library/Application Support/カメラ" 였다 — 앱 이름이
-#   カメラ → Chernobyl → Predormition → ハンイシキ 로 바뀌는 동안 여기만
-#   최초 이름에 멈춰 있었다. Miyo/ 밑도 아니라서, 앱이 쓰는 폴더와 완전히
-#   다른 곳에 캐시가 쌓이고 있었다(앱을 지워도 남고, 백업·정리 도구도 못 본다).
-#   앱은 QStandardPaths::AppDataLocation → ~/Library/Application Support/Miyo/<앱>
-#   을 쓴다. 앱 이름(ASCII)은 환경변수로 받고, 못 받으면 지금 이름으로 물러선다.
-_app_name = os.environ.get("MIYO_APP_NAME", "Hanishiki")
-_hash_cache_path = os.path.join(
-    os.path.expanduser("~"), "Library", "Application Support", "Miyo", _app_name,
-    "graphql_hashes.json"
-)
-os.makedirs(os.path.dirname(_hash_cache_path), exist_ok=True)
+# ★ 캐시가 어디에 쌓이나 — 경로를 스스로 짓지 않는다.
+#   이 자리는 두 번 틀렸다.
+#     1) "~/Library/Application Support/カメラ" 에 멈춰 있었다(최초 이름).
+#     2) 고친 뒤에도 ".../Miyo/<앱>" 으로 조립했는데, 조직 폴더를 없앤 뒤로
+#        앱은 ".../<앱>" 을 쓴다. 다시 앱 밖에 캐시가 쌓였다.
+#   이름을 받아 경로를 다시 조립하는 한 이 고장은 계속 돌아온다.
+#   → 앱이 완성된 경로를 HANISHIKI_DATA_DIR 로 넘겨 준다. 그것만 쓴다.
+_app_name = os.environ.get("HANISHIKI_APP_NAME") or os.environ.get("MIYO_APP_NAME") or "Hanishiki"
+_data_dir = os.environ.get("HANISHIKI_DATA_DIR") or os.path.join(
+    os.path.expanduser("~"), "Library", "Application Support", _app_name)
+_hash_cache_path = os.path.join(_data_dir, "graphql_hashes.json")
+os.makedirs(_data_dir, exist_ok=True)
+
+# 옛 자리에 쌓여 있던 캐시를 한 번만 이어받는다(새 자리가 비어 있을 때만).
+try:
+    if not os.path.exists(_hash_cache_path):
+        _legacy = os.path.join(os.path.expanduser("~"), "Library", "Application Support",
+                               "Miyo", _app_name, "graphql_hashes.json")
+        if os.path.exists(_legacy):
+            import shutil as _sh
+            _sh.copy2(_legacy, _hash_cache_path)
+except Exception:
+    pass
 
 
 def _load_cached_hashes():

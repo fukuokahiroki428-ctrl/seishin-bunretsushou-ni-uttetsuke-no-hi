@@ -4623,7 +4623,8 @@ void HanishikiBackend::getAppInfo()
         {"name",     QStringLiteral(APP_NAME_DISPLAY)},
         {"edition",  codename.isEmpty() ? QStringLiteral("-") : codename},
         {"vendor",   QStringLiteral(APP_VENDOR_NAME)},
-        {"build",    QStringLiteral(PREDORMITION_VERSION_STR)},
+        // ★ 숫자 버전은 넘기지 않는다. 화면에 뜨는 순간 사람이 그것으로 판을 부른다.
+        //   이 앱의 판 이름은 한자(上野)다. 숫자는 macOS 가 볼 자리에만 둔다.
     };
     runJs(QString("onAppInfo(%1)").arg(QString::fromUtf8(
         QJsonDocument(o).toJson(QJsonDocument::Compact))));
@@ -12911,11 +12912,13 @@ void HanishikiBackend::getSystemInfo()
         }
         info << "═══════════════════════════════════";
 
-        // App version
-        info << QString("판: %1  (내부 %2)")
+        // 판 이름. ★ 숫자는 사람에게 보이지 않는다 — 기계용이다.
+        //   예전엔 "판: 上野  (내부 4.0.0)" 처럼 숫자를 괄호로 곁들였는데,
+        //   그러면 결국 사람이 숫자를 읽고 그것으로 판을 부르게 된다.
+        //   숫자는 Info.plist(CFBundleShortVersionString)에만 남긴다.
+        info << QString("판: %1")
                     .arg(QStringLiteral(PREDORMITION_CODENAME).isEmpty()
-                             ? QStringLiteral("(이름 없음)") : QStringLiteral(PREDORMITION_CODENAME),
-                         QStringLiteral(PREDORMITION_VERSION_STR));
+                             ? QStringLiteral("(이름 없음)") : QStringLiteral(PREDORMITION_CODENAME));
         info << QString("앱 경로: %1").arg(QCoreApplication::applicationDirPath());
         info << QString("디스크 경로: %1").arg(m_config->tempDir().isEmpty() ? "(미설정)" : m_config->tempDir());
 

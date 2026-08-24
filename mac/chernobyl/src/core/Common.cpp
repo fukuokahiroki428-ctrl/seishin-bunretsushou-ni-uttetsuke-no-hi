@@ -858,8 +858,16 @@ QProcessEnvironment bundledProcessEnv()
     //   스크립트가 경로를 스스로 지으면 앱 이름이 바뀔 때마다 갈라진다.
     //   실제로 twitter_daemon.py 는 최초 이름("~/Library/Application Support/カメラ")에
     //   멈춰 있어서, Miyo/ 밑도 아닌 곳에 캐시를 쌓고 있었다(앱을 지워도 남고
-    //   백업·정리 도구도 못 본다). 이름을 여기서 한 번만 넘긴다.
-    env.insert("MIYO_APP_NAME", QStringLiteral(APP_NAME_ASCII));
+    //   백업·정리 도구도 못 본다).
+    //
+    // ★ 그런데 '이름' 만 넘기는 것으로는 부족했다. 스크립트가 그 이름으로 경로를
+    //   다시 조립하는데, 조직 폴더(Miyo/)를 없앤 뒤로 그 조립식이 틀려졌다.
+    //   실제로 캐시가 다시 Application Support/Miyo/<앱>/ 에 쌓이고 있었다.
+    //   → 조립하지 말고 완성된 경로를 넘긴다. 앱이 실제로 쓰는 그 폴더다.
+    env.insert("HANISHIKI_DATA_DIR",
+               QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
+    env.insert("HANISHIKI_APP_NAME", QStringLiteral(APP_NAME_ASCII));
+    env.insert("MIYO_APP_NAME", QStringLiteral(APP_NAME_ASCII));   // 옛 이름 — 아직 읽는 스크립트가 있을 수 있다
 
 #ifdef Q_OS_WIN
     // Windows: add exe dir to PATH for bundled tools
