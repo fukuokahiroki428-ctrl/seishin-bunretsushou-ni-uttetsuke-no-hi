@@ -411,23 +411,54 @@ inline QString checkEnvironment()
         }
     }
 
+    // ★ '없다' 고 말하기 전에 한 단계 아래를 본다.
+    //   이사(앱 이름이 네 번 바뀌었다)를 하다 보면 옛 데이터 한 벌이 통째로
+    //   하위 폴더에 남는 일이 실제로 있었다. 그때 진단서는 "AI 엔진 미설치 —
+    //   'AI 설치' 를 실행하세요" 라고 안내했는데, 정작 9.4GB 짜리 모델이 바로
+    //   한 칸 아래 있었다. 그대로 따랐으면 있는 것을 다시 내려받았을 것이다.
+    //   그러니 없으면 '정말 없는지' 부터 확인하고, 있으면 그 자리를 알려 준다.
+    auto findOrphan = [&appData](const QString &relative) -> QString {
+        const QStringList subs = QDir(appData).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        for (const QString &sub : subs) {
+            const QString cand = appData + "/" + sub + "/" + relative;
+            if (QFileInfo::exists(cand)) return appData + "/" + sub;
+        }
+        return QString();
+    };
+
     // 2) AI 엔진·모델 — 없으면 자가수리·보관함 질의가 아예 못 돈다.
     {
         const QString llm = appData + "/llm";
         const bool srv = QFile::exists(llm + "/llama-server");
         const int models = QDir(llm).entryList(QStringList() << "*.gguf", QDir::Files).size();
-        if (!srv || models == 0)
-            out += QString("[WARN] AI 엔진 미설치 (엔진 %1 · 모델 %2개) — 'AI 설치' 를 실행하세요\n")
-                       .arg(srv ? "있음" : "없음").arg(models);
-        else
+        if (!srv || models == 0) {
+            const QString orphan = findOrphan("llm/llama-server");
+            if (!orphan.isEmpty()) {
+                const int om = QDir(orphan + "/llm").entryList(QStringList() << "*.gguf", QDir::Files).size();
+                out += QString("[WARN] AI 엔진이 제자리에 없습니다 — 다만 %1 에 한 벌(모델 %2개)이 있습니다.\n"
+                               "       다시 내려받지 마시고 그 안의 llm 폴더를 %3 로 옮기십시오.\n")
+                           .arg(QDir(orphan).dirName()).arg(om).arg(appData);
+            } else {
+                out += QString("[WARN] AI 엔진 미설치 (엔진 %1 · 모델 %2개) — 'AI 설치' 를 실행하세요\n")
+                           .arg(srv ? "있음" : "없음").arg(models);
+            }
+        } else {
             out += QString("[OK]   AI 엔진 · 모델 %1개\n").arg(models);
+        }
     }
 
     // 3) 산출물 색인 — 없으면 보관함 질문이 전부 "자료 없음" 이 된다.
     {
         const QFileInfo db(appData + "/archive_index.db");
-        if (!db.exists())
-            out += "[WARN] 산출물 색인 없음 — 설정에서 '색인 만들기' 를 한 번 실행하세요\n";
+        if (!db.exists()) {
+            const QString orphan = findOrphan("archive_index.db");
+            if (!orphan.isEmpty())
+                out += QString("[WARN] 산출물 색인이 제자리에 없습니다 — %1 에 있습니다.\n"
+                               "       다시 만들지 마시고 archive_index.db 를 %2 로 옮기십시오.\n")
+                           .arg(QDir(orphan).dirName()).arg(appData);
+            else
+                out += "[WARN] 산출물 색인 없음 — 설정에서 '색인 만들기' 를 한 번 실행하세요\n";
+        }
         else {
             const int days = db.lastModified().daysTo(QDateTime::currentDateTime());
             out += QString("[OK]   산출물 색인 %1MB (%2일 전 갱신)%3\n")
