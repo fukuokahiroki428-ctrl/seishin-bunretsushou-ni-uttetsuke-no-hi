@@ -198,7 +198,11 @@ int main(int argc, char *argv[])
                 {"-e", QStringLiteral("tell application id \"%1\" to activate").arg(bundleId)});
         }
 #elif defined(Q_OS_WIN)
-        HWND hwnd = FindWindowW(nullptr, L"カメラ");
+        // ★ 옛 이름(カメラ)으로 찾고 있었다 — 지금 창 제목은 "<앱이름> — <판>" 이라
+        //   이 호출은 언제나 실패했다. 실제 표시 이름으로 찾는다.
+        HWND hwnd = FindWindowW(nullptr,
+                                reinterpret_cast<const wchar_t *>(
+                                    QStringLiteral(APP_NAME_DISPLAY).utf16()));
         if (hwnd) {
             SetForegroundWindow(hwnd);
             if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);

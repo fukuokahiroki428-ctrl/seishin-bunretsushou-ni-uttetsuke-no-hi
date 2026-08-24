@@ -4332,7 +4332,7 @@
             if (info) {
                 if (isNas || isExt) {
                     const icon = isNas ? 'NAS' : '외장';
-                    info.innerHTML = `<strong>${icon} 모드 활성 (전체 일괄)</strong> — 모든 플랫폼이 <code>${root}/Predormition/&lt;Platform&gt;</code>. 각 탭에서 따로 변경하면 그 플랫폼만 다른 경로.`;
+                    info.innerHTML = `<strong>${icon} 모드 활성 (전체 일괄)</strong> — 모든 플랫폼이 <code>${root}/&lt;Platform&gt;</code>. 각 탭에서 따로 변경하면 그 플랫폼만 다른 경로.`;
                     info.style.color = '#7c5cff';
                 } else {
                     info.innerHTML = '둘 다 OFF → 각 플랫폼 탭에서 따로 NAS/외장 선택. 또는 입력란에 직접 경로.';

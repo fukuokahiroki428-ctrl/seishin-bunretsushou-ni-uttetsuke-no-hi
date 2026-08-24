@@ -195,7 +195,7 @@ QString WebDavUploader::ensureSftpConf()
         if (obscured.isEmpty()) return QString();
     }
 
-    const QString path = QDir::tempPath() + "/predormition_sftp.conf";
+    const QString path = QDir::tempPath() + "/" + QStringLiteral(APP_NAME_ASCII).toLower() + "_sftp.conf";
     QFile f(path);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return QString();
     QString conf = QString("[nas_sftp]\ntype = sftp\nhost = %1\nport = %2\nuser = %3\n")

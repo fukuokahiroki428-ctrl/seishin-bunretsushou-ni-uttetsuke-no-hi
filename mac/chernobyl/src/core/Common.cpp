@@ -364,7 +364,7 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
         //   코드페이지로 받으므로 그대로 넘기면 일본어·한글 값과 경로가 '?' 로 뭉개진다.
         //   실행 파일 경로만 8.3 로 넘긴다(자기 exiftool_files 를 찾아야 하므로).
         //   맥은 argv 가 UTF-8 이고 perl 경유라 이 경로를 타지 않는다.
-        QTemporaryFile argFile(QDir::tempPath() + "/predormition_exif_XXXXXX.args");
+        QTemporaryFile argFile(QDir::tempPath() + "/" + QStringLiteral(APP_NAME_ASCII).toLower() + "_exif_XXXXXX.args");
         argFile.setAutoRemove(true);
         if (!argFile.open()) {
             qWarning() << "[Common] exiftool argfile 을 만들지 못했습니다 — EXIF 기록을 건너뜁니다";

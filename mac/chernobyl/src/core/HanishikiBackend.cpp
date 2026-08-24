@@ -128,6 +128,18 @@ QSemaphore* HanishikiBackend::platformSem(const QString &platform)
 #include <psapi.h>
 #else
 #include <sys/resource.h>
+
+// ★ 산출물 폴더에 남기는 매니페스트 이름.
+//   예전엔 "__CHERNOBYL_MANIFEST__" 였다. 앱 이름이 네 번 바뀌는 동안 사용자의
+//   백업 폴더마다 옛 이름이 박힌 파일이 쌓였다. 이름을 또 브랜드로 지으면 다음
+//   개명 때 같은 일이 반복된다 — 그래서 브랜드를 빼고 역할로만 짓는다.
+//   쓰는 것은 새 이름, 알아보는 것은 옛 이름까지(이미 쌓인 것들 때문에).
+static const char *kManifestBase = "__ARCHIVE_MANIFEST__";
+static bool isManifestName(const QString &fn)
+{
+    return fn.startsWith(QLatin1String("__ARCHIVE_MANIFEST"))
+        || fn.startsWith(QLatin1String("__CHERNOBYL_MANIFEST"));
+}
 #endif
 
 // Forward declaration — 정의는 upgradePython() 앞에
@@ -758,7 +770,7 @@ void HanishikiBackend::testBackup()
         return;
     }
     // 테스트 파일 작성
-    QString testFile = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/chernobyl_backup_test.txt";
+    QString testFile = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/.backup_write_test.txt";
     QFile f(testFile);
     if (f.open(QIODevice::WriteOnly)) {
         f.write(QString("백업 테스트 — %1\n").arg(QDateTime::currentDateTime().toString()).toUtf8());
@@ -1040,7 +1052,7 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
                  << "--exclude" << ".abiwa_**"
                  << "--exclude" << ".DS_Store"
                  << "--exclude" << ".git/**"
-                 << "--exclude" << "__CHERNOBYL_MANIFEST__*";
+                 << "--exclude" << "__ARCHIVE_MANIFEST__*" << "--exclude" << "__CHERNOBYL_MANIFEST__*";
             rc.start(rclonePath, args);
             if (!rc.waitForStarted(5000)) {
                 writeTerminalLog("\033[31m[rclone] 시작 실패\033[0m", "backup");
@@ -1214,7 +1226,7 @@ void HanishikiBackend::startRemoteBackup(const QString &configJson)
              << "--progress" << "--stats" << "2s" << "--stats-one-line"
              << "--retries" << "5" << "--low-level-retries" << "10"
              << "--exclude" << ".abiwa_**" << "--exclude" << ".DS_Store"
-             << "--exclude" << ".git/**" << "--exclude" << "__CHERNOBYL_MANIFEST__*";
+             << "--exclude" << ".git/**" << "--exclude" << "__ARCHIVE_MANIFEST__*" << "--exclude" << "__CHERNOBYL_MANIFEST__*";
         rc.start(rclonePath, args);
         int exitCode = -1;
         if (!rc.waitForStarted(5000)) {
@@ -1582,7 +1594,7 @@ void HanishikiBackend::backupNow()
             while (dit.hasNext()) {
                 QString f = dit.next();
                 QString fn = QFileInfo(f).fileName();
-                if (fn.startsWith(".abiwa_write_test") || fn.startsWith("__CHERNOBYL_MANIFEST")) continue;
+                if (fn.startsWith(".abiwa_write_test") || isManifestName(fn)) continue;
                 existingBytes += QFileInfo(f).size();
                 existingFiles++;
             }
@@ -2009,7 +2021,7 @@ void HanishikiBackend::backupNow()
             while (dit.hasNext()) {
                 QString f = dit.next();
                 QString fn = QFileInfo(f).fileName();
-                if (fn.startsWith(".abiwa_write_test") || fn.startsWith("__CHERNOBYL_MANIFEST")) continue;
+                if (fn.startsWith(".abiwa_write_test") || isManifestName(fn)) continue;
                 qint64 sz = QFileInfo(f).size();
                 finalDstBytes += sz;
                 finalDstFiles++;
@@ -2148,7 +2160,7 @@ void HanishikiBackend::writeDownloadManifest(const QString &dir, const QString &
         QString f = it.next();
         QString fname = QFileInfo(f).fileName();
         // 시스템 / 매니페스트 자체 skip
-        if (fname.startsWith(".") || fname.startsWith("__CHERNOBYL_MANIFEST")
+        if (fname.startsWith(".") || isManifestName(fname)
             || fname == "Thumbs.db" || fname == "desktop.ini") continue;
         if (f.contains("/.abiwa_") || f.contains("/.rsync-")) continue;
         qint64 sz = QFileInfo(f).size();
@@ -2240,7 +2252,7 @@ void HanishikiBackend::writeDownloadManifest(const QString &dir, const QString &
     root["top_files"] = topArr;
 
     // JSON 저장
-    QString jsonPath = dir + "/__CHERNOBYL_MANIFEST__.json";
+    QString jsonPath = dir + "/" + kManifestBase + ".json";
     QFile jf(jsonPath);
     if (jf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         jf.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
@@ -2248,7 +2260,7 @@ void HanishikiBackend::writeDownloadManifest(const QString &dir, const QString &
     }
 
     // 3) TXT manifest (사람이 읽기 좋게)
-    QString txtPath = dir + "/__CHERNOBYL_MANIFEST__.txt";
+    QString txtPath = dir + "/" + kManifestBase + ".txt";
     QFile tf(txtPath);
     if (tf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         QTextStream out(&tf);
@@ -2301,7 +2313,7 @@ void HanishikiBackend::writeDownloadManifest(const QString &dir, const QString &
 
         out << "═══════════════════════════════════════════════════════════════\n";
         out << "💡 무결성 확인: 파일 개수 / 사이즈 / 확장자별 카운트가 다음 백업과 일치해야 OK\n";
-        out << "💡 상세 정보: __CHERNOBYL_MANIFEST__.json 에 모든 통계 + Top 50 파일 list\n";
+        out << QString("💡 상세 정보: %1.json 에 모든 통계 + Top 50 파일 list\n").arg(kManifestBase);
         out << "═══════════════════════════════════════════════════════════════\n";
         tf.close();
     }
@@ -2381,8 +2393,9 @@ void HanishikiBackend::logCollectionOptions(const QJsonObject &config, const QSt
 // ═════════════════════════════════════════════════════════════════════════
 void HanishikiBackend::exportConfig()
 {
-    QString defaultName = QString("chernobyl_config_%1.json")
-        .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
+    QString defaultName = QString("%1_config_%2.json")
+        .arg(QStringLiteral(APP_NAME_ASCII).toLower(),
+             QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
     QString path = QFileDialog::getSaveFileName(m_window,
         "💾 사용자 정보 내보내기 — JSON 파일 저장",
         QDir::homePath() + "/" + defaultName,
@@ -3917,11 +3930,17 @@ void HanishikiBackend::setAllPathsToNas()
         log(QString("🌐 NAS 일괄 적용: %1").arg(root), "success", "settings");
         // 각 input 값 일괄 갱신
         // ★ 앱 이름이 바뀌어도 기존 아카이브가 갈라지지 않게: 이미 쓰던 Chernobyl 폴더가 있으면 그대로 쓴다.
-        const QString brandDir = QFileInfo::exists(root + "/Chernobyl") ? QStringLiteral("Chernobyl")
-                                                                       : QStringLiteral("Predormition");
+        // ★ 실제 저장 경로는 root/<플랫폼> 이다 — 브랜드 폴더를 만들지 않는다.
+        //   여기만 옛 이름으로 한 겹 더 만들고 있어서, 이 기능을 되살리면 사용자의
+        //   NAS 에 있지도 않던 Predormition/ 폴더가 생긴다. 이미 쓰던 옛 폴더가
+        //   있으면 그것만 존중하고, 없으면 겹을 두지 않는다.
+        QString brandDir;
+        for (const QString &legacy : {QStringLiteral("Chernobyl"), QStringLiteral("Predormition")})
+            if (QFileInfo::exists(root + "/" + legacy)) { brandDir = legacy; break; }
         QString js = "(function(){ var c=0;";
         for (const auto &m : mappings) {
-            QString fullPath = root + "/" + brandDir + "/" + m.subdir;
+            QString fullPath = brandDir.isEmpty() ? (root + "/" + m.subdir)
+                                                : (root + "/" + brandDir + "/" + m.subdir);
             QDir().mkpath(fullPath);  // 미리 폴더 생성
             QString p = fullPath;
             QString safeInput  = Common::jsStringLiteral(QString(m.inputId));
@@ -4683,7 +4702,7 @@ void HanishikiBackend::testSftpConnection(const QString &url, const QString &use
             QProcess obs; obs.start(rclone, {"obscure", pass}); obs.waitForFinished(5000);
             obscured = QString::fromUtf8(obs.readAllStandardOutput()).trimmed();
         }
-        const QString conf = QDir::tempPath() + "/predormition_sftp_test.conf";
+        const QString conf = QDir::tempPath() + "/" + QStringLiteral(APP_NAME_ASCII).toLower() + "_sftp_test.conf";
         { QFile f(conf);
           if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
               QMetaObject::invokeMethod(this, [this]() {
@@ -5024,6 +5043,7 @@ void HanishikiBackend::listMountedVolumes()
 // Qt native dialog 로 마운트된 볼륨 선택 → input 직접 갱신
 // ═════════════════════════════════════════════════════════════════════════
 #include <QInputDialog>
+
 void HanishikiBackend::pickMountedVolume(const QString &targetInputId)
 {
     qDebug() << "[pickMountedVolume] called targetInputId=" << targetInputId;

@@ -149,7 +149,7 @@ private:
     QString m_storageMode;  // "local" / "nas" / "external"
     QString m_storageRoot;  // /Volumes/X (mode != local 일 때)
     bool m_backupEnabled = false;
-    QString m_backupPath;   // NAS 마운트 경로 (예: /Volumes/공유폴더/Chernobyl_Backup)
+    QString m_backupPath;   // NAS 마운트 경로 (예: /Volumes/공유폴더/백업)
     bool m_ytDlpAutoUpdate = true;   // ★ 기본 ON — 장기지원: YouTube/Twitter 포맷 변경 시 yt-dlp 자동 갱신.
                                      //   yt-dlp SHA256 검증 + sanity(--version) + 실패 시 번들 복원 안전망 있음.
                                      //   최대 보안을 원하면 설정에서 OFF (그럼 포맷 변경 시 새 빌드 필요).
