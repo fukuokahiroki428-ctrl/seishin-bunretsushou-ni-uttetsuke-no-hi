@@ -413,41 +413,34 @@ async def main():
     httpx.Cookies.get = _safe_cookies_get
     print(json.dumps({"info": "httpx.Cookies.get() patched: duplicate cookies tolerated"}), flush=True)
 
-    # ── In-process source-level fix for twikit bug: 'code' KeyError ──
-    # twikit/client/client.py line ~158 accesses response_data['errors'][0]['code']
-    # unconditionally. Twitter sometimes returns errors without 'code' (only 'message'
-    # or 'extensions.code'). We patch the bundled source file ONCE if needed.
+    # ── twikit 상류 버그 우회: 'code' KeyError ──
+    # twikit/client/client.py 는 response_data['errors'][0]['code'] 를 무조건 읽는다.
+    # 트위터는 'code' 없이 'message' 만, 또는 extensions.code 로만 주는 경우가 있다.
+    #
+    # ★ 예전엔 이 파일을 '디스크에 고쳐 썼다'. 그런데 그 파일은 서명된 앱 번들 안에 있다.
+    #   한 글자만 바꿔도 codesign 봉인이 깨지고, 다음 기동 때 앱이 스스로 1분 넘게
+    #   재서명을 돌린다. 그 사이에 앱을 끄면 번들이 무효인 채로 남는다.
+    #   빌드할 때마다 새 twikit 이 들어오므로 '첫 트위터 수집' 마다 이 일이 반복됐다.
+    #   봉인이 깨지는 진짜 원인이 여기였다.
+    #
+    #   → 디스크를 건드리지 않는다. 고친 소스를 메모리에서 컴파일해 모듈에 덮는다.
+    #     아래 Client() 를 만들기 전이라 이미 만들어진 객체가 없어 안전하다.
+    #     (바로 위 httpx.Cookies.get 과 같은 방식 — 실행 중에만 고친다)
     try:
         import twikit.client.client as _twc
-        import os as _os
         _twc_path = _twc.__file__
         with open(_twc_path, 'r', encoding='utf-8') as _f:
             _src = _f.read()
         _bad = "error_code = response_data['errors'][0]['code']"
         _good = ("error_code = response_data['errors'][0].get('code') "
                  "or (response_data['errors'][0].get('extensions') or {}).get('code') or 0")
-        if _bad in _src and _good not in _src:
-            _src = _src.replace(_bad, _good)
-            try:
-                with open(_twc_path, 'w', encoding='utf-8') as _f:
-                    _f.write(_src)
-                # Invalidate bytecode cache so the fix loads next import
-                _cache_dir = _os.path.join(_os.path.dirname(_twc_path), '__pycache__')
-                if _os.path.isdir(_cache_dir):
-                    for _fn in _os.listdir(_cache_dir):
-                        if _fn.startswith('client.') and _fn.endswith('.pyc'):
-                            try: _os.remove(_os.path.join(_cache_dir, _fn))
-                            except Exception: pass
-                print(json.dumps({"info": "twikit client.py patched: 'code' KeyError fixed (reload required)"}), flush=True)
-                # Reload module in current process
-                import importlib
-                importlib.reload(_twc)
-            except PermissionError:
-                print(json.dumps({"info": "twikit client.py patch skipped (read-only)"}), flush=True)
+        if _bad in _src:
+            exec(compile(_src.replace(_bad, _good), _twc_path, 'exec'), _twc.__dict__)
+            print(json.dumps({"info": "twikit 'code' KeyError 우회 적용 (메모리에서만 — 번들 서명 유지)"}), flush=True)
         else:
-            print(json.dumps({"info": "twikit client.py already patched or pattern not found"}), flush=True)
+            print(json.dumps({"info": "twikit 'code' 패턴 없음 — 상류가 이미 고쳤거나 구조가 바뀜"}), flush=True)
     except Exception as _pe:
-        print(json.dumps({"info": f"twikit source patch failed: {_pe}"}), flush=True)
+        print(json.dumps({"info": f"twikit 우회 실패(수집은 계속 시도): {_pe}"}), flush=True)
 
     client = Client(language="ja")
     client.set_cookies({
