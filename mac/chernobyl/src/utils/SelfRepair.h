@@ -39,6 +39,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QString>
@@ -593,6 +594,23 @@ inline void runStartupMaintenanceAsync()
 {
     QThread *t = QThread::create([] { runStartupMaintenance(); });
     QObject::connect(t, &QThread::finished, t, &QObject::deleteLater);
+
+    // ★ 종료할 때 이 스레드를 아무도 기다리지 않았다.
+    //   진단 대부분은 읽기라서 중간에 버려도 그만이지만, 재서명은 다르다.
+    //   1분 남짓 걸리는데 그 도중에 프로세스가 끝나면 번들이 무효인 채로 남는다
+    //   (안쪽 부품은 새로 서명됐는데 바깥 봉인은 옛것). 다음 실행 때 또 재서명을
+    //   시작하고, 또 끄면 또 무효 — 고리가 된다. 실제로 그 상태를 겪었다.
+    //   그러니 '재서명이 도는 중일 때만' 기다린다. 다른 작업은 그냥 버린다.
+    QPointer<QThread> guard(t);
+    QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
+                     [guard]() {
+        if (!guard || !guard->isRunning() || !Common::resealInFlight()) return;
+        qInfo().noquote() << "[SEAL] 서명 복구가 끝나기를 기다립니다 — 잠시만 기다려 주십시오.";
+        // 넉넉히 기다리되 무한정은 아니다. 못 끝내면 다음 실행이 이어서 고친다.
+        if (!guard->wait(240000))
+            qWarning().noquote() << "[SEAL] 시간 안에 끝내지 못했습니다 — 다음 실행 때 다시 복구합니다.";
+    });
+
     t->start(QThread::LowPriority);
 }
 

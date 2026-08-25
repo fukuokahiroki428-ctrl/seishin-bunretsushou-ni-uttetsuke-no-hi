@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <csignal>
 #include <QLockFile>
 #include <QStandardPaths>
 #include <QMenu>
@@ -209,6 +210,21 @@ int main(int argc, char *argv[])
         }
 #endif
         return 0;
+    }
+
+    // ★ 종료 신호를 Qt 의 정상 종료로 바꾼다.
+    //   SIGTERM 은 기본 동작이 '즉시 죽음' 이라 aboutToQuit 이 돌지 않는다.
+    //   그러면 뒤에서 돌던 서명 복구가 한창일 때 잘려 번들이 무효로 남는다
+    //   (실측: 재서명 시작 5초 뒤 SIGTERM → 2초 만에 프로세스가 끝나고 봉인은 깨진 채).
+    //   사람이 ⌘Q 로 끄면 원래 정상 경로지만, 시스템이 재시동·로그아웃으로 보내는
+    //   SIGTERM 도 같은 대접을 받아야 한다.
+    {
+        auto onSignal = [](int) {
+            // 신호 처리기 안에서는 Qt 를 직접 부르면 안 된다 — 안전한 방법으로 깨운다.
+            QMetaObject::invokeMethod(QCoreApplication::instance(), "quit", Qt::QueuedConnection);
+        };
+        std::signal(SIGTERM, onSignal);
+        std::signal(SIGINT,  onSignal);
     }
 
     MainWindow window;

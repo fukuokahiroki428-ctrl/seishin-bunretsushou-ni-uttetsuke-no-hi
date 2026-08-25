@@ -67,6 +67,10 @@ QString appBundlePath();
 //   유효한 서명 아이덴티티가 있으면 그걸 쓰고, 없으면 ad-hoc(-) 서명. 검증까지 통과해야 true.
 //   Windows/Linux 는 서명 봉인이 없어 항상 true(무동작).
 bool resealAppBundle(QString *err = nullptr);
+
+// 지금 재서명이 돌고 있나. 종료할 때 이것만 기다린다 —
+// 서명 도중에 잘리면 번들이 무효인 채로 남기 때문이다.
+bool resealInFlight();
 // 디렉토리에 실제로 쓸 수 있는지(임시파일 생성/삭제로 확인).
 bool isDirWritable(const QString &dir);
 

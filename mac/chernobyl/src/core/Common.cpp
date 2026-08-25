@@ -15,6 +15,7 @@
 #include <QDebug>
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QAtomicInt>
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QTimer>
@@ -600,6 +601,9 @@ QString appBundlePath()
 }
 
 // 번들 안에 파일을 쓴 뒤 봉인을 복구한다. 실패하면 false + 사유.
+static QAtomicInt g_resealInFlight(0);
+bool resealInFlight() { return g_resealInFlight.loadAcquire() != 0; }
+
 bool resealAppBundle(QString *err)
 {
 #ifdef Q_OS_MACOS
@@ -640,6 +644,12 @@ bool resealAppBundle(QString *err)
         if (err) *err = "다른 재서명이 이미 진행 중입니다 — 그것이 끝나기를 기다리십시오.";
         return false;
     }
+
+    // 종료 처리가 이 구간만은 기다려 준다(서명 도중에 잘리면 번들이 무효로 남는다).
+    struct InFlight {
+        InFlight()  { g_resealInFlight.storeRelease(1); }
+        ~InFlight() { g_resealInFlight.storeRelease(0); }
+    } _inFlight;
 
     QProcess cs;
     cs.start("/bin/bash", {signer, app});
