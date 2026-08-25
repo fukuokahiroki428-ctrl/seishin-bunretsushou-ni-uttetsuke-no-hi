@@ -90,8 +90,12 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
     timer.setSingleShot(true);
 
     // Write data as it arrives (streaming)
+    // ★ write 의 반환값을 본다. 디스크가 차면 조용히 모자라게 쓰이고, 그 파일이
+    //   '받아 둔 것' 으로 남는다(아래 이어받기 검사가 size>0 만 보기 때문).
+    bool writeFailed = false;
     connect(reply, &QNetworkReply::readyRead, [&]() {
-        file.write(reply->readAll());
+        const QByteArray chunk = reply->readAll();
+        if (file.write(chunk) != chunk.size()) writeFailed = true;
     });
 
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
@@ -121,16 +125,31 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
     } else if (timer.isActive()) {
         timer.stop();
         // Write any remaining data
-        QByteArray remaining = reply->readAll();
-        if (!remaining.isEmpty()) file.write(remaining);
+        const QByteArray remaining = reply->readAll();
+        if (!remaining.isEmpty() && file.write(remaining) != remaining.size()) writeFailed = true;
 
         int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         success = (reply->error() == QNetworkReply::NoError) && (statusCode >= 200 && statusCode < 300);
+
+        // ★ 서버가 알려준 크기와 실제로 받은 크기를 대조한다.
+        //   서버나 중간 장비가 연결을 일찍 끊어도 상태 코드는 200 이고 error 도
+        //   NoError 로 오는 경우가 있다. 그러면 잘린 파일이 '완성본' 으로 남고,
+        //   맨 위 이어받기 검사(size>0 이면 건너뜀)가 그것을 영원히 완성본으로 본다.
+        //   보관 도구에서 가장 나쁜 고장이다 — 몇 년 뒤에나 발견된다.
+        //   (압축 전송이면 선언된 길이와 푼 크기가 달라지므로 그때는 대조하지 않는다)
+        const QVariant declared = reply->header(QNetworkRequest::ContentLengthHeader);
+        const bool encoded = !reply->rawHeader("Content-Encoding").isEmpty();
+        if (success && !encoded && declared.isValid() && declared.toLongLong() > 0
+            && file.size() != declared.toLongLong()) {
+            success = false;
+        }
     } else {
         reply->abort();
     }
 
+    if (!file.flush()) writeFailed = true;
     file.close();
+    if (writeFailed) success = false;
 
     // Remove empty/failed files
     if (!success || file.size() == 0) {
