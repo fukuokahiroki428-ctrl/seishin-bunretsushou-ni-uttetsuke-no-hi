@@ -5043,6 +5043,9 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         int convTweetCount = 0;
 
         // collectedData에서 Reply 타입 + reply_count > 0 인 것들 추출
+        if (!collectedData.ok())
+            m_backend->log("⚠ 수집 버퍼 쓰기에 실패한 항목이 있습니다 — 결과가 일부 빠졌을 수 있습니다."
+                           " 저장 디스크의 남은 공간을 확인하십시오.", "error", "twitter");
         QJsonArray allData = collectedData.readAll();
         QList<QString> replyIdsWithConv;
         for (const auto &val : allData) {

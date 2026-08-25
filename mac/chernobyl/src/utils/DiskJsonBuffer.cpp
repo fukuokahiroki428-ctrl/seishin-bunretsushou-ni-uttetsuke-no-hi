@@ -1,4 +1,5 @@
 #include "DiskJsonBuffer.h"
+#include <QDebug>
 #include <QDir>
 #include <QJsonDocument>
 #include <QUuid>
@@ -8,7 +9,12 @@ DiskJsonBuffer::DiskJsonBuffer(const QString &tempDir, const QString &prefix)
     QDir().mkpath(tempDir);
     QString filename = prefix + "_" + QUuid::createUuid().toString(QUuid::Id128).left(8) + ".jsonl";
     m_file.setFileName(tempDir + "/" + filename);
-    m_file.open(QIODevice::ReadWrite | QIODevice::Truncate);
+    if (!m_file.open(QIODevice::ReadWrite | QIODevice::Truncate)) {
+        // 예전엔 반환값을 안 봤다. 못 열면 이후 append 가 전부 조용히 버려진다.
+        m_ok = false;
+        qWarning() << "[DiskJsonBuffer] 버퍼 파일을 열지 못했습니다 —"
+                   << m_file.fileName() << m_file.errorString();
+    }
 }
 
 DiskJsonBuffer::~DiskJsonBuffer()
@@ -19,10 +25,20 @@ DiskJsonBuffer::~DiskJsonBuffer()
 
 void DiskJsonBuffer::append(const QJsonObject &obj)
 {
-    if (!m_file.isOpen()) return;
-    QByteArray line = QJsonDocument(obj).toJson(QJsonDocument::Compact) + "\n";
-    m_file.write(line);
-    m_file.flush();
+    if (!m_file.isOpen()) { m_ok = false; return; }
+    // ★ 읽기와 쓰기가 같은 파일 핸들을 쓴다. readNext 로 중간까지만 읽어 둔 상태에서
+    //   append 하면 그 자리에 덮어써 앞의 기록이 깨진다. 지금 부르는 순서로는
+    //   그런 조합이 없지만, 한 줄로 막아 둔다.
+    if (!m_file.seek(m_file.size())) { m_ok = false; return; }
+
+    const QByteArray line = QJsonDocument(obj).toJson(QJsonDocument::Compact) + "\n";
+    if (m_file.write(line) != line.size() || !m_file.flush()) {
+        // 디스크가 차면 open 은 성공하고 write 만 모자라게 쓴다.
+        m_ok = false;
+        qWarning() << "[DiskJsonBuffer] 버퍼 쓰기 실패 —" << m_file.fileName()
+                   << m_file.errorString();
+        return;
+    }
     m_count++;
 }
 

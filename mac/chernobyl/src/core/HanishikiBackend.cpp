@@ -8029,7 +8029,11 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
 
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "success", "discord");
     log(QString("収集完了: メッセージ %1件, メディア %2件, ユーザー %3人")
-        .arg(allMessages.count()).arg(mediaCount).arg(uniqueUsers.size()), "success", "discord");
+            .arg(allMessages.count()).arg(mediaCount).arg(uniqueUsers.size()), "success", "discord");
+    // ★ 버퍼가 조용히 실패했으면(디스크 참·권한) 결과가 말없이 짧아진다. 반드시 알린다.
+    if (!allMessages.ok())
+        log("⚠ 수집 버퍼 쓰기에 실패한 항목이 있습니다 — 결과가 일부 빠졌을 수 있습니다."
+            " 저장 디스크의 남은 공간을 확인하십시오.", "error", "discord");
     log(QString("  保存先: %1").arg(channelDir), "info", "discord");
 
     if (saveExcel && allMessages.count() > 0) {
@@ -9127,6 +9131,10 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
         QString igExcelPath = FileHelper::typeExcelPath(excelDir, username, igType);
 
         // 새 데이터 준비
+    // ★ 버퍼가 조용히 실패했으면(디스크 참·권한) 결과가 말없이 짧아진다. 반드시 알린다.
+    if (!allMedia.ok())
+        log("⚠ 수집 버퍼 쓰기에 실패한 항목이 있습니다 — 결과가 일부 빠졌을 수 있습니다."
+            " 저장 디스크의 남은 공간을 확인하십시오.", "error", "instagram");
         QJsonArray allMediaArray = allMedia.readAll();
         auto extractIgRow = [](const QJsonObject &node) -> QStringList {
             QString caption;
@@ -15455,6 +15463,10 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
         QStringList headers2 = {"id","title","fee","url","published","type","like_count","comment_count","cover_image"};
         for (int c = 0; c < headers2.size(); ++c) doc.write(1, c+1, headers2[c]);
         int row = 2;
+    // ★ 버퍼가 조용히 실패했으면(디스크 참·권한) 결과가 말없이 짧아진다. 반드시 알린다.
+    if (!allPosts.ok())
+        log("⚠ 수집 버퍼 쓰기에 실패한 항목이 있습니다 — 결과가 일부 빠졌을 수 있습니다."
+            " 저장 디스크의 남은 공간을 확인하십시오.", "error", "fanbox");
         QJsonArray all = allPosts.readAll();
         for (const auto &v : all) {
             QJsonObject o = v.toObject();
@@ -16077,6 +16089,10 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
     // Excel — type별 + complete
     if (saveExcel && allPosts.count() > 0) {
         log("Excel 저장 중...", "info", "tumblr");
+    // ★ 버퍼가 조용히 실패했으면(디스크 참·권한) 결과가 말없이 짧아진다. 반드시 알린다.
+    if (!allPosts.ok())
+        log("⚠ 수집 버퍼 쓰기에 실패한 항목이 있습니다 — 결과가 일부 빠졌을 수 있습니다."
+            " 저장 디스크의 남은 공간을 확인하십시오.", "error", "tumblr");
         QJsonArray allPostsArray = allPosts.readAll();
         QStringList hdrs = {"ID", "Date", "Type", "Slug", "Summary", "Tags", "Notes", "URL"};
 
