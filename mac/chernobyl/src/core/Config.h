@@ -28,6 +28,7 @@ public:
     explicit Config(QObject *parent = nullptr);
 
     void load(const QString &filePath = QString());
+    QStringList recoveryCandidates() const;   // 설정을 되찾아 올 자리들
     void save(const QString &filePath = QString());
 
     // 주 위치: app/Contents/Resources/miyo_config.json (앱 내부 — 사용자 요청)

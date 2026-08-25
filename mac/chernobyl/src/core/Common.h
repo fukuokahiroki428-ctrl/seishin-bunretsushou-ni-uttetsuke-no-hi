@@ -108,6 +108,14 @@ QString bundledResourcesDir();
 // ★ 예전엔 이 구분이 없어서 갱신도 고정본을 그대로 pip 에 넘겼다.
 //   pip 는 "Requirement already satisfied" 로 끝내고, 앱은 그걸 "최신" 이라고
 //   보고했다. 실제로는 한 판도 올라가지 않는데 올라간 줄 알게 되는 형태였다.
+// 파일을 '통째로 바뀌거나, 전혀 안 바뀌거나' 로 쓴다.
+// ★ 왜 필요한가. 지금까지 설정·색인·override 를 QIODevice::WriteOnly 로 열어 썼다.
+//   그 순간 파일은 0바이트로 잘린다. 쓰기가 끝나기 전에 앱이 죽거나 전원이 나가면
+//   남는 것은 잘린 파일이다 — 계정·토큰·저장된 입력값이 통째로 사라진다.
+//   백업본도 바로 뒤이어 같은 방식으로 덮어써서, 둘 다 상하는 창이 있었다.
+//   QSaveFile 은 임시 파일에 다 쓴 뒤 원자적으로 갈아 끼운다. 중간 상태가 없다.
+bool writeFileAtomic(const QString &path, const QByteArray &bytes, QString *err = nullptr);
+
 QStringList bundledRequirements(bool stripPins = false);   // 번들 requirements.txt 의 패키지 목록(버전 고정 포함)
 
 

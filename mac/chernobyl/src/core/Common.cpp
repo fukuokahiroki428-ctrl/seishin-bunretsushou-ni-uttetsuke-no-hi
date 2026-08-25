@@ -15,6 +15,7 @@
 #include <QDebug>
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QSaveFile>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QMutex>
@@ -528,6 +529,28 @@ QString apiOverride(const QString &key, const QString &builtinDefault)
     return v.isEmpty() ? builtinDefault : v;
 }
 
+bool writeFileAtomic(const QString &path, const QByteArray &bytes, QString *err)
+{
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QSaveFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) {
+        if (err) *err = f.errorString();
+        return false;
+    }
+    // ★ write 의 반환값을 본다. 디스크가 꽉 차면 open 은 성공하고 write 만 모자라게
+    //   쓰는데, 예전 코드는 그것을 무시했다 → 반쪽짜리 설정이 조용히 남았다.
+    if (f.write(bytes) != bytes.size()) {
+        if (err) *err = QStringLiteral("쓴 크기가 모자랍니다(디스크 공간?)");
+        f.cancelWriting();
+        return false;
+    }
+    if (!f.commit()) {                 // 여기서야 실제 파일이 갈아 끼워진다
+        if (err) *err = f.errorString();
+        return false;
+    }
+    return true;
+}
+
 bool setApiOverride(const QString &key, const QString &value)
 {
     const QString p = apiOverridesPath();
@@ -544,9 +567,7 @@ bool setApiOverride(const QString &key, const QString &value)
     else                 o[key] = value;
 
     QFile f(p);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
-    f.write(QJsonDocument(o).toJson(QJsonDocument::Indented));
-    f.close();
+    if (!writeFileAtomic(p, QJsonDocument(o).toJson(QJsonDocument::Indented))) return false;
     return true;
 }
 

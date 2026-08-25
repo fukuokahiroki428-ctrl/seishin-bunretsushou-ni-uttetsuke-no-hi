@@ -8274,11 +8274,9 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
         if (!channelInfo.isEmpty())
             index["channel_info"] = channelInfo;
 
-        QFile indexFile(channelDir + "/index.json");
-        if (indexFile.open(QIODevice::WriteOnly)) {
-            indexFile.write(QJsonDocument(index).toJson(QJsonDocument::Indented));
-            indexFile.close();
-        }
+        // 채널 색인 — 잘림 없이 통째로 갈아 끼운다(수집 도중 끊겨도 옛것이 남는다).
+        Common::writeFileAtomic(channelDir + "/index.json",
+                                QJsonDocument(index).toJson(QJsonDocument::Indented));
         log("인덱스 저장 완료.", "success", "discord");
     }
 }
@@ -13938,8 +13936,7 @@ bool HanishikiBackend::applyScriptPatchImpl(const QString &name, const QString &
     if (hadOverride) QFile::copy(ov, bak);
     else             QFile::copy(Common::activeToolScriptPath(name), bak);
     // 쓰기
-    { QFile f(ov); if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) { err = "override 쓰기 실패"; return false; }
-      f.write(newContent.toUtf8()); f.close(); }
+    { QString werr; if (!Common::writeFileAtomic(ov, newContent.toUtf8(), &werr)) { err = "override 쓰기 실패: " + werr; return false; } }
     // 문법 검증 — ast.parse 는 __pycache__ 를 만들지 않는다(py_compile 은 만들어 서명 봉인을 깬다).
     QProcess proc;
     proc.setProcessEnvironment(Common::bundledProcessEnv());

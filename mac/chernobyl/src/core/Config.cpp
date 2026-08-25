@@ -1,4 +1,7 @@
 #include "Config.h"
+#include "Common.h"
+#include <QJsonDocument>
+#include <QDateTime>
 #include <algorithm>
 #include <QFile>
 #include <QFileInfo>
@@ -87,74 +90,85 @@ QString Config::backupConfigPath()
     return cur;
 }
 
+// 한 파일을 읽어 JSON 으로 해석해 본다. 없거나 비었거나 깨졌으면 false.
+static bool readConfigJson(const QString &path, QJsonObject *out)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    const QByteArray raw = f.readAll();
+    f.close();
+    if (raw.trimmed().isEmpty()) return false;
+    QJsonParseError err{};
+    const QJsonDocument doc = QJsonDocument::fromJson(raw, &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) return false;
+    *out = doc.object();
+    return true;
+}
+
+// 설정을 되찾아 올 자리들 — 가까운 것부터.
+QStringList Config::recoveryCandidates() const
+{
+    QStringList c;
+    c << backupConfigPath();
+    const QString appDir = QCoreApplication::applicationDirPath();
+    c << appDir + "/../Resources/miyo_config.json";          // 옛 in-bundle 저장 시절
+    const QString sup = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    c << sup + "/ABIWA/miyo_config.json";
+    c << QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/ABIWA/miyo_config.json";
+
+    // ★ 앱 이름이 바뀐 뒤의 옛 폴더. 이름을 목록에 박아 두면 '다음 번' 개명 때 또
+    //   같은 일이 난다 — 이 앱만 해도 다섯 번째 이름이다. 그래서 형제 폴더를 훑어
+    //   설정 파일이 있는 것을 찾고 가장 최근에 쓰인 것부터 시도한다.
+    //   설정 파일 이름으로만 거르므로 남의 앱을 잘못 집지 않는다.
+    QFileInfoList found;
+    const auto dirs = QDir(QFileInfo(sup).absolutePath()).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QFileInfo &d : dirs) {
+        if (d.absoluteFilePath() == QFileInfo(sup).absoluteFilePath()) continue;
+        QFileInfo cfg(d.absoluteFilePath() + "/hanishiki_config.json");
+        if (!cfg.exists()) cfg = QFileInfo(d.absoluteFilePath() + "/miyo_config.json");
+        if (cfg.exists() && cfg.size() > 0) found << cfg;
+    }
+    std::sort(found.begin(), found.end(), [](const QFileInfo &a, const QFileInfo &b) {
+        return a.lastModified() > b.lastModified();
+    });
+    for (const QFileInfo &f : found) c << f.absoluteFilePath();
+    return c;
+}
+
 void Config::load(const QString &filePath)
 {
     m_configPath = filePath.isEmpty() ? defaultConfigPath() : filePath;
 
-    // ★ 자동 복원 — 앱 내부 config 없으면 외부 백업/옛 위치에서 복원
-    //   재빌드로 앱 내부 사라져도 사용자 입력 정보 영구 보존.
-    if (!QFile::exists(m_configPath)) {
-        QStringList candidates;
-        candidates << backupConfigPath();   // 백업 (우선)
-        // ★ 옛 in-bundle config (이전엔 번들 안에 저장했음 — 마이그레이션용)
-        QString appDir = QCoreApplication::applicationDirPath();
-        candidates << appDir + "/../Resources/miyo_config.json";
-        // 옛 ABIWA 시절 경로들
-        candidates << QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/ABIWA/miyo_config.json";
-        candidates << QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/ABIWA/miyo_config.json";
+    QJsonObject obj;
+    if (readConfigJson(m_configPath, &obj)) { fromJson(obj); return; }
 
-        // ★ 앱 이름이 바뀐 뒤의 옛 폴더 — 이게 없어서 이름을 바꿀 때마다 설정이 통째로
-        //   버려졌다. 이 앱만 해도 カメラ → チェルノブイリ → Chernobyl → Predormition
-        //   으로 네 번 바뀌었다. AppDataLocation 은 .../Miyo/<앱이름> 이라, 이름이 바뀌면
-        //   폴더도 바뀌어 계정·쿠키·NAS 설정·플랫폼 목록이 한 번에 사라진 것처럼 보인다.
-        //
-        //   이름을 목록에 박아 두면 '다음 번' 이름 변경 때 또 같은 일이 난다. 그래서
-        //   형제 폴더를 훑어 miyo_config.json 이 있는 것을 찾고, 그 중 가장 최근에 쓰인
-        //   것을 가져온다 — 앞으로 이름이 또 바뀌어도 이어진다.
-        {
-            const QString mine = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-            // 조직 폴더를 뺐으므로 여기는 .../Application Support 다(폴더가 100개 넘는다).
-            //   설정 파일 이름으로만 거르므로 남의 앱을 잘못 집지 않는다.
-            QDir siblings(QFileInfo(mine).absolutePath());
-            QFileInfoList found;
-            const auto dirs = siblings.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
-            for (const QFileInfo &d : dirs) {
-                if (d.absoluteFilePath() == QFileInfo(mine).absoluteFilePath()) continue;  // 내 폴더
-                QFileInfo cfg(d.absoluteFilePath() + "/hanishiki_config.json");
-                if (!cfg.exists()) cfg = QFileInfo(d.absoluteFilePath() + "/miyo_config.json");
-                if (cfg.exists() && cfg.size() > 0) found << cfg;
-            }
-            std::sort(found.begin(), found.end(), [](const QFileInfo &a, const QFileInfo &b) {
-                return a.lastModified() > b.lastModified();   // 최근에 쓰던 것부터
-            });
-            for (const QFileInfo &f : found) candidates << f.absoluteFilePath();
-        }
-
-        for (const QString &oldPath : candidates) {
-            if (QFile::exists(oldPath)) {
-                QFile::copy(oldPath, m_configPath);
-                qDebug() << "[Config] restored from" << oldPath << "to" << m_configPath;
-                break;
-            }
-        }
+    // ★ 여기가 예전에 조용히 데이터를 버리던 자리다.
+    //   복구는 '파일이 아예 없을 때' 만 돌았고, 파일이 있는데 깨져 있으면
+    //   파싱 실패를 qDebug 한 줄로 흘리고 그냥 돌아갔다. 앱은 빈 설정으로 뜨고,
+    //   그 다음 저장이 백업까지 빈 값으로 덮어썼다. 계정·토큰·저장된 입력값이
+    //   그렇게 사라진다(실제로 16키→11, 계정 8→4, 입력값 140→0 을 겪었다).
+    //   → 깨진 경우도 복구를 돌린다. 그리고 깨진 원본을 지우지 않고 옆으로 치운다.
+    if (QFile::exists(m_configPath) && QFileInfo(m_configPath).size() > 0) {
+        const QString aside = m_configPath + QStringLiteral(".damaged_%1")
+                                                 .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
+        if (QFile::rename(m_configPath, aside))
+            qWarning() << "[config] 설정이 깨져 있어 옆으로 옮겼습니다(지우지 않았습니다):" << aside;
+        else
+            qWarning() << "[config] 설정이 깨져 있는데 옮기지도 못했습니다:" << m_configPath;
     }
 
-    QFile file(m_configPath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        qDebug() << "Config file not found:" << m_configPath;
+    const QStringList cands = recoveryCandidates();
+    for (const QString &c : cands) {
+        if (!readConfigJson(c, &obj)) continue;      // 후보도 깨졌으면 다음 것
+        QDir().mkpath(QFileInfo(m_configPath).absolutePath());
+        QFile::copy(c, m_configPath);
+        QFile::setPermissions(m_configPath, QFile::ReadOwner | QFile::WriteOwner);
+        qInfo() << "[config] 설정을 되찾았습니다:" << c;
+        fromJson(obj);
         return;
     }
 
-    QJsonParseError error;
-    QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &error);
-    file.close();
-
-    if (error.error != QJsonParseError::NoError) {
-        qDebug() << "Config parse error:" << error.errorString();
-        return;
-    }
-
-    fromJson(doc.object());
+    qWarning() << "[config] 읽을 수 있는 설정이 없습니다 — 기본값으로 시작합니다:" << m_configPath;
 }
 
 void Config::save(const QString &filePath)
@@ -174,28 +188,31 @@ void Config::save(const QString &filePath)
         QFile::setPermissions(p, QFile::ReadOwner | QFile::WriteOwner);
     };
 
-    // ★ 주 위치 저장 (앱 내부)
-    {
-        QFile file(path);
-        if (file.open(QIODevice::WriteOnly)) {
-            file.write(bytes);
-            file.close();
-            lockDown(path);
-        } else {
-            qDebug() << "Cannot write config:" << path;
-        }
+    // ★ 쓰는 순서와 방식이 둘 다 중요하다.
+    //
+    //   방식: 예전엔 QFile 을 WriteOnly 로 열어 썼다. 그 순간 파일이 0바이트로
+    //   잘린다. 쓰기가 끝나기 전에 앱이 죽거나 전원이 나가면 남는 것은 잘린
+    //   파일이고, 그 안에 있던 계정·토큰·저장된 입력값(140개)이 통째로 사라진다.
+    //   writeFileAtomic 은 임시 파일에 다 쓴 뒤 갈아 끼우므로 중간 상태가 없다.
+    //
+    //   순서: 백업을 먼저 쓴다. 예전엔 주 파일을 먼저 덮어쓰고 백업을 뒤에 썼는데,
+    //   그 사이에 죽으면 주 파일은 새것(어쩌면 잘린 것)이고 백업은 옛것도 아닌
+    //   어중간한 상태가 된다. 백업이 먼저 온전해지면, 주 파일 쓰기가 어떻게 되든
+    //   되돌릴 자리가 항상 하나 남는다.
+    if (filePath.isEmpty()) {
+        const QString backup = backupConfigPath();
+        QString berr;
+        if (Common::writeFileAtomic(backup, bytes, &berr)) lockDown(backup);
+        else qWarning() << "[config] 백업 저장 실패:" << backup << berr;
     }
 
-    // ★ 외부 백업 동시 저장 — 재빌드로 앱 내부 사라지면 자동 복원
-    if (filePath.isEmpty()) {
-        QString backup = backupConfigPath();
-        QDir().mkpath(QFileInfo(backup).absolutePath());
-        QFile bf(backup);
-        if (bf.open(QIODevice::WriteOnly)) {
-            bf.write(bytes);
-            bf.close();
-            lockDown(backup);   // 백업본도 똑같이 — 한쪽만 조이면 의미가 없다
-        }
+    QString err;
+    if (Common::writeFileAtomic(path, bytes, &err)) {
+        lockDown(path);
+    } else {
+        // ★ 조용히 넘어가지 않는다. 예전엔 qDebug 한 줄이라 릴리즈에서는 아무
+        //   흔적도 없이 설정이 저장되지 않았다.
+        qWarning() << "[config] 설정 저장 실패:" << path << err;
     }
 }
 
