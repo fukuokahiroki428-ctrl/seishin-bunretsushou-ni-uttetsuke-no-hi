@@ -177,6 +177,14 @@ MainWindow::MainWindow(QWidget *parent)
 
 QMenu *MainWindow::createDockMenu()
 {
+    // ★ 이 함수는 두 번 불린다 — 생성자에서 한 번(m_dockMenu 에 담으려고),
+    //   main.cpp 에서 한 번(NSApp setDockMenu: 에 넘기려고).
+    //   예전엔 부를 때마다 새로 만들었다. 그래서 Dock 에 실제로 붙은 메뉴와
+    //   updateDockMenu() 가 고치는 메뉴가 서로 달랐고, Dock 우클릭 메뉴의
+    //   상태·통계는 처음 만든 그대로 "상태: 대기" 에서 영영 멈춰 있었다.
+    //   한 번 만든 것을 계속 돌려준다.
+    if (m_dockMenu) return m_dockMenu;
+
     auto *menu = new QMenu(this);
 
     auto *showAction = menu->addAction(QStringLiteral(APP_NAME_DISPLAY) + QStringLiteral(" 열기"));
@@ -212,6 +220,7 @@ QMenu *MainWindow::createDockMenu()
         }
     });
 
+    m_dockMenu = menu;
     return menu;
 }
 
