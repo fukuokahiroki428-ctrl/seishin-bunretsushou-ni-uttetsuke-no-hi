@@ -233,6 +233,67 @@ static bool ansiRepresentable(const QString &p)
 }
 #endif
 
+
+#ifdef Q_OS_WIN
+// copyTreePreserving 은 아래(파이썬 환경 씨뿌리기 쪽)에 있다. 여기서 먼저 쓰므로 전방 선언한다.
+static bool copyTreePreserving(const QString &src, const QString &dst);
+
+// ★ exiftool.exe 를 ANSI 로 표현 가능한 자리로 옮겨 놓고 그 사본을 쓴다.
+//
+//   exiftool.exe 는 PAR 로 묶인 Perl 프로그램이라, 자기 자신의 경로를 ANSI 로 읽어서
+//   그 옆의 exiftool_files\perl5*.dll 을 찾는다. 앱이 한글·일본어가 든 경로에 있으면
+//   그 경로가 '?' 로 뭉개져 DLL 을 못 찾고 즉시 죽는다.
+//     실측: "Could not find D:\? ?? (2)\...\exiftool_files\perl5*.dll"
+//   원래는 8.3 단축 경로로 우회했는데, 이 기계의 D: 는 8.3 생성이 꺼져 있어서
+//   (dir /x 로 확인 — 단축 이름 칸이 비어 있다) 우회가 아예 불가능했다.
+//
+//   그래서 ANSI 로 표현 가능한 임시 폴더에 exiftool.exe 와 exiftool_files 를 한 번 복사해
+//   두고 그쪽을 실행한다. 복사는 처음 한 번만 한다.
+//   실패하면 원본 경로를 그대로 돌려준다 — 그때는 지금까지처럼 경고만 남는다.
+static QString asciiSafeExiftool(const QString &exePath)
+{
+    if (exePath.isEmpty() || ansiRepresentable(exePath)) return exePath;
+
+    static QString cached;
+    static bool tried = false;
+    if (tried) return cached.isEmpty() ? exePath : cached;
+    tried = true;
+
+    // ANSI 로 표현 가능한 후보를 순서대로 — 쓸 수 있는 첫 자리를 쓴다.
+    QStringList bases;
+    bases << QDir::tempPath()
+          << QString::fromLatin1(qgetenv("SystemRoot")) + "/Temp"
+          << QString::fromLatin1(qgetenv("ProgramData")) + "/Predormition";
+    for (const QString &base : bases) {
+        if (base.isEmpty() || !ansiRepresentable(base)) continue;
+        const QString dir = base + "/predormition_exiftool";
+        if (!QDir().mkpath(dir)) continue;
+
+        const QString dstExe = dir + "/exiftool.exe";
+        const QFileInfo srcInfo(exePath);
+        // 이미 같은 크기로 복사돼 있으면 다시 복사하지 않는다.
+        if (QFileInfo(dstExe).size() != srcInfo.size()) {
+            QFile::remove(dstExe);
+            if (!QFile::copy(exePath, dstExe)) continue;
+        }
+        // exiftool_files 는 exe 옆에 있어야 한다. 없으면 exe 만으로는 못 돈다.
+        const QString srcFiles = srcInfo.absolutePath() + "/exiftool_files";
+        if (QDir(srcFiles).exists()) {
+            const QString dstFiles = dir + "/exiftool_files";
+            if (!QDir(dstFiles).exists() && !copyTreePreserving(srcFiles, dstFiles)) {
+                qWarning() << "[Common] exiftool_files 복사 실패:" << srcFiles << "->" << dstFiles;
+                continue;
+            }
+        }
+        qInfo() << "[Common] 경로에 ANSI 로 못 쓰는 글자가 있어 exiftool 을 옮겨 씁니다:" << dstExe;
+        cached = dstExe;
+        return cached;
+    }
+    qWarning() << "[Common] exiftool 을 ANSI 안전한 자리로 옮기지 못했습니다 — EXIF 가 실패할 수 있습니다.";
+    return exePath;
+}
+#endif
+
 QString ansiSafePath(const QString &path)
 {
 #ifdef Q_OS_WIN
@@ -365,6 +426,15 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
 
     QProcess proc;
     proc.setProcessEnvironment(bundledProcessEnv());
+#ifdef Q_OS_WIN
+    // ★ argfile 은 exiftool 이 다 읽을 때까지 살아 있어야 한다.
+    //   전에는 아래 else 블록 안에서 만들어서, 블록이 끝나는 순간 소멸자가
+    //   (setAutoRemove(true) 때문에) 파일을 지워 버렸다. proc.start() 는 비동기라
+    //   exiftool 이 뜨기도 전에 파일이 사라져서 "Error opening arg file" 로 매번 실패했다.
+    //   실측: 이 기계의 로그에 1668건 전부 그 오류. EXIF 가 하나도 안 쓰이고 있었다.
+    //   여기서 만들면 함수가 끝날 때까지 — waitForFinished 이후까지 — 살아 있다.
+    QTemporaryFile argFile(QDir::tempPath() + "/predormition_exif_XXXXXX.args");
+#endif
     if (!exiftoolPerl.isEmpty()) {
         // 번들 exiftool: perl -I<lib> exiftool <args>
         QStringList perlArgs;
@@ -387,7 +457,6 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
         //   -@ 로 주면 exiftool 이 파일에서 직접 읽어 온전히 전달된다.
         //   실행 파일 경로만은 8.3 로 넘긴다 — exiftool.exe 는 자기 경로를 기준으로
         //   exiftool_files\perl5*.dll 을 찾으므로 여기가 뭉개지면 시작조차 못 한다.
-        QTemporaryFile argFile(QDir::tempPath() + "/predormition_exif_XXXXXX.args");
         argFile.setAutoRemove(true);
         if (!argFile.open()) {
             qWarning() << "[Common] exiftool argfile 을 만들지 못했습니다 — EXIF 기록을 건너뜁니다";
@@ -401,7 +470,7 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
         }
         argFile.close();
         // argfile 자체는 exiftool 이 읽기만 하므로 8.3 로 넘겨도 안전하다.
-        proc.start(ansiSafePath(exiftoolPath), {"-@", ansiSafePath(argFile.fileName())});
+        proc.start(asciiSafeExiftool(exiftoolPath), {"-@", ansiSafePath(argFile.fileName())});
 #else
         proc.start(exiftoolPath, args);
 #endif
