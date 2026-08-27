@@ -319,7 +319,7 @@ QMap<QString, QString> TwitterCollector::getHeaders() const
     headers["X-Twitter-Auth-Type"] = "OAuth2Session";
     headers["X-Twitter-Active-User"] = "yes";
     headers["Referer"] = "https://x.com/";
-    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15";
+    headers["User-Agent"] = Common::browserUserAgent();
     headers["Accept-Language"] = "ja";
     headers["X-Twitter-Client-Language"] = "ja";
     // Auth cookies & CSRF

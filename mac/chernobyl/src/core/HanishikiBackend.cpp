@@ -8328,8 +8328,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     QMap<QString, QString> baseHeaders;
     // ★ 완전한 브라우저 UA — 잘린 UA("…AppleWebKit/537.36")는 product 토큰이 없어 봇 핑거프린트로
     //   Instagram 이 401 대신 '빈 200'(소프트 차단)을 줘서 게시물 0개가 됨.
-    baseHeaders["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+    baseHeaders["User-Agent"] = Common::browserUserAgent();
     baseHeaders["Cookie"] = "sessionid=" + sessionId;
     baseHeaders["X-IG-App-ID"] = "936619743392459";
     // ★ www.instagram.com 웹 API 가 요구하는 XHR 헤더. 특히 X-ASBD-ID 누락 시 '빈 200' 소프트 차단.
@@ -9794,7 +9793,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
     http.setRunFlag(runFlag("pixiv").get());  // 중지 시 즉시 abort
 
     QMap<QString, QString> apiHeaders;
-    apiHeaders["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    apiHeaders["User-Agent"] = Common::browserUserAgent();
     // ★ NSFW (R-18) 보강:
     //   1) PHPSESSID 외에 사용자가 직접 추가 raw cookie 줄 수 있음 (config["pixivExtraCookie"])
     //      예: "device_token=xxx; user_token=yyy" — Pixiv가 일부 R-18에 추가 쿠키 검증
@@ -15328,8 +15327,7 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
     HttpClient http;
     http.setRunFlag(runFlag("fanbox").get());
     QMap<QString, QString> headers;
-    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+    headers["User-Agent"] = Common::browserUserAgent();
     headers["Cookie"] = cookie;
     headers["Origin"] = "https://www.fanbox.cc";
     headers["Referer"] = "https://www.fanbox.cc/";
@@ -16201,8 +16199,7 @@ void HanishikiBackend::runSpinSpinCollection(const QJsonObject &config)
     const QString API_BASE = "https://web-api.spin-spin.com";
 
     QMap<QString, QString> headers;
-    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                             "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+    headers["User-Agent"] = Common::browserUserAgent();
     headers["Accept"] = "application/json, text/plain, */*";
     headers["Accept-Language"] = "ko-KR,ko;q=0.9,en;q=0.8";
     headers["Origin"] = "https://spin-spin.com";
@@ -16947,8 +16944,7 @@ void HanishikiBackend::runAskedCollection(const QJsonObject &config)
     http.setRunFlag(runFlag("asked").get());  // 중지 시 즉시 abort
 
     QMap<QString, QString> headers;
-    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+    headers["User-Agent"] = Common::browserUserAgent();
     headers["Accept"] = "application/json, text/html";
     if (!cookie.isEmpty()) headers["Cookie"] = cookie;
 

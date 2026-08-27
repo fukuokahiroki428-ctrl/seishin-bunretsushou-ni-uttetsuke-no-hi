@@ -530,6 +530,44 @@ QString apiOverride(const QString &key, const QString &builtinDefault)
     return v.isEmpty() ? builtinDefault : v;
 }
 
+// 설치된 브라우저의 판을 읽는다. 없으면 번들 크로미움, 그것도 없으면 안전한 최신값.
+static QString detectChromeMajor()
+{
+    const QStringList plists = {
+        QStringLiteral("/Applications/Google Chrome.app/Contents/Info.plist"),
+        QDir::homePath() + QStringLiteral("/Applications/Google Chrome.app/Contents/Info.plist"),
+        bundledResourcesDir() + QStringLiteral("/chromium/Chromium.app/Contents/Info.plist"),
+    };
+    for (const QString &pl : plists) {
+        if (!QFileInfo::exists(pl)) continue;
+        QProcess p;
+        p.start("/usr/libexec/PlistBuddy", {"-c", "Print :CFBundleShortVersionString", pl});
+        p.waitForFinished(4000);
+        const QString v = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+        const QString major = v.section('.', 0, 0);
+        bool okNum = false;
+        const int n = major.toInt(&okNum);
+        if (okNum && n >= 100) return major;      // 100 미만이면 뭔가 잘못 읽은 것
+    }
+    return QString();
+}
+
+QString browserUserAgent()
+{
+    static QString cached;
+    if (!cached.isEmpty()) return cached;
+
+    QString major = detectChromeMajor();
+    if (major.isEmpty()) major = QStringLiteral("140");   // 아무것도 못 읽었을 때의 보수적 기본값
+
+    // Chrome 은 macOS 판을 10_15_7 로 고정해 보낸다(UA 고정 정책). 그대로 맞춘다.
+    cached = QStringLiteral(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/%1.0.0.0 Safari/537.36").arg(major);
+    qInfo().noquote() << "[UA] 요청에 쓸 User-Agent — Chrome" << major;
+    return cached;
+}
+
 bool writeFileAtomic(const QString &path, const QByteArray &bytes, QString *err)
 {
     QDir().mkpath(QFileInfo(path).absolutePath());

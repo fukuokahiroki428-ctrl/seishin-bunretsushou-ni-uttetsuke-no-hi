@@ -118,6 +118,15 @@ QString bundledResourcesDir();
 //   남는 것은 잘린 파일이다 — 계정·토큰·저장된 입력값이 통째로 사라진다.
 //   백업본도 바로 뒤이어 같은 방식으로 덮어써서, 둘 다 상하는 창이 있었다.
 //   QSaveFile 은 임시 파일에 다 쓴 뒤 원자적으로 갈아 끼운다. 중간 상태가 없다.
+// 요청에 실을 User-Agent.
+// ★ 왜 코드에 박으면 안 되나.
+//   이 앱은 사용자의 '진짜 브라우저 세션 쿠키' 로 요청한다. 그런데 UA 는
+//   Chrome/120·Chrome/131·Safari 17.5 로 박혀 있었다. 실제 브라우저는 Chrome 151 이다.
+//   쿠키를 만든 브라우저와 UA 가 어긋나면 그 자체가 자동화 신호다 —
+//   플랫폼이 계정을 묶어 정지시키는 근거가 된다. 몇 년 지난 UA 는 더 눈에 띈다.
+//   → 설치된 브라우저에서 실제 판을 읽어 만든다. 한 번 만들고 캐시한다.
+QString browserUserAgent();
+
 bool writeFileAtomic(const QString &path, const QByteArray &bytes, QString *err = nullptr);
 
 QStringList bundledRequirements(bool stripPins = false);   // 번들 requirements.txt 의 패키지 목록(버전 고정 포함)
