@@ -3190,9 +3190,12 @@ void MiyoBackend::naikakukaiTick()
             prevNewest = m_twitterCollector->newestTweetId();
         }
 
+        // 이 수집은 감시가 돌린 것이다 — 로그를 内閣会 창에도 같이 흘린다.
+        m_naikakukaiMirroring = true;
         if (p == "twitter") runTwitterCollection(runConfig);
         else if (p == "bluesky") runBlueskyCollection(runConfig);
         else if (p == "tumblr") runTumblrCollection(runConfig);
+        m_naikakukaiMirroring = false;
         setPlatformRunning(p, false);
 
         // 새 글 발견 여부 — 시스템 알림
@@ -3405,8 +3408,17 @@ void MiyoBackend::writeTerminalLog(const QString &message, const QString &platfo
     static const QRegularExpression ansiEsc(QStringLiteral("\x1B\[[0-9;]*m"));
     QString clean = message;
     clean.remove(ansiEsc);
-    QMetaObject::invokeMethod(this, [this, key, clean]() {
+    // ★ 감시(内閣会)가 돌린 수집이면 그 기능 창에도 같은 줄을 보낸다.
+    //   자동 감지는 사용자가 보고 있지 않을 때 도는 것이라, 무슨 일이 있었는지
+    //   한 창에서 이어서 읽을 수 있어야 한다. 플랫폼별 창은 그대로 둔다.
+    const bool mirror = m_naikakukaiMirroring.load() && key != "naikakukai"
+                        && m_terminalWindows.contains("naikakukai");
+    QMetaObject::invokeMethod(this, [this, key, clean, mirror]() {
         if (TerminalWindow *w = m_terminalWindows.value(key, nullptr)) w->appendLine(clean);
+        if (mirror) {
+            if (TerminalWindow *n = m_terminalWindows.value("naikakukai", nullptr))
+                n->appendLine(QString("[%1] %2").arg(key, clean));
+        }
     }, Qt::QueuedConnection);
 }
 
