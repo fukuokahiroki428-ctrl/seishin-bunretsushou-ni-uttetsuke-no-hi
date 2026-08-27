@@ -77,6 +77,12 @@ static const QMap<QString, int> monthMap = {
 
 QDateTime parseISODate(const QString &dateStr)
 {
+    // ★ 빈 문자열은 정상이다 — 프로필 사진·배너처럼 원래 날짜가 없는 것들이 있다
+    //   (addExifMetadata 호출부에서 "" 를 넘긴다). 그런데도 경고를 찍는 바람에
+    //   이 기계 로그에 8714 줄이 쌓여 734KB 가 됐고, 진짜 문제(exiftool 실패)가
+    //   그 속에 묻혀 있었다. 조용히 무효 날짜를 돌려준다.
+    if (dateStr.isEmpty()) return QDateTime();
+
     // Try various formats
     QDateTime dt;
 
