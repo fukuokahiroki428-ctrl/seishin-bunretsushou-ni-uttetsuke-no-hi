@@ -46,6 +46,19 @@ RealChromeCrawler::~RealChromeCrawler()
     stop();
 }
 
+void RealChromeCrawler::setProxy(const QString &url)
+{
+    m_proxyUrl = url;
+    m_proxyUser.clear();
+    m_proxyPass.clear();
+    if (url.isEmpty()) return;
+    // ★ Chrome 은 --proxy-server 에 user:pass 를 받지 않는다. URL 에서 떼어 두었다가
+    //   CDP 의 Fetch.authRequired 가 오면 그때 넘긴다.
+    const QUrl u(url);
+    m_proxyUser = u.userName();
+    m_proxyPass = u.password();
+}
+
 QString RealChromeCrawler::findChromeExecutable() const
 {
     // 후보 경로 — 사용자가 어떤 Chromium 계열 브라우저든 깔려있을 가능성을 모두 검사
@@ -417,6 +430,18 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
                         "Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});";
                     sendCommand("Page.enable", QJsonObject(), nullptr);
                     sendCommand("Page.addScriptToEvaluateOnNewDocument", p, nullptr);
+
+                // ★ 프록시 인증 — Chrome 은 --proxy-server 로 자격증명을 받지 않는다.
+                //   Fetch 를 켜고 authRequired 가 올 때 넘긴다. 이걸 안 하면 인증이 필요한
+                //   프록시에서 캡쳐가 407 로 전부 실패한다.
+                //   ※ Fetch 를 켜면 모든 요청이 일시정지되므로 requestPaused 도 반드시
+                //     이어줘야 한다(안 그러면 페이지가 통째로 멈춘다).
+                if (!m_proxyUser.isEmpty()) {
+                    QJsonObject fp;
+                    fp["handleAuthRequests"] = true;
+                    sendCommand("Fetch.enable", fp, nullptr);
+                    if (m_backend) m_backend->log("프록시 인증 대기 활성화", "info", "crawl");
+                }
                 }
                 // Network 자동 활성화
                 if (!m_responseSaveDir.isEmpty()) {
@@ -559,6 +584,32 @@ int RealChromeCrawler::sendCommand(const QString &method, const QJsonObject &par
 
 void RealChromeCrawler::handleEvent(const QString &method, const QJsonObject &params)
 {
+    // ★ 프록시가 자격증명을 요구할 때 — Chrome 은 명령줄로 못 받으므로 여기서 넘긴다.
+    if (method == "Fetch.authRequired") {
+        QJsonObject p;
+        p["requestId"] = params["requestId"];
+        QJsonObject ch;
+        // ★ 프록시 챌린지일 때만 준다. 사이트 자체가 요구하는 인증에 프록시 비밀번호를
+        //   보내면 그 사이트에 자격증명을 넘겨주는 셈이 된다.
+        const QString source = params["authChallenge"].toObject()["source"].toString();
+        if (source == "Proxy" && !m_proxyUser.isEmpty()) {
+            ch["response"] = "ProvideCredentials";
+            ch["username"] = m_proxyUser;
+            ch["password"] = m_proxyPass;
+        } else {
+            ch["response"] = "CancelAuth";
+        }
+        p["authChallengeResponse"] = ch;
+        sendCommand("Fetch.continueWithAuth", p, nullptr);
+        return;
+    }
+    // ★ Fetch 를 켜면 모든 요청이 여기서 멈춘다 — 반드시 이어줘야 페이지가 흐른다.
+    if (method == "Fetch.requestPaused") {
+        QJsonObject p;
+        p["requestId"] = params["requestId"];
+        sendCommand("Fetch.continueRequest", p, nullptr);
+        return;
+    }
     if (method == "Network.requestWillBeSent") {
         QString reqId = params["requestId"].toString();
         QJsonObject req = params["request"].toObject();

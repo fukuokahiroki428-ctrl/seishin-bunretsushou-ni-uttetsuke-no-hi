@@ -3079,6 +3079,36 @@
                     </div>
 
                     <div class="nt-group">
+                            <h3>프록시 · VPN · 계정마다 다른 출구</h3>
+                            <div class="nt-card">
+                                <div class="nt-hint">
+                                    계정마다 다른 IP 로 나가게 합니다. <b>시스템 VPN 으로는 안 됩니다</b> —
+                                    VPN 은 기계 전체를 한 경로로 보내서 계정별로 나눌 수가 없습니다.
+                                    NordVPN 을 비롯한 대부분이 <b>SOCKS5 서버와 전용 자격증명</b>을 함께 줍니다.
+                                    그것을 등록해 두고 계정마다 골라 쓰면 됩니다.<br>
+                                    비밀번호는 저장한 뒤 화면으로 다시 불러오지 않습니다. 바꿀 때만 새로 입력하세요
+                                    (비워 두면 기존 값을 그대로 둡니다).
+                                </div>
+                                <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+                                    <input type="text" class="nt-input" id="proxy-name" placeholder="이름 — 예: 일본1" style="flex:0 0 130px;height:32px;">
+                                    <select class="nt-input" id="proxy-type" style="flex:0 0 110px;height:32px;">
+                                        <option value="socks5">SOCKS5</option>
+                                        <option value="http">HTTP</option>
+                                        <option value="https">HTTPS</option>
+                                    </select>
+                                    <input type="text" class="nt-input" id="proxy-host" placeholder="주소 — 예: jp.socks.nordhold.net" style="flex:1;min-width:200px;height:32px;">
+                                    <input type="number" class="nt-input" id="proxy-port" placeholder="포트" value="1080" style="flex:0 0 90px;height:32px;">
+                                    <input type="text" class="nt-input" id="proxy-user" placeholder="아이디" style="flex:0 0 150px;height:32px;">
+                                    <input type="password" class="nt-input" id="proxy-pass" placeholder="비밀번호 / 토큰" style="flex:0 0 170px;height:32px;">
+                                    <button class="nt-btn ok" onclick="addProxyProfile()">추가</button>
+                                    <button class="nt-btn" onclick="testProxyProfile()">연결 시험</button>
+                                </div>
+                                <div id="proxy-test-result" style="margin-top:8px;font-size:12px;"></div>
+                                <div id="proxy-list" style="margin-top:10px;font-size:12px;"></div>
+                            </div>
+                        </div>
+
+                    <div class="nt-group">
                         <h3>API 주소 교체 · 재빌드 없이 고치기</h3>
                         <div class="nt-card">
                             <div class="nt-hint">
@@ -6073,6 +6103,79 @@
             const el = document.getElementById('system-info-box');
             if (el) el.textContent = text.replace(/\\n/g, '\n');
         }
+
+        // ── 프록시(VPN) 프로필 ────────────────────────────────────────────
+        //   계정마다 다른 출구로 나가게 하는 설정. 백엔드가 비밀번호를 화면으로
+        //   돌려주지 않으므로(hasPass 만 온다) 여기서도 들고 있지 않는다.
+        var _proxyProfiles = [];
+        function loadProxyProfiles(){ if (window.backend && backend.getProxyProfiles) backend.getProxyProfiles(); }
+        window.onProxyProfiles = function(list){
+            _proxyProfiles = list || [];
+            var box = document.getElementById('proxy-list');
+            if (box) {
+                if (!_proxyProfiles.length) {
+                    box.innerHTML = '<span style="color:var(--text-tertiary)">등록된 프록시가 없습니다.</span>';
+                } else {
+                    box.innerHTML = _proxyProfiles.map(function(p, i){
+                        return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border-color);">'
+                             + '<b style="min-width:110px;">' + p.name + '</b>'
+                             + '<span style="color:var(--text-secondary);">' + p.type + '://' + p.host + ':' + p.port + '</span>'
+                             + '<span style="color:var(--text-tertiary);">' + (p.user || '(인증 없음)')
+                             + (p.hasPass ? ' · 비밀번호 저장됨' : '') + '</span>'
+                             + '<button class="nt-btn" style="margin-left:auto;" onclick="removeProxyProfile(' + i + ')">삭제</button>'
+                             + '</div>';
+                    }).join('');
+                }
+            }
+            document.querySelectorAll('select.acct-proxy').forEach(fillProxySelect);
+        };
+        function fillProxySelect(sel){
+            var cur = sel.value;
+            sel.innerHTML = '<option value="">직접 연결</option>'
+                + _proxyProfiles.map(function(p){ return '<option value="' + p.name + '">' + p.name + '</option>'; }).join('');
+            sel.value = cur;
+        }
+        function _proxyFromForm(){
+            return {
+                name: (document.getElementById('proxy-name').value || '').trim(),
+                type: document.getElementById('proxy-type').value,
+                host: (document.getElementById('proxy-host').value || '').trim(),
+                port: parseInt(document.getElementById('proxy-port').value || '0', 10),
+                user: (document.getElementById('proxy-user').value || '').trim(),
+                pass: document.getElementById('proxy-pass').value || ''
+            };
+        }
+        function addProxyProfile(){
+            var p = _proxyFromForm();
+            if (!p.name || !p.host || !p.port) { alert('이름 · 주소 · 포트는 필요합니다.'); return; }
+            // 기존 항목은 pass 를 빈 값으로 보낸다 = 백엔드에서 '안 바꿈' 으로 처리된다.
+            var next = _proxyProfiles.filter(function(x){ return x.name !== p.name; }).map(function(x){
+                return { name:x.name, type:x.type, host:x.host, port:x.port, user:x.user, pass:'' };
+            });
+            next.push(p);
+            if (window.backend && backend.setProxyProfiles) backend.setProxyProfiles(JSON.stringify(next));
+            document.getElementById('proxy-pass').value = '';
+        }
+        function removeProxyProfile(i){
+            var next = _proxyProfiles.filter(function(_, k){ return k !== i; }).map(function(x){
+                return { name:x.name, type:x.type, host:x.host, port:x.port, user:x.user, pass:'' };
+            });
+            if (window.backend && backend.setProxyProfiles) backend.setProxyProfiles(JSON.stringify(next));
+        }
+        function testProxyProfile(){
+            var p = _proxyFromForm();
+            if (!p.host || !p.port) { alert('주소와 포트를 넣어 주세요.'); return; }
+            var el = document.getElementById('proxy-test-result');
+            el.textContent = '확인 중…'; el.style.color = 'var(--text-secondary)';
+            if (window.backend && backend.testProxy) backend.testProxy(JSON.stringify(p));
+        }
+        window.onProxyTest = function(ok, detail){
+            var el = document.getElementById('proxy-test-result');
+            if (!el) return;
+            el.textContent = ok ? ('정상 — 나가는 IP ' + detail) : ('실패 — ' + detail);
+            el.style.color = ok ? '#3fb950' : '#f85149';
+        };
+
         // ── API 주소 교체 — 플랫폼이 내부 API 를 바꿔도 재빌드 없이 고친다 ──────
         function saveApiOverride() {
             var k = (document.getElementById('api-ov-key') || {}).value || '';
