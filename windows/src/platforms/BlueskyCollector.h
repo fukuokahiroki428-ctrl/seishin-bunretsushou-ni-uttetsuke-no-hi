@@ -20,6 +20,10 @@ public:
     qint64 daemonPid() const { return m_daemon ? m_daemon->processId() : 0; }
 
 private:
+    // ★ 프록시(VPN) — 계정마다 다른 출구로 나가게 한다. 트위터 쪽과 같은 방식.
+    QString m_proxyUrl;
+    public: void setProxy(const QString &u) { m_proxyUrl = u; }
+    private:
     bool startDaemon(const QString &handle, const QString &password, QJsonObject customInitArgs = QJsonObject());
     bool startDaemonMulti(const QJsonArray &accounts);
     QJsonObject sendCommand(const QJsonObject &cmd, bool &isRunning, int timeoutMs = 600000);

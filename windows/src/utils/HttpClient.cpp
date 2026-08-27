@@ -286,6 +286,29 @@ void HttpClient::setProxy(const QString &host, int port, QNetworkProxy::ProxyTyp
     m_nam->setProxy(proxy);
 }
 
+void HttpClient::setProxyUrl(const QString &url)
+{
+    if (url.trimmed().isEmpty()) { clearProxy(); return; }
+
+    // QUrl 이 사용자·비밀번호까지 풀어 준다. 비밀번호에 @ 나 : 가 들어가도
+    // 퍼센트 인코딩돼 있으면 정확히 복원된다.
+    const QUrl u(url);
+    const QString host = u.host();
+    if (host.isEmpty()) { clearProxy(); return; }
+
+    const QString scheme = u.scheme().toLower();
+    QNetworkProxy::ProxyType type = QNetworkProxy::HttpProxy;
+    int defPort = 8080;
+    if (scheme.startsWith("socks")) { type = QNetworkProxy::Socks5Proxy; defPort = 1080; }
+
+    QNetworkProxy proxy(type, host, quint16(u.port(defPort)));
+    if (!u.userName().isEmpty()) {
+        proxy.setUser(u.userName());
+        proxy.setPassword(u.password());
+    }
+    m_nam->setProxy(proxy);
+}
+
 void HttpClient::clearProxy()
 {
     m_nam->setProxy(QNetworkProxy::NoProxy);

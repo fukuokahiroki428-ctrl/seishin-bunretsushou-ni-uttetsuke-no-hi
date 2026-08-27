@@ -72,6 +72,9 @@ bool BlueskyCollector::startDaemon(const QString &handle, const QString &passwor
         initArgs["handle"] = handle;
         initArgs["password"] = password;
     }
+    // 프로필이 지정돼 있으면 데몬이 그 출구로 나간다. 비어 있으면 직접 연결.
+    if (!m_proxyUrl.isEmpty()) initArgs["proxy"] = m_proxyUrl;
+
     QString argsJson = QString::fromUtf8(QJsonDocument(initArgs).toJson(QJsonDocument::Compact));
 
     m_daemon = new QProcess(this);

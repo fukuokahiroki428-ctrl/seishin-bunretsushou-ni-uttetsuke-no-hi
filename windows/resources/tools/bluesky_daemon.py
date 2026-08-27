@@ -58,12 +58,40 @@ def main():
         print(json.dumps({"error": "openpyxl not installed"}), flush=True)
         sys.exit(1)
 
+    # ★ 프록시(VPN) — 계정마다 다른 출구로 나가게 한다.
+    #   atproto 는 내부에서 httpx 를 쓴다. 그 클라이언트의 transport 를 프록시용으로
+    #   바꿔치기한다. 내부 구조가 판마다 다를 수 있으므로 후보를 훑고, 못 찾으면
+    #   조용히 넘어간다 — 프록시 때문에 수집 자체가 죽으면 안 된다.
+    _PROXY = init_args.get("proxy") or ""
+
+    def _safe_proxy(u):
+        """로그에 자격증명을 남기지 않는다."""
+        if "@" not in u:
+            return u
+        return u.split("://")[0] + "://***@" + u.rsplit("@", 1)[1]
+
+    def _apply_proxy(client):
+        if not _PROXY:
+            return
+        try:
+            import httpx as _httpx
+            holder = getattr(client, "request", None) or getattr(client, "_request", None)
+            inner = getattr(holder, "_client", None) if holder is not None else None
+            if inner is None:
+                log("프록시: httpx 클라이언트를 찾지 못해 건너뜁니다")
+                return
+            inner._transport = _httpx.HTTPTransport(retries=3, proxy=_PROXY)
+            log(f"프록시 사용: {_safe_proxy(_PROXY)}")
+        except Exception as e:
+            log(f"프록시 적용 실패 (직접 연결로 계속): {e}")
+
     # Login with first account
     current_account_idx = 0
     clients = []
     for i, acct in enumerate(accounts):
         try:
             c = ATProtoClient()
+            _apply_proxy(c)
             c.login(acct["handle"], acct["password"])
             clients.append(c)
             log(f"Account {i+1} logged in: {acct['handle']}")
@@ -170,6 +198,7 @@ def main():
             try:
                 acct = accounts[current_account_idx]
                 clients[current_account_idx] = ATProtoClient()
+                _apply_proxy(clients[current_account_idx])
                 clients[current_account_idx].login(acct["handle"], acct["password"])
                 client = clients[current_account_idx]
                 log(f"🔄 계정 전환: {acct['handle']}")
@@ -185,6 +214,7 @@ def main():
             try:
                 acct = accounts[current_account_idx]
                 clients[current_account_idx] = ATProtoClient()
+                _apply_proxy(clients[current_account_idx])
                 clients[current_account_idx].login(acct["handle"], acct["password"])
                 client = clients[current_account_idx]
                 log("✅ 재로그인 성공! 수집 재개...")

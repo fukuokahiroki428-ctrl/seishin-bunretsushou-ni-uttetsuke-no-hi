@@ -7487,16 +7487,36 @@ void MiyoBackend::runBlueskyCollection(const QJsonObject &config)
     }
     QDir().mkpath(tempDir);
     enrichedConfig["tempDir"] = tempDir;
+
+    // ★ 프록시(VPN) — 트위터 쪽과 같은 방식. 이 수집이 쓸 계정에 붙은 출구를 찾는다.
+    //   계정마다 다른 IP 로 나가게 하는 것이 목적이므로 계정을 고른 뒤에 정한다.
+    QString proxyUrlForRun;
+    {
+        const QJsonArray accs = enrichedConfig["accounts"].toArray();
+        const QJsonObject acct = accs.isEmpty() ? enrichedConfig : accs.first().toObject();
+        const QJsonObject prof = proxyForAccount(acct);
+        if (!prof.isEmpty()) {
+            proxyUrlForRun = proxyUrl(prof);
+            log(QString("프록시 사용 — 프로필 '%1' (%2)")
+                    .arg(prof["name"].toString(), proxyUrl(prof, false)), "info", "bluesky");
+            QMutexLocker lock(&m_proxyPerTrackMutex);
+            const QString tk = config["_parallelKey"].toString();
+            m_proxyPerTrack[tk.isEmpty() ? QStringLiteral("*") : tk] = proxyUrlForRun;
+        }
+    }
+
     // 병렬 모드: trackKey 별 isRunning 참조 + thread-local collector
     const QString parallelKey = config["_parallelKey"].toString();
     if (!parallelKey.isEmpty()) {
         BlueskyCollector localCollector(this);
+        localCollector.setProxy(proxyUrlForRun);
         if (!m_isRunning.contains(parallelKey)) m_isRunning[parallelKey] = true;
         localCollector.collect(enrichedConfig, m_isRunning[parallelKey]);
         return;
     }
     delete m_blueskyCollector;
     m_blueskyCollector = new BlueskyCollector(this);
+    m_blueskyCollector->setProxy(proxyUrlForRun);
     m_blueskyCollector->collect(enrichedConfig, m_isRunning["bluesky"]);
 }
 
@@ -15908,6 +15928,26 @@ void MiyoBackend::runTumblrCollection(const QJsonObject &config)
     http.setTimeout(30000);
     http.setDownloadTimeout(120000);
     http.setRunFlag(&m_isRunning["tumblr"]);  // 중지 시 즉시 abort
+
+    // ★ 프록시(VPN) — 트위터·블루스카이와 같은 방식. 계정(=API 키)에 붙은 출구로 나간다.
+    {
+        const QJsonArray pAccs = config["accounts"].toArray();
+        const QJsonObject pAcct = pAccs.isEmpty() ? config : pAccs.first().toObject();
+        const QJsonObject prof = proxyForAccount(pAcct);
+        if (!prof.isEmpty()) {
+            http.setProxyUrl(proxyUrl(prof));
+            log(QString("프록시 사용 — 프로필 '%1' (%2)")
+                    .arg(prof["name"].toString(), proxyUrl(prof, false)), "info", "tumblr");
+            // Qt 에는 '프록시로 가는 길 자체를 TLS 로 감싸는' 프록시 종류가 없다
+            // (QNetworkProxy 는 HttpProxy / Socks5Proxy 뿐). HTTPS 로 골라 두셨어도
+            // 프록시까지 가는 구간은 평문이 된다. 조용히 낮추지 않고 알린다.
+            // 목적지(api.tumblr.com)와의 HTTPS 는 그대로 유지되므로 내용은 보호된다.
+            if (prof["type"].toString().toLower() == "https")
+                log("HTTPS 프록시는 Qt 가 지원하지 않아 HTTP 프록시로 연결합니다 — "
+                    "프록시로 가는 구간은 평문입니다. 감추려면 SOCKS5 를 쓰세요.",
+                    "warning", "tumblr");
+        }
+    }
 
     QString blogId = blogName + ".tumblr.com";
 

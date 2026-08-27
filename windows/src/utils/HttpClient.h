@@ -53,6 +53,10 @@ public:
 
     // Settings
     void setProxy(const QString &host, int port, QNetworkProxy::ProxyType type = QNetworkProxy::HttpProxy);
+    // ★ "socks5://아이디:비밀번호@호스트:포트" 한 줄로 받는다.
+    //   프록시 프로필이 이 형태로 저장돼 있어서, 호출부마다 쪼개 쓰지 않도록 여기서 푼다.
+    //   빈 문자열이면 프록시를 끈다(직접 연결).
+    void setProxyUrl(const QString &url);
     void clearProxy();
     void setTimeout(int msec) { m_timeout = msec; }
     void setDownloadTimeout(int msec) { m_downloadTimeout = msec; }
