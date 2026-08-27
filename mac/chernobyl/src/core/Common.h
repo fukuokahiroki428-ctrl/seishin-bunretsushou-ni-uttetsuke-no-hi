@@ -127,6 +127,24 @@ QString bundledResourcesDir();
 //   → 설치된 브라우저에서 실제 판을 읽어 만든다. 한 번 만들고 캐시한다.
 QString browserUserAgent();
 
+// ── 프록시(VPN) ────────────────────────────────────────────────────────────
+// ★ 이 앱은 요청을 다섯 갈래로 내보낸다 — Qt(HttpClient)·파이썬 데몬·yt-dlp·
+//   rclone·번들 크로미움. 프록시를 쓰기로 했으면 다섯이 전부 같은 길로 나가야 한다.
+//   하나라도 빠지면 같은 세션이 두 IP 에서 온 것처럼 보여 오히려 더 눈에 띈다.
+//   그래서 설정을 한 곳에 두고, 각 경로가 여기서 받아 간다.
+//
+//   자격증명은 명령줄로 넘기지 않는다(ps 로 남이 읽는다). 환경변수와 stdin 만 쓴다.
+void  setProxyConfig(bool enabled, const QString &host, int port,
+                     const QString &user, const QString &pass);
+bool  proxyEnabled();
+// "socks5://user:pass@host:port" — 없으면 빈 문자열.
+QString proxyUrl();
+// 크로미움처럼 '인증을 못 넣는' 프로그램용. 로컬 중계기를 띄우고 그 주소를 준다.
+// (인증 없는 127.0.0.1 → 중계기가 상위에 인증해 연결)
+QString proxyLocalRelayUrl();
+void  stopProxyRelay();
+
+
 bool writeFileAtomic(const QString &path, const QByteArray &bytes, QString *err = nullptr);
 
 QStringList bundledRequirements(bool stripPins = false);   // 번들 requirements.txt 의 패키지 목록(버전 고정 포함)

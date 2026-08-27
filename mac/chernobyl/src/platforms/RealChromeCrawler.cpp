@@ -233,6 +233,12 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
         QStringList args;
         args << QString("--remote-debugging-port=%1").arg(m_debugPort);
         if (!m_useUserProfile) {
+            // ★ 크로미움은 SOCKS5 의 사용자/비밀번호 인증을 지원하지 않는다.
+            //   그래서 인증이 붙은 프록시를 켜면 여기만 진짜 IP 로 새어 나갔다.
+            //   앱이 띄운 로컬 중계기(인증 없음 → 상위에 인증)를 가리킨다.
+            //   자격증명이 크로미움 명령줄에 실리지 않는 이점도 있다.
+            { const QString relay = Common::proxyLocalRelayUrl();
+              if (!relay.isEmpty()) args << "--proxy-server=" + relay; }
             args << "--user-data-dir=" + m_userDataDir;
             // ★ 시크릿 모드 — 임시 프로필이라도 incognito 윈도우로 띄움. 흔적 안 남음.
             //   CDP Network.setCookie 로 주입하는 토큰 (auth_token/ct0/sessionid 등) 은 정상 작동.

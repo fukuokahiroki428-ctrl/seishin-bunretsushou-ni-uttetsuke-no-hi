@@ -1,6 +1,7 @@
 #include "Common.h"
 #include <QLockFile>
 #include <QProcess>
+#include <QUrl>
 #include <QProcessEnvironment>
 #include <QTimeZone>
 #include <QLocale>
@@ -530,6 +531,116 @@ QString apiOverride(const QString &key, const QString &builtinDefault)
     return v.isEmpty() ? builtinDefault : v;
 }
 
+// ── 프록시(VPN) ────────────────────────────────────────────────────────────
+namespace {
+struct ProxyCfg {
+    bool enabled = false;
+    QString host, user, pass;
+    int port = 1080;
+};
+QMutex   g_proxyMutex;
+ProxyCfg g_proxy;
+QProcess *g_relay = nullptr;      // 크로미움용 로컬 중계기
+int       g_relayPort = 0;
+}
+
+void setProxyConfig(bool enabled, const QString &host, int port,
+                    const QString &user, const QString &pass)
+{
+    QMutexLocker lock(&g_proxyMutex);
+    const bool changed = (g_proxy.enabled != enabled) || (g_proxy.host != host)
+                      || (g_proxy.port != port) || (g_proxy.user != user)
+                      || (g_proxy.pass != pass);
+    g_proxy = {enabled, host, user, pass, port};
+    if (changed && g_relay) {     // 설정이 바뀌면 중계기를 다시 띄운다
+        g_relay->kill();
+        g_relay->waitForFinished(2000);
+        g_relay->deleteLater();
+        g_relay = nullptr;
+        g_relayPort = 0;
+    }
+}
+
+bool proxyEnabled()
+{
+    QMutexLocker lock(&g_proxyMutex);
+    return g_proxy.enabled && !g_proxy.host.isEmpty() && g_proxy.port > 0;
+}
+
+QString proxyUrl()
+{
+    QMutexLocker lock(&g_proxyMutex);
+    if (!g_proxy.enabled || g_proxy.host.isEmpty() || g_proxy.port <= 0) return QString();
+    QString auth;
+    if (!g_proxy.user.isEmpty()) {
+        auth = QUrl::toPercentEncoding(g_proxy.user) + ":"
+             + QUrl::toPercentEncoding(g_proxy.pass) + "@";
+    }
+    return QStringLiteral("socks5://%1%2:%3").arg(auth, g_proxy.host).arg(g_proxy.port);
+}
+
+QString proxyLocalRelayUrl()
+{
+    if (!proxyEnabled()) return QString();
+    {
+        QMutexLocker lock(&g_proxyMutex);
+        if (g_relay && g_relay->state() != QProcess::NotRunning && g_relayPort > 0)
+            return QStringLiteral("socks5://127.0.0.1:%1").arg(g_relayPort);
+    }
+
+    const QString script = activeToolScriptPath(QStringLiteral("socks_relay.py"));
+    const QString python = bundledPythonPath();
+    if (!QFileInfo::exists(script) || !QFileInfo::exists(python)) {
+        qWarning() << "[proxy] 중계기를 띄울 수 없습니다 — 스크립트나 파이썬이 없습니다";
+        return QString();
+    }
+
+    QMutexLocker lock(&g_proxyMutex);
+    auto *p = new QProcess();
+    p->setProcessEnvironment(QProcessEnvironment::systemEnvironment());
+    p->start(python, {script, QStringLiteral("--stdin-args")});
+    if (!p->waitForStarted(5000)) { p->deleteLater(); return QString(); }
+
+    // ★ 자격증명은 stdin 첫 줄로만 넘긴다 — 명령줄에 실으면 ps 로 남이 읽는다.
+    QJsonObject init{{"listen_port", 0},
+                     {"host", g_proxy.host}, {"port", g_proxy.port},
+                     {"user", g_proxy.user}, {"pass", g_proxy.pass}};
+    p->write(QJsonDocument(init).toJson(QJsonDocument::Compact) + "\n");
+    p->waitForBytesWritten(3000);
+
+    // 준비 신호를 기다린다.
+    int port = 0;
+    QByteArray acc;
+    while (p->waitForReadyRead(8000)) {
+        acc += p->readAllStandardOutput();
+        const int nl = acc.indexOf('\n');
+        if (nl < 0) continue;
+        const QJsonObject o = QJsonDocument::fromJson(acc.left(nl)).object();
+        if (o.value("ready").toBool()) { port = o.value("port").toInt(); }
+        break;
+    }
+    if (port <= 0) {
+        qWarning() << "[proxy] 중계기가 준비되지 않았습니다";
+        p->kill(); p->waitForFinished(2000); p->deleteLater();
+        return QString();
+    }
+    g_relay = p;
+    g_relayPort = port;
+    qInfo() << "[proxy] 로컬 중계기 준비 — 127.0.0.1:" << port;
+    return QStringLiteral("socks5://127.0.0.1:%1").arg(port);
+}
+
+void stopProxyRelay()
+{
+    QMutexLocker lock(&g_proxyMutex);
+    if (!g_relay) return;
+    g_relay->kill();
+    g_relay->waitForFinished(2000);
+    g_relay->deleteLater();
+    g_relay = nullptr;
+    g_relayPort = 0;
+}
+
 // 설치된 브라우저의 판을 읽는다. 없으면 번들 크로미움, 그것도 없으면 안전한 최신값.
 static QString detectChromeMajor()
 {
@@ -933,6 +1044,25 @@ QProcessEnvironment bundledProcessEnv()
     //   다시 조립하는데, 조직 폴더(Miyo/)를 없앤 뒤로 그 조립식이 틀려졌다.
     //   실제로 캐시가 다시 Application Support/Miyo/<앱>/ 에 쌓이고 있었다.
     //   → 조립하지 말고 완성된 경로를 넘긴다. 앱이 실제로 쓰는 그 폴더다.
+    // ★ 프록시를 켰으면 자식 프로세스도 전부 같은 길로 내보낸다.
+    //   httpx(파이썬 데몬)·yt-dlp·rclone 은 모두 이 표준 환경변수를 읽는다.
+    //   명령줄이 아니라 환경으로 주는 이유: 명령줄은 같은 기계의 아무 프로세스나
+    //   ps 로 읽지만, 환경은 같은 사용자만 볼 수 있다.
+    {
+        const QString pu = proxyUrl();
+        if (!pu.isEmpty()) {
+            env.insert("ALL_PROXY",   pu);
+            env.insert("all_proxy",   pu);
+            env.insert("HTTP_PROXY",  pu);
+            env.insert("HTTPS_PROXY", pu);
+            env.insert("http_proxy",  pu);
+            env.insert("https_proxy", pu);
+            // 로컬 통신까지 프록시로 보내면 데몬 제어가 끊긴다.
+            env.insert("NO_PROXY",    "127.0.0.1,localhost");
+            env.insert("no_proxy",    "127.0.0.1,localhost");
+        }
+    }
+
     env.insert("HANISHIKI_DATA_DIR",
                QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
     env.insert("HANISHIKI_APP_NAME", QStringLiteral(APP_NAME_ASCII));

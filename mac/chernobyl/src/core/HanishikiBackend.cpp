@@ -3807,6 +3807,15 @@ void HanishikiBackend::loadConfig()
     getTradCoverBase64();
 
     // Startup log (background)
+    // ★ 저장된 프록시 설정을 프로세스 전체에 반영한다. 이걸 빼먹으면 화면에는
+    //   "켬" 인데 실제로는 아무 데도 안 먹는다.
+    Common::setProxyConfig(m_config->proxyEnabled(), m_config->proxyHost(),
+                           m_config->proxyPort(), m_config->proxyUser(),
+                           m_config->proxyPass());
+    if (m_config->proxyEnabled())
+        log(QString("🌐 프록시 사용 중 — %1:%2").arg(m_config->proxyHost()).arg(m_config->proxyPort()),
+            "info", "settings");
+
     writeStartupLog();
 
     // 앱 시작 시 자동 유지보수
@@ -4627,6 +4636,95 @@ void HanishikiBackend::setApiOverride(const QString &key, const QString &value)
         log(QString("❌ %1 저장 실패 (쓰기 권한 확인)").arg(key), "error", "settings");
     }
     getApiOverrides();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 프록시(VPN) — 켜면 다섯 갈래가 전부 같은 길로 나간다.
+void HanishikiBackend::setProxyConfig(const QString &host, int port,
+                                      const QString &user, const QString &pass, bool enabled)
+{
+    m_config->setProxyEnabled(enabled);
+    m_config->setProxyHost(host.trimmed());
+    m_config->setProxyPort(port > 0 ? port : 1080);
+    m_config->setProxyUser(user);
+    m_config->setProxyPass(pass);
+    m_config->save();
+
+    Common::setProxyConfig(enabled, host.trimmed(), port > 0 ? port : 1080, user, pass);
+    if (!enabled) Common::stopProxyRelay();
+
+    log(enabled ? QString("🌐 프록시 켬 — %1:%2 (모든 요청이 이 길로 나갑니다)").arg(host).arg(port)
+                : QString("🌐 프록시 끔 — 요청이 이 컴퓨터의 회선으로 나갑니다"),
+        "info", "settings");
+    if (enabled)
+        log("먼저 '나가는 IP 확인' 을 눌러 실제로 바뀌었는지 보십시오.", "info", "settings");
+}
+
+void HanishikiBackend::getProxyConfig()
+{
+    QJsonObject o{
+        {"enabled", m_config->proxyEnabled()},
+        {"host",    m_config->proxyHost()},
+        {"port",    m_config->proxyPort()},
+        {"user",    m_config->proxyUser()},
+        {"hasPass", !m_config->proxyPass().isEmpty()},   // 비밀번호 자체는 화면으로 안 보낸다
+    };
+    runJs(QString("onProxyConfig(%1)").arg(QString::fromUtf8(
+        QJsonDocument(o).toJson(QJsonDocument::Compact))));
+}
+
+void HanishikiBackend::testProxy()
+{
+    log("나가는 IP 를 확인합니다…", "info", "settings");
+    QThread *t = QThread::create([this]() {
+        // ★ 두 갈래를 각각 본다. 하나만 보면 '반만 덮인' 상태를 못 잡는다.
+        auto ipVia = [](HttpClient &h) -> QString {
+            for (const char *u : {"https://ifconfig.me/ip", "https://icanhazip.com",
+                                  "https://checkip.amazonaws.com", "https://api.ipify.org"}) {
+                HttpResponse r = h.get(QString::fromLatin1(u));
+                const QString body = QString::fromUtf8(r.data).trimmed();
+                if (r.isOk() && !body.isEmpty() && body.size() < 64)
+                    return body;
+            }
+            return QString();
+        };
+        HttpClient viaProxy;                    // 생성자가 전역 프록시를 적용한다
+        const QString a = ipVia(viaProxy);
+
+        // 자식 프로세스(파이썬)도 같은 길로 나가는지 — 여기가 어긋나면 반만 덮인 것이다
+        QProcess py;
+        py.setProcessEnvironment(Common::bundledProcessEnv());
+        // ★ 주소를 하나만 쓰면 그 서비스가 죽거나 DNS 가 안 될 때 '프록시 고장' 으로
+        //   오인한다(실제로 api.ipify.org 가 이 기계에서 해석되지 않아 겪었다).
+        //   앱 쪽과 같은 목록을 같은 순서로 시도한다.
+        py.start(Common::bundledPythonPath(), {"-c",
+            "import httpx\n"
+            "for u in ('https://ifconfig.me/ip','https://icanhazip.com',"
+            "'https://checkip.amazonaws.com','https://api.ipify.org'):\n"
+            "    try:\n"
+            "        t = httpx.get(u, timeout=15).text.strip()\n"
+            "        if t and len(t) < 64:\n"
+            "            print(t); break\n"
+            "    except Exception:\n"
+            "        pass\n"});
+        py.waitForFinished(30000);
+        const QString b = QString::fromUtf8(py.readAllStandardOutput()).trimmed();
+
+        QMetaObject::invokeMethod(this, [this, a, b]() {
+            if (a.isEmpty() && b.isEmpty()) {
+                log("❌ 나가는 IP 를 확인하지 못했습니다 — 프록시 주소·자격증명을 보십시오.", "error", "settings");
+                return;
+            }
+            log(QString("앱 요청이 나가는 IP : %1").arg(a.isEmpty() ? "(확인 실패)" : a), "info", "settings");
+            log(QString("데몬이 나가는 IP   : %1").arg(b.isEmpty() ? "(확인 실패)" : b), "info", "settings");
+            if (!a.isEmpty() && !b.isEmpty() && a == b)
+                log("✅ 두 경로가 같은 IP 로 나갑니다.", "success", "settings");
+            else if (!a.isEmpty() && !b.isEmpty())
+                log("⚠ 두 경로의 IP 가 다릅니다 — 이 상태로 쓰면 프록시를 안 쓰는 것보다 위험합니다.", "error", "settings");
+        }, Qt::QueuedConnection);
+    });
+    connect(t, &QThread::finished, t, &QObject::deleteLater);
+    t->start();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -53,6 +53,7 @@ public:
                                   const QMap<QString, QString> &headers = {});
 
     // Settings
+    void applyGlobalProxy();   // Common 의 프록시 설정을 이 클라이언트에 적용
     void setProxy(const QString &host, int port, QNetworkProxy::ProxyType type = QNetworkProxy::HttpProxy);
     void clearProxy();
     void setTimeout(int msec) { m_timeout = msec; }

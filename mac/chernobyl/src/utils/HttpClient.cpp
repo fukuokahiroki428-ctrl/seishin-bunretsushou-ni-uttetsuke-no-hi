@@ -1,4 +1,6 @@
 #include "HttpClient.h"
+#include <QUrl>
+#include "core/Common.h"
 #include <QFileInfo>
 #include "FileHelper.h"
 #include <QTimer>
@@ -12,6 +14,10 @@ HttpClient::HttpClient(QObject *parent)
     : QObject(parent)
     , m_nam(new QNetworkAccessManager(nullptr))  // no parent — prevent double-delete race
 {
+    // ★ 프록시를 켜 두었으면 이 클라이언트도 그 길로 나간다.
+    //   여기가 빠지면 API 요청만 진짜 IP 로 새어 '한 세션 두 IP' 가 된다.
+    applyGlobalProxy();
+
     // Follow redirects automatically (critical for media CDN URLs)
     m_nam->setRedirectPolicy(QNetworkRequest::NoLessSafeRedirectPolicy);
 }
@@ -293,6 +299,16 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
     reply->deleteLater();
     m_lastRequestTime = QDateTime::currentMSecsSinceEpoch();
     return result;
+}
+
+void HttpClient::applyGlobalProxy()
+{
+    const QString u = Common::proxyUrl();
+    if (u.isEmpty()) { m_nam->setProxy(QNetworkProxy::NoProxy); return; }
+    const QUrl url(u);
+    QNetworkProxy p(QNetworkProxy::Socks5Proxy, url.host(), quint16(url.port(1080)));
+    if (!url.userName().isEmpty()) { p.setUser(url.userName()); p.setPassword(url.password()); }
+    m_nam->setProxy(p);
 }
 
 void HttpClient::setProxy(const QString &host, int port, QNetworkProxy::ProxyType type)
