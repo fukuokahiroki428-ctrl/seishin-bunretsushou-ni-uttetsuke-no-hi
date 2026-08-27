@@ -54,6 +54,7 @@ FetchContent_MakeAvailable(QXlsx)
 # Sources
 set(CORE_SOURCES
     src/core/MainWindow.cpp
+    src/core/TerminalWindow.cpp
     src/core/MiyoBackend.cpp
     src/core/PenBackend.cpp
     src/core/Common.cpp
@@ -62,6 +63,7 @@ set(CORE_SOURCES
 
 set(CORE_HEADERS
     src/core/MainWindow.h
+    src/core/TerminalWindow.h
     src/core/MiyoBackend.h
     src/core/PenBackend.h
     src/core/WorkerSignals.h

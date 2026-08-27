@@ -4,6 +4,10 @@
 #include "core/Config.h"
 #include <QCoreApplication>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
 #ifndef Q_OS_WIN
 #include <signal.h>
 #include <sys/types.h>
@@ -331,6 +335,20 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
         m_chromeProc = new QProcess(this);
         m_chromeProc->setProgram(chrome);
         m_chromeProc->setArguments(args);
+#ifdef Q_OS_WIN
+        // ★ 캐쉬 브라우저를 앞으로 내지 않는다.
+        //   수집 중에는 항목마다 창이 새로 뜨는데, 그때마다 포커스를 빼앗아
+        //   다른 일을 못 한다. 캐쉬는 CDP 로 모두 끝나므로 창이 보일 이유가 없다.
+        //   SW_SHOWMINNOACTIVE — 최소화로 띄고, 포커스도 주지 않는다.
+        //   ※ headless 로 안 간 이유: 로그인이 필요한 순간에는 사용자가 그 창에서
+        //     직접 로그인해야 한다(onLoginPause). 창은 있어야 하고, 다만 조용해야 한다.
+        m_chromeProc->setCreateProcessArgumentsModifier(
+            [](QProcess::CreateProcessArguments *a) {
+                if (!a->startupInfo) return;
+                a->startupInfo->dwFlags |= STARTF_USESHOWWINDOW;
+                a->startupInfo->wShowWindow = SW_SHOWMINNOACTIVE;
+            });
+#endif
         m_chromeProc->start();
         if (!m_chromeProc->waitForStarted(5000)) {
             if (m_backend) m_backend->log("Chrome 프로세스 시작 실패", "error", "crawl");

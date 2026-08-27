@@ -334,6 +334,8 @@ public:
     void closeAllTerminalLogs();
     QString m_terminalLogPath;
     QMap<QString, QString> m_terminalLogPaths;
+    // 수집 모니터 창 — 트랙마다 하나씩 띄우는 별도 창(cmd 아님).
+    QMap<QString, class TerminalWindow *> m_terminalWindows;
     QMap<QString, qint64> m_lastStatsUpdate;
 
     // Log batching — 로그 배치 처리로 UI 부하 감소

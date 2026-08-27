@@ -1159,12 +1159,9 @@
                 <div class="nav-item" onclick="switchTab('trad')">
                     <div class="nav-icon trad">F</div> trad
                 </div>
-                <!-- naikakukai 메뉴 숨김 — 요청에 따라 선택창(사이드바)에서만 제거.
-                     기능·탭 본문·백엔드 코드는 그대로 살아 있어 switchTab('naikakukai') 로 접근 가능하다.
                 <div class="nav-item" onclick="switchTab('naikakukai')">
                     <div class="nav-icon" style="background:#7c3aed">内</div> 内閣会
                 </div>
-                -->
             </div>
         </div>
 
@@ -7343,9 +7340,10 @@
         border-radius:5px; padding:5px 10px; font-size:11px; font-weight:600; cursor:pointer;
     }
     .login-pause-card button:hover { background:#264a36; }
+    /* ★ 여기도 box-shadow 대신 opacity — 같은 이유(리페인트 회피). */
     @keyframes loginPulse {
-        0%,100% { box-shadow:0 4px 16px rgba(0,0,0,.4); }
-        50% { box-shadow:0 4px 16px rgba(255,184,77,.4); }
+        0%,100% { opacity:1; }
+        50% { opacity:.72; }
     }
     </style>
     <div id="loginPauseFloat"></div>
@@ -7455,9 +7453,14 @@
     .sidebar-nav .nav-item[data-led="live"] .nav-icon::after,
     .sidebar-nav .nav-item[data-led="err"] .nav-icon::after{ content:'' !important; position:absolute !important; top:-3px !important; right:-3px !important;
       width:9px !important; height:9px !important; border-radius:50% !important; border:2px solid var(--bg) !important; box-sizing:border-box !important; }
-    .sidebar-nav .nav-item[data-led="live"] .nav-icon::after{ background:var(--green) !important; animation:navled 1.6s ease-in-out infinite !important; }
+    .sidebar-nav .nav-item[data-led="live"] .nav-icon::after{ background:var(--green) !important;
+      box-shadow:0 0 5px 0 var(--green) !important; will-change:opacity !important;
+      animation:navled 1.6s ease-in-out infinite !important; }
     .sidebar-nav .nav-item[data-led="err"] .nav-icon::after{ background:var(--red) !important; }
-    @keyframes navled{ 0%,100%{ box-shadow:0 0 5px 0 var(--green);} 50%{ box-shadow:0 0 1px 0 transparent;} }
+    /* ★ box-shadow 를 움직이면 매 프레임 다시 그린다(repaint).
+     점 두 개가 60fps 로 영원히 도는 통에 유휴 상태에서도 코어의 45% 를 태웠다(실측).
+     opacity 는 합성기가 처리해서 다시 그리지 않는다. 글로우는 고정값으로 남긴다. */
+    @keyframes navled{ 0%,100%{ opacity:1; } 50%{ opacity:.35; } }
     /* ═══ 콘솔 스테이지 2: 상단 상태바 (계기판) + 전역 활성 게이지 ═══ */
     .toolbar-title{ letter-spacing:-.2px !important; }
     .toolbar-stats{ gap:15px !important; }
@@ -7467,7 +7470,9 @@
       font-weight:600 !important; font-variant-numeric:tabular-nums !important; color:var(--text) !important; letter-spacing:0 !important; }
     .tb-global .tb-led{ width:6px !important; height:6px !important; border-radius:50% !important; display:inline-block !important;
       background:var(--text-tertiary) !important; opacity:.4 !important; }
-    .tb-global[data-on="1"] .tb-led{ background:var(--green) !important; opacity:1 !important; animation:navled 1.6s ease-in-out infinite !important; }
+    .tb-global[data-on="1"] .tb-led{ background:var(--green) !important;
+      box-shadow:0 0 5px 0 var(--green) !important; will-change:opacity !important;
+      animation:navled 1.6s ease-in-out infinite !important; }
     .tb-global[data-on="1"] .toolbar-stat-value{ color:var(--green) !important; }
     .toolbar #stat-status.badge{ font-family:ui-monospace,Menlo,monospace !important; font-size:9.5px !important; letter-spacing:.5px !important;
       text-transform:uppercase !important; padding:3px 10px !important; border-radius:999px !important; }
@@ -7501,5 +7506,6 @@
       if(document.readyState!=='loading') tag(); else document.addEventListener('DOMContentLoaded', tag);
     })();
     </script>
+
 </body>
 </html>

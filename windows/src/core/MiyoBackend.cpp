@@ -1,4 +1,5 @@
 #include "MiyoBackend.h"
+#include "TerminalWindow.h"
 #include "MainWindow.h"
 #include "Config.h"
 #include "utils/WebDavUploader.h"
@@ -439,6 +440,24 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     // 앱 종료 직전 hook — 자식 프로세스 정리
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
         killChildProcesses();
+    });
+
+    // ★ 신글 감시 자동 시작 — 감시 대상이 저장돼 있으면 앱을 켜는 순간 알아서 돈다.
+    //   예전엔 앱을 켤 때마다 内閣会 탭에 들어가 직접 시작해야 했다. 그러면 켜 두는 걸
+    //   잊은 동안 올라온 글을 놓친다 — 자동 감시의 의미가 없다.
+    //   설정에 대상이 없으면 아무 일도 하지 않는다(처음 쓰는 사람에게는 조용하다).
+    //   창이 다 뜨고 나서 시작하도록 이벤트 루프 한 바퀴 뒤로 미룬다.
+    QTimer::singleShot(0, this, [this]() {
+        if (!m_config) return;
+        const QJsonArray watches = m_config->naikakukaiWatches();
+        if (watches.isEmpty()) return;
+        QJsonObject cfg;
+        cfg["watches"] = watches;
+        cfg["intervalMin"] = m_config->naikakukaiInterval();
+        log(QString("신글 감시 자동 시작 — 대상 %1개, %2분마다")
+                .arg(watches.size()).arg(m_config->naikakukaiInterval()),
+            "info", "naikakukai");
+        startNaikakukai(QString::fromUtf8(QJsonDocument(cfg).toJson(QJsonDocument::Compact)));
     });
 }
 
@@ -3311,315 +3330,84 @@ QString MiyoBackend::currentThreadTrackKey() const
 // ═════════════════════════════════════════════════════════════════════════
 void MiyoBackend::openBackupTerminalLog()
 {
-    QString platform = "backup";
+    // 백업 진행도 앱 안 로그 창에 띄운다 — 수집 터미널과 같은 이유로 cmd 창을 쓰지 않는다.
+    const QString platform = "backup";
     QString scriptDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_" + platform;
     QDir().mkpath(scriptDir);
-    writeConsoleFontHelper(scriptDir);   // 콘솔 글꼴(CJK) 보조 스크립트
     QString logPath = scriptDir + "/.miyo_" + platform + "_log.txt";
     m_terminalLogPaths[platform] = logPath;
     m_terminalLogPath = logPath;
     QFile::remove(logPath);
-    // 시작 마커
     QFile f(logPath);
-    if (f.open(QIODevice::WriteOnly)) {
-        f.write("");
-        f.close();
-    }
+    if (f.open(QIODevice::WriteOnly)) f.close();
 
-#ifdef Q_OS_WIN
-    // Windows — PowerShell 증분 tail (UTF-8 + ANSI strip).
-    //   옛 방식(:loop/cls/Get-Content -Tail 30)은 (1) Get-Content 가 UTF-8 로그를 cp949 로 읽어
-    //   한글 mojibake, (2) ANSI 색코드(\033[..m)가 콘솔에서 해석 안 돼 "[0m" 날것 노출,
-    //   (3) cls 전체 재그리기 렉. → 수집 터미널(openTerminalLog)과 동일한 증분 tail 로 교체:
-    //   UTF-8 StreamReader 로 신규 바이트만 읽고, ANSI 색코드 제거 후 출력. [DONE] 만나면 종료.
-    QString scriptPath = scriptDir + "/miyo_backup_tail.bat";
-    QFile script(scriptPath);
-    if (script.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QString nativeLog = QDir::toNativeSeparators(logPath);
-        // ★ PowerShell 작은따옴표 문자열 안의 ' 는 '' 로 이스케이프.
-        //   Windows 경로에는 작은따옴표가 들어갈 수 있고(예: C:\\Users\\O'Brien\\...),
-        //   그대로 넣으면 문자열이 조기 종료돼 스크립트가 깨지거나 뒤가 코드로 해석된다.
-        nativeLog.replace("'", "''");
-        QString content;
-        content += "@echo off\r\n";
-        content += "chcp 65001 >nul\r\n";
-        content += "powershell -NoProfile -ExecutionPolicy Bypass -File \"" +
-                   QDir::toNativeSeparators(scriptDir + "/miyo_console_font.ps1") +
-                   "\" >nul 2>&1\r\n";
-        content += "title Predormition Backup Monitor\r\n";
-        content += "echo ===============================================\r\n";
-        content += "echo   📦 Predormition 백업 진행 모니터\r\n";
-        content += "echo ===============================================\r\n";
-        content += "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
-                   "$p='" + nativeLog + "'; $pos=0; $esc=[char]27;"
-                   " [Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
-                   " $enc=[System.Text.Encoding]::UTF8;"
-                   " while($true){ try{"
-                   " $fs=[System.IO.File]::Open($p,'Open','Read','ReadWrite');"
-                   " [void]$fs.Seek($pos,'Begin');"
-                   " $sr=New-Object System.IO.StreamReader($fs,$enc);"
-                   " $n=$sr.ReadToEnd(); $pos=$fs.Position; $sr.Dispose(); $fs.Dispose();"
-                   " if($n){ $n=$n -replace ($esc+'\\[[0-9;]*m'),'';"
-                   " [Console]::Out.Write($n); [Console]::Out.Flush();"
-                   " if($n -match '\\[DONE\\]'){break} } }catch{}"
-                   " Start-Sleep -Milliseconds 150 }\"\r\n";
-        content += "echo.\r\n";
-        content += "echo 백업 완료 — 터미널을 닫아도 됩니다.\r\n";
-        content += "pause >nul\r\n";
-        script.write(content.toUtf8());
-        script.close();
-    }
-    launchChildConsole(scriptPath);  // 자체 콘솔 창 + Predormition 자식 프로세스 (nested)
-#else
-    // macOS — 컬러 + 스피너 애니메이션, 150ms refresh
-    QString scriptPath = scriptDir + "/miyo_backup_tail.command";
-    QFile script(scriptPath);
-    if (script.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QString content;
-        content += "#!/bin/bash\n";
-        content += "LOG='" + logPath + "'\n";
-        content += "BOLD='\\033[1m'\n";
-        content += "GREEN='\\033[32m'\n";
-        content += "YELLOW='\\033[33m'\n";
-        content += "CYAN='\\033[36m'\n";
-        content += "MAGENTA='\\033[35m'\n";
-        content += "GRAY='\\033[90m'\n";
-        content += "RESET='\\033[0m'\n";
-        content += "SPINNER='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'\n";
-        content += "sp_i=0\n";
-        // 터미널 사이즈 (가능하면)
-        // ★ 모니터 종료(Ctrl+C / 창 닫기 / 정상 exit) 시 STOP sentinel 만들기 → 앱 워커가 polling 으로 감지 후 백업 중지
-        content += "trap 'touch \"${LOG}.STOP\" 2>/dev/null; exit 0' SIGINT SIGTERM HUP EXIT\n";
-        content += "while true; do\n";
-        content += "  clear\n";
-        content += "  ROWS=$(tput lines 2>/dev/null || echo 40)\n";
-        content += "  TAIL_N=$((ROWS - 8))\n";
-        content += "  echo -e \"${BOLD}${CYAN}═══════════════════════════════════════════════════════════════${RESET}\"\n";
-        content += "  echo -e \"${BOLD}${CYAN}  📦 Predormition 백업 진행 모니터  ${GRAY}$(date '+%H:%M:%S')${RESET}\"\n";
-        content += "  echo -e \"${BOLD}${CYAN}═══════════════════════════════════════════════════════════════${RESET}\"\n";
-        content += "  if [ -f \"$LOG\" ]; then\n";
-        content += "    tail -n $TAIL_N \"$LOG\"\n";
-        content += "  fi\n";
-        content += "  if grep -q '\\[DONE\\]' \"$LOG\" 2>/dev/null; then\n";
-        content += "    echo \"\"\n";
-        content += "    echo -e \"${BOLD}${GREEN}✅ 백업 완료 — 아무 키나 누르면 종료${RESET}\"\n";
-        content += "    read -n 1\n";
-        content += "    exit 0\n";
-        content += "  fi\n";
-        content += "  sp=${SPINNER:$sp_i:1}\n";
-        content += "  echo \"\"\n";
-        content += "  echo -e \"${CYAN}${BOLD}${sp}${RESET} ${MAGENTA}백업 진행 중...${RESET} ${YELLOW}(Ctrl+C 또는 창 닫기 = 백업 중지)${RESET}\"\n";
-        content += "  sp_i=$(( (sp_i + 1) % 10 ))\n";
-        content += "  sleep 0.15\n";
-        content += "done\n";
-        script.write(content.toUtf8());
-        script.close();
-        script.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner |
-                              QFileDevice::ReadGroup | QFileDevice::ExeGroup |
-                              QFileDevice::ReadOther | QFileDevice::ExeOther);
-        QProcess::execute("/bin/chmod", {"+x", scriptPath});
-        QProcess::execute("/usr/bin/xattr", {"-c", scriptPath});
-    }
-    bool opened = QProcess::startDetached("/usr/bin/open", {"-a", "Terminal.app", scriptPath});
-    if (!opened) opened = QProcess::startDetached("/usr/bin/open", {scriptPath});
-    if (!opened) {
-        QString esc = QString(scriptPath).replace("\\", "\\\\").replace("\"", "\\\"");
-        QString appleScript = QString(
-            "tell application \"Terminal\"\n"
-            "  activate\n"
-            "  do script \"clear; '%1'\"\n"
-            "end tell"
-        ).arg(esc);
-        QProcess::startDetached("/usr/bin/osascript", {"-e", appleScript});
-    }
-#endif
+    runJs(QString("if(window.onTerminalOpen)onTerminalOpen(%1,%2);")
+              .arg(Common::jsStringLiteral(platform), Common::jsStringLiteral(QString())));
 }
 
 void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePath)
 {
-    // ★ .command 는 로컬 temp 에 (NAS/외장 마운트는 POSIX 실행권한 보존 X)
-    //   사용자 tempDir 이 NAS 면 .command 실행 실패. 로컬 /tmp 사용.
-    // ★ 트랙마다 터미널 하나 — 맥과 같다.
-    //   예전엔 베이스 플랫폼(twitter)으로 묶어 터미널 1개만 띄우고 twitter#0/#1 이 같은 로그에
-    //   같이 썼다. 그러면 두 트랙의 줄이 한 창에서 서로 끼어들어 읽을 수가 없다. 실제로 이렇게 나온다:
-    //       수집 시작 (twitter#0)
-    //       ━━━ [TWITTER] 사용자 선택 옵션 ━━━
-    //       수집 시작 (twitter#1)
-    //       ━━━ [TWITTER] 사용자 선택 옵션 ━━━
-    //         ☑ ON : downloadMedia, …      ← 어느 트랙 것인지 알 수 없다
-    //         ☑ ON : downloadMedia, …
-    //   맥에는 이 통합이 없다(m_openTerminalBases 자체가 없다). 윈도우로 옮기며 들어간 것이고,
-    //   창 하나를 아끼는 대신 로그를 못 읽게 만들었다. 맥 방식으로 되돌린다.
+    // ★ 별도 cmd 창을 띄우지 않는다. 앱 안에 로그 창을 만든다.
+    //   콘솔 창은 우리 규칙이 아니라 conhost 의 규칙을 따른다 — 그래서 계속 싸웠다.
+    //     · 글꼴: 기본이 Consolas 라 한글·일본어 글리프가 없어 전부 '?' 로 그려졌다.
+    //       창마다 SetCurrentConsoleFontEx 로 바꿔야 했고, 구조체 크기가 4바이트만 틀려도
+    //       ERROR_INVALID_PARAMETER 로 조용히 실패했다.
+    //     · 갱신: 파일을 폴링해서 읽는 구조라 새 줄이 최대 폴링 간격만큼 늦게 나타났다.
+    //     · 프로세스: 트랙마다 cmd + conhost 가 하나씩 붙었다.
+    //   앱 안에서 그리면 셋 다 사라진다 — 글꼴은 앱 것을 쓰고, 줄은 생기는 즉시 도착하고,
+    //   프로세스는 늘지 않는다.
+    //
+    //   파일 기록은 남긴다. 앱이 죽은 뒤에도 무슨 일이 있었는지 봐야 한다.
     QString scriptDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_" + platform;
     QDir().mkpath(scriptDir);
-    writeConsoleFontHelper(scriptDir);   // 콘솔 글꼴(CJK) 보조 스크립트
 
     QString logPath = scriptDir + "/.miyo_" + platform + "_log.txt";
     m_terminalLogPaths[platform] = logPath;
     m_terminalLogPath = logPath;  // backward compat
     QFile::remove(logPath);
 
-    // Create the log file
-    QFile f(m_terminalLogPath);
-    if (!f.open(QIODevice::WriteOnly)) return;
-    f.write("=========================================\n");
-    f.write(QString("  Predormition - %1\n").arg(platform.toUpper()).toUtf8());
-    f.write("=========================================\n\n");
-    f.close();
-
-#ifdef Q_OS_WIN
-    // Windows: create a .bat script that tails the log file
-    QString scriptPath = scriptDir + "/miyo_" + platform + "_tail.bat";
-    QFile script(scriptPath);
-    if (script.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QString content;
-        content += "@echo off\r\n";
-        content += "chcp 65001 >nul\r\n";
-        content += "powershell -NoProfile -ExecutionPolicy Bypass -File \"" +
-                   QDir::toNativeSeparators(scriptDir + "/miyo_console_font.ps1") +
-                   "\" >nul 2>&1\r\n";
-        content += "title Predormition - " + platform.toUpper() + "\r\n";
-        // ★ 렉 방지 — 옛 방식은 `:loop / cls / type 전체파일 / timeout 2 / goto loop` 라
-        //   로그가 길어지면 매 2초 전체 파일을 다시 그려(콘솔 full clear+redraw) CPU/GPU 부담 → 렉.
-        //   PowerShell `Get-Content -Wait -Tail` 로 교체: 마지막 N줄만 띄우고 이후 신규 라인만 append
-        //   (전체 재그리기/재읽기 X) → 가볍고 실시간. [DONE] 라인 만나면 종료. (macOS 의 tail -f 와 동등)
-        //   ※ Get-Content -Wait 는 파일을 잡아 앱의 append 쓰기를 막을 수 있어(라인 누락) 사용 X.
-        //   수동 증분 tail: FileShare.ReadWrite 로 열어(앱 동시 쓰기 허용) 새 바이트만 읽고 즉시 닫음.
-        QString nativeLog = QDir::toNativeSeparators(logPath);
-        content += "powershell -NoProfile -ExecutionPolicy Bypass -Command \""
-                   "$p='" + nativeLog + "'; $pos=0; $esc=[char]27;"
-                   " [Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
-                   " $enc=[System.Text.Encoding]::UTF8;"
-                   " while($true){ try{"
-                   " $fs=[System.IO.File]::Open($p,'Open','Read','ReadWrite');"
-                   " [void]$fs.Seek($pos,'Begin');"
-                   " $sr=New-Object System.IO.StreamReader($fs,$enc);"
-                   " $n=$sr.ReadToEnd(); $pos=$fs.Position; $sr.Dispose(); $fs.Dispose();"
-                   " if($n){ $n=$n -replace ($esc+'\\[[0-9;]*m'),'';"
-                   " [Console]::Out.Write($n); [Console]::Out.Flush();"
-                   " if($n -match '\\[DONE\\]'){break} } }catch{}"
-                   " Start-Sleep -Milliseconds 150 }\"\r\n";
-        content += "echo.\r\n";
-        content += "echo 터미널을 닫아도 됩니다.\r\n";
-        content += "pause >nul\r\n";
-        script.write(content.toUtf8());
-        script.close();
-    }
-    launchChildConsole(scriptPath);  // 자체 콘솔 창 + Predormition 자식 프로세스 (nested)
-#else
-    // macOS/Linux: 단순 tail -f — kernel inotify/kqueue 사용, CPU 거의 0
-    // ★ 옛 애니메이션 (150ms clear+refresh) 은 CPU/메모리 부담 큼 → 사용자 요청으로 단순화
-    QString scriptPath = scriptDir + "/miyo_" + platform + "_tail.command";
-    QFile script(scriptPath);
-    if (script.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QString content;
-        content += "#!/bin/bash\n";
-        content += "clear\n";
-        content += "cat '" + logPath + "'\n";
-        content += "tail -f -n +0 '" + logPath + "' &\n";
-        content += "TAIL_PID=$!\n";
-        content += "# Wait for DONE marker\n";
-        content += "while true; do\n";
-        content += "  if grep -q '\\[DONE\\]' '" + logPath + "' 2>/dev/null; then\n";
-        content += "    kill $TAIL_PID 2>/dev/null\n";
-        content += "    echo ''\n";
-        content += "    echo '터미널을 닫아도 됩니다.'\n";
-        content += "    read -n 1\n";
-        content += "    exit 0\n";
-        content += "  fi\n";
-        content += "  sleep 1\n";
-        content += "done\n";
-        script.write(content.toUtf8());
-        script.close();
-        script.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner |
-                              QFileDevice::ReadGroup | QFileDevice::ExeGroup |
-                              QFileDevice::ReadOther | QFileDevice::ExeOther);
-        // ★ NAS/외장 fallback — chmod 직접 + quarantine 제거
-        QProcess::execute("/bin/chmod", {"+x", scriptPath});
-        QProcess::execute("/usr/bin/xattr", {"-d", "com.apple.quarantine", scriptPath});
-    }
-    // Terminal.app으로 직접 열기 — 여러 방법 시도 (TCC/quarantine/provenance/sandbox 문제 회피)
-
-    // 1) 실행을 막을 수 있는 확장 속성들 모두 제거
-    QProcess::execute("xattr", {"-c", scriptPath});  // 모든 xattr 제거가 가장 확실
-
-    // 2) open -a Terminal.app 으로 시도
-    bool opened = QProcess::startDetached("/usr/bin/open", {"-a", "Terminal.app", scriptPath});
-
-    // 3) 실패하면 기본 핸들러로 (.command는 Terminal이 기본값)
-    if (!opened) {
-        opened = QProcess::startDetached("/usr/bin/open", {scriptPath});
+    QFile f(logPath);
+    if (f.open(QIODevice::WriteOnly)) {
+        f.write("=========================================\n");
+        f.write(QString("  Predormition - %1\n").arg(platform.toUpper()).toUtf8());
+        f.write("=========================================\n\n");
+        f.close();
     }
 
-    // 4) 그래도 실패하면 osascript 로 Terminal 에 직접 명령
-    if (!opened) {
-        QString esc = QString(scriptPath).replace("\\", "\\\\").replace("\"", "\\\"");
-        QString appleScript = QString(
-            "tell application \"Terminal\"\n"
-            "  activate\n"
-            "  do script \"clear; '%1'; exit\"\n"
-            "end tell"
-        ).arg(esc);
-        opened = QProcess::startDetached("/usr/bin/osascript", {"-e", appleScript});
-    }
-
-    if (!opened) {
-        qWarning() << "[openTerminalLog] Failed to launch Terminal for" << platform << "script:" << scriptPath;
-    }
-
-    // ★ STOP sentinel 워치독 — 사용자가 터미널에서 Ctrl+C / 창 닫기 시 platform 수집 중지
-    //   매 500ms 폴링, sentinel 발견 → m_isRunning[platform] = false → collector 자연 종료
-    QString stopSentinel = logPath + ".STOP";
-    QFile::remove(stopSentinel);  // stale 정리
-    QThread *watchdog = QThread::create([this, platform, stopSentinel]() {
-        while (m_isRunning.value(platform, false)) {
-            if (QFile::exists(stopSentinel)) {
-                QFile::remove(stopSentinel);
-                QMetaObject::invokeMethod(this, [this, platform]() {
-                    log(QString("🛑 터미널 종료 → [%1] 수집 중지").arg(platform), "warning", platform);
-                    {
-                        QMutexLocker lock(&m_runningMutex);
-                        // platform + 모든 trackKey (병렬 모드) 다 중지
-                        for (auto it = m_isRunning.begin(); it != m_isRunning.end(); ++it) {
-                            if (it.key() == platform || it.key().startsWith(platform + "#")) {
-                                it.value() = false;
-                            }
-                            m_stopRequested[it.key()] = true;
-                        }
-                    }
-                }, Qt::QueuedConnection);
-                break;
-            }
-            QThread::msleep(500);
-        }
-    });
-    connect(watchdog, &QThread::finished, watchdog, &QThread::deleteLater);
-    watchdog->start();
-#endif
+    // 창은 메인 스레드에서만 만든다 — 수집은 워커 스레드에서 불러온다.
+    QMetaObject::invokeMethod(this, [this, platform, savePath]() {
+        TerminalWindow *&w = m_terminalWindows[platform];
+        if (!w) w = new TerminalWindow(platform, savePath);
+        w->show();
+        w->raise();
+    }, Qt::QueuedConnection);
 }
 
 void MiyoBackend::writeTerminalLog(const QString &message, const QString &platform)
 {
-    // 1) 현재 스레드가 trackKey 등록했으면 (병렬 모드) 그 키의 터미널 파일에만 write
-    QString trackKey = currentThreadTrackKey();
-    if (!trackKey.isEmpty() && m_terminalLogPaths.contains(trackKey)) {
-        QFile f(m_terminalLogPaths[trackKey]);
-        if (f.open(QIODevice::Append | QIODevice::Text)) {
-            f.write((message + "\n").toUtf8());
-            f.close();
-        }
-        return;
+    // 어느 트랙의 줄인지 정한다 — 병렬이면 trackKey("twitter#0"), 아니면 platform.
+    QString key = currentThreadTrackKey();
+    if (key.isEmpty() || !m_terminalLogPaths.contains(key)) {
+        //   platform 이 비었으면 어디로 보낼지 알 수 없다. 예전엔 마지막에 열린 터미널로
+        //   흘려보내서 백업 창에 youtube 로그가 섞였다. 그 폴백은 두지 않는다.
+        if (platform.isEmpty() || !m_terminalLogPaths.contains(platform)) return;
+        key = platform;
     }
-    // 2) platform 자체로 매핑된 파일 — platform 명시 안 됐으면 그냥 skip (★ 섞임 방지)
-    //   이전엔 m_terminalLogPath 로 fallback → 마지막 열린 터미널이 모든 platform-less 호출 받아서
-    //   백업 터미널에 youtube/yt-dlp 등이 섞임. 그 fallback 제거.
-    if (platform.isEmpty()) return;
-    if (!m_terminalLogPaths.contains(platform)) return;
-    QFile f(m_terminalLogPaths[platform]);
+
+    QFile f(m_terminalLogPaths[key]);
     if (f.open(QIODevice::Append | QIODevice::Text)) {
         f.write((message + "\n").toUtf8());
         f.close();
     }
+
+    // ★ 앱 안 로그 창으로 바로 보낸다 — 파일을 폴링하지 않으므로 지연이 없다.
+    //   ANSI 색코드는 여기서 뗀다. 콘솔이 아니면 해석되지 않고 "[0m" 같은 날것이 보인다.
+    static const QRegularExpression ansiEsc(QStringLiteral("\x1B\[[0-9;]*m"));
+    QString clean = message;
+    clean.remove(ansiEsc);
+    QMetaObject::invokeMethod(this, [this, key, clean]() {
+        if (TerminalWindow *w = m_terminalWindows.value(key, nullptr)) w->appendLine(clean);
+    }, Qt::QueuedConnection);
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -3676,6 +3464,11 @@ void MiyoBackend::closeTerminalLog(const QString &platform)
         path = m_terminalLogPath;
         m_terminalLogPath.clear();
     }
+    // 앱 안 로그 창에도 끝났다고 알린다 — 창은 닫지 않는다. 끝난 뒤에도 읽을 수 있어야 한다.
+    if (!platform.isEmpty())
+        QMetaObject::invokeMethod(this, [this, platform]() {
+            if (TerminalWindow *w = m_terminalWindows.value(platform, nullptr)) w->markDone();
+        }, Qt::QueuedConnection);
     if (path.isEmpty()) return;
     QFile f(path);
     if (f.open(QIODevice::Append | QIODevice::Text)) {
