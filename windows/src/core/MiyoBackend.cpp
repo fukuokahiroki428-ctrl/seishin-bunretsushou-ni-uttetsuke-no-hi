@@ -647,6 +647,7 @@ void MiyoBackend::getProxyProfiles()
     for (const QJsonValue &v : src) {
         QJsonObject p = v.toObject();
         QJsonObject safe;
+        safe["provider"] = p["provider"];   // 업체 분류 — 목록을 묶어 보여주는 데 쓴다
         safe["name"] = p["name"];
         safe["type"] = p["type"];
         safe["host"] = p["host"];

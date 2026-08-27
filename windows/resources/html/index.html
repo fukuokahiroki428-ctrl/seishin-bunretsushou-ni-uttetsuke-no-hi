@@ -3090,6 +3090,14 @@
                                     (비워 두면 기존 값을 그대로 둡니다).
                                 </div>
                                 <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+                                    <select class="nt-input" id="proxy-provider" onchange="applyProxyPreset()" style="flex:0 0 150px;height:32px;">
+                                        <option value="custom">직접 입력</option>
+                                        <option value="nordvpn">NordVPN (SOCKS5)</option>
+                                        <option value="pia">PIA (SOCKS5)</option>
+                                        <option value="expressvpn">ExpressVPN</option>
+                                        <option value="other-socks">기타 SOCKS5</option>
+                                        <option value="other-http">기타 HTTP(S)</option>
+                                    </select>
                                     <input type="text" class="nt-input" id="proxy-name" placeholder="이름 — 예: 일본1" style="flex:0 0 130px;height:32px;">
                                     <select class="nt-input" id="proxy-type" style="flex:0 0 110px;height:32px;">
                                         <option value="socks5">SOCKS5</option>
@@ -3103,6 +3111,7 @@
                                     <button class="nt-btn ok" onclick="addProxyProfile()">추가</button>
                                     <button class="nt-btn" onclick="testProxyProfile()">연결 시험</button>
                                 </div>
+                                <div id="proxy-provider-note" style="margin-top:8px;font-size:12px;color:var(--text-secondary);"></div>
                                 <div id="proxy-test-result" style="margin-top:8px;font-size:12px;"></div>
                                 <div id="proxy-list" style="margin-top:10px;font-size:12px;"></div>
                             </div>
@@ -6104,6 +6113,61 @@
             if (el) el.textContent = text.replace(/\\n/g, '\n');
         }
 
+
+        // ── 업체별 프리셋 ────────────────────────────────────────────────
+        //   업체마다 '계정마다 다른 출구' 를 지원하는 방식이 다르다. 프록시를 따로
+        //   내주는 곳만 이 앱에서 계정별로 나눌 수 있다. VPN 앱만 있는 곳은 기계
+        //   전체가 한 경로로 나가므로 계정별 분리가 원리적으로 불가능하다.
+        var PROXY_PRESETS = {
+            'custom': {
+                type: '', port: '', hostHint: '주소',
+                note: ''
+            },
+            'nordvpn': {
+                type: 'socks5', port: 1080,
+                hostHint: '예: nl.socks.nordhold.net',
+                note: '<b>NordVPN — SOCKS5 지원.</b> 계정 비밀번호가 아니라 '
+                    + '<b>전용 서비스 자격증명</b>을 씁니다. Nord 계정 페이지의 '
+                    + 'NordVPN → 수동 설정(Manual setup) 에서 서비스 자격증명을 확인해 넣으세요. '
+                    + '서버 주소는 Nord 문서의 SOCKS5 서버 목록에서 고릅니다. 포트는 1080.'
+            },
+            'pia': {
+                type: 'socks5', port: 1080,
+                hostHint: 'PIA 문서의 SOCKS5 서버 주소',
+                note: '<b>PIA — SOCKS5 지원.</b> 계정 페이지에서 <b>SOCKS5 전용 아이디/비밀번호를 따로 생성</b>합니다. '
+                    + '계정 로그인 정보와 다릅니다. 서버 주소와 포트는 생성 화면에 함께 나옵니다.'
+            },
+            'expressvpn': {
+                type: '', port: '',
+                hostHint: '— 프록시 주소 없음 —',
+                note: '<b>ExpressVPN 은 이 방식으로 계정별 분리가 안 됩니다.</b> '
+                    + '사용자에게 독립 SOCKS5/HTTP 프록시 주소를 내주지 않기 때문입니다. '
+                    + 'VPN 앱을 켜면 기계 전체가 한 경로로 나가므로 계정마다 다른 IP 를 줄 수 없습니다. '
+                    + '계정별로 나누시려면 프록시를 내주는 업체(NordVPN·PIA 등)나 별도 프록시 서비스를 쓰셔야 합니다.'
+            },
+            'other-socks': {
+                type: 'socks5', port: 1080,
+                hostHint: '프록시 주소',
+                note: '<b>SOCKS5</b> — 인증이 필요하면 아이디/비밀번호를 넣으세요. '
+                    + '수집(데몬)과 캡쳐 브라우저 모두 이 출구로 나갑니다.'
+            },
+            'other-http': {
+                type: 'http', port: 8080,
+                hostHint: '프록시 주소',
+                note: '<b>HTTP(S) 프록시</b> — 인증이 필요하면 아이디/비밀번호를 넣으세요. '
+                    + 'HTTPS 로 감싸는 프록시면 종류를 HTTPS 로 고르세요.'
+            }
+        };
+        function applyProxyPreset(){
+            var k = document.getElementById('proxy-provider').value;
+            var p = PROXY_PRESETS[k] || PROXY_PRESETS['custom'];
+            if (p.type) document.getElementById('proxy-type').value = p.type;
+            if (p.port !== '') document.getElementById('proxy-port').value = p.port;
+            document.getElementById('proxy-host').placeholder = p.hostHint;
+            var note = document.getElementById('proxy-provider-note');
+            if (note) note.innerHTML = p.note || '';
+        }
+
         // ── 프록시(VPN) 프로필 ────────────────────────────────────────────
         //   계정마다 다른 출구로 나가게 하는 설정. 백엔드가 비밀번호를 화면으로
         //   돌려주지 않으므로(hasPass 만 온다) 여기서도 들고 있지 않는다.
@@ -6116,14 +6180,31 @@
                 if (!_proxyProfiles.length) {
                     box.innerHTML = '<span style="color:var(--text-tertiary)">등록된 프록시가 없습니다.</span>';
                 } else {
-                    box.innerHTML = _proxyProfiles.map(function(p, i){
-                        return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border-color);">'
-                             + '<b style="min-width:110px;">' + p.name + '</b>'
-                             + '<span style="color:var(--text-secondary);">' + p.type + '://' + p.host + ':' + p.port + '</span>'
-                             + '<span style="color:var(--text-tertiary);">' + (p.user || '(인증 없음)')
-                             + (p.hasPass ? ' · 비밀번호 저장됨' : '') + '</span>'
-                             + '<button class="nt-btn" style="margin-left:auto;" onclick="removeProxyProfile(' + i + ')">삭제</button>'
-                             + '</div>';
+                    // 업체 → 연결 방식 순으로 묶어 보여준다. 어떤 출구가 몇 개인지 한눈에 보이게.
+                    var LABEL = {nordvpn:'NordVPN', pia:'PIA', expressvpn:'ExpressVPN',
+                                 'other-socks':'기타 SOCKS5', 'other-http':'기타 HTTP(S)', custom:'직접 입력'};
+                    var groups = {};
+                    _proxyProfiles.forEach(function(p, i){
+                        var g = LABEL[p.provider] || LABEL.custom;
+                        (groups[g] = groups[g] || []).push({p: p, i: i});
+                    });
+                    box.innerHTML = Object.keys(groups).sort().map(function(g){
+                        var rows = groups[g].sort(function(a, b){
+                            return (a.p.type || '').localeCompare(b.p.type || '');
+                        }).map(function(e){
+                            var p = e.p;
+                            return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0 5px 12px;border-bottom:1px solid var(--border-color);">'
+                                 + '<b style="min-width:110px;">' + p.name + '</b>'
+                                 + '<span style="min-width:70px;color:var(--accent);">' + (p.type || '?').toUpperCase() + '</span>'
+                                 + '<span style="color:var(--text-secondary);">' + p.host + ':' + p.port + '</span>'
+                                 + '<span style="color:var(--text-tertiary);">' + (p.user || '(인증 없음)')
+                                 + (p.hasPass ? ' · 비밀번호 저장됨' : '') + '</span>'
+                                 + '<button class="nt-btn" style="margin-left:auto;" onclick="removeProxyProfile(' + e.i + ')">삭제</button>'
+                                 + '</div>';
+                        }).join('');
+                        return '<div style="margin-top:8px;font-weight:600;color:var(--text-secondary);">'
+                             + g + ' <span style="font-weight:400;color:var(--text-tertiary);">('
+                             + groups[g].length + ')</span></div>' + rows;
                     }).join('');
                 }
             }
@@ -6137,6 +6218,7 @@
         }
         function _proxyFromForm(){
             return {
+                provider: document.getElementById('proxy-provider').value,
                 name: (document.getElementById('proxy-name').value || '').trim(),
                 type: document.getElementById('proxy-type').value,
                 host: (document.getElementById('proxy-host').value || '').trim(),
@@ -6150,7 +6232,7 @@
             if (!p.name || !p.host || !p.port) { alert('이름 · 주소 · 포트는 필요합니다.'); return; }
             // 기존 항목은 pass 를 빈 값으로 보낸다 = 백엔드에서 '안 바꿈' 으로 처리된다.
             var next = _proxyProfiles.filter(function(x){ return x.name !== p.name; }).map(function(x){
-                return { name:x.name, type:x.type, host:x.host, port:x.port, user:x.user, pass:'' };
+                return { provider:x.provider, name:x.name, type:x.type, host:x.host, port:x.port, user:x.user, pass:'' };
             });
             next.push(p);
             if (window.backend && backend.setProxyProfiles) backend.setProxyProfiles(JSON.stringify(next));
@@ -6158,7 +6240,7 @@
         }
         function removeProxyProfile(i){
             var next = _proxyProfiles.filter(function(_, k){ return k !== i; }).map(function(x){
-                return { name:x.name, type:x.type, host:x.host, port:x.port, user:x.user, pass:'' };
+                return { provider:x.provider, name:x.name, type:x.type, host:x.host, port:x.port, user:x.user, pass:'' };
             });
             if (window.backend && backend.setProxyProfiles) backend.setProxyProfiles(JSON.stringify(next));
         }
