@@ -115,6 +115,10 @@ private:
     // Current auth
     QString m_authToken;
     QString m_ct0;
+    // 프록시(VPN) URL — 계정별로 다르게 나가게 하는 값.
+    QString m_proxyUrl;
+    public: void setProxy(const QString &u) { m_proxyUrl = u; }
+
     QString m_csrfToken;
     // 수집 중 발견한 스페이스 카드 트윗의 status URL (전체수집 끝에 yt-dlp 로 일괄 다운로드)
     QSet<QString> m_spaceCardTweetUrls;

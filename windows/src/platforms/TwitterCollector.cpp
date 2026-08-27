@@ -89,6 +89,8 @@ bool TwitterCollector::startDaemon()
     QJsonObject initArgs;
     initArgs["auth_token"] = m_authToken;
     initArgs["ct0"] = m_ct0;
+    // ★ 프록시(VPN) — 이 계정에 붙은 출구로 나간다. 비면 직접 나간다.
+    if (!m_proxyUrl.isEmpty()) initArgs["proxy"] = m_proxyUrl;
     QString argsJson = QString::fromUtf8(QJsonDocument(initArgs).toJson(QJsonDocument::Compact));
 
     m_daemon = new QProcess();  // 부모 없음 — 워커 스레드에서 생성되므로 this(메인스레드) 지정하면 크래시

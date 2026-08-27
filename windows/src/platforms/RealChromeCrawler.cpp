@@ -309,6 +309,16 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
              << "--enable-features=NetworkServiceSandbox"       // Network 서비스 sandbox
              << "--block-insecure-private-network-requests";    // 내부망 비보안 요청 차단
 #endif
+        // ★ 프록시(VPN) — 지정되었으면 캐쉬 브라우저도 같은 출구로 나간다.
+        //   수집과 캐쉬가 다른 IP 로 나가면 계정을 나누는 의미가 없다.
+        if (!m_proxyUrl.isEmpty()) {
+            const QUrl pu(m_proxyUrl);
+            const QString scheme = pu.scheme().isEmpty() ? QStringLiteral("socks5") : pu.scheme();
+            args << QString("--proxy-server=%1://%2:%3").arg(scheme, pu.host()).arg(pu.port(1080));
+            if (m_backend)
+                m_backend->log(QString("캐쉬 브라우저 프록시: %1://%2:%3")
+                                   .arg(scheme, pu.host()).arg(pu.port(1080)), "info", "crawl");
+        }
         args << "--disable-gpu"
              << "--disable-software-rasterizer"
              << "--disable-accelerated-2d-canvas"

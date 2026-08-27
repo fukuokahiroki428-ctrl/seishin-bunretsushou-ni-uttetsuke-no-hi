@@ -220,6 +220,7 @@ QJsonObject Config::toJson() const
     if (!m_platformTargets.isEmpty()) root["platformTargets"] = m_platformTargets;
     root["debugLogs"] = m_debugLogs;
     if (!m_secondaryPath.isEmpty()) root["secondaryPath"] = m_secondaryPath;
+    if (!m_proxyProfiles.isEmpty()) root["proxyProfiles"] = m_proxyProfiles;
     if (!m_naikakukaiWatches.isEmpty()) root["naikakukaiWatches"] = m_naikakukaiWatches;
     root["naikakukaiInterval"] = m_naikakukaiInterval;
     if (!m_webdavUrl.isEmpty())  root["webdavUrl"]  = m_webdavUrl;
@@ -258,6 +259,7 @@ void Config::fromJson(const QJsonObject &obj)
     if (obj.contains("platformTargets")) m_platformTargets = obj["platformTargets"].toObject();
     if (obj.contains("debugLogs")) m_debugLogs = obj["debugLogs"].toBool();
     if (obj.contains("secondaryPath")) m_secondaryPath = obj["secondaryPath"].toString();
+    if (obj.contains("proxyProfiles")) m_proxyProfiles = obj["proxyProfiles"].toArray();
     if (obj.contains("naikakukaiWatches")) m_naikakukaiWatches = obj["naikakukaiWatches"].toArray();
     if (obj.contains("naikakukaiInterval")) m_naikakukaiInterval = obj["naikakukaiInterval"].toInt(30);
     if (obj.contains("webdavUrl"))      m_webdavUrl  = obj["webdavUrl"].toString();

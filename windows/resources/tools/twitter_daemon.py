@@ -450,8 +450,20 @@ async def main():
         import httpx as _httpx
         new_timeout = _httpx.Timeout(30.0, connect=15.0, read=30.0, write=15.0, pool=10.0)
         client.http.timeout = new_timeout
-        # 재시도 transport — connection error 시 자동 3회 retry
-        client.http._transport = _httpx.HTTPTransport(retries=3)
+        # ★ 프록시(VPN) — 계정마다 다른 출구로 나가게 한다.
+        #   시스템 VPN 은 기계 전체를 한 경로로 보내므로 계정별 분리가 안 된다.
+        #   앱이 계정에 붙은 프로필을 URL 한 줄로 만들어 넘겨준다.
+        #   transport 를 통째로 바꾸므로 retries 설정도 여기서 같이 준다.
+        _proxy = init_args.get("proxy") or ""
+        if _proxy:
+            client.http._transport = _httpx.HTTPTransport(retries=3, proxy=_proxy)
+            # 비밀번호는 찍지 않는다 — 로그가 그대로 남는다.
+            _safe = _proxy
+            if "@" in _safe:
+                _safe = _safe.split("://")[0] + "://***@" + _safe.rsplit("@", 1)[1]
+            print(json.dumps({"info": f"프록시 사용: {_safe}"}), flush=True)
+        else:
+            client.http._transport = _httpx.HTTPTransport(retries=3)
         print(json.dumps({"info": "httpx timeout=30s + retries=3 적용"}), flush=True)
     except Exception as _te:
         print(json.dumps({"info": f"timeout 설정 실패 (무시): {_te}"}), flush=True)

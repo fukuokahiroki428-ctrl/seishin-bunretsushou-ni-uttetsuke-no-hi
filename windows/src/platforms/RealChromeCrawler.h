@@ -50,6 +50,8 @@ public:
     void setUseUserProfile(bool b) { m_useUserProfile = b; }
     void setDebugPort(int port) { m_debugPort = port; }
     void setUserDataDir(const QString &d) { m_userDataDir = d; }
+    // 프록시(VPN) — "socks5://user:pass@host:port". 비어 두면 직접 나간다.
+    void setProxy(const QString &url) { m_proxyUrl = url; }
 
     // 1) Chrome 시작 + CDP 연결 (콜백 ok=true면 성공)
     void start(std::function<void(bool)> done);
@@ -117,6 +119,7 @@ private:
     QPointer<QWebSocket> m_ws;
     QNetworkAccessManager *m_nam = nullptr;
 
+    QString m_proxyUrl;        // 프록시 URL (비면 미사용)
     int m_debugPort = 9223;
     bool m_useUserProfile = false;
     bool m_ready = false;

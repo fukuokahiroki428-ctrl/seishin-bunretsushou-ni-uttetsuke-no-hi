@@ -62,6 +62,13 @@ public:
     void setSecondaryPath(const QString &p) { m_secondaryPath = p; }
 
     // 内閣会 감시 목록 + interval 영구 저장
+    // ── 프록시(VPN) 프로필 ──────────────────────────────────────────
+    //   계정마다 다른 출구로 나가려면 프록시여야 한다. 시스템 VPN 은 기계 전체를
+    //   한 경로로 보내므로 계정별 분리가 불가능하다. NordVPN 등이 주는 SOCKS5
+    //   서버 자격증명을 여기에 넣어 쓴다.
+    //   [{name, type:"socks5"|"http", host, port, user, pass}]
+    QJsonArray proxyProfiles() const { return m_proxyProfiles; }
+    void setProxyProfiles(const QJsonArray &a) { m_proxyProfiles = a; }
     QJsonArray naikakukaiWatches() const { return m_naikakukaiWatches; }
     void setNaikakukaiWatches(const QJsonArray &arr) { m_naikakukaiWatches = arr; }
     int naikakukaiInterval() const { return m_naikakukaiInterval; }
@@ -136,6 +143,7 @@ private:
     QJsonObject m_platformTargets;
     bool m_debugLogs = false;
     QString m_secondaryPath;
+    QJsonArray m_proxyProfiles;
     QJsonArray m_naikakukaiWatches;
     int m_naikakukaiInterval = 30;
     QString m_webdavUrl;

@@ -622,6 +622,131 @@ void MiyoBackend::memoryMonitorTick()
 //         수집기는 이미 파일 존재 여부로 중복 스킵 → 신글만 자동 추가됨
 // ─────────────────────────────────────────────
 
+// ═════════════════════════════════════════════════════════════════════════
+// 프록시(VPN) — 계정마다 다른 출구로 나가게 한다.
+//
+//   시스템 VPN 은 기계 전체를 한 경로로 보내므로 계정별 분리가 안 된다.
+//   앱이 연결마다 다른 출구를 고르려면 프록시여야 한다. NordVPN 같은 곳이 주는
+//   SOCKS5 서버 자격증명을 프로필로 등록해 두고, 계정에 이름으로 붙인다.
+// ═════════════════════════════════════════════════════════════════════════
+
+// ★ 비밀번호는 UI 로 돌려보내지 않는다. 화면에 뿌린 값은 로그·스크린샷·개발자도구로
+//   새어나갈 수 있다. 등록돼 있는지 여부(hasPass)만 알려 준다.
+// 이 트랙(계정)이 쓰는 프록시 URL. 수집 시작 때 기억해 두고 캡쳐 브라우저도 같은 출구로 보낸다.
+//   수집과 캡쳐가 다른 IP 로 나가면 계정을 나누는 의미가 없다.
+QString MiyoBackend::resolveProxyUrlFor(const QString &trackKey) const
+{
+    QMutexLocker lock(&m_proxyPerTrackMutex);
+    return m_proxyPerTrack.value(trackKey.isEmpty() ? QStringLiteral("*") : trackKey);
+}
+
+void MiyoBackend::getProxyProfiles()
+{
+    QJsonArray out;
+    const QJsonArray src = m_config ? m_config->proxyProfiles() : QJsonArray();
+    for (const QJsonValue &v : src) {
+        QJsonObject p = v.toObject();
+        QJsonObject safe;
+        safe["name"] = p["name"];
+        safe["type"] = p["type"];
+        safe["host"] = p["host"];
+        safe["port"] = p["port"];
+        safe["user"] = p["user"];
+        safe["hasPass"] = !p["pass"].toString().isEmpty();
+        out.append(safe);
+    }
+    runJs(QString("if(window.onProxyProfiles)onProxyProfiles(%1);")
+              .arg(QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact))));
+}
+
+void MiyoBackend::setProxyProfiles(const QString &json)
+{
+    QJsonArray incoming = QJsonDocument::fromJson(json.toUtf8()).array();
+    // ★ 비밀번호가 빈 채로 오면 지우라는 뜻이 아니라 '안 바꿈' 이다.
+    //   위에서 비밀번호를 안 내려보내므로, 그대로 저장하면 편집할 때마다 지워진다.
+    const QJsonArray old = m_config ? m_config->proxyProfiles() : QJsonArray();
+    QMap<QString, QString> keep;
+    for (const QJsonValue &v : old) {
+        const QJsonObject p = v.toObject();
+        if (!p["pass"].toString().isEmpty()) keep[p["name"].toString()] = p["pass"].toString();
+    }
+    QJsonArray merged;
+    for (const QJsonValue &v : incoming) {
+        QJsonObject p = v.toObject();
+        if (p["pass"].toString().isEmpty() && keep.contains(p["name"].toString()))
+            p["pass"] = keep[p["name"].toString()];
+        merged.append(p);
+    }
+    if (m_config) { m_config->setProxyProfiles(merged); m_config->save(); }
+    log(QString("프록시 프로필 %1개 저장").arg(merged.size()), "success", "settings");
+    getProxyProfiles();
+}
+
+QString MiyoBackend::proxyUrl(const QJsonObject &p, bool withCredentials)
+{
+    const QString host = p["host"].toString();
+    const int port = p["port"].toInt();
+    if (host.isEmpty() || port <= 0) return QString();
+    QString scheme = p["type"].toString().toLower();
+    if (scheme.isEmpty()) scheme = "socks5";
+    QString auth;
+    if (withCredentials) {
+        const QString u = p["user"].toString(), pw = p["pass"].toString();
+        if (!u.isEmpty())
+            auth = QUrl::toPercentEncoding(u) + (pw.isEmpty() ? QByteArray() : ":" + QUrl::toPercentEncoding(pw)) + "@";
+    }
+    return QString("%1://%2%3:%4").arg(scheme, auth, host).arg(port);
+}
+
+QJsonObject MiyoBackend::proxyForAccount(const QJsonObject &account) const
+{
+    const QString want = account["proxy"].toString();
+    if (want.isEmpty() || !m_config) return QJsonObject();
+    for (const QJsonValue &v : m_config->proxyProfiles()) {
+        const QJsonObject p = v.toObject();
+        if (p["name"].toString() == want) return p;
+    }
+    return QJsonObject();
+}
+
+// 실제로 그 프록시로 나가지는지 확인한다 — 나가는 IP 를 받아 온다.
+void MiyoBackend::testProxy(const QString &json)
+{
+    QJsonObject p = QJsonDocument::fromJson(json.toUtf8()).object();
+    // 저장된 비밀번호를 쓴다(UI 는 비밀번호를 갖고 있지 않다)
+    if (p["pass"].toString().isEmpty()) {
+        const QJsonObject saved = proxyForAccount(QJsonObject{{"proxy", p["name"]}});
+        if (!saved.isEmpty()) p["pass"] = saved["pass"];
+    }
+    const QString url = proxyUrl(p);
+    if (url.isEmpty()) {
+        runJs("if(window.onProxyTest)onProxyTest(false,'주소나 포트가 비어 있습니다');");
+        return;
+    }
+    log(QString("프록시 시험 → %1").arg(proxyUrl(p, false)), "info", "settings");
+
+    // curl 로 확인한다 — SOCKS5 인증까지 그대로 처리하고, 앱 네트워크 설정을 건드리지 않는다.
+    QProcess *proc = new QProcess(this);
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+        [this, proc](int code, QProcess::ExitStatus) {
+            const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
+            const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+            proc->deleteLater();
+            if (code == 0 && !out.isEmpty()) {
+                log(QString("프록시 정상 — 나가는 IP %1").arg(out), "success", "settings");
+                runJs(QString("if(window.onProxyTest)onProxyTest(true,%1);")
+                          .arg(Common::jsStringLiteral(out)));
+            } else {
+                const QString why = err.isEmpty() ? QString("연결 실패 (curl %1)").arg(code)
+                                                  : err.left(200);
+                log(QString("프록시 실패 — %1").arg(why), "error", "settings");
+                runJs(QString("if(window.onProxyTest)onProxyTest(false,%1);")
+                          .arg(Common::jsStringLiteral(why)));
+            }
+        });
+    proc->start("curl", {"-s", "--max-time", "20", "--proxy", url, "https://api.ipify.org"});
+}
+
 void MiyoBackend::startNaikakukai(const QString &configJson)
 {
     QJsonDocument doc = QJsonDocument::fromJson(configJson.toUtf8());
@@ -5515,9 +5640,10 @@ bool MiyoBackend::captureRealPageCDP(const QString &url,
             b64.replace("=", "").replace("/", "_").replace("+", "_");
             tkSuffix = "_" + b64;
         }
-        QMetaObject::invokeMethod(this, [this, chromePtr, needStart, checkDone, port, tkSuffix]() {
+        QMetaObject::invokeMethod(this, [this, chromePtr, needStart, checkDone, port, tkSuffix, trackKey]() {
             if (!*chromePtr) {
                 *chromePtr = new RealChromeCrawler(this, this);
+                (*chromePtr)->setProxy(resolveProxyUrlFor(trackKey));
                 (*chromePtr)->setUseUserProfile(false);
                 (*chromePtr)->setDebugPort(port);
                 if (!tkSuffix.isEmpty()) {
@@ -6151,6 +6277,7 @@ bool MiyoBackend::captureRealPageCDPLoginAware(const QString &url,
         }
         if (!*chromePP) {
             *chromePP = new RealChromeCrawler(this, this);
+            (*chromePP)->setProxy(resolveProxyUrlFor(trackKey));
             (*chromePP)->setUseUserProfile(false);
             (*chromePP)->setDebugPort(reservedPort);
             if (!trackKey.isEmpty()) {
@@ -7300,9 +7427,27 @@ void MiyoBackend::runTwitterCollection(const QJsonObject &config)
     // 병렬 모드: _parallelKey가 있으면 thread-local collector + 그 키의 isRunning 사용
     //   - 멤버 m_twitterCollector 덮어쓰기 race 방지
     //   - "새 트윗 확인" 기능은 sequential (단일) 수집 후에만 의미 있으므로 멤버 유지 안 함
+    // ★ 프록시(VPN) — 이 수집이 쓸 계정에 붙은 출구를 찾는다.
+    //   계정마다 다른 IP 로 나가게 하는 것이 목적이므로, 계정을 고른 뒤에 정해야 한다.
+    QString proxyUrlForRun;
+    {
+        const QJsonArray accs = enrichedConfig["accounts"].toArray();
+        const QJsonObject acct = accs.isEmpty() ? enrichedConfig : accs.first().toObject();
+        const QJsonObject prof = proxyForAccount(acct);
+        if (!prof.isEmpty()) {
+            proxyUrlForRun = proxyUrl(prof);
+            log(QString("프록시 사용 — 프로필 '%1' (%2)")
+                    .arg(prof["name"].toString(), proxyUrl(prof, false)), "info", "twitter");
+            QMutexLocker lock(&m_proxyPerTrackMutex);
+            const QString tk = config["_parallelKey"].toString();
+            m_proxyPerTrack[tk.isEmpty() ? QStringLiteral("*") : tk] = proxyUrlForRun;
+        }
+    }
+
     const QString parallelKey = config["_parallelKey"].toString();
     if (!parallelKey.isEmpty()) {
         TwitterCollector localCollector(this);
+        localCollector.setProxy(proxyUrlForRun);
         // m_isRunning[parallelKey]를 참조 — startCollection에서 true로 세팅됨
         if (!m_isRunning.contains(parallelKey)) m_isRunning[parallelKey] = true;
         localCollector.collect(enrichedConfig, m_isRunning[parallelKey]);
@@ -7312,6 +7457,7 @@ void MiyoBackend::runTwitterCollection(const QJsonObject &config)
     // Sequential 모드: 기존 멤버 collector 사용 (새 트윗 확인용으로 유지)
     delete m_twitterCollector;
     m_twitterCollector = new TwitterCollector(this);
+    m_twitterCollector->setProxy(proxyUrlForRun);
     m_lastConfig["twitter"] = enrichedConfig;
     m_twitterCollector->collect(enrichedConfig, m_isRunning["twitter"]);
 }

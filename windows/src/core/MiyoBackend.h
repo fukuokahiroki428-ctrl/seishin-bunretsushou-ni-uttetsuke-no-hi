@@ -170,6 +170,16 @@ public slots:
     void writeStartupLog();        // 앱 시작 시 상세 로그 기록
 
     // 内閣会 — 지정 사용자 신글 자동 감지/다운로드 (Twitter/Bluesky/Tumblr 공식 API)
+    // ── 프록시(VPN) ────────────────────────────────────────────────
+    Q_INVOKABLE void getProxyProfiles();                       // UI 로 목록 전달
+    Q_INVOKABLE void setProxyProfiles(const QString &json);    // 목록 저장
+    Q_INVOKABLE void testProxy(const QString &json);           // 한 개 연결 시험
+    //   계정에 붙은 프로필 이름으로 실제 프록시 설정을 찾는다. 없으면 빈 객체.
+    QJsonObject proxyForAccount(const QJsonObject &account) const;
+    QString resolveProxyUrlFor(const QString &trackKey) const;
+    //   프록시를 yt-dlp / Chrome / httpx 가 쓰는 URL 한 줄로 만든다.
+    static QString proxyUrl(const QJsonObject &p, bool withCredentials = true);
+
     void startNaikakukai(const QString &configJson);
     void stopNaikakukai();
     bool isNaikakukaiRunning() const { return m_naikakukaiRunning; }
@@ -354,6 +364,9 @@ public:
     // 内閣会 내부 상태
     void naikakukaiTick();
     QTimer *m_naikakukaiTimer = nullptr;
+    // 트랙별 프록시 URL — 수집과 캐쉬가 같은 출구를 쓰게 한다.
+    QMap<QString, QString> m_proxyPerTrack;
+    mutable QMutex m_proxyPerTrackMutex;
     QJsonArray m_naikakukaiWatches;
     int m_naikakukaiIntervalMin = 30;
     int m_naikakukaiCursor = 0;
