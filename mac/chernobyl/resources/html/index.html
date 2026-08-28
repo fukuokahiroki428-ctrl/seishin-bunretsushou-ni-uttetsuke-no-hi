@@ -344,6 +344,62 @@
             .toolbar-stats { gap: 8px; }
         }
 
+        /* ══ 좁은 창(핸드폰 폭) ══════════════════════════════════════════════
+           ★ 여기 규칙들이 예전엔 죽어 있었다. 창 최소 크기가 820px 로 막혀 있어서
+             680/480 기준점에 닿을 방법이 자체가 없었다(MainWindow::setMinimumSize).
+             최소 크기를 낮추면서 이 폭에서 실제로 무엇이 깨지는지 재고 고쳤다.
+             390px 에서: 사이드바가 148px(38%)를 먹어 본문이 242px 만 남고,
+             툴바 글자가 세로로 쪼개지고("설/정"), 입력칸 placeholder 가 잘렸다. */
+        @media (max-width: 680px) {
+            /* 세로로 쌓는다 — 옆에 두기엔 폭이 없다 */
+            .app { flex-direction: column; }
+
+            /* 사이드바를 가로로 스크롤되는 탭줄로 */
+            .sidebar {
+                width: 100%; max-width: none; height: auto;
+                flex-direction: row; align-items: center;
+                overflow-x: auto; overflow-y: hidden;
+                border-right: none; border-bottom: 1px solid var(--border-light);
+                padding: 6px 8px; gap: 4px;
+                flex: 0 0 auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            .sidebar::-webkit-scrollbar { height: 0; }
+            .sidebar-header { display: none; }      /* 세로 배치용 여백 — 가로줄에선 자리만 먹는다 */
+            /* ★ 사이드바만 가로로 눕혀서는 안 된다. 안쪽 .sidebar-nav 가 block 이라
+               항목들이 그대로 세로로 쌓여, 폭 390px 에서 사이드바 높이가 503px 이
+               되어 버렸다(실측). 안쪽도 같이 눕힌다. */
+            .sidebar-nav {
+                display: flex; flex-direction: row; flex-wrap: nowrap;
+                gap: 4px; overflow-x: auto; overflow-y: hidden;
+                width: 100%; padding: 0;
+            }
+            .sidebar-nav::-webkit-scrollbar { height: 0; }
+            .sidebar-footer {
+                flex: 0 0 auto; border-top: none; padding: 0 4px; margin: 0;
+            }
+            .nav-item {
+                flex: 0 0 auto; white-space: nowrap; padding: 6px 10px;
+            }
+
+            /* 본문이 남은 세로 공간을 전부 갖는다 */
+            .main { max-width: 100%; flex: 1 1 auto; min-height: 0; }
+
+            /* 툴바 — 글자가 세로로 쪼개지지 않게 */
+            .toolbar { height: auto; min-height: 44px; flex-wrap: wrap; padding: 6px 12px; }
+            .toolbar * { white-space: nowrap; }
+            .toolbar-stats { flex-wrap: wrap; gap: 10px; font-size: 11px; }
+
+            /* 한 줄에 두 칸씩 두면 각각 170px 밖에 안 된다 — 세로로 쌓는다 */
+            .input-row { flex-direction: column; align-items: stretch; }
+            .input-row > .field { width: 100% !important; flex: 1 1 auto !important; }
+            .field-label { white-space: normal; }
+            .input, input.input, select.input, textarea.input { width: 100%; box-sizing: border-box; }
+
+            /* 로그판은 이 폭에서 자리를 차지할 수 없다 */
+            .log-panel, #log-panel { display: none; }
+        }
+
         /* ── Section ── */
         .section { margin-bottom: 20px; overflow: visible; }
         .section-label {
