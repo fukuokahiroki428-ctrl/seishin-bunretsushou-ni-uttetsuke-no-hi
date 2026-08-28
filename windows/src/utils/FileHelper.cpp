@@ -179,7 +179,16 @@ bool moveFileSafe(const QString &srcPath, const QString &dstPath, QString *err)
     //    ★ 복사가 끝나기 전에는 원본을 절대 지우지 않는다 — 중간에 끊겨도 원본이 남게.
     QFile src(srcPath), dst(dstPath);
     if (!src.open(QIODevice::ReadOnly))  return fail("원본을 열 수 없습니다: " + src.errorString());
-    if (!dst.open(QIODevice::WriteOnly)) { src.close(); return fail("대상에 쓸 수 없습니다: " + dst.errorString()); }
+    if (!dst.open(QIODevice::WriteOnly)) {
+        src.close();
+#ifdef Q_OS_WIN
+        // 윈도우는 260자를 넘으면 "파일을 찾을 수 없습니다" 라고 답한다 — 원인을 밝혀 준다.
+        if (dstPath.length() >= 250)
+            return fail(QString("경로가 너무 깁니다 (%1자 — 윈도우 한계 260자): %2")
+                            .arg(dstPath.length()).arg(dst.errorString()));
+#endif
+        return fail("대상에 쓸 수 없습니다: " + dst.errorString());
+    }
 
     const qint64 total = src.size();
     qint64 written = 0;

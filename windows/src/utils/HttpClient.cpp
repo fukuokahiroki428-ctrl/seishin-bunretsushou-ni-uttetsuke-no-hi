@@ -8,6 +8,24 @@
 #include <QProcess>
 #include <QCoreApplication>
 
+// 파일을 못 연 이유를 사람이 읽을 수 있게 바꾼다.
+// ★ 윈도우는 경로가 260자를 넘으면 "파일을 찾을 수 없습니다" 라고 답한다. 폴더가 멀쩡히
+//   있는데도 그렇게 말하므로 원인을 오해하기 딱 좋다.
+//   실측: 307자 경로가 errno 2 (No such file or directory) 로 실패했다. 이 기계는
+//   LongPathsEnabled 가 0 이고 실행 파일에 longPathAware 선언도 없어 한계가 살아 있다.
+//   전에는 두 다운로드 함수 모두 아무 말 없이 false 만 돌려줘서, 로그에 흔적조차 없었다.
+static QString openFailureReason(const QString &path, const QString &qtError)
+{
+#ifdef Q_OS_WIN
+    if (path.length() >= 250)
+        return QString("경로가 너무 깁니다 (%1자 — 윈도우 한계 260자). "
+                       "저장 폴더를 더 짧은 곳으로 옮기거나 긴 경로 지원을 켜 주세요. [%2]")
+                .arg(path.length()).arg(qtError);
+#endif
+    return qtError;
+}
+
+
 HttpClient::HttpClient(QObject *parent)
     : QObject(parent)
     , m_nam(new QNetworkAccessManager(nullptr))  // no parent — prevent double-delete race
@@ -86,6 +104,8 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
     // Stream directly to file to avoid loading entire file into memory
     QFile file(filePath);
     if (!file.open(QIODevice::WriteOnly)) {
+        qWarning() << "[HttpClient] 저장할 파일을 열지 못했습니다:"
+                   << openFailureReason(filePath, file.errorString()) << "-" << filePath;
         reply->abort();
         reply->deleteLater();
         return false;
@@ -185,6 +205,8 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
 
     QFile file(filePath);
     if (!file.open(QIODevice::WriteOnly)) {
+        qWarning() << "[HttpClient] 저장할 파일을 열지 못했습니다:"
+                   << openFailureReason(filePath, file.errorString()) << "-" << filePath;
         reply->abort();
         reply->deleteLater();
         return result;

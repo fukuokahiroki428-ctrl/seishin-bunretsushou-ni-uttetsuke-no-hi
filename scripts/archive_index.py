@@ -155,6 +155,21 @@ def open_db(path: Path, reset: bool) -> sqlite3.Connection:
 
 
 # ── 추출기 ─────────────────────────────────────────────────────────────────
+# ★ 윈도우의 260자 제한 — Qt(C++) 와 파이썬이 서로 다르게 군다.
+#   Qt 는 긴 경로를 알아서 처리해 파일을 만드는데, 파이썬은 접두어 없이는 그 파일을
+#   "없다" 고 한다. 실측: 앱이 만든 305자 파일을 파이썬이 errno 2 로 못 열었고,
+#   \\?\ 접두어를 붙이니 그대로 읽혔다.
+#   그대로 두면 색인이 그 파일들을 아무 말 없이 빠뜨린다 — 보관함이 불완전해진다.
+def _long_path(p):
+    """윈도우에서 260자를 넘는 경로에 접두어를 붙인다. 그 외에는 그대로 둔다."""
+    s = str(p)
+    if os.name != "nt" or len(s) < 250:
+        return s
+    if s.startswith("\\\\?\\"):
+        return s
+    return "\\\\?\\" + os.path.abspath(s)
+
+
 def read_exif_batch(exiftool: str, paths: list[Path]) -> dict[str, dict]:
     """여러 파일의 EXIF 를 한 번에 읽는다. 한 장씩 부르면 수만 장에서 몇 시간 걸린다."""
     if not exiftool or not paths:
@@ -165,7 +180,11 @@ def read_exif_batch(exiftool: str, paths: list[Path]) -> dict[str, dict]:
             [exiftool, '-j', '-charset', 'filename=utf8', '-fast2',
              '-Artist', '-ImageDescription', '-Description', '-UserComment',
              '-XPComment', '-DateTimeOriginal', '-CreateDate', '-@', '-'],
-            input=listing, capture_output=True, text=True, timeout=300)
+            # ★ text=True 는 시스템 코드페이지로 인코딩한다. 윈도우에서는 cp1252 라
+            #   한글·일본어 파일명이 뭉개져 exiftool 이 파일을 못 찾는다.
+            #   exiftool 에 -charset filename=utf8 을 주고 있으므로 여기도 UTF-8 이어야 맞다.
+            input=listing, capture_output=True, text=True,
+            encoding='utf-8', errors='replace', timeout=300)
         out = r.stdout.strip()
         if not out:
             return {}
@@ -262,6 +281,7 @@ def main() -> int:
     print(f"기존 색인: {len(known):,}건\n")
 
     todo, skipped, scanned = [], 0, 0
+    unreadable = []
     t0 = time.time()
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if not d.startswith('.') and d != '#recycle']
@@ -270,8 +290,10 @@ def main() -> int:
                 continue
             p = Path(dirpath) / fn
             try:
-                st = p.stat()
-            except OSError:
+                st = os.stat(_long_path(p))
+            except OSError as e:
+                # 조용히 넘기지 않는다 — 몇 개를 못 봤는지 끝에 알려 준다.
+                unreadable.append((str(p), getattr(e, "errno", 0)))
                 continue
             scanned += 1
             prev = known.get(str(p))
@@ -283,6 +305,13 @@ def main() -> int:
                 break
         if args.limit and len(todo) >= args.limit:
             break
+
+    if unreadable:
+        print(f"\n  ⚠ 읽지 못한 파일 {len(unreadable):,}건 — 색인에서 빠집니다.")
+        for path, errno in unreadable[:5]:
+            print(f"      ({len(path)}자, errno {errno}) {path[:120]}")
+        if len(unreadable) > 5:
+            print(f"      … 외 {len(unreadable) - 5:,}건")
 
     print(f"훑음 {scanned:,}건 · 변경없음 {skipped:,}건 · 새로 색인 {len(todo):,}건\n")
     if not todo:
