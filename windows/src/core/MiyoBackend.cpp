@@ -157,6 +157,26 @@ static void killByCommandLine(const QString &imageName, const QString &needle)
     QProcess::execute("powershell", {"-NoProfile", "-NonInteractive", "-Command", ps});
 }
 
+// ★ 프로세스를 자식까지 통째로 끝낸다.
+//   YouTube·니코동 다운로드는 보이는 cmd.exe 콘솔이 .bat 을 돌리고, 그 .bat 이
+//   yt-dlp 를 자식으로 띄우는 구조다. 그런데 '중지' 는 yt-dlp 의 명령줄에서
+//   "abiwa_" 를 찾아 죽이려 했는데, yt-dlp 에 넘기는 -o 템플릿은 사용자 저장 폴더라
+//   "abiwa_" 가 들어 있지 않다 — 즉 아무것도 못 잡고 다운로드가 계속됐다.
+//   .bat 안의 중지 표시 검사는 URL 과 URL 사이에서만 도므로, 지금 받고 있는 것은
+//   끝까지 다 받고 나서야 멈췄다.
+//   부모 콘솔을 트리째 끝내면 그 아래 yt-dlp·ffmpeg 도 함께 끝난다.
+static void killTreeByCommandLine(const QString &imageName, const QString &needle)
+{
+    QString img = imageName; img.remove('\'');
+    QString pat = needle;    pat.remove('\'');
+    const QString ps = QString(
+        "Get-CimInstance Win32_Process -Filter \"Name='%1'\" -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.CommandLine -like '*%2*' } | "
+        "ForEach-Object { taskkill /PID $_.ProcessId /T /F 2>$null }")
+        .arg(img, pat);
+    QProcess::execute("powershell", {"-NoProfile", "-NonInteractive", "-Command", ps});
+}
+
 // 캡쳐에 쓰일 수 있는 Chromium 계열 실행 파일 이름 전부.
 //   ★ chrome.exe 만 보면 안 된다. findChromeExecutable() 은 Chrome 이 없으면 Edge 를,
 //     그것도 없으면 Brave 를 쓴다. Chrome 이 안 깔린 기계(윈도우 기본 상태가 그렇다)에서는
@@ -5338,6 +5358,9 @@ void MiyoBackend::stopYoutube()
     // ★ 이름만으로 죽이면 사용자가 따로 돌리고 있던 yt-dlp·ffmpeg 까지 끝난다
     //   (영상 편집 중이었다면 그 작업이 날아간다). 우리 것은 명령줄에 앱 임시
     //   폴더(abiwa_) 가 들어 있으므로 그것으로만 고른다.
+    // 부모 콘솔을 트리째 — 이것이 실제로 지금 받고 있는 것을 멈춘다.
+    killTreeByCommandLine("cmd.exe", "miyo_yt_download.bat");
+    // 남은 것이 있으면 보조로 한 번 더 (명령줄에 앱 임시 폴더가 든 경우).
     killByCommandLine("yt-dlp.exe", "abiwa_");
     killByCommandLine("ffmpeg.exe", "abiwa_");
 #else
@@ -5396,6 +5419,9 @@ void MiyoBackend::stopNiconico()
 #ifdef Q_OS_WIN
     // ★ 이름만으로 죽이면 사용자가 따로 돌리던 yt-dlp·ffmpeg 까지 끝난다.
     //   우리 것은 명령줄에 앱 임시 폴더(abiwa_)가 들어 있으므로 그것으로만 고른다.
+    // 부모 콘솔을 트리째 — 이것이 실제로 지금 받고 있는 것을 멈춘다.
+    killTreeByCommandLine("cmd.exe", "miyo_yt_download.bat");
+    // 남은 것이 있으면 보조로 한 번 더 (명령줄에 앱 임시 폴더가 든 경우).
     killByCommandLine("yt-dlp.exe", "abiwa_");
     killByCommandLine("ffmpeg.exe", "abiwa_");
 #else
@@ -10298,9 +10324,21 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
                 QString appDir = QCoreApplication::applicationDirPath();
                 QProcess ffmpeg;
                 QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-                env.insert("PATH", appDir + ":" + env.value("PATH"));
+                // ★ PATH 구분자는 윈도우가 ';', 유닉스가 ':' 다. 실행 파일 이름도 다르다.
+                //   여기만 유닉스 기준으로 굳어 있어서 윈도우에서는 PATH 가 통째로 망가지고
+                //   확장자 없는 "ffmpeg" 을 찾다 실패해, 우고이라 GIF 변환이 조용히 죽었다.
+                //   (같은 파일 7349행은 ffmpeg.exe 를 먼저 보는 올바른 방식을 쓰고 있다.)
+#ifdef Q_OS_WIN
+                const QChar kPathSep = QLatin1Char(';');
+#else
+                const QChar kPathSep = QLatin1Char(':');
+#endif
+                env.insert("PATH", appDir + kPathSep + env.value("PATH"));
                 ffmpeg.setProcessEnvironment(env);
-                ffmpeg.start(appDir + "/ffmpeg", {
+                QString ffmpegExe = appDir + "/ffmpeg.exe";
+                if (!QFile::exists(ffmpegExe)) ffmpegExe = appDir + "/ffmpeg";
+                if (!QFile::exists(ffmpegExe)) ffmpegExe = "ffmpeg";   // PATH 에 맡긴다
+                ffmpeg.start(ffmpegExe, {
                     "-y", "-f", "concat", "-safe", "0", "-i", concatPath,
                     "-vf", "split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5",
                     "-loop", "0",

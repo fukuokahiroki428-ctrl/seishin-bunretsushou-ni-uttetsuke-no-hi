@@ -1036,6 +1036,16 @@ QProcessEnvironment bundledProcessEnv()
     env.insert("PREDORMITION_DATA_DIR", QDir::toNativeSeparators(dataDir));
     env.insert("HANISHIKI_DATA_DIR", QDir::toNativeSeparators(dataDir));   // 맥 쪽과 같은 이름도 함께
 
+    // ★ 파이썬 자식은 반드시 UTF-8 로 말하게 한다.
+    //   윈도우에서 파이썬 3.14 는 파이프로 나갈 때 시스템 ANSI 코드페이지를 쓴다.
+    //   이 기계는 cp1252 라서, 파이썬이 한글·일본어를 print 하는 순간
+    //   UnicodeEncodeError 로 데몬이 통째로 죽는다 (실측으로 재현했다).
+    //   C++ 쪽은 QString::fromUtf8 로 읽으므로 애초에 UTF-8 이어야 맞다.
+    //   지금 주요 데몬이 살아 있는 것은 json.dumps 가 기본값으로 \uXXXX 이스케이프를
+    //   하기 때문일 뿐이다 — email_watch.py 처럼 ensure_ascii=False 를 쓰는 곳은 실제로 죽고,
+    //   앞으로 누가 한글을 print 하면 또 죽는다. 원인 자체를 없앤다.
+    env.insert("PYTHONUTF8", "1");
+    env.insert("PYTHONIOENCODING", "utf-8");
     env.insert("PYTHONDONTWRITEBYTECODE", "1");
     return env;
 }
