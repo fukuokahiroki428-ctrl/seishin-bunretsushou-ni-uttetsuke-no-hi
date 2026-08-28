@@ -576,7 +576,10 @@ def main():
             log(f"Excel save error: {e}")
             # Fallback: TSV
             try:
-                with open(filename.replace('.xlsx', '.txt'), 'w') as f:
+                # ★ 인코딩을 명시한다. 안 적으면 윈도우에서 시스템 ANSI(cp1252)로 써서
+                #   한글·일본어 게시물 본문에서 UnicodeEncodeError 로 죽었다.
+                #   맥은 UTF-8 이므로, 명시해야 양쪽 결과가 같아진다.
+                with open(filename.replace('.xlsx', '.txt'), 'w', encoding='utf-8') as f:
                     f.write('\t'.join(headers) + '\n')
                     for row in data:
                         f.write('\t'.join(str(v) for v in row) + '\n')

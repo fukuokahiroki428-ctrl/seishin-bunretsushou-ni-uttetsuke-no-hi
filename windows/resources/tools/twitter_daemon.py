@@ -78,7 +78,7 @@ def _load_cached_hashes():
     """Load previously cached hashes from disk."""
     try:
         if os.path.exists(_hash_cache_path):
-            with open(_hash_cache_path) as f:
+            with open(_hash_cache_path, encoding='utf-8') as f:
                 data = json.load(f)
                 # Check if cache is less than 7 days old
                 cached_time = data.get("_timestamp", 0)
@@ -98,7 +98,7 @@ def _save_cached_hashes(hashes):
         os.makedirs(os.path.dirname(_hash_cache_path), exist_ok=True)
         data = dict(hashes)
         data["_timestamp"] = time.time()
-        with open(_hash_cache_path, "w") as f:
+        with open(_hash_cache_path, "w", encoding="utf-8") as f:
             json.dump(data, f)
     except Exception:
         pass
@@ -349,7 +349,8 @@ def extract_chrome_twitter_cookies():
 
             # Get encryption key from Local State
             local_state_path = os.path.join(local_app, "Google", "Chrome", "User Data", "Local State")
-            with open(local_state_path) as f:
+            # 크롬의 Local State 는 UTF-8 JSON 이다. 시스템 ANSI 로 읽으면 깨진다.
+            with open(local_state_path, encoding='utf-8') as f:
                 local_state = json.load(f)
             import base64
             encrypted_key = base64.b64decode(local_state["os_crypt"]["encrypted_key"])
