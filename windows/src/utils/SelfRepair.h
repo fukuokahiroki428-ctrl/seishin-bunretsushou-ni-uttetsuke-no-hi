@@ -291,7 +291,13 @@ inline bool spawnBundledLlm(int port)
     static QAtomicInt spawned{0};
     if (!spawned.testAndSetOrdered(0, 1)) return false;
 
-    const QString dir = resourcesDir() + "/llm";
+    // ★ 설치 스크립트(win_install_ai.ps1)는 모델을 <APPDATA>\Predormition\llm 에 넣는다.
+    //   앱 본체의 llmDir() 도 그 자리를 먼저 본다. 그런데 여기만 <exe>/llm 만 봐서,
+    //   AI 를 설치해도 자가수리의 원인 진단용 LLM 은 영영 뜨지 않았다.
+    //   앱 본체와 같은 순서로 맞춘다 — 사용자 설치본 우선, 없으면 번들.
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/llm";
+    if (!QDir(dir).exists() || QDir(dir).entryList(QStringList() << "*.gguf", QDir::Files).isEmpty())
+        dir = resourcesDir() + "/llm";
     QString server = dir + "/llama-server" + exeSuffix();
     if (!QFile::exists(server)) { spawned.storeRelease(0); return false; }
     // ★ 여러 모델 지원 — llm/ 의 *.gguf 중 '모델 헤드'만 나열(분할 파일은 00001-of 만 진입점).

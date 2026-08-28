@@ -77,7 +77,10 @@ bool TwitterCollector::startDaemon()
     stopDaemon(); // Clean up any previous
 
     // Find daemon script: bundled tools dir → dev fallback
-    QString scriptPath = Common::bundledToolsDir() + "/twitter_daemon.py";
+    // ★ 자가수리가 고쳐 놓은 스크립트가 있으면 그것을 쓴다.
+    //   전에는 bundledToolsDir() 를 직접 봐서, AI 자가수리가 script_overrides 에
+    //   써 놓은 수정본이 영영 실행되지 않았다 — 고쳐도 아무 일도 안 일어났다.
+    QString scriptPath = Common::activeToolScriptPath("twitter_daemon.py");
     if (!QFile::exists(scriptPath)) {
         scriptPath = QCoreApplication::applicationDirPath() + "/../../resources/tools/twitter_daemon.py";
     }
@@ -324,7 +327,10 @@ bool TwitterCollector::initTransactionIds()
     m_transactionIds.clear();
 
     // Find the Python helper script
-    QString scriptPath = Common::bundledToolsDir() + "/twitter_tid.py";
+    // ★ 자가수리가 고쳐 놓은 스크립트가 있으면 그것을 쓴다.
+    //   전에는 bundledToolsDir() 를 직접 봐서, AI 자가수리가 script_overrides 에
+    //   써 놓은 수정본이 영영 실행되지 않았다 — 고쳐도 아무 일도 안 일어났다.
+    QString scriptPath = Common::activeToolScriptPath("twitter_tid.py");
     if (!QFile::exists(scriptPath)) {
         scriptPath = QCoreApplication::applicationDirPath() + "/../../resources/tools/twitter_tid.py";
     }
@@ -435,7 +441,10 @@ QMap<QString, QString> TwitterCollector::getHeadersWithTid(const QString &urlPat
 QJsonObject TwitterCollector::callTwikitApi(const QJsonObject &args)
 {
     // Find the Python API proxy script
-    QString scriptPath = Common::bundledToolsDir() + "/twitter_api.py";
+    // ★ 자가수리가 고쳐 놓은 스크립트가 있으면 그것을 쓴다.
+    //   전에는 bundledToolsDir() 를 직접 봐서, AI 자가수리가 script_overrides 에
+    //   써 놓은 수정본이 영영 실행되지 않았다 — 고쳐도 아무 일도 안 일어났다.
+    QString scriptPath = Common::activeToolScriptPath("twitter_api.py");
     if (!QFile::exists(scriptPath)) {
         scriptPath = QCoreApplication::applicationDirPath() + "/../../resources/tools/twitter_api.py";
     }

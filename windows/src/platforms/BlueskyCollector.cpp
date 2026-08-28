@@ -57,7 +57,10 @@ bool BlueskyCollector::startDaemon(const QString &handle, const QString &passwor
 {
     stopDaemon();
 
-    QString scriptPath = Common::bundledToolsDir() + "/bluesky_daemon.py";
+    // ★ 자가수리가 고쳐 놓은 스크립트가 있으면 그것을 쓴다.
+    //   전에는 bundledToolsDir() 를 직접 봐서, AI 자가수리가 script_overrides 에
+    //   써 놓은 수정본이 영영 실행되지 않았다 — 고쳐도 아무 일도 안 일어났다.
+    QString scriptPath = Common::activeToolScriptPath("bluesky_daemon.py");
     if (!QFile::exists(scriptPath))
         scriptPath = QCoreApplication::applicationDirPath() + "/../../resources/tools/bluesky_daemon.py";
     if (!QFile::exists(scriptPath)) {
