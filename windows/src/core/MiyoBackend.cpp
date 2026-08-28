@@ -9693,24 +9693,37 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     // ★ yt-dlp .bat 를 보이는 콘솔(CREATE_NEW_CONSOLE)로 실행 — 사용자가 다운로드 진행상황을 직접 본다.
     //   Qt 는 부모가 콘솔 없는 GUI 앱(Predormition)이면 자식에 CREATE_NO_WINDOW 를 자동으로 붙여 창을 숨긴다
     //   (GetConsoleWindow()==NULL) → 반드시 끄고 콘솔을 보이게 표시. 종료/정리는 m_childConsoleProcs 로 추적.
+    // ★ 자식 콘솔은 메인 스레드에서 만든다.
+    //   runYoutubeDownload 는 QThread::create 안에서 돌고(5327행), this(MiyoBackend)는
+    //   메인 스레드에 있다. 그런데 여기서 new QProcess(this) 를 하면 다른 스레드에 있는
+    //   부모에 자식을 붙이는 꼴이라 Qt 가 막고, 붙더라도 QProcess 의 스레드 소속이
+    //   어긋나 finished 가 제대로 오지 않는다 → m_childConsoleProcs 에 죽은 포인터가
+    //   쌓이고, 앱 종료 때 그것들을 훑는다.
+    //   게다가 m_childConsoleProcs 는 메인 스레드 쪽(3666·3672·3707·3719행)에서도
+    //   만지므로, 뮤텍스 없이 워커에서 append 하면 그 자체가 경합이다.
+    //   생성·시작·추적을 통째로 메인 스레드로 넘긴다. 이 함수는 곧바로 상태 파일을
+    //   기다리므로 잠깐 막혀도 상관없다.
     {
-        QProcess *p = new QProcess(this);
-        p->setProgram("cmd.exe");
-        p->setArguments({"/c", QDir::toNativeSeparators(scriptPath)});
-        p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) {
-            a->flags |= CREATE_NEW_CONSOLE;
-            a->flags &= ~CREATE_NO_WINDOW;
-            if (a->startupInfo) {
-                a->startupInfo->dwFlags &= ~STARTF_USESTDHANDLES;
-                a->startupInfo->dwFlags |= STARTF_USESHOWWINDOW;
-                a->startupInfo->wShowWindow = SW_SHOWNORMAL;
-            }
-        });
-        QProcess *raw = p;
-        connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-            [this, raw](int, QProcess::ExitStatus) { m_childConsoleProcs.removeAll(raw); raw->deleteLater(); });
-        m_childConsoleProcs.append(p);
-        p->start();
+        const QString scriptPathCopy = scriptPath;
+        QMetaObject::invokeMethod(this, [this, scriptPathCopy]() {
+            QProcess *p = new QProcess(this);
+            p->setProgram("cmd.exe");
+            p->setArguments({"/c", QDir::toNativeSeparators(scriptPathCopy)});
+            p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) {
+                a->flags |= CREATE_NEW_CONSOLE;
+                a->flags &= ~CREATE_NO_WINDOW;
+                if (a->startupInfo) {
+                    a->startupInfo->dwFlags &= ~STARTF_USESTDHANDLES;
+                    a->startupInfo->dwFlags |= STARTF_USESHOWWINDOW;
+                    a->startupInfo->wShowWindow = SW_SHOWNORMAL;
+                }
+            });
+            QProcess *raw = p;
+            connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+                [this, raw](int, QProcess::ExitStatus) { m_childConsoleProcs.removeAll(raw); raw->deleteLater(); });
+            m_childConsoleProcs.append(p);
+            p->start();
+        }, Qt::BlockingQueuedConnection);
     }
 #else
     QProcess::startDetached("/usr/bin/open", {scriptPath});

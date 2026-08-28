@@ -970,7 +970,26 @@ QStringList pythonCandidates()
         list << bundled;
     }
 #ifdef Q_OS_WIN
-    list << "python" << "python3";
+    // ★ 'python' 은 Microsoft Store 리다이렉터 스텁으로 풀리는 경우가 많다.
+    //   실측(이 기계): PATH 의 python 이
+    //     %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe
+    //       → AppInstallerPythonRedirector.exe
+    //   로 풀리고, 실행하면 스크립트를 돌리지 않고 "Python" 한 줄만 찍고 0 으로 끝난다.
+    //   QProcess 는 이것을 '정상 기동' 으로 보므로, 데몬은 영영 응답하지 않는데
+    //   앱은 파이썬을 찾았다고 믿는다 — 가장 진단하기 어려운 형태의 실패다.
+    //   진짜 런처인 py.exe 를 먼저 보고(py 는 'py 스크립트.py 인자' 를 그대로 받는다),
+    //   WindowsApps 아래로 풀리는 스텁은 후보에서 뺀다.
+    list << "py";
+    for (const QString &name : {QStringLiteral("python"), QStringLiteral("python3")}) {
+        const QString resolved = QStandardPaths::findExecutable(name);
+        if (resolved.isEmpty()) continue;
+        if (resolved.contains("/WindowsApps/", Qt::CaseInsensitive)
+            || resolved.contains("\\WindowsApps\\", Qt::CaseInsensitive)) {
+            qWarning() << "[Common] 스토어 스텁이라 건너뜁니다:" << resolved;
+            continue;
+        }
+        list << resolved;
+    }
 #else
     list << "/opt/homebrew/bin/python3.14" << "/opt/homebrew/bin/python3" << "python3";
 #endif

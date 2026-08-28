@@ -198,9 +198,14 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
             QString marker = ud.section('/', -1);
             marker.replace("'", "''");
             if (!marker.isEmpty()) {
+                // ★ chrome.exe 만 보면 안 된다 — findChromeExecutable() 은 번들 Chromium 이
+                //   없으면 Edge(EdgeCore 포함), 그것도 없으면 Brave 를 띄운다. 그런 기계에서는
+                //   캡쳐 브라우저가 msedge.exe 라, 이 정리가 고아를 하나도 못 잡았다.
+                //   RealChromeCrawler 는 같은 이유로 이미 고쳐져 있었는데 여기만 남아 있었다.
                 QString ps = QString(
                     "Get-CimInstance Win32_Process | "
-                    "Where-Object { $_.Name -eq 'chrome.exe' -and $_.CommandLine -like '*%1*' } | "
+                    "Where-Object { $_.Name -in @('chrome.exe','msedge.exe','brave.exe') "
+                    "-and $_.CommandLine -like '*%1*' } | "
                     "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
                 ).arg(marker);
                 QProcess::execute("powershell", {"-NoProfile", "-NonInteractive", "-Command", ps});
