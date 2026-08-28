@@ -14983,6 +14983,9 @@ void HanishikiBackend::refreshTwitterTokens()
             "                    found = {'auth_token': toks['auth_token'], 'ct0': toks['ct0'], 'browser': fn_name}\n"
             "                    break\n"
             "            except Exception as e:\n"
+            "                _m = str(e).lower()\n"
+            "                if any(k in _m for k in ('could not find', 'not found', 'no such', 'does not exist', 'no cookies')):\n"
+            "                    continue\n"
             "                errors.append(f'{fn_name}/{dom}: {type(e).__name__}')\n"
             "        if found: break\n"
             "    if found:\n"
@@ -15085,7 +15088,12 @@ void HanishikiBackend::refreshInstagramSession()
             "                }\n"
             "                break\n"
             "        except Exception as e:\n"
-            "            errors.append(f'{fn_name}: {type(e).__name__}')\n"
+            "            _m = str(e).lower()\n"
+            // ★ 안 깔린 브라우저의 실패는 오류가 아니다. 예전엔 이것까지 모아
+            //   'librewolf: BrowserCookieError; edge: ...' 처럼 빨갛게 보여 줘서,
+            //   멀쩡한 상태인데 뭔가 고장난 것처럼 보였다. 조용히 넘긴다.
+            "            if not any(k in _m for k in ('could not find', 'not found', 'no such', 'does not exist', 'no cookies')):\n"
+            "                errors.append(f'{fn_name}: {type(e).__name__}')\n"
             "    if found:\n"
             "        print(json.dumps(found))\n"
             "    else:\n"
@@ -15227,7 +15235,12 @@ void HanishikiBackend::refreshPixivSession()
             "                    break\n"
             "            if found: break\n"
             "        except Exception as e:\n"
-            "            errors.append(f'{fn_name}: {type(e).__name__}')\n"
+            "            _m = str(e).lower()\n"
+            // ★ 안 깔린 브라우저의 실패는 오류가 아니다. 예전엔 이것까지 모아
+            //   'librewolf: BrowserCookieError; edge: ...' 처럼 빨갛게 보여 줘서,
+            //   멀쩡한 상태인데 뭔가 고장난 것처럼 보였다. 조용히 넘긴다.
+            "            if not any(k in _m for k in ('could not find', 'not found', 'no such', 'does not exist', 'no cookies')):\n"
+            "                errors.append(f'{fn_name}: {type(e).__name__}')\n"
             "    if found:\n"
             "        print(json.dumps(found))\n"
             "    else:\n"
@@ -15322,6 +15335,9 @@ void HanishikiBackend::refreshFanboxSession()
             "                    }\n"
             "                    break\n"
             "            except Exception as e:\n"
+            "                _m = str(e).lower()\n"
+            "                if any(k in _m for k in ('could not find', 'not found', 'no such', 'does not exist', 'no cookies')):\n"
+            "                    continue\n"
             "                errors.append(f'{fn_name}({dom or \"all\"}): {type(e).__name__}: {str(e)[:60]}')\n"
             "                continue\n"
             "        if found: break\n"
@@ -15733,7 +15749,12 @@ void HanishikiBackend::refreshDomainCookies(const QString &domain, const QString
             "                used_browser = fn_name\n"
             "                break\n"
             "        except Exception as e:\n"
-            "            errors.append(f'{fn_name}: {type(e).__name__}')\n"
+            "            _m = str(e).lower()\n"
+            // ★ 안 깔린 브라우저의 실패는 오류가 아니다. 예전엔 이것까지 모아
+            //   'librewolf: BrowserCookieError; edge: ...' 처럼 빨갛게 보여 줘서,
+            //   멀쩡한 상태인데 뭔가 고장난 것처럼 보였다. 조용히 넘긴다.
+            "            if not any(k in _m for k in ('could not find', 'not found', 'no such', 'does not exist', 'no cookies')):\n"
+            "                errors.append(f'{fn_name}: {type(e).__name__}')\n"
             "    if cookies:\n"
             "        cookie_str = '; '.join(f'{k}={v}' for k, v in cookies.items())\n"
             "        print(json.dumps({'cookie': cookie_str, 'count': len(cookies), 'browser': used_browser}))\n"
