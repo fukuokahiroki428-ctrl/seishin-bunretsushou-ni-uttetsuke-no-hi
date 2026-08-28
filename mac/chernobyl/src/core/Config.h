@@ -124,6 +124,21 @@ public:
     void setNasAutoReconnect(bool b) { m_nasAutoReconnect = b; }
 
     // ★ 동시 다운로드 개수 — 0 = 플랫폼별 기본값, 1~N = 모든 플랫폼 동시 작업 한도(전역 override)
+    // ── 프록시(VPN) ────────────────────────────────────────────────────────
+    //   ★ 켜면 '전부' 이 경로로 나가야 한다. Qt·파이썬 데몬·yt-dlp·rclone·
+    //     번들 크로미움 다섯 갈래 중 하나라도 빠지면 같은 세션이 두 IP 에서 온
+    //     것처럼 보여, 프록시를 안 쓰느니만 못하다.
+    bool proxyEnabled() const { return m_proxyEnabled; }
+    void setProxyEnabled(bool v) { m_proxyEnabled = v; }
+    QString proxyHost() const { return m_proxyHost; }
+    void setProxyHost(const QString &v) { m_proxyHost = v; }
+    int proxyPort() const { return m_proxyPort; }
+    void setProxyPort(int v) { m_proxyPort = v; }
+    QString proxyUser() const { return m_proxyUser; }
+    void setProxyUser(const QString &v) { m_proxyUser = v; }
+    QString proxyPass() const { return m_proxyPass; }
+    void setProxyPass(const QString &v) { m_proxyPass = v; }
+
     int maxConcurrent() const { return m_maxConcurrent; }
     void setMaxConcurrent(int n) { m_maxConcurrent = n; }
 
@@ -158,4 +173,9 @@ private:
     bool m_unixFilenames = false;
     bool m_nasAutoReconnect = true;  // 기본 ON (대부분 원하는 동작)
     int m_maxConcurrent = 0;         // 0 = 플랫폼별 기본값
+    bool m_proxyEnabled = false;
+    QString m_proxyHost;
+    int m_proxyPort = 1080;
+    QString m_proxyUser;
+    QString m_proxyPass;   // ★ 설정 파일은 0600 으로 조인다(Config::save 의 lockDown)
 };

@@ -186,6 +186,10 @@ public slots:
     void showSystemNotification(const QString &title, const QString &body);
 
     // 디버그 진단 — 설정 탭에서 호출
+    Q_INVOKABLE void setProxyConfig(const QString &host, int port,
+                                    const QString &user, const QString &pass, bool enabled);
+    Q_INVOKABLE void getProxyConfig();     // JS onProxyConfig(json)
+    Q_INVOKABLE void testProxy();          // 실제로 나가는 IP 를 확인해 로그로
     Q_INVOKABLE void getAppInfo();                   // JS onAppInfo(json) — 이름/판/만든 곳
     Q_INVOKABLE void getDiagnosticInfo();
     Q_INVOKABLE void killZombieChromes();

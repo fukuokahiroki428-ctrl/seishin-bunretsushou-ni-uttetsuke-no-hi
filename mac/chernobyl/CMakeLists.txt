@@ -394,7 +394,7 @@ if(APPLE)
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools"
         COMMENT "Creating tools directory"
     )
-    foreach(TOOL_SCRIPT twitter_tid.py twitter_api.py twitter_daemon.py bluesky_daemon.py email_watch.py)
+    foreach(TOOL_SCRIPT twitter_tid.py twitter_api.py twitter_daemon.py bluesky_daemon.py email_watch.py socks_relay.py)
         if(EXISTS "${TOOLS_DIR}/${TOOL_SCRIPT}")
             add_custom_command(TARGET Hanishiki POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -583,7 +583,7 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND} -E make_directory "${WIN_OUTPUT_DIR}/tools"
         COMMENT "Creating tools directory"
     )
-    foreach(TOOL_SCRIPT twitter_tid.py twitter_api.py twitter_daemon.py bluesky_daemon.py email_watch.py)
+    foreach(TOOL_SCRIPT twitter_tid.py twitter_api.py twitter_daemon.py bluesky_daemon.py email_watch.py socks_relay.py)
         if(EXISTS "${TOOLS_DIR}/${TOOL_SCRIPT}")
             add_custom_command(TARGET Hanishiki POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
