@@ -63,7 +63,11 @@ jobs:
           host: windows
           target: desktop
           arch: win64_msvc2019_64
-          modules: 'qtwebengine qtwebchannel qtwebsockets qtpositioning'
+          # ★ qtimageformats — webp/tiff/avif 디코더. 없으면 QImage::load 가 실패해서
+          #   무결성 검사가 멀쩡한 파일을 '손상' 이라고 보고한다. 아카이빙 앱에서
+          #   '손상' 은 사용자가 파일을 지우게 만드는 말이라 그냥 두면 안 된다.
+          #   실측: 정상 16KB webp 와 TIFF 가 '이미지 디코딩 실패 (손상)' 으로 나왔다.
+          modules: 'qtwebengine qtwebchannel qtwebsockets qtpositioning qtimageformats'
           # aqt Qt 6.7.3 는 Qt 모듈 private(Qt6GuiPrivate 등)를 안 담는다 → QXlsx 는
           # third_party/qtzip 의 vendored QZip 헤더 + Qt6::GuiPrivate shim 으로 빌드(CMakeLists 참고).
           cache: true

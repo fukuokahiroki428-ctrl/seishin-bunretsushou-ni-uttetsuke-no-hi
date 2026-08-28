@@ -21,6 +21,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QImage>
+#include <QImageReader>
 #include <QSet>
 #include <QVarLengthArray>
 #include <QTemporaryFile>
@@ -1101,6 +1102,42 @@ QString checkFileIntegrity(const QString &filePath)
     // 이미지 — QImage 로 load 시도 (빠른 검증)
     if (imgExts.contains(ext)) {
         if (size < 100) return QString("너무 작음 (%1 byte)").arg(size);
+
+        // ★ 디코더가 없는 형식을 '손상' 이라고 부르면 안 된다.
+        //   Qt 는 webp/tiff 를 qtimageformats 플러그인으로 읽는데, 그 플러그인이 배포본에
+        //   빠져 있으면 QImage::load 가 그냥 실패한다. avif/heic 는 Qt 6.7 에 디코더가
+        //   아예 없다. 그런데도 "이미지 디코딩 실패 (손상)" 을 찍으면, 아카이빙 앱에서
+        //   멀쩡한 자료를 사용자가 지우게 만든다.
+        //   실측: 플러그인 없는 배포본에서 정상 16KB webp 와 TIFF 가 '손상' 으로 나왔다.
+        //   읽을 수 없는 형식이면 매직 바이트만 보고 정직하게 보고한다.
+        static const QSet<QByteArray> readable = []{
+            QSet<QByteArray> s;
+            for (const QByteArray &f : QImageReader::supportedImageFormats()) s.insert(f);
+            return s;
+        }();
+        const QByteArray extBa = ext.toLatin1();
+        const bool canDecode = readable.contains(extBa)
+                            || (ext == "jpg"  && readable.contains("jpeg"))
+                            || (ext == "tiff" && readable.contains("tif"));
+        if (!canDecode) {
+            QFile f(filePath);
+            if (!f.open(QIODevice::ReadOnly)) return "파일 열기 실패";
+            const QByteArray head = f.read(16);
+            f.close();
+            if (head.size() < 12) return "헤더 읽기 실패";
+            bool magicOk = false;
+            if (ext == "webp")
+                magicOk = head.startsWith("RIFF") && head.mid(8, 4) == "WEBP";
+            else if (ext == "avif" || ext == "heic")
+                magicOk = head.mid(4, 4) == "ftyp";
+            else if (ext == "tiff" || ext == "tif")
+                magicOk = head.startsWith("II*") || head.startsWith("MM");
+            else
+                magicOk = true;   // 판단 근거가 없으면 손상이라 부르지 않는다
+            if (!magicOk) return QString("%1 헤더가 아님 (손상)").arg(ext.toUpper());
+            return QString();     // 더 볼 수단이 없다 — 정상으로 둔다
+        }
+
         QImage img;
         if (!img.load(filePath)) return "이미지 디코딩 실패 (손상)";
         if (img.width() < 1 || img.height() < 1) return "이미지 크기 0";
