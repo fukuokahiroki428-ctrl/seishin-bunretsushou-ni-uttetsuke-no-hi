@@ -2532,6 +2532,52 @@
                          백엔드 getAppInfo() 가 빌드 때 박힌 매크로를 그대로 넘겨준다
                          (CODENAME·APP_VENDOR·APP_NAME_DISPLAY 단일 출처).
                          손으로 적어 두면 이름이 바뀔 때 이 화면만 옛 이름으로 남는다. -->
+                    <!-- ★ 프록시(VPN) — 켜면 '전부' 이 길로 나가야 한다.
+                         Qt·파이썬 데몬·yt-dlp·rclone·번들 크로미움 다섯 갈래 중
+                         하나라도 빠지면 같은 세션이 두 IP 에서 온 것처럼 보여
+                         오히려 더 눈에 띈다. 그래서 부분 적용을 만들지 않았다. -->
+                    <div class="section">
+                        <div class="section-label">프록시 (VPN)</div>
+                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                            켜면 <b>모든 요청</b>이 이 프록시로 나갑니다 — 수집·다운로드·캡처·백업까지 전부.
+                            NordVPN 등의 <b>SOCKS5</b> 주소와 <b>서비스 자격증명</b>(계정 비밀번호가 아닙니다)을 넣으십시오.
+                            <br>비밀번호는 이 컴퓨터에만 본인만 읽을 수 있게 저장되고, 다른 프로그램의 명령줄에 실리지 않습니다.
+                        </p>
+                        <div class="input-row" style="margin-bottom:6px;">
+                            <div class="field" style="flex:2;">
+                                <label class="field-label">주소 (SOCKS5)</label>
+                                <input type="text" class="input" id="proxy-host" placeholder="예) amsterdam.nl.socks.nordhold.net">
+                            </div>
+                            <div class="field" style="width:110px;">
+                                <label class="field-label">포트</label>
+                                <input type="text" class="input" id="proxy-port" placeholder="1080" value="1080">
+                            </div>
+                        </div>
+                        <div class="input-row" style="margin-bottom:6px;">
+                            <div class="field" style="flex:1;">
+                                <label class="field-label">사용자명 <span style="font-weight:400;color:var(--text-tertiary);">· 서비스 자격증명</span></label>
+                                <input type="text" class="input" id="proxy-user" placeholder="service username">
+                            </div>
+                            <div class="field" style="flex:1;">
+                                <label class="field-label">비밀번호</label>
+                                <input type="password" class="input" id="proxy-pass" placeholder="service password">
+                            </div>
+                        </div>
+                        <label class="option-item" style="margin-bottom:8px;">
+                            <input type="checkbox" id="proxy-enabled">
+                            <span>프록시 사용 — 모든 요청을 이 길로 내보냅니다</span>
+                        </label>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <button class="btn btn-primary btn-sm" onclick="saveProxyConfig()">저장하고 적용</button>
+                            <button class="btn btn-secondary btn-sm" onclick="backend&&backend.testProxy&&backend.testProxy()"
+                                    title="앱 요청과 데몬 요청이 각각 어떤 IP 로 나가는지 확인합니다">나가는 IP 확인</button>
+                        </div>
+                        <p style="font-size:11px;color:var(--text-tertiary);margin:8px 0 0;">
+                            켠 뒤에는 <b>반드시 '나가는 IP 확인'</b> 을 눌러 두 줄이 같은 IP 인지 보십시오.
+                            서로 다르면 일부만 프록시를 타는 상태라, 안 쓰느니만 못합니다.
+                        </p>
+                    </div>
+
                     <div class="section">
                         <div class="section-label">앱 정보</div>
                         <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
@@ -3752,7 +3798,7 @@
             const names = {dashboard:'현황 대시보드',twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',niconico:'ニコニコ',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',naikakukai:'内閣会',crawl:'経済産業省',settings:'설정'};
             document.getElementById('toolbar-title').textContent = names[tab] || tab;
             // Load system info when switching to settings
-            if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); if (backend && backend.getLlmStatus) backend.getLlmStatus(); if (window.loadScriptState) loadScriptState(); if (window.archiveRefresh) archiveRefresh(); if (backend && backend.getAiConfig) backend.getAiConfig(); if (backend && backend.getApiOverrides) backend.getApiOverrides(); if (backend && backend.getAppInfo) backend.getAppInfo(); }
+            if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); if (backend && backend.getLlmStatus) backend.getLlmStatus(); if (window.loadScriptState) loadScriptState(); if (window.archiveRefresh) archiveRefresh(); if (backend && backend.getAiConfig) backend.getAiConfig(); if (backend && backend.getApiOverrides) backend.getApiOverrides(); if (backend && backend.getAppInfo) backend.getAppInfo(); if (backend && backend.getProxyConfig) backend.getProxyConfig(); }
             if (tab === 'dashboard' && window.renderDashboard) renderDashboard();   // 캡처 콘솔 홈
             // 해당 플랫폼의 저장된 stats 복원
             const s = platformStats[tab] || {posts:0, media:0, status:'대기'};
@@ -5468,6 +5514,34 @@
         }
         // 앱 정보 — 백엔드가 넘긴 값만 그린다(화면에 이름·판을 적어 두지 않는다).
         //   판(edition)은 한자 이름(예: 上野). 숫자(build)는 기계용이라 작게 곁들인다.
+        // 프록시(VPN) 설정 — 비밀번호는 백엔드가 돌려보내지 않는다(있는지 여부만).
+        function onProxyConfig(o) {
+            if (!o) return;
+            var set = function(id, v) { var e = document.getElementById(id); if (e) e.value = v; };
+            set('proxy-host', o.host || '');
+            set('proxy-port', o.port || 1080);
+            set('proxy-user', o.user || '');
+            var pw = document.getElementById('proxy-pass');
+            if (pw) pw.placeholder = o.hasPass ? '저장돼 있습니다 (바꾸려면 새로 입력)' : 'service password';
+            var cb = document.getElementById('proxy-enabled');
+            if (cb) cb.checked = !!o.enabled;
+        }
+
+        function saveProxyConfig() {
+            if (!backend || !backend.setProxyConfig) return;
+            var v = function(id) { var e = document.getElementById(id); return e ? e.value.trim() : ''; };
+            var host = v('proxy-host');
+            var port = parseInt(v('proxy-port'), 10) || 1080;
+            var user = v('proxy-user');
+            var pass = v('proxy-pass');
+            var on   = !!(document.getElementById('proxy-enabled') || {}).checked;
+            if (on && !host) { alert('프록시 주소를 넣어 주십시오.'); return; }
+            backend.setProxyConfig(host, port, user, pass, on);
+            var pw = document.getElementById('proxy-pass');
+            if (pw) { pw.value = ''; }   // 화면에 남겨 두지 않는다
+            if (backend.getProxyConfig) backend.getProxyConfig();
+        }
+
         function onAppInfo(o) {
             if (!o) return;
             var set = function(id, v) { var e = document.getElementById(id); if (e) e.textContent = v; };
