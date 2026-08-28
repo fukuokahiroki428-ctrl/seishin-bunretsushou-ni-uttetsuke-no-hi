@@ -395,6 +395,28 @@ if(WIN32)
 
     set(WIN_OUTPUT_DIR "$<TARGET_FILE_DIR:Miyo>")
 
+    # ★ UI(html) 를 exe 옆으로 — 이게 없으면 앱이 qrc:/html/index.html 로 폴백하는데,
+    #   그때는 WebChannel transport 가 origin 차이로 안 붙어서 "화면은 뜨는데 버튼이
+    #   전부 죽는" 상태가 된다 (MainWindow.cpp 112~114 주석이 적어 둔 그 증상).
+    #   지금까지는 GitHub Actions 의 Deploy 단계(build.yml:284)만 이 복사를 했다.
+    #   그래서 WINDOWS_BUILD.txt 가 안내하는 로컬 cmake 빌드는 만들자마자 깨져 있었다.
+    #   맥 분기는 121행에서 이미 같은 복사를 하고 있다 — 윈도우만 빠져 있었다.
+    add_custom_command(TARGET Miyo POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/resources/html" "${WIN_OUTPUT_DIR}/html"
+        COMMENT "Bundling UI html (없으면 모든 버튼이 죽는다)"
+    )
+
+    # requirements.txt — 파이썬 패키지 버전 고정. 없으면 코드 안 최소 목록으로 폴백해
+    # 버전 고정이 사라진다 (Common.cpp 의 qWarning 경로).
+    if(EXISTS "${CMAKE_SOURCE_DIR}/../requirements.txt")
+        add_custom_command(TARGET Miyo POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/../requirements.txt" "${WIN_OUTPUT_DIR}/requirements.txt"
+            COMMENT "Bundling requirements.txt"
+        )
+    endif()
+
     # Python tool scripts → <exe_dir>/tools/
     set(TOOLS_DIR "${CMAKE_SOURCE_DIR}/resources/tools")
     add_custom_command(TARGET Miyo POST_BUILD
@@ -463,6 +485,27 @@ if(WIN32)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${EXIFTOOL_WIN}" "${WIN_OUTPUT_DIR}/exiftool.exe"
             COMMENT "Bundling exiftool.exe"
+        )
+    endif()
+    # ★ exiftool.exe 는 PAR 로 묶인 Perl 이라 옆의 exiftool_files\perl5*.dll 이 반드시 있어야
+    #   한다. exe 만 복사하면 Common.cpp 의 탐색이 그것을 채택한 뒤 실행에 실패해서,
+    #   exiftool 이 아예 없을 때보다 원인 찾기가 어려워진다.
+    set(EXIFTOOL_FILES_WIN "${CMAKE_SOURCE_DIR}/resources/tools/exiftool_files")
+    if(EXISTS "${EXIFTOOL_FILES_WIN}")
+        add_custom_command(TARGET Miyo POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${EXIFTOOL_FILES_WIN}" "${WIN_OUTPUT_DIR}/exiftool_files"
+            COMMENT "Bundling exiftool_files (Perl 런타임 — 없으면 exiftool 이 안 뜬다)"
+        )
+    endif()
+
+    # 번들 Chromium — 있으면 exe 옆으로. RealChromeCrawler 가 첫 후보로 여기를 본다.
+    set(CHROMIUM_WIN "${CMAKE_SOURCE_DIR}/resources/chromium")
+    if(EXISTS "${CHROMIUM_WIN}")
+        add_custom_command(TARGET Miyo POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CHROMIUM_WIN}" "${WIN_OUTPUT_DIR}/chromium"
+            COMMENT "Bundling Chromium"
         )
     endif()
 

@@ -1026,6 +1026,16 @@ QProcessEnvironment bundledProcessEnv()
     env.insert("PATH", extraPaths + ":" + env.value("PATH"));
 #endif
 
+    // ★ 파이썬 도구가 자기 데이터를 어디에 둘지 여기서 알려 준다.
+    //   맥 쪽은 이미 이 계약(HANISHIKI_DATA_DIR)을 쓰는데 윈도우 사본은 안 받고 있어서,
+    //   twitter_daemon.py 가 맥 경로를 그대로 써 C:\Users\<사용자>\Library\
+    //   Application Support\カメラ\ 라는 가짜 트리를 사용자 홈에 만들고 있었다
+    //   (실측: 이 기계에 그 폴더와 graphql_hashes.json 이 실제로 있었다).
+    //   이름도 옛 코드네임이었다. 앱과 같은 자리를 쓰게 한다.
+    const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    env.insert("PREDORMITION_DATA_DIR", QDir::toNativeSeparators(dataDir));
+    env.insert("HANISHIKI_DATA_DIR", QDir::toNativeSeparators(dataDir));   // 맥 쪽과 같은 이름도 함께
+
     env.insert("PYTHONDONTWRITEBYTECODE", "1");
     return env;
 }

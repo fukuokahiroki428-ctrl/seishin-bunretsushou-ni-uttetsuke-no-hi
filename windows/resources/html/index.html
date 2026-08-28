@@ -4684,8 +4684,10 @@
             }
         }
         function diagOpenCrashLog() {
-            if (backend && backend.openFolder) {
-                backend.openFolder('~/Library/Logs/DiagnosticReports');
+            // 어느 폴더인지는 백엔드가 운영체제에 맞춰 정한다.
+            // 여기에 경로를 박아 두면 한쪽 판에서 반드시 틀린다 (맥 경로가 박혀 있었다).
+            if (backend && backend.openDiagnosticsFolder) {
+                backend.openDiagnosticsFolder();
             }
         }
         // backend → JS callback for diagnostic info

@@ -4155,6 +4155,31 @@ void MiyoBackend::setStorageMode(const QString &mode)
     }, Qt::QueuedConnection);
 }
 
+void MiyoBackend::openDiagnosticsFolder()
+{
+    // 예전에는 index.html 이 backend.openFolder('~/Library/Logs/DiagnosticReports') 를
+    // 직접 불렀다. 윈도우에서는 openFolder 가 ~ 를 C:\Users\<사용자> 로 펼친 뒤
+    // mkpath 까지 해서, 있지도 않은 C:\Users\<사용자>\Library\Logs\DiagnosticReports 를
+    // 새로 만들고 그 빈 폴더를 열었다. 사용자는 아무 로그도 못 보고 홈에 가짜 맥 트리만 남았다.
+#ifdef Q_OS_MACOS
+    openFolder(QDir::homePath() + "/Library/Logs/DiagnosticReports");
+#elif defined(Q_OS_WIN)
+    // 윈도우에서 실제로 볼 것이 있는 자리 두 곳.
+    //   1) 앱이 직접 남긴 로그 — 대개 이쪽이 답을 갖고 있다.
+    //   2) 윈도우가 남긴 크래시 덤프.
+    const QString appLog = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const QString dumps  = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+                           + "/CrashDumps";
+    // 앱 로그 폴더 하나만 연다 — 대개 이쪽이 답을 갖고 있고, 창을 둘 띄우면 성가시다.
+    openFolder(appLog);
+    // 윈도우 크래시 덤프 자리는 있을 때만 알려 준다. 없는 폴더를 만들어 주지 않는다.
+    if (QDir(dumps).exists())
+        log("윈도우 크래시 덤프도 있습니다: " + QDir::toNativeSeparators(dumps), "info", "settings");
+#else
+    openFolder(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
+#endif
+}
+
 void MiyoBackend::openFolder(const QString &path)
 {
     QString folderPath = path;

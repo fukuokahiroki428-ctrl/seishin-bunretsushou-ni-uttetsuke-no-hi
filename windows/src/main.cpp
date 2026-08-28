@@ -174,12 +174,32 @@ int main(int argc, char *argv[])
                     if (!QDir().rename(appData, parked)) parked.clear();
                 }
                 if (QDir().rename(oldDir, appData)) {
-                    // 치워 둔 잔재(옛 로그 등)를 새 폴더 안으로 되돌린다. 실패해도 치명적이지 않다.
+                    // 치워 둔 잔재를 새 폴더 안으로 되돌린다.
+                    // ★ 예전에는 QDir::Files 만 되돌리고 곧바로 removeRecursively 를 불렀다.
+                    //   그래서 치워 둔 자리에 '폴더'가 있으면 통째로 지워졌다.
+                    //   실제 상황: AI 설치 스크립트(scripts/win_install_ai.ps1)가 앱 첫 실행보다
+                    //   먼저 돌면 %APPDATA%\Predormition\llm 에 모델을 최대 9GB 내려받는다
+                    //   (그 스크립트도 '설치기가 먼저 돌 수도 있으므로' 라고 적어 두었다).
+                    //   그 상태에서 옛 자리가 남아 있으면 이 블록이 llm 을 영영 지웠다.
+                    //   실측: 같은 코드를 떼어 재현하니 model.gguf 가 사라지고 로그 파일만 남았다.
+                    //   폴더도 함께 되돌리고, 되돌리지 못한 것이 남으면 지우지 않는다.
                     if (!parked.isEmpty()) {
                         QDir pd(parked);
-                        for (const QString &f : pd.entryList(QDir::Files | QDir::Hidden))
-                            QFile::rename(parked + "/" + f, appData + "/" + f);
-                        pd.removeRecursively();
+                        const QDir::Filters allEntries =
+                            QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden;
+                        for (const QString &e : pd.entryList(allEntries)) {
+                            const QString from = parked + "/" + e;
+                            const QString to   = appData + "/" + e;
+                            // 옮겨 온 쪽에 같은 이름이 이미 있으면 건드리지 않는다 — 어느 쪽도 잃지 않기 위해서.
+                            if (QFileInfo::exists(to)) continue;
+                            if (!QDir().rename(from, to))
+                                qWarning() << "[startup] 되돌리지 못한 항목:" << from;
+                        }
+                        if (pd.entryList(allEntries).isEmpty())
+                            pd.removeRecursively();
+                        else
+                            qWarning() << "[startup] 되돌리지 못한 것이 남아 보관합니다 (직접 확인하세요):"
+                                       << parked;
                     }
                     qInfo() << "[startup] user data migrated:" << oldDir << "->" << appData;
                     // 비어 버린 옛 조직 폴더는 치운다 (안에 다른 앱이 있으면 rmdir 이 실패하므로 안전)

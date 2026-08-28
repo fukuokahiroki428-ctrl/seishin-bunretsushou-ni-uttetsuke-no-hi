@@ -93,6 +93,10 @@ public slots:
     // Navigation
     void browsePath(const QString &platform);
     void openFolder(const QString &path);
+    // ★ 진단 로그 자리는 운영체제마다 다르다. HTML 에는 전처리기가 없어서
+    //   경로를 JS 에 박아 두면 한쪽에서 반드시 틀린다 (실제로 맥 경로가 박혀 있었다).
+    //   어느 폴더를 열지는 여기서 정한다.
+    void openDiagnosticsFolder();
     void pasteToField(const QString &fieldId);
     void pasteClipboard();
 

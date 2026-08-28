@@ -21,6 +21,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
+#include <QVersionNumber>
 #include <QDateTime>
 #include <QStandardPaths>
 #include <QTimer>
@@ -56,9 +57,23 @@ QString PenChromeCrawler::findChromeExecutable() const
         << "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
         << "/Applications/Arc.app/Contents/MacOS/Arc";
 #elif defined(Q_OS_WIN)
-    QString programFiles = qgetenv("ProgramFiles");
-    QString programFilesX86 = qgetenv("ProgramFiles(x86)");
-    QString localAppData = qgetenv("LOCALAPPDATA");
+    // ★ 번들 Chromium 최우선 — RealChromeCrawler 와 같은 순서로 맞춘다.
+    //   맥 분기는 위에서 번들을 첫 후보로 넣는데(48행) 윈도우 분기에만 빠져 있었다.
+    //   그래서 Chrome/Brave 가 없고 Edge 가 EdgeCore 배치인 기계에서는, 앱 폴더에
+    //   chrome.exe 가 멀쩡히 들어 있는데도 findChromeExecutable() 이 빈 값을 돌려주고
+    //   사이트 미러·PEN 캡쳐가 통째로 안 돌았다. 같은 기계에서 트위터 realCapture 는
+    //   잘 도는 탓에(그쪽은 번들 후보가 있다) 원인을 오판하기 쉽다.
+    //   실측: 이 기계에는 Program Files / (x86) / LocalAppData 어디에도 chrome.exe·
+    //   msedge.exe 가 없고, D:\Predormition\chromium\chrome.exe 와
+    //   C:\Program Files (x86)\Microsoft\EdgeCore\152.0.4191.51 만 있다.
+    {
+        const QString appDir = QCoreApplication::applicationDirPath();
+        candidates << appDir + "/chromium/chrome.exe"
+                   << appDir + "/chromium/chrome-win64/chrome.exe";
+    }
+    QString programFiles = qEnvironmentVariable("ProgramFiles");
+    QString programFilesX86 = qEnvironmentVariable("ProgramFiles(x86)");
+    QString localAppData = qEnvironmentVariable("LOCALAPPDATA");
     if (!programFiles.isEmpty()) {
         candidates << programFiles + "\\Google\\Chrome\\Application\\chrome.exe"
                    << programFiles + "\\Microsoft\\Edge\\Application\\msedge.exe"
@@ -71,6 +86,20 @@ QString PenChromeCrawler::findChromeExecutable() const
     if (!localAppData.isEmpty()) {
         candidates << localAppData + "\\Google\\Chrome\\Application\\chrome.exe"
                    << localAppData + "\\Microsoft\\Edge\\Application\\msedge.exe";
+    }
+    // ★ 요즘 Edge 배치 — ...\Microsoft\EdgeCore\<버전>\msedge.exe
+    //   RealChromeCrawler 에는 있는데 여기에는 없어서, Edge 만 있는 기계에서 못 찾았다.
+    //   버전 폴더가 여러 개면 최신 것을 먼저 쓴다.
+    for (const QString &base : { programFilesX86, programFiles, localAppData }) {
+        if (base.isEmpty()) continue;
+        QDir core(base + "\\Microsoft\\EdgeCore");
+        if (!core.exists()) continue;
+        QStringList vers = core.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        std::sort(vers.begin(), vers.end(), [](const QString &a, const QString &b) {
+            return QVersionNumber::fromString(a) > QVersionNumber::fromString(b);
+        });
+        for (const QString &v : vers)
+            candidates << core.absolutePath() + "/" + v + "/msedge.exe";
     }
 #else
     candidates

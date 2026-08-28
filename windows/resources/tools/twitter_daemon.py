@@ -32,9 +32,46 @@ ENDPOINT_NAMES = [
     "ListLatestTweetsTimeline", "CommunityTweetsTimeline",
 ]
 
-_hash_cache_path = os.path.join(
-    os.path.expanduser("~"), "Library", "Application Support", "カメラ", "graphql_hashes.json"
-)
+# ★ 데이터 폴더는 앱이 환경변수로 알려 준다 (Common.cpp bundledProcessEnv).
+#   예전에는 맥 경로 ~/Library/Application Support/カメラ 가 그대로 박혀 있어서,
+#   윈도우에서 expanduser("~") 가 C:\Users\<사용자> 로 풀리는 바람에
+#   C:\Users\<사용자>\Library\Application Support\カメラ\ 라는 가짜 맥 트리를
+#   사용자 홈에 만들었다. 이름도 옛 코드네임이었다.
+#   환경변수가 없을 때만 판별해서 각 운영체제의 제자리를 쓴다.
+def _default_data_dir():
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "Predormition")
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Predormition")
+    base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "Predormition")
+
+
+_data_dir = (os.environ.get("PREDORMITION_DATA_DIR")
+             or os.environ.get("HANISHIKI_DATA_DIR")
+             or _default_data_dir())
+_hash_cache_path = os.path.join(_data_dir, "graphql_hashes.json")
+try:
+    os.makedirs(_data_dir, exist_ok=True)
+except Exception:
+    pass
+
+# 옛 자리에 쌓여 있던 캐시를 한 번만 이어받는다 (새 자리가 비어 있을 때만).
+try:
+    if not os.path.exists(_hash_cache_path):
+        for _legacy in (
+            os.path.join(os.path.expanduser("~"), "Library", "Application Support",
+                         "カメラ", "graphql_hashes.json"),
+            os.path.join(os.path.expanduser("~"), "Library", "Application Support",
+                         "Miyo", "Predormition", "graphql_hashes.json"),
+        ):
+            if os.path.exists(_legacy):
+                import shutil as _sh
+                _sh.copy2(_legacy, _hash_cache_path)
+                break
+except Exception:
+    pass
 
 
 def _load_cached_hashes():
