@@ -13593,11 +13593,18 @@ void MiyoBackend::startLocalLlm(const QString &modelHint)
     const QString server = dir + "/llama-server.exe";
     if (!QFile::exists(server)) {
         // 원인만 말하면 사용자는 무엇을 해야 할지 모른다 — 할 일을 적는다.
+        // ★ 어디에 있는지까지 말해 준다. 전에는 파일 이름만 알려 줬는데 그 파일이
+        //   배포본에 아예 들어 있지 않아서 사용자가 찾을 수가 없었다.
+        const QString installer = QCoreApplication::applicationDirPath()
+                                + "/scripts/AI_설치_더블클릭.bat";
+        const QString how = QFile::exists(installer)
+            ? QString("   %1 을 두 번 눌러 주세요.").arg(QDir::toNativeSeparators(installer))
+            : QString("   설치 스크립트를 찾지 못했습니다 (%1). 배포본이 온전한지 확인해 주세요.")
+                  .arg(QDir::toNativeSeparators(installer));
         log(QString("❌ AI 엔진이 설치돼 있지 않습니다.\n"
-                    "   설치 위치: %1\n"
-                    "   'AI_설치_더블클릭.bat' 을 실행하면 엔진과 모델을 받습니다.\n"
+                    "   설치 위치: %1\n%2\n"
                     "   (한 번 설치하면 앱을 다시 깔아도 지워지지 않는 자리에 들어갑니다)")
-                .arg(llmInstallDir()),
+                .arg(llmInstallDir(), how),
             "error", "settings");
         getLlmStatus();
         return;

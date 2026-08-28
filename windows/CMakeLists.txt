@@ -409,6 +409,47 @@ if(WIN32)
 
     # requirements.txt — 파이썬 패키지 버전 고정. 없으면 코드 안 최소 목록으로 폴백해
     # 버전 고정이 사라진다 (Common.cpp 의 qWarning 경로).
+    # 페이지 통째 캡쳐용 SingleFile 확장 — 맥 분기(297행)에만 있어서 로컬 윈도우 빌드는
+    # 이 기능이 조용히 빠졌다. CI 의 Deploy 단계는 넣어 주므로 설치본은 영향 없었다.
+    #   실제 파일은 맥 트리에만 있다 — CI 의 Deploy 단계와 같은 폴백을 쓴다.
+    set(SF_SRC "${TOOLS_DIR}/singlefile_extension")
+    if(NOT EXISTS "${SF_SRC}")
+        set(SF_SRC "${CMAKE_SOURCE_DIR}/../mac/chernobyl/resources/tools/singlefile_extension")
+    endif()
+    if(EXISTS "${SF_SRC}")
+        add_custom_command(TARGET Miyo POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${SF_SRC}" "${WIN_OUTPUT_DIR}/tools/singlefile_extension"
+            COMMENT "Bundling SingleFile extension"
+        )
+    endif()
+
+    # 보관함 색인·질의응답 스크립트
+    foreach(ARCHIVE_SCRIPT archive_index.py archive_ask.py)
+        if(EXISTS "${CMAKE_SOURCE_DIR}/../scripts/${ARCHIVE_SCRIPT}")
+            add_custom_command(TARGET Miyo POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_SOURCE_DIR}/../scripts/${ARCHIVE_SCRIPT}"
+                    "${WIN_OUTPUT_DIR}/tools/${ARCHIVE_SCRIPT}"
+                COMMENT "Bundling ${ARCHIVE_SCRIPT}"
+            )
+        endif()
+    endforeach()
+
+    # ★ 로컬 AI 설치 스크립트 — 앱이 "AI_설치_더블클릭.bat 을 실행하세요" 라고 안내하는데
+    #   그 파일이 배포본 어디에도 없었다. 저장소를 clone 할 줄 모르는 사용자에게는
+    #   로컬 AI 를 설치할 길이 사실상 없었다.
+    #   파일 이름에 한글이 있어 CMake 에 개별 경로로 적으면 시스템 코드페이지로 읽혀
+    #   복사가 실패한다(실측: GLOB 도 마찬가지). copy_directory 는 제대로 처리한다.
+    #   .bat 은 %~dp0 로 옆의 ps1 을 부르므로 폴더째 두면 그대로 동작한다.
+    if(EXISTS "${CMAKE_SOURCE_DIR}/../scripts")
+        add_custom_command(TARGET Miyo POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_SOURCE_DIR}/../scripts" "${WIN_OUTPUT_DIR}/scripts"
+            COMMENT "Bundling scripts (로컬 AI 설치 등)"
+        )
+    endif()
+
     if(EXISTS "${CMAKE_SOURCE_DIR}/../requirements.txt")
         add_custom_command(TARGET Miyo POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different

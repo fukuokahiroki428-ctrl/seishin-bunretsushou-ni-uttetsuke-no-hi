@@ -303,6 +303,16 @@ jobs:
                    elseif (Test-Path "../mac/chernobyl/resources/tools/singlefile_extension") { "../mac/chernobyl/resources/tools/singlefile_extension" }
                    else { $null }
           if ($sfSrc) { Copy-Item $sfSrc "$dist/tools/singlefile_extension" -Recurse -Force; Write-Host "  ✔ SingleFile 확장 포함" }
+
+          # ★ 로컬 AI 설치 스크립트 — 앱이 "AI_설치_더블클릭.bat 을 실행하세요" 라고
+          #   안내하는데 배포본에 그 파일이 없었다. .bat 은 %~dp0 로 옆의 ps1 을 부르므로
+          #   폴더째 둔다. CMake 로컬 빌드도 같은 자리(<exe>\scripts)에 둔다.
+          if (Test-Path "../scripts") {
+            Copy-Item "../scripts" "$dist/scripts" -Recurse -Force
+            Write-Host "  ✔ scripts 폴더 포함 (로컬 AI 설치)"
+          } else {
+            Write-Host "  ⚠ scripts 폴더 없음 — 로컬 AI 설치 안내가 헛돈다"
+          }
           else { Write-Host "  ⚠ SingleFile 확장 없음 — 페이지 통째 캡쳐 기능이 비활성" }
 
           # ★ Chromium 번들 — Chrome for Testing (win64, BSD 라이선스)
