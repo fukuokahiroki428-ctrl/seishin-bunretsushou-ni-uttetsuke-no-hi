@@ -4327,8 +4327,31 @@ void MiyoBackend::startCollection(const QString &configJson)
         }
     }
 
-    // Open terminal log window — 병렬이면 각 trackKey마다 별도 터미널 (개별 .command)
+    // ★ 저장 경로 검사 — 임시 디스크는 위에서 확인하는데 정작 저장 경로는 안 봤다.
+    //   비어 있거나 만들 수 없는 경로면 수집은 끝까지 돌지만 파일이 하나도 안 남는다.
+    //   내려받기가 조용히 실패할 뿐이라 사용자는 원인을 알 수 없었다.
+    //   여기서 미리 잡고, 왜 안 되는지 말해 준다.
     QString savePath = config["path"].toString();
+    if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
+    if (savePath.trimmed().isEmpty()) {
+        dbg("EARLY RETURN: 저장 경로 없음", platformName);
+        log("저장 경로가 비어 있습니다 — 이 플랫폼 탭에서 저장 경로를 먼저 정해 주세요.",
+            "error", platformName);
+        runJs(QString("setRunning('%1', false)").arg(platformName));
+        return;
+    }
+    if (!QDir().mkpath(savePath)) {
+        dbg("EARLY RETURN: 저장 경로 생성 실패", platformName);
+        log(QString("저장 경로를 만들 수 없습니다: %1\n"
+                    "   드라이브가 연결돼 있는지, 쓰기 권한이 있는지 확인해 주세요.")
+                .arg(QDir::toNativeSeparators(savePath)),
+            "error", platformName);
+        runJs(QString("setRunning('%1', false)").arg(platformName));
+        return;
+    }
+    config["path"] = savePath;   // ~ 를 펼친 결과를 아래로 넘긴다
+
+    // Open terminal log window — 병렬이면 각 trackKey마다 별도 터미널 (개별 .command)
     openTerminalLog(trackKey, savePath);
 
     // Prevent system sleep during collection
