@@ -9501,7 +9501,14 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 
     // Windows-escape helper (double quotes)
     auto esc = [](const QString &s) -> QString {
-        return "\"" + s + "\"";
+        // ★ 이 .bat 은 setlocal enabledelayedexpansion 으로 돌아간다. 그 상태에서는
+        //   큰따옴표 안이라도 !...! 가 지연 확장(delayed expansion)으로 먹힌다.
+        //   실측: "C:\\temp\\my!folder!\\a.jpg" 를 echo 하면 "C:\\temp\\my.jpg" 가 나오고,
+        //   ^! 로 적으면 그대로 남는다. 저장 폴더 이름에 ! 가 있으면(윈도우에서 허용된다)
+        //   yt-dlp 출력 경로가 통째로 어긋난다.
+        QString q = s;
+        q.replace("!", "^!");
+        return "\"" + q + "\"";
     };
 
     QString argsStr;
