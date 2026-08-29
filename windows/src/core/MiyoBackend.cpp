@@ -4256,7 +4256,14 @@ static QString findBundledTool(const QString &name)
     //     [OK] yt-dlp — 2026.08.19 (C:/Users/.../Roaming/Predormition/tools/yt-dlp.exe)
     //   인데 findBundledTool 은 그 자리를 안 봐서 맨 이름 "yt-dlp" 를 돌려줬고,
     //   PATH 에도 없어서 QProcess 가 시작조차 못 했다.
-    const QStringList dirs = { appDir, appDir + "/tools", Common::userToolsDir() };
+    // ★ 사용자 도구 폴더를 '먼저' 본다 — 새 것이 항상 이기게.
+    //   자가수리는 최신 도구를 %APPDATA%\Predormition\tools 에 받아 둔다. 그런데 exe 옆을
+    //   먼저 보면, 배포본에 딸려 온 옛 사본이 그 최신본을 가려 버린다.
+    //   실측으로 물린 자리다: 배포본의 yt-dlp 2026.07.04 는 유튜브 미디어 요청이 전부
+    //   403 로 막혔고(형식 목록은 나오는데 본문만 거부), 자가수리가 받아 둔 2026.08.19 는
+    //   같은 영상을 4초에 받았다. 그런데 exe 옆이 우선이라 옛 것이 계속 쓰였다.
+    //   yt-dlp 처럼 바깥 서비스를 따라가야 하는 도구는 낡으면 그냥 안 된다.
+    const QStringList dirs = { Common::userToolsDir(), appDir, appDir + "/tools" };
     for (const QString &d : dirs) {
         const QString p = d + "/" + name;
         if (QFile::exists(p)) return p;
