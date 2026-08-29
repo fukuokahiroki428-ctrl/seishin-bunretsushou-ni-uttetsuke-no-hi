@@ -286,6 +286,7 @@ QJsonObject Config::toJson() const
     root["nasAutoReconnect"] = m_nasAutoReconnect;
     root["unixFilenames"] = m_unixFilenames;
     root["maxConcurrent"] = m_maxConcurrent;
+    root["windowGeometry"] = m_windowGeometry;
     root["proxyEnabled"] = m_proxyEnabled;
     root["proxyHost"]    = m_proxyHost;
     root["proxyPort"]    = m_proxyPort;
@@ -329,6 +330,7 @@ void Config::fromJson(const QJsonObject &obj)
     if (obj.contains("nasAutoReconnect")) m_nasAutoReconnect = obj["nasAutoReconnect"].toBool();
     if (obj.contains("unixFilenames")) m_unixFilenames = obj["unixFilenames"].toBool();
     if (obj.contains("maxConcurrent")) m_maxConcurrent = obj["maxConcurrent"].toInt(0);
+    if (obj.contains("windowGeometry")) m_windowGeometry = obj["windowGeometry"].toString();
     if (obj.contains("proxyEnabled")) m_proxyEnabled = obj["proxyEnabled"].toBool(false);
     if (obj.contains("proxyHost"))    m_proxyHost    = obj["proxyHost"].toString();
     if (obj.contains("proxyPort"))    m_proxyPort    = obj["proxyPort"].toInt(1080);

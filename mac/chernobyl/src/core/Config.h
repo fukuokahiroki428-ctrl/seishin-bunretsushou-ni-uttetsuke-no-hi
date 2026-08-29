@@ -128,6 +128,12 @@ public:
     //   ★ 켜면 '전부' 이 경로로 나가야 한다. Qt·파이썬 데몬·yt-dlp·rclone·
     //     번들 크로미움 다섯 갈래 중 하나라도 빠지면 같은 세션이 두 IP 에서 온
     //     것처럼 보여, 프록시를 안 쓰느니만 못하다.
+    // 창 크기·위치. QWidget::saveGeometry() 결과를 base64 로 담는다.
+    //   ★ 왜 저장하나 — 예전엔 켤 때마다 resize(1180, 820) 으로 항상 넓게 열렸다.
+    //     좁게 줄여 써도 다음 실행이면 되돌아가서, 좁은 폭 배치를 쓸 수가 없었다.
+    QString windowGeometry() const { return m_windowGeometry; }
+    void setWindowGeometry(const QString &v) { m_windowGeometry = v; }
+
     bool proxyEnabled() const { return m_proxyEnabled; }
     void setProxyEnabled(bool v) { m_proxyEnabled = v; }
     QString proxyHost() const { return m_proxyHost; }
@@ -173,6 +179,7 @@ private:
     bool m_unixFilenames = false;
     bool m_nasAutoReconnect = true;  // 기본 ON (대부분 원하는 동작)
     int m_maxConcurrent = 0;         // 0 = 플랫폼별 기본값
+    QString m_windowGeometry;
     bool m_proxyEnabled = false;
     QString m_proxyHost;
     int m_proxyPort = 1080;
