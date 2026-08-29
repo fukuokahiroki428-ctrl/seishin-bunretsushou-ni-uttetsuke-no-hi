@@ -289,6 +289,18 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     connect(m_webdav, &WebDavUploader::logMessage, this, [this](const QString &msg, const QString &type) {
         log(msg, type, "settings");
     });
+
+    // ★ 도구 자동 갱신 — 하루에 한 번 확인한다.
+    //   시작 시 한 번만 보면, 한 달 내내 켜 둔 앱은 그동안 낡은 채로 있는다.
+    //   실제로 그래서 멈춘 적이 있다: 두 달 묵은 yt-dlp 가 유튜브 미디어 요청을
+    //   전부 403 로 받았다. 갱신 주기(7일)는 SelfRepair 안에서 다시 따지므로
+    //   매일 불러도 실제 통신은 일주일에 한 번이다.
+    {
+        QTimer *upd = new QTimer(this);
+        upd->setInterval(24 * 60 * 60 * 1000);   // 24시간
+        connect(upd, &QTimer::timeout, this, [] { SelfRepair::runPeriodicUpdateAsync(); });
+        upd->start();
+    }
     // ★ 앱 시작 시 이전 세션의 좀비 capture Chrome 청소
     //   매치 패턴 3종 — 일반 Chrome 영향 없음:
     //     1) chrome_capture_profile (capture 전용 폴더)

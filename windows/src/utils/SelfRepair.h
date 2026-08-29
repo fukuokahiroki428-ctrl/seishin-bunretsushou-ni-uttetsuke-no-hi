@@ -216,6 +216,139 @@ inline bool repairTool(ToolStatus &st)
 }
 
 // 잔존 상태 정리 — 캡쳐 Chrome 프로필 stale lock, temp 폴더
+// ═════════════════════════════════════════════════════════════════════════
+// 도구 자동 갱신 — 1년을 방치해도 도는 것이 목표라면 이것이 핵심이다.
+//
+// 왜 필요한가 (실측):
+//   2026.08.29 에 유튜브 다운로드가 통째로 멈췄다. 코드 버그가 아니었다.
+//   배포본에 딸려 온 yt-dlp 2026.07.04 가 유튜브의 변경을 못 따라가
+//   미디어 요청이 전부 403 로 막혔다(형식 목록은 나오는데 본문만 거부).
+//   최신 2026.08.19 로 바꾸니 같은 영상을 4초에 받았다. 두 달 만에 정지한 것이다.
+//
+//   그런데 기존 자가진단은 이 고장을 원리적으로 못 잡는다 — 낡은 yt-dlp 도
+//   --version 은 멀쩡히 출력하므로 [OK] 로 통과한다. 그리고 repairTool 은
+//   고장 시 '번들본 재복사' 를 하는데, 그것은 더 낡은 것으로 되돌리는 일이다.
+//   즉 지금 구조는 낡음에 대해 무방비일 뿐 아니라 낡는 쪽으로 민다.
+//
+// 어떻게 하는가:
+//   yt-dlp 자신의 -U 를 쓴다. 배포처·서명·교체를 yt-dlp 가 알아서 한다.
+//   단, -U 는 '자기가 실행된 파일' 을 덮으므로 쓰기 가능한 자리여야 한다.
+//   그래서 사용자 도구 폴더의 사본을 갱신한다. findBundledTool 이 그 폴더를
+//   먼저 보므로 갱신 결과가 그대로 쓰인다.
+//
+// 안전 규칙:
+//   · 갱신 전에 백업한다. 갱신 후 실행이 안 되면 백업으로 되돌린다.
+//     새 것이 망가졌다고 앱이 못 쓰게 되면 자동 갱신은 없느니만 못하다.
+//   · 성공했을 때만 시각을 기록한다. 오프라인이면 다음 기회에 다시 시도한다.
+//   · 네트워크가 없거나 느려도 앱 시작을 막지 않는다 (낮은 우선순위 스레드).
+// ═════════════════════════════════════════════════════════════════════════
+
+// ★ 실행하기 전에 '실행 파일처럼 생겼는지' 부터 본다.
+//   망가진 파일을 QProcess 로 돌리면 윈도우가 "이 앱을 실행할 수 없습니다" 대화상자를
+//   띄우고, 그러면 자가진단 스레드가 사람이 누를 때까지 그대로 멈춘다.
+//   실측: 6바이트 쓰레기로 바꿔 놓고 앱을 띄우니 자가진단이 몇 분씩 끝나지 않았다.
+//   (재현이 들쭉날쭉했다 — 더더욱 실행에 맡기면 안 된다는 뜻이다.)
+//   PE 서명(MZ)과 최소 크기만 봐도 이 사고는 전부 막힌다.
+inline bool looksLikeExecutable(const QString &path, qint64 minBytes = 1024 * 512)
+{
+    QFileInfo fi(path);
+    if (!fi.exists() || fi.size() < minBytes) return false;
+#ifdef Q_OS_WIN
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    const QByteArray head = f.read(2);
+    f.close();
+    return head == "MZ";
+#else
+    return fi.isExecutable();
+#endif
+}
+
+inline QString updateStampPath(const QString &name)
+{
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                        + "/selfrepair";
+    QDir().mkpath(dir);
+    return dir + "/last_update_" + name + ".txt";
+}
+
+inline bool updateDue(const QString &name, int everyDays)
+{
+    QFile f(updateStampPath(name));
+    if (!f.open(QIODevice::ReadOnly)) return true;          // 기록이 없으면 해야 한다
+    const qint64 last = QString::fromUtf8(f.readAll()).trimmed().toLongLong();
+    f.close();
+    if (last <= 0) return true;
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    return (now - last) >= qint64(everyDays) * 86400;
+}
+
+inline void markUpdated(const QString &name)
+{
+    QFile f(updateStampPath(name));
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        f.write(QByteArray::number(QDateTime::currentSecsSinceEpoch()));
+}
+
+// yt-dlp 를 최신으로. 이미 최신이면 아무 일도 하지 않는다.
+// 반환: 사람에게 보여 줄 한 줄 (빈 문자열이면 이번엔 할 일이 없었다는 뜻)
+inline QString updateYtDlpIfDue(int everyDays = 7, bool force = false)
+{
+    const QString name = "yt-dlp";
+    if (!force && !updateDue(name, everyDays)) return QString();
+
+    const QString userCopy = userToolsDir() + "/" + name + exeSuffix();
+
+    // 사용자 폴더에 사본이 없으면 번들본을 씨앗으로 깐다 (-U 는 쓰기 가능한 자리가 필요하다)
+    if (!QFile::exists(userCopy)) {
+        QString bundled;
+        for (const QString &p : toolCandidates(name)) {
+            if (p.startsWith(userToolsDir())) continue;
+            if (QFile::exists(p)) { bundled = p; break; }
+        }
+        if (bundled.isEmpty()) return QStringLiteral("[UPD]  yt-dlp — 원본이 없어 갱신을 건너뜁니다\n");
+        if (!QFile::copy(bundled, userCopy))
+            return QStringLiteral("[UPD]  yt-dlp — 갱신용 사본을 만들지 못했습니다\n");
+        makeExecutable(userCopy);
+    }
+
+    // 망가진 사본이면 갱신을 시도하지 않는다 — 아래 자가복구가 번들본으로 되살린다.
+    if (!looksLikeExecutable(userCopy))
+        return QStringLiteral("[UPD]  yt-dlp — 사본이 온전하지 않아 갱신을 건너뜁니다 (복구에 맡김)\n");
+
+    const QString before = checkTool(name).version;
+
+    // 백업 — 갱신이 잘못되면 되돌린다
+    const QString backup = userCopy + ".prev";
+    QFile::remove(backup);
+    QFile::copy(userCopy, backup);
+
+    QProcess p;
+    p.start(Common::ansiSafePath(userCopy), QStringList() << "-U");
+    if (!p.waitForStarted(5000) || !p.waitForFinished(180000)) {
+        p.kill();
+        QFile::remove(backup);
+        return QStringLiteral("[UPD]  yt-dlp — 갱신 시도가 응답하지 않아 중단했습니다 (기존 것 유지)\n");
+    }
+    const QString out = QString::fromUtf8(p.readAllStandardOutput() + p.readAllStandardError()).trimmed();
+
+    // 갱신 뒤 반드시 확인한다 — 새 것이 안 돌면 되돌린다
+    const ToolStatus after = checkTool(name);
+    if (!after.runs) {
+        QFile::remove(userCopy);
+        if (QFile::copy(backup, userCopy)) makeExecutable(userCopy);
+        QFile::remove(backup);
+        return QStringLiteral("[UPD]  yt-dlp — 갱신본이 실행되지 않아 이전 것으로 되돌렸습니다\n");
+    }
+    QFile::remove(backup);
+    markUpdated(name);
+
+    if (!before.isEmpty() && after.version == before)
+        return QString("[UPD]  yt-dlp — 이미 최신 (%1)\n").arg(after.version);
+    return QString("[UPD]  yt-dlp — 갱신됨: %1 → %2\n")
+               .arg(before.isEmpty() ? QStringLiteral("(모름)") : before, after.version);
+}
+
 inline QStringList cleanStaleState()
 {
     QStringList cleaned;
@@ -405,6 +538,10 @@ inline QString runStartupMaintenance()
     report += "═ SelfRepair 자가진단 " + QDateTime::currentDateTime().toString(Qt::ISODate) + " ═\n";
     report += "appDir: " + appDir() + "\n";
 
+    // ★ 검사보다 갱신을 먼저 한다. 낡은 것을 검사해 [OK] 를 찍어 봐야 소용없다.
+    //   (실측: 두 달 묵은 yt-dlp 도 --version 은 통과하는데 유튜브는 전부 403 이었다)
+    report += updateYtDlpIfDue();
+
     const QStringList tools = {"yt-dlp", "ffmpeg", "python", "exiftool", "rclone"};
     int broken = 0;
     for (const QString &t : tools) {
@@ -450,6 +587,20 @@ inline QString runStartupMaintenance()
 inline void runStartupMaintenanceAsync()
 {
     QThread *t = QThread::create([] { runStartupMaintenance(); });
+    QObject::connect(t, &QThread::finished, t, &QObject::deleteLater);
+    t->start(QThread::LowPriority);
+}
+
+// ★ 켜 두고 쓰는 기계를 위한 진입점.
+//   시작 시 한 번만 보면, 한 달 내내 켜 둔 앱은 그 한 달 동안 낡은 채로 있는다.
+//   백엔드가 하루에 한 번 이것을 부른다. 갱신 주기(7일)는 안에서 다시 따지므로
+//   매일 불러도 실제 통신은 일주일에 한 번뿐이다.
+inline void runPeriodicUpdateAsync()
+{
+    QThread *t = QThread::create([] {
+        const QString line = updateYtDlpIfDue();
+        if (!line.isEmpty()) qInfo().noquote() << "[SelfRepair]" << line.trimmed();
+    });
     QObject::connect(t, &QThread::finished, t, &QObject::deleteLater);
     t->start(QThread::LowPriority);
 }
