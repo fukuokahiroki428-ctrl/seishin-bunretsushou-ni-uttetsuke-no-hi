@@ -182,6 +182,28 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
         return;
     }
     if (m_backend) m_backend->log(QString("Chrome 발견: %1").arg(chrome), "info", "crawl");
+    // ★ 어떤 브라우저를 쓰는지 분명히 알린다.
+    //   번들 Chromium 이 없으면 사용자가 설치한 브라우저를 빌려 쓰게 되는데, 그때는
+    //   그 브라우저의 신원·확장·설정이 따라온다. 조용히 넘어갈 일이 아니다.
+    //   (실측: Edge 로 떨어지면 새 프로필이어도 윈도우 계정으로 암묵적 로그인이 됐다.
+    //    지금은 그것을 끄는 플래그를 주지만, 애초에 번들을 쓰는 편이 낫다.)
+    {
+        const QString appDir = QCoreApplication::applicationDirPath();
+        const bool bundled = chrome.startsWith(appDir, Qt::CaseInsensitive);
+        if (m_backend) {
+            if (bundled) {
+                m_backend->log(QString("캡쳐 브라우저: 앱 내부 Chromium — %1").arg(chrome),
+                               "info", "crawl");
+            } else {
+                m_backend->log(QString("⚠ 캡쳐 브라우저: 앱 내부 Chromium 이 없어 시스템에 설치된 "
+                                       "브라우저를 씁니다 — %1\n"
+                                       "   계정 연동·동기화는 껐지만, 내 브라우저를 빌려 쓰는 것이므로 "
+                                       "앱 내부 Chromium 을 넣어 두는 편이 안전합니다.")
+                                   .arg(chrome), "warning", "crawl");
+            }
+        }
+    }
+
 
     // ★ 앱 전용 영구 프로필 — 임시 폴더에 매번 새로 만들지 않고 한 곳에 고정.
     //   m_userDataDir이 외부에서 setUserDataDir로 미리 설정됐으면 그 경로 사용 (병렬 trackKey별 분리).
@@ -262,9 +284,34 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
         args << QString("--remote-debugging-port=%1").arg(m_debugPort);
         if (!m_useUserProfile) {
             args << "--user-data-dir=" + m_userDataDir;
-            // ★ 시크릿 모드 — 임시 프로필이라도 incognito 윈도우로 띄움. 흔적 안 남음.
+            // ★ 시크릿 모드 — 임시 프로필이라도 사생활 보호 창으로 띄움. 흔적 안 남음.
             //   CDP Network.setCookie 로 주입하는 토큰 (auth_token/ct0/sessionid 등) 은 정상 작동.
-            args << "--incognito";
+            //
+            // ★★ Edge 는 --incognito 를 무시한다. 그리고 새 프로필이어도 윈도우 계정으로
+            //     '암묵적 로그인(implicit signin)' 을 해 버린다.
+            //     실측(이 기계, EdgeCore 153.0.4234.6):
+            //       msedge.exe --user-data-dir=<빈 폴더> --incognito 로 띄웠더니
+            //         · InPrivate 가 아니라 일반 창이 떴고 (edge://settings/profiles)
+            //         · <프로필>/Default/Preferences 의 account_info 에 사용자의
+            //           개인 마이크로소프트 계정이 그대로 들어가 있었다
+            //         · signin.allowed = true, 확장 프로그램 service worker 까지 로드됨
+            //     즉 Chrome 이 안 깔린 기계에서는 캡쳐가 사용자 개인 신원으로 돌고 있었다.
+            //     Edge 는 --inprivate 를 쓰고, 암묵적 로그인·계정 연동을 명시적으로 끈다.
+            const QString exeName = QFileInfo(chrome).fileName().toLower();
+            if (exeName.contains("msedge")) {
+                args << "--inprivate"
+                     << "--disable-features=msImplicitSignin,msEdgeIdentityIntegration,"
+                        "msSingleSignOnOSForPrimaryAccount,msWebOAuth,EdgeAutofill,"
+                        "msEdgeShoppingIO,msEntityExtraction"
+                     << "--no-service-autorun"
+                     << "--disable-background-mode";
+            } else {
+                args << "--incognito";
+            }
+            // 어느 브라우저든 계정 연동은 끈다. 여기서 로그인은 CDP 로 주입하는 쿠키뿐이어야 한다.
+            args << "--disable-signin-promo"
+                 << "--disable-account-consistency"
+                 << "--disable-sync-preferences";
         }
         // ★ --disable-blink-features=AutomationControlled 제거 — Chrome이 보안 경고 띄움.
         //   대신 onWsConnected에서 Page.addScriptToEvaluateOnNewDocument로 JS 단에서 webdriver 가림.

@@ -160,6 +160,28 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
         return;
     }
     if (m_backend) m_backend->log(QString("Chrome 발견: %1").arg(chrome), "info", "crawl");
+    // ★ 어떤 브라우저를 쓰는지 분명히 알린다.
+    //   번들 Chromium 이 없으면 사용자가 설치한 브라우저를 빌려 쓰게 되는데, 그때는
+    //   그 브라우저의 신원·확장·설정이 따라온다. 조용히 넘어갈 일이 아니다.
+    //   (실측: Edge 로 떨어지면 새 프로필이어도 윈도우 계정으로 암묵적 로그인이 됐다.
+    //    지금은 그것을 끄는 플래그를 주지만, 애초에 번들을 쓰는 편이 낫다.)
+    {
+        const QString appDir = QCoreApplication::applicationDirPath();
+        const bool bundled = chrome.startsWith(appDir, Qt::CaseInsensitive);
+        if (m_backend) {
+            if (bundled) {
+                m_backend->log(QString("캡쳐 브라우저: 앱 내부 Chromium — %1").arg(chrome),
+                               "info", "crawl");
+            } else {
+                m_backend->log(QString("⚠ 캡쳐 브라우저: 앱 내부 Chromium 이 없어 시스템에 설치된 "
+                                       "브라우저를 씁니다 — %1\n"
+                                       "   계정 연동·동기화는 껐지만, 내 브라우저를 빌려 쓰는 것이므로 "
+                                       "앱 내부 Chromium 을 넣어 두는 편이 안전합니다.")
+                                   .arg(chrome), "warning", "crawl");
+            }
+        }
+    }
+
 
     // ★ 앱 전용 영구 프로필 — 임시 폴더에 매번 새로 만들지 않고 한 곳에 고정.
     //   m_userDataDir이 외부에서 setUserDataDir로 미리 설정됐으면 그 경로 사용 (병렬 trackKey별 분리).
@@ -238,6 +260,26 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
         args << QString("--remote-debugging-port=%1").arg(m_debugPort);
         if (!m_useUserProfile) {
             args << "--user-data-dir=" + m_userDataDir;
+        }
+        // ★★ 캡쳐 브라우저가 사용자 개인 신원으로 도는 것을 막는다.
+        //   Edge 는 새 프로필이어도 윈도우 계정으로 '암묵적 로그인' 을 해 버린다.
+        //   실측(이 기계, EdgeCore 153.0.4234.6): 빈 폴더를 --user-data-dir 로 주고 띄웠더니
+        //   <프로필>/Default/Preferences 의 account_info 에 사용자의 개인 마이크로소프트
+        //   계정이 들어가 있었고 signin.allowed=true, 확장 프로그램까지 로드됐다.
+        //   Chrome 이 안 깔린 기계에서는 findChromeExecutable() 이 Edge 를 고르므로,
+        //   사이트 미러가 사용자 본인 신원으로 남의 사이트를 긁고 있었다는 뜻이다.
+        //   이 크롤러는 로그인 유지를 위해 지속 프로필을 쓰므로 InPrivate 는 걸지 않되,
+        //   브라우저가 스스로 계정을 끌어오는 것만은 확실히 끊는다.
+        {
+            const QString exeName = QFileInfo(chrome).fileName().toLower();
+            if (exeName.contains("msedge")) {
+                args << "--disable-features=msImplicitSignin,msEdgeIdentityIntegration,"
+                        "msSingleSignOnOSForPrimaryAccount,msWebOAuth,EdgeAutofill"
+                     << "--no-service-autorun";
+            }
+            args << "--disable-signin-promo"
+                 << "--disable-account-consistency"
+                 << "--disable-sync";
         }
         // ★ --disable-blink-features=AutomationControlled 제거 — Chrome이 보안 경고 띄움.
         //   대신 onWsConnected에서 Page.addScriptToEvaluateOnNewDocument로 JS 단에서 webdriver 가림.
