@@ -58,6 +58,11 @@ private:
     HanishikiBackend *m_backend = nullptr;
     PenBackend *m_penBackend = nullptr;
     QMenu *m_dockMenu = nullptr;
+    QMenu *m_platformMenu = nullptr;   // 상단 막대의 '기능' 메뉴
+public:
+    // 화면이 뜬 뒤 사이드바에서 실제 항목을 읽어 '기능' 메뉴를 채운다.
+    void populatePlatformMenu();
+private:
 
 #ifdef Q_OS_MACOS
     IOPMAssertionID m_sleepAssertion = 0;
