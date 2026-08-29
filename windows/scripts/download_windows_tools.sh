@@ -1,7 +1,7 @@
 #!/bin/bash
 # ════════════════════════════════════════════════════════════════
 # Windows .exe 도구 자동 다운로드
-#   Mac/Linux 에서 실행 → windows/miyo_cpp/resources/tools/ 에 배치
+#   Mac/Linux 에서 실행 → windows/resources/tools/ 에 배치
 #   사용자가 windows ZIP 받으면 도구 다 들어있게 만듦
 # ════════════════════════════════════════════════════════════════
 
@@ -66,25 +66,45 @@ else
     VER=$(curl -sS "https://exiftool.org/ver.txt" | tr -d '\n\r ')
     if [ -z "$VER" ]; then VER="13.59"; fi
     echo -e "  ${CYAN}→ exiftool ${VER} 다운로드 (~12MB)...${RESET}"
-    curl -L -sS -o "$TMP_DIR/exiftool.zip" \
+    # ★ exiftool.org 는 버전별 zip 을 직접 두지 않는다(구버전 링크는 404). CI 와 같은
+    #   순서로 미러를 훑는다 — oliverbetz.de 가 실제 ZIP 을 주고, SourceForge 는 폴백.
+    #   예전에는 SourceForge 만 봤는데 HTML 이 내려오는 날이 있었고, 그러면 아래 unzip 이
+    #   실패하면서 set -e 가 스크립트를 통째로 끝냈다 — 뒤의 rclone·deno 는 실행조차
+    #   안 됐다. deno 는 yt-dlp 의 JS 런타임이라 없으면 YouTube 추출에서 포맷이 빠진다.
+    EXIF_OK=0
+    for U in \
+        "https://oliverbetz.de/cms/files/Artikel/ExifTool-for-Windows/exiftool-${VER}_64.zip" \
         "https://sourceforge.net/projects/exiftool/files/exiftool-${VER}_64.zip/download"
-    cd "$TMP_DIR"
-    unzip -q exiftool.zip
-    # 파일명이 exiftool(-k).exe 인 경우 rename
-    if [ -f "exiftool(-k).exe" ]; then
-        mv "exiftool(-k).exe" exiftool.exe
-    fi
-    if [ -f "exiftool.exe" ]; then
-        cp exiftool.exe "$TOOLS_DIR/"
-        # exiftool_files 폴더도 함께 (Perl runtime + 라이브러리)
-        if [ -d "exiftool_files" ]; then
-            cp -R exiftool_files "$TOOLS_DIR/"
+    do
+        curl -L -sS -A "Mozilla/5.0" -o "$TMP_DIR/exiftool.zip" "$U" || continue
+        # 진짜 ZIP 인지 본다 (HTML 을 받아 놓고 압축을 푸는 사고 방지) — PK\x03\x04
+        if [ "$(head -c 2 "$TMP_DIR/exiftool.zip" 2>/dev/null)" = "PK" ]; then
+            EXIF_OK=1; break
         fi
-        echo -e "  ${GREEN}✓ 완료${RESET} ($(ls -lh "$TOOLS_DIR/exiftool.exe" | awk '{print $5}'))"
+        echo -e "  ${YELLOW}  · ZIP 이 아님 (다음 미러 시도): ${U}${RESET}"
+    done
+    cd "$TMP_DIR"
+    if [ "$EXIF_OK" != "1" ] || ! unzip -q exiftool.zip; then
+        echo -e "  ${RED}✗ exiftool 내려받기 실패 — 건너뛰고 계속합니다${RESET}"
+        rm -f exiftool.zip
+        cd "$SCRIPT_DIR" 2>/dev/null || cd - >/dev/null
     else
-        echo -e "  ${RED}✗ 실패 — exiftool.exe 추출 못함${RESET}"
+        # 파일명이 exiftool(-k).exe 인 경우 rename
+        if [ -f "exiftool(-k).exe" ]; then
+            mv "exiftool(-k).exe" exiftool.exe
+        fi
+        if [ -f "exiftool.exe" ]; then
+            cp exiftool.exe "$TOOLS_DIR/"
+            # exiftool_files 폴더도 함께 (Perl runtime + 라이브러리)
+            if [ -d "exiftool_files" ]; then
+                cp -R exiftool_files "$TOOLS_DIR/"
+            fi
+            echo -e "  ${GREEN}✓ 완료${RESET} ($(ls -lh "$TOOLS_DIR/exiftool.exe" | awk '{print $5}'))"
+        else
+            echo -e "  ${RED}✗ 실패 — exiftool.exe 추출 못함${RESET}"
+        fi
+        rm -rf exiftool.exe exiftool_files exiftool.zip
     fi
-    rm -rf exiftool.exe exiftool_files exiftool.zip
 fi
 
 # ─── 4. rclone.exe (WebDAV/SFTP/S3 고속 백업) ───────────────────
@@ -146,10 +166,23 @@ echo -e "${BOLD}${CYAN}═══════════════════
 echo -e "${BOLD}${GREEN}  ✅ 완료 — 다운로드된 도구:${RESET}"
 echo -e "${BOLD}${CYAN}═══════════════════════════════════════════════════════════════${RESET}"
 ls -lh "$TOOLS_DIR"/*.exe 2>/dev/null
+# ★ 한 단계가 실패해도 나머지는 계속 받으므로, 무엇이 빠졌는지 분명히 말해 준다.
+#   "완료" 만 찍고 끝나면 사용자는 deno 가 없는 줄 모른 채 YouTube 가 반만 되는 것을 겪는다.
+MISSING=""
+for T in yt-dlp.exe ffmpeg.exe ffprobe.exe exiftool.exe rclone.exe deno.exe; do
+    [ -f "$TOOLS_DIR/$T" ] || MISSING="$MISSING $T"
+done
+if [ -n "$MISSING" ]; then
+    echo ""
+    echo -e "${YELLOW}⚠ 빠진 도구:${RESET}$MISSING"
+    echo -e "   다시 실행하거나(--force) 해당 배포처에서 직접 받아 $TOOLS_DIR 에 두세요."
+    echo -e "   (deno 가 없으면 yt-dlp 의 YouTube 포맷 추출이 일부 빠집니다)"
+fi
 echo ""
 echo -e "${YELLOW}다음 단계:${RESET}"
-echo -e "  1. windows/miyo_cpp/ 폴더를 Windows 머신으로 복사"
-echo -e "  2. Qt 6.7+ + CMake 3.20+ 설치"
-echo -e "  3. build_windows.bat 실행"
-echo -e "  4. dist/Chernobyl_win/Chernobyl.exe 동작 확인"
+echo -e "  1. windows/ 폴더를 Windows 머신으로 복사"
+echo -e "  2. Qt 6.7+ (MSVC 빌드) + CMake 3.20+ 설치"
+echo -e "     ※ MinGW Qt 로는 안 됩니다 — Qt 가 MinGW 용 QtWebEngine 을 배포하지 않습니다."
+echo -e "  3. windows/build_windows.bat 실행"
+echo -e "  4. dist/win/Predormition.exe 동작 확인 (predormition.iss 가 이 폴더를 패키징)"
 echo ""

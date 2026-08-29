@@ -1,6 +1,11 @@
 @echo off
 REM ═══════════════════════════════════════════
-REM ABIWA Windows Build Script
+REM Predormition Windows Build Script (MSVC 전용 · 사전 준비 안내 포함)
+REM ═══════════════════════════════════════════
+REM ★ 같은 이름의 스크립트가 둘이다. 정본은 windows\build_windows.bat 이다 —
+REM   그쪽이 Qt 자동 탐지 · windeployqt · 도구 번들 · zip 까지 한다.
+REM   이 파일은 사전 준비를 자세히 적어 둔 MSVC 전용 변형이다.
+REM   결과물 폴더는 양쪽 다 dist\win 으로 맞춰 두었다 (predormition.iss 가 보는 자리).
 REM ═══════════════════════════════════════════
 REM
 REM 사전 준비:
@@ -24,14 +29,14 @@ REM    - ffmpeg: https://www.gyan.dev/ffmpeg/builds/
 REM
 REM 사용법:
 REM   1. "x64 Native Tools Command Prompt for VS 2022" 열기
-REM   2. cd <miyo_cpp 폴더>
+REM   2. cd <windows 폴더>
 REM   3. scripts\build_windows.bat
 REM ═══════════════════════════════════════════
 
 setlocal enabledelayedexpansion
 
 echo =========================================
-echo   ABIWA Windows Build
+echo   Predormition Windows Build
 echo =========================================
 
 REM Check Qt
@@ -73,7 +78,8 @@ if !errorlevel! neq 0 (
 
 set "SRC_DIR=%~dp0.."
 set "BUILD_DIR=%SRC_DIR%\build_win"
-set "INSTALL_DIR=%SRC_DIR%\dist\ABIWA"
+REM ★ predormition.iss 가 dist\win\* 를 패키징한다 — 이름을 그것에 맞춘다.
+set "INSTALL_DIR=%SRC_DIR%\dist\win"
 
 echo [build] Source: %SRC_DIR%
 echo [build] Build:  %BUILD_DIR%
@@ -124,8 +130,8 @@ echo.
 echo Next steps:
 echo   1. windeployqt should have run automatically
 echo   2. Run scripts\bundle_python_win.bat "%BUILD_DIR%\Release"
-echo      (or the directory containing ABIWA.exe)
-echo   3. Test: "%BUILD_DIR%\Release\ABIWA.exe"
+echo      (or the directory containing Predormition.exe)
+echo   3. Test: "%BUILD_DIR%\Release\Predormition.exe"
 echo.
 
 endlocal

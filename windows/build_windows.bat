@@ -11,7 +11,7 @@ REM 사용법:
 REM   1) Qt6 설치 경로를 QT_DIR 환경변수에 설정 (예: C:\Qt\6.7.0\mingw_64)
 REM      또는 아래 SET QT_DIR=... 줄 직접 수정
 REM   2) build_windows.bat 더블클릭
-REM   3) 결과: dist\Predormition_win\Predormition.exe + 모든 DLL
+REM   3) 결과: dist\win\Predormition.exe + 모든 DLL (predormition.iss 가 그대로 패키징)
 REM ═════════════════════════════════════════════════════════════════
 
 setlocal enabledelayedexpansion
@@ -19,17 +19,28 @@ cd /d "%~dp0"
 
 REM ─── Qt 경로 자동 탐지 ──────────────────────────────────────────
 if "%QT_DIR%"=="" (
+    REM ★ MSVC 를 먼저 본다. Qt 는 MinGW 용 QtWebEngine 을 배포하지 않는다 —
+    REM   이 앱은 WebEngine 이 UI 그 자체라 MinGW Qt 로는 설정 단계에서 막힌다.
+    REM   예전에는 mingw_64 를 먼저 찾아서, MSVC 가 깔려 있어도 MinGW 를 골라
+    REM   "Qt6WebEngineWidgets 를 찾을 수 없다" 로 끝났다.
     for %%V in (6.8.0 6.7.3 6.7.2 6.7.1 6.7.0 6.6.0 6.5.3 6.5.2 6.5.1 6.5.0) do (
-        if exist "C:\Qt\%%V\mingw_64\bin\qmake.exe" (
-            set "QT_DIR=C:\Qt\%%V\mingw_64"
+        if exist "C:\Qt\%%V\msvc2022_64\bin\qmake.exe" (
+            set "QT_DIR=C:\Qt\%%V\msvc2022_64"
             goto :qt_found
         )
         if exist "C:\Qt\%%V\msvc2019_64\bin\qmake.exe" (
             set "QT_DIR=C:\Qt\%%V\msvc2019_64"
             goto :qt_found
         )
-        if exist "C:\Qt\%%V\msvc2022_64\bin\qmake.exe" (
-            set "QT_DIR=C:\Qt\%%V\msvc2022_64"
+    )
+    REM MSVC 가 하나도 없을 때만 MinGW 를 본다 — 되기는 어렵지만 이유는 알려 준다.
+    for %%V in (6.8.0 6.7.3 6.7.2 6.7.1 6.7.0 6.6.0 6.5.3 6.5.2 6.5.1 6.5.0) do (
+        if exist "C:\Qt\%%V\mingw_64\bin\qmake.exe" (
+            set "QT_DIR=C:\Qt\%%V\mingw_64"
+            echo [WARN] MSVC 용 Qt 가 없어 MinGW Qt 를 씁니다: !QT_DIR!
+            echo        Qt 는 MinGW 용 QtWebEngine 을 배포하지 않습니다. 이 앱은 WebEngine 이
+            echo        UI 그 자체라 여기서 막힐 가능성이 큽니다. Qt 설치 관리자에서
+            echo        MSVC 2019/2022 64-bit 컴포넌트를 추가하시는 편이 확실합니다.
             goto :qt_found
         )
     )
@@ -102,7 +113,11 @@ if %errorlevel% neq 0 (
 cd ..
 
 REM ─── 배포 디렉토리 ──────────────────────────────────────────────
-set "DIST_DIR=dist\Predormition_win"
+REM ★ predormition.iss 가 dist\win\* 를 패키징한다. 여기서 다른 이름을 쓰면
+REM   문서대로 따라가도 ISCC 가 "No files found matching dist\win\*" 로 실패한다.
+REM   (반대로 dist\win 을 손으로 만들어 두면, 이 스크립트가 다음 실행에서 그것을
+REM    지우지 않아 옛 exe 가 든 설치본이 조용히 나온다.)
+set "DIST_DIR=dist\win"
 if exist "%DIST_DIR%" rmdir /S /Q "%DIST_DIR%"
 mkdir "%DIST_DIR%"
 
@@ -153,7 +168,7 @@ powershell -Command "Compress-Archive -Path '%DIST_DIR%\*' -DestinationPath '%DI
 
 echo.
 echo ─────────────────────────────────────────────────────────
-echo ✅ 빌드 완료!
+echo ✅ 빌드 완료^!
 echo    실행파일: %DIST_DIR%\Predormition.exe
 echo    압축본:   %DIST_DIR%.zip
 echo ─────────────────────────────────────────────────────────
