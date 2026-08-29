@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "Config.h"
 #include "HanishikiBackend.h"
 #include "PenBackend.h"
 
@@ -69,7 +70,7 @@ MainWindow::MainWindow(QWidget *parent)
     //   창을 핸드폰 폭까지 줄일 수 있게 낮춘다. 그 폭에서 어떻게 보이는지는
     //   실제로 390x844 로 재서 사이드바·툴바·입력칸을 고쳤다.
     setMinimumSize(360, 480);
-    resize(1180, 820);
+    resize(1180, 820);   // 저장된 것이 없을 때의 기본. 아래에서 있으면 덮어쓴다.
 
     // QMainWindow 배경 — HTML 페이지 배경(--bg)과 반드시 같아야 한다.
     //   이 색이 신호등 주변 타이틀바 띠로 그대로 보이기 때문에, 다르면 창 위쪽에
@@ -172,6 +173,32 @@ MainWindow::MainWindow(QWidget *parent)
     QTimer::singleShot(500, this, &MainWindow::applyDarkTitlebar);
 
     // Dock 메뉴 생성 (macOS Dock 우클릭 시 표시)
+    // ★ 저장해 둔 창 크기·위치를 되살린다.
+    //   예전엔 켤 때마다 1180x820 으로 열려서, 좁게 줄여 놔도 다음 실행이면
+    //   되돌아갔다 — 좁은 폭 배치를 쓸 수가 없었다.
+    //   화면 구성이 바뀌어 창이 화면 밖으로 나가는 일이 없도록, 복원한 창이
+    //   지금 화면들과 겹치지 않으면 기본 크기로 되돌린다.
+    if (m_backend && m_backend->config()) {
+        // ★ 설정은 원래 화면이 다 뜬 뒤에 JS 가 backend.loadConfig() 를 불러야 읽혔다.
+        //   창을 만드는 이 시점엔 아직 비어 있어서, 복원할 값이 없어 늘 기본 크기로
+        //   열렸다(저장은 되는데 복원만 안 되던 원인). 여기서 먼저 읽는다.
+        //   뒤에 JS 가 다시 읽어도 같은 파일이라 문제되지 않는다.
+        m_backend->config()->load();
+        const QByteArray geo = QByteArray::fromBase64(
+            m_backend->config()->windowGeometry().toLatin1());
+        if (!geo.isEmpty() && restoreGeometry(geo)) {
+            bool onScreen = false;
+            const QRect mine = frameGeometry();
+            for (QScreen *sc : QGuiApplication::screens())
+                if (sc->availableGeometry().intersects(mine)) { onScreen = true; break; }
+            if (!onScreen) {
+                resize(1180, 820);
+                move(QGuiApplication::primaryScreen()->availableGeometry().center()
+                     - rect().center());
+            }
+        }
+    }
+
     m_dockMenu = createDockMenu();
 
     // ★ 앱 시작 시 sleep 방지 어설션 자동 활성 — collection 안 돌고 있어도 항상 활성
@@ -355,6 +382,13 @@ void MainWindow::closeEvent(QCloseEvent *event)
             event->ignore();
             return;
         }
+    }
+
+    // ★ 창 크기·위치를 남긴다. 다음에 켤 때 그대로 열린다.
+    if (m_backend && m_backend->config()) {
+        m_backend->config()->setWindowGeometry(
+            QString::fromLatin1(saveGeometry().toBase64()));
+        m_backend->config()->save();
     }
 
     // 브라우저 창 닫기
