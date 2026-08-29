@@ -126,6 +126,15 @@ int main(int argc, char *argv[])
     //   %APPDATA%/<조직명>/<앱이름> 이라, 이름을 정하기 전에 첫 메시지가 찍히면
     //   핸들러의 static QFile 이 엉뚱한 경로로 프로세스 내내 고정된다.
     //   진단 로그가 앱 데이터 폴더 밖에 쌓여, 문서가 안내하는 경로에는 아무것도 없었다.
+#ifdef Q_OS_WIN
+    // ★ 자식 프로세스가 망가졌을 때 윈도우가 띄우는 오류 대화상자를 끈다.
+    //   그 창이 뜨면 그것을 띄운 스레드가 사람이 누를 때까지 멈춘다. 자가진단처럼
+    //   백그라운드에서 도는 것이 멈추면 아무도 모르는 채로 앱이 반쯤 죽는다.
+    //   (실측: 도구 하나를 망가뜨렸더니 자가진단 보고서가 영영 안 나왔다.)
+    //   실패는 호출한 쪽이 반환값으로 받아 처리한다 — 그래야 로그에도 남는다.
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX | SEM_NOGPFAULTERRORBOX);
+#endif
+
     app.setApplicationName("Predormition");
     // ★ 조직명을 비운다 — 사용자 데이터 경로를 이름과 일치시킨다.
     //   Qt 는 %APPDATA%/<조직>/<앱> 을 쓰므로, 조직이 있으면 ...\Miyo\Predormition 이 되고

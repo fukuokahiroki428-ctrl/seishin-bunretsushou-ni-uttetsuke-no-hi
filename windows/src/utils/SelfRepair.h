@@ -133,12 +133,42 @@ inline QStringList versionArgs(const QString &name)
     return {"--version"};   // yt-dlp, python
 }
 
+// ★ 크기 하한은 '잘린 파일' 만 거를 만큼만 둔다. 처음에 512KB 로 잡았다가
+//   멀쩡한 도구를 손상이라고 보고했다 — 실측: python.exe 91KB, exiftool.exe 58KB.
+//   잘못된 [FAIL] 은 잘못된 [OK] 만큼 나쁘다. 판단은 MZ 서명에 맡긴다.
+inline bool looksLikeExecutable(const QString &path, qint64 minBytes = 1024)
+{
+    QFileInfo fi(path);
+    if (!fi.exists() || fi.size() < minBytes) return false;
+#ifdef Q_OS_WIN
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    const QByteArray head = f.read(2);
+    f.close();
+    return head == "MZ";
+#else
+    return fi.isExecutable();
+#endif
+}
+
 inline ToolStatus checkTool(const QString &name)
 {
     ToolStatus st; st.name = name;
     st.path = resolveTool(name);
     if (st.path.isEmpty()) { st.error = "not found (bundle/user/system)"; return st; }
     st.found = true;
+
+    // ★ 실행하기 전에 실행 파일 꼴인지 본다.
+    //   망가진 파일을 QProcess 로 돌리면 윈도우가 "이 앱을 실행할 수 없습니다" 대화상자를
+    //   띄울 수 있고, 그러면 이 스레드가 사람이 누를 때까지 멈춘다. 자가진단이 멈추면
+    //   보고서도 안 나오므로 "고쳐 놓고 말을 안 하는" 상태가 된다 — 실제로 그랬다.
+    //   실측: yt-dlp 를 6바이트로 바꾸고 앱을 띄우면 복구는 되는데 보고서가 60~90초가
+    //   지나도 안 나왔다. 대화상자가 뜰지 말지는 SmartScreen·백신 상태에 따라 달라져서
+    //   재현이 들쭉날쭉했다. 실행에 맡기지 않고 여기서 먼저 거른다.
+    if (!looksLikeExecutable(st.path)) {
+        st.error = "손상됨 (실행 파일 형식이 아님)";
+        return st;   // runs=false → 아래 repairTool 이 번들본으로 되살린다
+    }
 
     QProcess p;
 #ifndef Q_OS_WIN
@@ -249,21 +279,6 @@ inline bool repairTool(ToolStatus &st)
 //   실측: 6바이트 쓰레기로 바꿔 놓고 앱을 띄우니 자가진단이 몇 분씩 끝나지 않았다.
 //   (재현이 들쭉날쭉했다 — 더더욱 실행에 맡기면 안 된다는 뜻이다.)
 //   PE 서명(MZ)과 최소 크기만 봐도 이 사고는 전부 막힌다.
-inline bool looksLikeExecutable(const QString &path, qint64 minBytes = 1024 * 512)
-{
-    QFileInfo fi(path);
-    if (!fi.exists() || fi.size() < minBytes) return false;
-#ifdef Q_OS_WIN
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly)) return false;
-    const QByteArray head = f.read(2);
-    f.close();
-    return head == "MZ";
-#else
-    return fi.isExecutable();
-#endif
-}
-
 inline QString updateStampPath(const QString &name)
 {
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
