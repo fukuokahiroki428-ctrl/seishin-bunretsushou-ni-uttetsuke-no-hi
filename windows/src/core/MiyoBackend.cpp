@@ -4248,12 +4248,22 @@ static QString findBundledTool(const QString &name)
 {
     QString appDir = QCoreApplication::applicationDirPath();
 #ifdef Q_OS_WIN
-    // Windows: tools are next to the exe, check with .exe extension too
-    QString bundled = appDir + "/" + name;
-    if (QFile::exists(bundled)) return bundled;
-    if (!name.endsWith(".exe")) {
-        QString withExe = appDir + "/" + name + ".exe";
-        if (QFile::exists(withExe)) return withExe;
+    // Windows: exe 옆 → exe/tools → 사용자 도구 폴더 순서로 본다.
+    // ★ 예전에는 exe 옆만 보고 없으면 그냥 이름을 돌려줬다(= PATH 에 맡김).
+    //   그런데 자가수리(SelfRepair)는 도구를 %APPDATA%\Predormition\tools 에 받아 둔다.
+    //   그래서 "자가진단은 [OK] yt-dlp 라고 하는데 정작 다운로드는 안 되는" 상태가 됐다.
+    //   실측: 이 기계에서 자가진단 로그는
+    //     [OK] yt-dlp — 2026.08.19 (C:/Users/.../Roaming/Predormition/tools/yt-dlp.exe)
+    //   인데 findBundledTool 은 그 자리를 안 봐서 맨 이름 "yt-dlp" 를 돌려줬고,
+    //   PATH 에도 없어서 QProcess 가 시작조차 못 했다.
+    const QStringList dirs = { appDir, appDir + "/tools", Common::userToolsDir() };
+    for (const QString &d : dirs) {
+        const QString p = d + "/" + name;
+        if (QFile::exists(p)) return p;
+        if (!name.endsWith(".exe")) {
+            const QString pe = p + ".exe";
+            if (QFile::exists(pe)) return pe;
+        }
     }
 #else
     // macOS: tools inside Contents/MacOS/
@@ -5475,7 +5485,21 @@ void MiyoBackend::analyzeYoutube(const QString &url)
 
             QProcess proc;
             proc.setProcessEnvironment(bundledEnv());
-            proc.start(findBundledTool("yt-dlp"), {"--flat-playlist", "--dump-json", "--no-warnings", urls[i]});
+            const QString ytdlp = findBundledTool("yt-dlp");
+            proc.start(ytdlp, {"--flat-playlist", "--dump-json", "--no-warnings", urls[i]});
+
+            // ★ 시작 자체를 못 했으면 거기서 끝내고 그렇다고 말한다.
+            //   예전에는 이것을 안 봐서, yt-dlp 를 못 찾아 실행이 안 됐는데도
+            //   exitCode() 가 0(기본값)이라 "Found 0 videos / 성공" 으로 넘어갔다.
+            //   사용자에게는 "동영상을 찾을 수 없습니다" 만 보였다 — 원인을 알 길이 없었다.
+            if (!proc.waitForStarted(5000)) {
+                log(QString("yt-dlp 를 실행하지 못했습니다: %1\n"
+                            "   찾은 경로: %2\n"
+                            "   설정 → 자가진단에서 도구를 다시 받아 주세요.")
+                        .arg(proc.errorString(), ytdlp),
+                    "error", "youtube");
+                continue;
+            }
 
             // Read output incrementally to avoid timeout with large channels
             int count = 0;
@@ -9383,6 +9407,15 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 
     // Build yt-dlp arguments
     QString ytdlpPath = findBundledTool("yt-dlp");
+    // ★ 없으면 .bat 을 만들어 띄워 봐야 콘솔만 깜빡이고 끝난다. 먼저 확인하고 말해 준다.
+    if (!QFile::exists(ytdlpPath)) {
+        log(QString("yt-dlp 를 찾지 못했습니다.\n"
+                    "   찾아본 곳: 앱 폴더 · 앱 폴더/tools · %1\n"
+                    "   설정 → 자가진단에서 도구를 다시 받아 주세요.")
+                .arg(QDir::toNativeSeparators(Common::userToolsDir())),
+            "error", platform);
+        return;
+    }
     QString appDir = QCoreApplication::applicationDirPath();
 
     QStringList baseArgs;
