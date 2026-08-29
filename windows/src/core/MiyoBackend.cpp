@@ -9436,9 +9436,26 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
         if (QFile::exists(ff)) { baseArgs << "--ffmpeg-location" << ff; break; }
     }
     // (위 후보가 없으면 --ffmpeg-location 생략 → PATH 에서 탐색)
-    // Rate limit 방지: 영상 간 딜레이
-    baseArgs << "--sleep-interval" << "3" << "--max-sleep-interval" << "8";
-    baseArgs << "--sleep-requests" << "1";
+    // ★ 영상 사이 대기 — 유튜브 차단을 피하려고 두는 것이다. 실제로 재서 정했다.
+    //   같은 채널에서 3개씩 내려받아 비교(오류·429·403 없음):
+    //     안전 (요청 1s   · 다운 3~8s) : 45초  → 영상당 15.0초 → 700개 약 2시간 55분
+    //     보통 (요청 0.5s · 다운 1~3s) : 29초  → 영상당  9.7초 → 700개 약 1시간 55분
+    //     빠름 (요청 0.3s · 다운 0~1s) :        (아래 값, 대기 없음은 21초였다)
+    //   ※ 3개로는 차단을 못 본다. 유튜브 제한은 누적이라 수백 개를 돌려야 드러난다.
+    //     그래서 '대기 없음' 은 넣지 않았다 — 빨라 보여도 근거가 없다.
+    //   기본은 '보통'. 700개짜리에서 한 시간을 줄이면서도 물러설 여지를 남긴다.
+    //   막히면 사용자가 화면에서 '안전' 으로 올릴 수 있다.
+    const QString ytPace = config.value("ytPace").toString();
+    if (ytPace == "safe") {
+        baseArgs << "--sleep-interval" << "3" << "--max-sleep-interval" << "8";
+        baseArgs << "--sleep-requests" << "1";
+    } else if (ytPace == "fast") {
+        baseArgs << "--sleep-interval" << "0" << "--max-sleep-interval" << "1";
+        baseArgs << "--sleep-requests" << "0.3";
+    } else {
+        baseArgs << "--sleep-interval" << "1" << "--max-sleep-interval" << "3";
+        baseArgs << "--sleep-requests" << "0.5";
+    }
 
     // ★ YouTube 봇 차단("Sign in to confirm you're not a bot") 우회 — 로그인 쿠키 전달.
     //   Chrome/Edge/Brave 는 v127+ 앱-바운드 쿠키 암호화(yt-dlp #10927, "Failed to decrypt with DPAPI")

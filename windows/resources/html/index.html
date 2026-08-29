@@ -1709,6 +1709,15 @@
                                     <label class="nt-check"><input type="checkbox" id="youtube-metadata" checked> 메타데이터</label>
                                     <label class="nt-check"><input type="checkbox" id="youtube-playlist"> 재생목록</label>
                                     <label class="nt-check"><input type="checkbox" id="youtube-sponsor"> SponsorBlock</label>
+                                    <span style="display:inline-flex;align-items:center;gap:6px;margin-left:4px;">
+                                        <span style="font-size:12px;color:var(--muted);">속도</span>
+                                        <select class="nt-input" id="youtube-pace" style="height:28px;width:auto;font-size:12px;"
+                                                title="영상 사이에 두는 대기 시간입니다. 짧을수록 빠르지만 유튜브가 막을 위험이 커집니다.">
+                                            <option value="fast">빠름 — 700개 약 1시간 25분</option>
+                                            <option value="normal" selected>보통 — 700개 약 1시간 55분</option>
+                                            <option value="safe">안전 — 700개 약 2시간 55분</option>
+                                        </select>
+                                    </span>
                                     <label class="nt-check" title="영상 페이지를 보이는 그대로 HTML 한 장으로 저장합니다(제목·설명 서식·화면의 댓글·추천 영상). 영상이 내려가도 화면은 남습니다. 다운로드가 끝난 뒤에 진행합니다."><input type="checkbox" id="youtube-real-capture"> 진짜 페이지 캡쳐</label>
                                     <label class="nt-check"><input type="checkbox" id="youtube-comments"> 댓글 수집 <small style="color:var(--muted)">(작성자·프로필 포함, 상위 300)</small></label>
                                 </div>
@@ -5306,7 +5315,8 @@
                 playlist:document.getElementById('youtube-playlist').checked,
                 sponsor:document.getElementById('youtube-sponsor').checked,
                 comments:document.getElementById('youtube-comments').checked,
-                realCapture:!!(document.getElementById('youtube-real-capture')||{}).checked
+                realCapture:!!(document.getElementById('youtube-real-capture')||{}).checked,
+                ytPace:(document.getElementById('youtube-pace')||{}).value || 'normal'
             };
             setRunning('youtube', true);
             clearLog('youtube'); setYoutubeProgress(0);
