@@ -910,6 +910,98 @@
     .toolbar-spacer{ flex:1; }
     .toolbar-stats{ display:flex; align-items:center; gap:16px; }
     .toolbar-stat{ font-size:12px; color:var(--muted); }
+
+    /* ══ 좁은 창(핸드폰 폭) ══════════════════════════════════════════════
+       ★ 680px 기준점 규칙이 예전엔 죽어 있었다. 창 최소 크기가 820px 로 막혀 있어
+         그 폭에 닿을 방법이 없었다(MainWindow::setMinimumSize). 최소를 360 으로
+         낮추면서 살린다.
+       ★ 윈도우판은 위 스킨이 .sidebar 를 246px !important 로 고정한다. 그래서
+         맥판 규칙을 그대로 옮기면 하나도 안 먹는다 — 여기서는 !important 로 되받는다.
+       ★ 로그판은 맥판처럼 감추지 않는다. 이 앱은 수집 로그를 보면서 쓰는 물건이라
+         감추면 폰 크기로 줄이는 의미가 없다. 대신 높이를 줄여 아래로 쌓는다. */
+    @media (max-width: 680px) {
+        .app { flex-direction: column !important; }
+
+        /* 사이드바를 가로로 스크롤되는 탭줄로 */
+        .sidebar {
+            width: 100% !important; max-width: none !important; height: auto !important;
+            flex-direction: row !important; align-items: center !important;
+            overflow-x: auto !important; overflow-y: hidden !important;
+            border-right: none !important;
+            border-bottom: 1px solid var(--border) !important;
+            padding: 6px 8px !important; gap: 4px;
+            flex: 0 0 auto !important;
+        }
+        .sidebar::-webkit-scrollbar { height: 0; }
+        .sidebar-header { display: none !important; }
+        /* 세로 목록용 구분 라벨("플랫폼" 등) — 가로 탭줄에서는 세로로 찌그러진다 */
+        .nt-navgroup { display: none !important; }
+
+        /* ★ 사이드바만 눕혀서는 안 된다 — 안쪽 .sidebar-nav 가 세로로 쌓이면
+           사이드바 높이가 그대로 500px 가까이 된다. 안쪽도 같이 눕힌다. */
+        .sidebar-nav {
+            display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important;
+            gap: 4px; overflow-x: auto !important; overflow-y: hidden !important;
+            width: 100%; padding: 0 !important; flex: 1 1 auto !important;
+        }
+        .sidebar-nav::-webkit-scrollbar { height: 0; }
+        .sidebar-footer {
+            flex: 0 0 auto !important; border-top: none !important;
+            padding: 0 4px !important; margin: 0 !important; display: flex; gap: 4px;
+        }
+        .nav-item {
+            flex: 0 0 auto !important; white-space: nowrap !important;
+            padding: 6px 10px !important; margin-bottom: 0 !important;
+        }
+        .nav-item.active::before { display: none; }   /* 세로 막대 표시는 가로줄에서 의미 없다 */
+
+        /* 본문이 남은 세로 공간을 전부 갖는다 */
+        .main { max-width: 100% !important; flex: 1 1 auto !important; min-height: 0 !important; }
+
+        /* 툴바 — 글자가 세로로 쪼개지지 않게. 창 버튼은 반드시 남긴다. */
+        .toolbar {
+            height: auto !important; min-height: 44px !important;
+            flex-wrap: wrap !important; padding: 6px 12px !important; gap: 8px !important;
+        }
+        .toolbar * { white-space: nowrap; }
+        .toolbar-title { font-size: 15px !important; }
+        .toolbar-stats { flex-wrap: wrap; gap: 10px; font-size: 11px; }
+        .win-controls { margin-left: auto; }
+
+        .scroll-area { padding: 12px !important; }
+
+        /* 한 줄에 두 칸씩 두면 각각 170px 밖에 안 된다 — 세로로 쌓는다 */
+        .input-row, .nt-row { flex-direction: column !important; align-items: stretch !important; }
+        .input-row > .field, .nt-row > .nt-rc { width: 100% !important; flex: 1 1 auto !important; }
+        .nt-rl { margin-bottom: 4px; }
+        .field-label { white-space: normal; }
+        .input, input.input, select.input, textarea.input,
+        .nt-input, input.nt-input, select.nt-input { width: 100%; box-sizing: border-box; }
+
+        /* 로그는 남긴다 — 다만 화면을 다 먹지 않게 */
+        .log-box { max-height: 220px !important; font-size: 11px !important; }
+
+        /* ── 폰 폭 다듬기 (390px 에서 실측하며 맞춤) ────────────────────
+           · .nt-actions 가 328px 칸에 333px 를 넣어 5px 넘쳤다 → 줄바꿈 허용.
+           · 카드 안의 인라인 flex 줄들도 같이 접히게 한다. 안 그러면 입력칸이
+             126px 까지 눌린다(실측).
+           · 사이드바 76px + 툴바 89px = 165px 를 세로로 먹고 있었다. 844 중 20%.
+             여백을 줄여 되찾는다. */
+        .nt-actions { flex-wrap: wrap !important; }
+        .nt-card [style*="display:flex"] { flex-wrap: wrap !important; }
+        .nt-input, .nt-card select, .nt-card input { min-width: 0 !important; }
+        /* 한 줄에 입력칸+선택칸을 같이 두면 입력칸이 91px 까지 눌린다(실측).
+           각자 한 줄을 준다 — 폰에서는 그 편이 읽고 누르기 쉽다. */
+        .nt-card [style*="display:flex"] > input,
+        .nt-card [style*="display:flex"] > select,
+        .nt-card [style*="display:flex"] > .nt-input { flex: 1 1 100% !important; }
+
+        .sidebar { padding: 4px 6px !important; }
+        .nav-item { padding: 5px 8px !important; font-size: 12px !important; }
+        .nav-item .nav-icon { width: 18px !important; height: 18px !important; font-size: 10px !important; }
+        .toolbar { gap: 6px !important; padding: 5px 10px !important; }
+        .toolbar-stats { gap: 8px !important; font-size: 10px !important; }
+    }
     .toolbar-stat-value{ font-weight:700; color:var(--text); }
     .badge{ padding:4px 11px !important; border-radius:999px !important; font-size:11px !important; font-weight:600 !important; }
     .badge-ready{ background:var(--panel2) !important; color:var(--muted) !important; }
