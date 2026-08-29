@@ -259,11 +259,24 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
              << "--mute-audio"
              << "--disable-backgrounding-occluded-windows"
              << "--disable-renderer-backgrounding"
-             << "--memory-pressure-off"
-             << "--js-flags=--max-old-space-size=384"
+             // ★ 메모리 설정이 정반대로 되어 있었다. 저용량 기계를 배려한 의도였지만
+             //   결과는 "메모리 부족" 으로 페이지가 죽는 것이었다.
+             //     · max-old-space-size=384 : V8 힙을 384MB 로 묶었다. 트위터·인스타
+             //       타임라인 같은 실제 페이지에는 너무 작아서, 아끼는 게 아니라
+             //       한계를 넘겨 OOM 을 '만들어 내는' 값이었다.
+             //     · memory-pressure-off    : 시스템이 빠듯해도 캐시를 비우지 말라는
+             //       뜻이다. 메모리가 모자란 기계에서 켤 설정이 아니다. 정확히 반대다.
+             //   → 힙은 실제 페이지가 돌 만큼 주고(1024MB), 메모리 압박에는 응하게 한다.
+             //     디스크·미디어 캐시를 작게 잡고 적극적으로 버리는 것은 그대로 둔다 —
+             //     그쪽이 저용량 기계에 실제로 도움이 되는 설정이다.
+             << "--js-flags=--max-old-space-size=1024"
              << "--disk-cache-size=10485760"
              << "--media-cache-size=5242880"
-             << "--aggressive-cache-discard";
+             << "--aggressive-cache-discard"
+             // ★ 페이지가 스스로 새 탭·창을 열지 못하게 한다. 크롤러는 탭 하나를
+             //   재사용하는데, 페이지가 팝업이나 target=_blank 로 탭을 늘리면
+             //   그만큼 메모리를 먹고 캡처 대상도 헷갈린다.
+             << "--block-new-web-contents";
 
         // ★ 사용자 임시 디스크 시스템 — Chrome disk cache 도 거기에. /tmp 사용 X.
         //   backend 의 Config 에서 tempDir 받아서 cache dir 강제 set.

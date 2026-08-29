@@ -228,8 +228,11 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
              << "--mute-audio"
              << "--disable-backgrounding-occluded-windows"
              << "--disable-renderer-backgrounding"
-             << "--memory-pressure-off"
-             << "--js-flags=--max-old-space-size=384"
+             // ★ RealChromeCrawler 와 같은 이유로 memory-pressure-off 를 뺐다.
+             //   저용량 기계에서 캐시를 안 비우게 만드는 설정이라 정반대였다.
+             //   페이지가 새 탭을 늘리지 못하게 하는 것도 같이 맞춘다.
+             << "--block-new-web-contents"
+             << "--js-flags=--max-old-space-size=1024"
              << "--disk-cache-size=10485760"
              << "--media-cache-size=5242880"
              << "--aggressive-cache-discard"

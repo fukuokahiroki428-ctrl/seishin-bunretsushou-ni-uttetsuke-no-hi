@@ -48,8 +48,10 @@ int main(int argc, char *argv[])
         "--disable-accelerated-2d-canvas "
         "--disable-accelerated-video-decode "
         "--site-per-process "                      // ★ 보안 격리 유지
-        "--memory-pressure-off "
-        "--js-flags=--max-old-space-size=384 "
+        // ★ memory-pressure-off 는 '메모리가 빠듯해도 비우지 말라' 는 뜻이라
+        //   저용량 기계에서 켤 설정이 아니었다(정확히 반대다). 뺀다.
+        //   힙 상한도 384MB 는 너무 좁아 화면이 무거워지면 그대로 죽는다.
+        "--js-flags=--max-old-space-size=768 "
         "--disk-cache-size=10485760 "
         "--media-cache-size=5242880 "
         "--aggressive-cache-discard "
