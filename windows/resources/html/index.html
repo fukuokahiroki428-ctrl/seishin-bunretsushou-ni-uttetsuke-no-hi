@@ -3478,6 +3478,23 @@
                     </div>
 
                     <div class="nt-group">
+                        <h3>자가진단</h3>
+                        <div class="nt-card">
+                            <div class="nt-hint">
+                                앱이 쓰는 도구(yt-dlp · ffmpeg · exiftool · python)를 <strong>실제로 시켜 보고</strong> 결과를 확인합니다.
+                                버전만 확인하면 &ldquo;버전은 찍히는데 실제로는 안 되는&rdquo; 고장을 못 잡습니다 —
+                                유튜브가 통째로 막혔을 때도, EXIF 가 1668건 전부 안 써졌을 때도 버전 확인은 전부 통과했습니다.
+                                앱을 켤 때 자동으로 한 번 돌고, 유튜브 확인은 하루에 한 번만 합니다.
+                            </div>
+                            <div class="nt-actions" style="margin-top:8px;">
+                                <button class="nt-pillbtn" id="selfrepair-run" onclick="runSelfDiagnosis()">지금 검사</button>
+                                <button class="nt-pillbtn" onclick="openSelfDiagnosisFolder()">보고서 폴더 열기</button>
+                            </div>
+                            <pre id="selfrepair-output" style="margin-top:8px;max-height:320px;overflow:auto;font-size:11px;line-height:1.55;color:var(--text-secondary);font-family:'SF Mono',Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all;"></pre>
+                        </div>
+                    </div>
+
+                    <div class="nt-group">
                         <h3>디버그</h3>
                         <div class="nt-card">
                             <div class="nt-hint">
@@ -3507,6 +3524,21 @@
 
             </div>
         </div>
+    </div>
+
+    <!-- 자가진단 알림 띠 — 문제를 찾았을 때만 뜬다.
+         파일에만 적어 두면 아무도 안 본다는 것이 이 앱에서 이미 증명됐다. -->
+    <div id="selfrepair-banner" style="display:none;position:fixed;left:50%;bottom:18px;transform:translateX(-50%);
+         z-index:9998;max-width:min(720px,92vw);padding:10px 14px;border-radius:10px;
+         font-size:12.5px;line-height:1.5;box-shadow:0 6px 24px rgba(0,0,0,.28);
+         background:#3b1d1d;color:#ffd9d9;border:1px solid #7a3a3a;">
+        <span id="selfrepair-banner-text"></span>
+        <button onclick="switchTab('settings');hideSelfDiagnosisBanner();"
+                style="margin-left:10px;padding:3px 9px;border-radius:6px;border:1px solid currentColor;
+                       background:transparent;color:inherit;cursor:pointer;font-size:11.5px;">보기</button>
+        <button onclick="hideSelfDiagnosisBanner()"
+                style="margin-left:4px;padding:3px 9px;border-radius:6px;border:1px solid transparent;
+                       background:transparent;color:inherit;cursor:pointer;opacity:.7;font-size:11.5px;">닫기</button>
     </div>
 
     <!-- Disk Selection Modal -->
@@ -4365,6 +4397,8 @@
             // ★ PEN(팬을 잘 쓰고 싶다) 통합 — 사이트 미러 백엔드. 로그/콜백은 같은 webView 로 자동 전달.
             window.penBackend = channel.objects.penBackend;
             if (backend) backend.loadConfig();
+            // 지난 자가진단 결과를 설정 탭에 미리 채워 둔다 (탭을 열자마자 보이게)
+            try { if (backend && backend.loadLastSelfDiagnosis) backend.loadLastSelfDiagnosis(); } catch(e) {}
             // NAS/외장 버튼 자동 삽입
             const _tryAttachNas = () => {
                 try { if (typeof _attachNasButtonsOnce === 'function') _attachNasButtonsOnce(); } catch(e) {}
@@ -4791,6 +4825,48 @@
                 backend.openDiagnosticsFolder();
             }
         }
+        // ── 자가진단 ────────────────────────────────────────────────
+        //   결과를 화면에 띄우는 쪽. 백엔드(SelfRepair)가 검사하고 여기로 넘겨준다.
+        function runSelfDiagnosis() {
+            if (!backend || !backend.runSelfDiagnosis) {
+                const el = document.getElementById('selfrepair-output');
+                if (el) el.textContent = '이 버전은 자가진단 API 를 지원하지 않습니다.';
+                return;
+            }
+            backend.runSelfDiagnosis();
+        }
+        function openSelfDiagnosisFolder() {
+            if (backend && backend.openSelfDiagnosisFolder) backend.openSelfDiagnosisFolder();
+        }
+        function hideSelfDiagnosisBanner() {
+            const b = document.getElementById('selfrepair-banner');
+            if (b) b.style.display = 'none';
+        }
+        // 검사 중에는 버튼을 잠근다 — 여러 번 눌러 유튜브를 여러 번 두드리지 않게.
+        window.onSelfDiagnosisBusy = function(busy) {
+            const b = document.getElementById('selfrepair-run');
+            if (!b) return;
+            b.disabled = !!busy;
+            b.textContent = busy ? '검사 중… (1~2분)' : '지금 검사';
+        };
+        // 보고서 전문
+        window.onSelfDiagnosisReport = function(o) {
+            const el = document.getElementById('selfrepair-output');
+            if (el && o && typeof o.report === 'string') el.textContent = o.report;
+        };
+        // 한 줄 요약 — 문제가 있을 때만 띠를 띄운다.
+        //   이상 없을 때도 띄우면 사람은 곧 띠를 안 보게 된다. 그러면 진짜일 때도 못 본다.
+        window.onSelfDiagnosisSummary = function(o) {
+            if (!o) return;
+            try { if (backend && backend.loadLastSelfDiagnosis) backend.loadLastSelfDiagnosis(); } catch(e) {}
+            if (o.level !== 'error') return;
+            const b = document.getElementById('selfrepair-banner');
+            const t = document.getElementById('selfrepair-banner-text');
+            if (!b || !t) return;
+            t.textContent = '🩺 ' + o.line;
+            b.style.display = 'block';
+        };
+
         // backend → JS callback for diagnostic info
         window.onDiagInfo = function(info) {
             const el = document.getElementById('settings-diag-output');

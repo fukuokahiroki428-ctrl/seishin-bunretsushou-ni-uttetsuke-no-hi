@@ -257,7 +257,7 @@ static bool copyTreePreserving(const QString &src, const QString &dst);
 //   그래서 ANSI 로 표현 가능한 임시 폴더에 exiftool.exe 와 exiftool_files 를 한 번 복사해
 //   두고 그쪽을 실행한다. 복사는 처음 한 번만 한다.
 //   실패하면 원본 경로를 그대로 돌려준다 — 그때는 지금까지처럼 경고만 남는다.
-static QString asciiSafeExiftool(const QString &exePath)
+QString asciiSafeExiftool(const QString &exePath)
 {
     if (exePath.isEmpty() || ansiRepresentable(exePath)) return exePath;
 

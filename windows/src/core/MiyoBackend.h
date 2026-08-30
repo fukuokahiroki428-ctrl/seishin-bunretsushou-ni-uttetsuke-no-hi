@@ -40,6 +40,8 @@ public:
     void updateStats(int posts, int media, const QString &status, const QString &platform = QString());
     // 수집 종료 후 로그 꼬리에서 오류 다발 감지 시 로컬 LLM 진단 (SelfRepair 연동)
     void llmDiagnoseIfBroken(const QString &platformName, const QString &trackKey);
+    // 자가진단 보고서를 화면으로 (JSON 으로 감싸서 JS 에 넘긴다)
+    void pushSelfDiagnosisReport(const QString &report);
     // 수집 종료 시 UI 시작/정지 버튼 동기화 통지 (CollectionGuard 소멸자에서 호출)
     void notifyCollectionEnded(const QString &platform);
 
@@ -190,6 +192,12 @@ public slots:
 
     // 시스템 알림 (macOS osascript display notification — 다른 앱 쓰는 중에도 알림 옴)
     void showSystemNotification(const QString &title, const QString &body);
+
+    // ── 자가진단 (SelfRepair) — 설정 탭에서 호출 ──────────────────
+    //   보고서를 파일에만 적으면 아무도 안 본다. 화면으로 끌어낸다.
+    Q_INVOKABLE void runSelfDiagnosis();        // 지금 검사 (네트워크 확인까지 전부)
+    Q_INVOKABLE void loadLastSelfDiagnosis();   // 마지막 결과를 화면에 다시 띄우기
+    Q_INVOKABLE void openSelfDiagnosisFolder(); // 보고서 폴더 열기
 
     // 디버그 진단 — 설정 탭에서 호출
     Q_INVOKABLE void getDiagnosticInfo();

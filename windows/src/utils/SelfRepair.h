@@ -1,7 +1,12 @@
 #pragma once
 // ═════════════════════════════════════════════════════════════════════════
 // SelfRepair.h — 앱 자가진단 · 자가복구 + 로컬 LLM 진단 계층 (header-only)
-// 설치 위치: windows/src/utils/SelfRepair.h  (mac/predormition/src/utils/ 동일)
+// 설치 위치: windows/src/utils/SelfRepair.h
+//   ※ mac/chernobyl/src/utils/SelfRepair.h 와 '같은 파일이어야 한다' 는 뜻이 아니다.
+//     실제로 두 판은 갈라져 있다 — 윈도우 쪽엔 도구 자동 갱신·실기능 확인이,
+//     맥 쪽엔 서명 자동복구가 따로 들어갔다. 전에 여기 "동일" 이라고 적혀 있었고
+//     그것을 믿고 한쪽만 고치면 다른 쪽은 조용히 낡는다.
+//     어디가 갈라졌는지는 `python scripts/port_parity.py` 가 매번 말해 준다.
 //
 // 목적:
 //   1) 시작 시 번들 도구(yt-dlp/ffmpeg/exiftool/rclone/python) 존재·실행 자가진단
@@ -26,6 +31,10 @@
 // ═════════════════════════════════════════════════════════════════════════
 
 #include <QAtomicInt>
+#include <QElapsedTimer>
+#include <QMutex>
+#include <QTextStream>
+#include <functional>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -99,11 +108,10 @@ inline QStringList toolCandidates(const QString &name)
         c << appDir() + "/yt-dlp" + sfx;                // mac: Contents/MacOS
         c << resourcesDir() + "/tools/yt-dlp" + sfx;    // 번들 tools/
     } else if (name == "python") {
-#ifdef Q_OS_WIN
-        c << resourcesDir() + "/python_env/python.exe";
-#else
-        c << resourcesDir() + "/python_env/bin/python3";
-#endif
+        // ★ 앱 본체와 같은 후보를 본다. 예전엔 여기서 번들 python_env 하나만 봐서,
+        //   번들이 없고 시스템 파이썬으로 잘 도는 기계에서도 [FAIL] 이 떴다.
+        //   진단이 앱과 다른 것을 보면 그 진단은 앱 얘기가 아니다.
+        c << Common::pythonCandidates();
     } else {  // ffmpeg / exiftool / rclone 공통 패턴
         c << appDir() + "/" + name + sfx;
         c << resourcesDir() + "/tools/" + name + sfx;
@@ -118,9 +126,19 @@ inline QStringList toolCandidates(const QString &name)
 inline QString resolveTool(const QString &name)
 {
     const QStringList cands = toolCandidates(name);
-    for (const QString &p : cands)
+    for (const QString &p : cands) {
         if (QFileInfo(p).isFile()) return p;   // ★ 디렉토리 제외 — exiftool 후보 'tools/exiftool'(폴더)가
-    return QString();                          //   매칭돼 perl 이 폴더를 스크립트로 열려다 실패하던 문제
+                                               //   매칭돼 perl 이 폴더를 스크립트로 열려다 실패하던 문제
+        // ★ 'py' 처럼 경로가 아니라 이름만 온 후보는 PATH 에서 찾는다.
+        //   앱 본체(pythonCandidates)가 그렇게 쓰므로 진단도 같아야 한다.
+        //   안 그러면 번들 파이썬이 없고 시스템 파이썬으로 잘 도는 기계에서
+        //   앱은 멀쩡한데 진단만 [FAIL] 을 찍는다.
+        if (!p.contains('/') && !p.contains('\\')) {
+            const QString found = QStandardPaths::findExecutable(p);
+            if (!found.isEmpty()) return found;
+        }
+    }
+    return QString();
 }
 
 // ── 자가진단 ─────────────────────────────────────────────────────────────
@@ -148,6 +166,27 @@ inline bool looksLikeExecutable(const QString &path, qint64 minBytes = 1024)
     return head == "MZ";
 #else
     return fi.isExecutable();
+#endif
+}
+
+// ★ 도구를 실행할 때 쓸 경로 — 앱 본체와 똑같은 규칙으로 정한다.
+//
+//   실측으로 물린 자리다. exiftool 은 자기 경로 옆의 exiftool_files\perl5*.dll 을
+//   ANSI 코드페이지로 찾는다. 경로에 한글이 있으면 못 찾는다. 앱 본체는 그래서
+//   exiftool 을 ANSI 로 쓸 수 있는 자리로 통째로 옮겨서 쓴다(asciiSafeExiftool).
+//   그런데 자가진단만 8.3 단축 경로(ansiSafePath)를 쓰고 있었고, 이 기계의 D: 는
+//   8.3 이름 생성이 꺼져 있어 단축 경로가 안 만들어진다 — 그래서
+//     [FAIL] exiftool — Could not find ...\exiftool_files\perl5*.dll
+//   이 떴다. 앱의 EXIF 는 멀쩡히 써지고 있는데도 그랬다.
+//   잘못된 [FAIL] 은 잘못된 [OK] 만큼 나쁘다. 진단은 앱이 하는 것을 그대로 해야 한다.
+inline QString launchPath(const QString &name, const QString &path)
+{
+#ifdef Q_OS_WIN
+    if (name == "exiftool") return Common::asciiSafeExiftool(path);
+    return Common::ansiSafePath(path);
+#else
+    Q_UNUSED(name);
+    return path;
 #endif
 }
 
@@ -182,7 +221,7 @@ inline ToolStatus checkTool(const QString &name)
     // ★ 앱 본체(Common::addExifMetadata)와 같은 경로 처리를 쓴다. exiftool 은 argv 를
     //   ANSI 로 받으므로, 사용자 이름이 한글·일본어인 설치 경로에서는 8.3 단축 경로가 필요하다.
     //   여기서만 원본 경로를 넘기면 실제 EXIF 는 써지는데 진단만 실패하는 오경보가 난다.
-    p.start(Common::ansiSafePath(st.path), versionArgs(name));
+    p.start(launchPath(name, st.path), versionArgs(name));
     if (!p.waitForStarted(4000)) { st.error = "failed to start: " + p.errorString(); return st; }
     if (!p.waitForFinished(20000)) { p.kill(); st.error = "version check timeout"; return st; }
     const QString out = QString::fromUtf8(p.readAllStandardOutput()
@@ -243,6 +282,259 @@ inline bool repairTool(ToolStatus &st)
         if (re.runs) { st = re; return true; }
     }
     return false;
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 실기능 확인 (smoke test) — "버전이 찍힌다" 와 "실제로 된다" 는 다른 얘기다.
+//
+// 왜 필요한가 — 실제로 당한 두 건:
+//   · 2026.08.29 유튜브 다운로드 전면 정지. yt-dlp 2026.07.04 는 --version 을
+//     멀쩡히 출력했고 형식 목록도 나왔다. 미디어 요청만 전부 HTTP 403 이었다.
+//   · EXIF 1668건 전부 실패. exiftool -ver 는 [OK] 였다. 실제로는 argfile 이
+//     먼저 지워져 한 건도 안 써지고 있었다.
+//   두 번 다 자가진단은 "이상 없음" 이라고 말하고 있었다. 조용한 고장보다
+//   "괜찮다고 말하는 고장" 이 더 나쁘다 — 사람이 딴 데를 찾게 만든다.
+//
+// 그래서 각 도구에 '앱이 실제로 시키는 일' 을 그대로 시켜 보고 결과를 확인한다.
+//
+// 판정은 셋이다 — 통과 / 실패 / 건너뜀.
+//   '건너뜀' 이 중요하다. 네트워크가 없을 때 yt-dlp 를 실패로 적으면 비행기 안에서
+//   앱을 켠 사람에게 "도구가 망가졌다" 고 거짓말하는 셈이다. 1년을 방치할 앱에서
+//   거짓 경보는 진짜 경보를 묻어 버린다. 모르면 모른다고 적는다.
+// ═════════════════════════════════════════════════════════════════════════
+
+// httpGet 의 정의는 아래 LLM 절에 있다. 여기서 먼저 쓰므로 선언만 앞세운다.
+inline QByteArray httpGet(const QString &url, int timeoutMs);
+
+enum SmokeVerdict { SmokeSkip = 0, SmokePass, SmokeFail };
+
+struct SmokeResult {
+    SmokeVerdict verdict = SmokeSkip;
+    QString      detail;
+};
+
+inline SmokeResult smokePass(const QString &d) { SmokeResult r; r.verdict = SmokePass; r.detail = d; return r; }
+inline SmokeResult smokeFail(const QString &d) { SmokeResult r; r.verdict = SmokeFail; r.detail = d; return r; }
+inline SmokeResult smokeSkip(const QString &d) { SmokeResult r; r.verdict = SmokeSkip; r.detail = d; return r; }
+
+inline QString smokeDir()
+{
+    const QString d = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                      + "/selfrepair/smoke";
+    QDir().mkpath(d);
+    return d;
+}
+
+// ── exiftool: 진짜로 태그를 쓰고 되읽는다 ────────────────────────────────
+//   시험용 그림을 어디서 받아 오면 그 다운로드 자체가 새 고장 요인이 된다.
+//   그래서 1x1 JPEG(160바이트)를 코드 안에 넣어 둔다 — 바깥에 의존하지 않는다.
+//   값에는 일부러 한글·일본어를 넣는다. exiftool.exe 는 argv 를 시스템 ANSI 로
+//   받으므로 여기서 뭉개지는 것이 실제 고장 지점이었다.
+inline SmokeResult smokeExiftool(const QString &exe)
+{
+    static const char kJpeg1x1[] =
+        "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRof"
+        "Hh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAAB"
+        "AAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==";
+
+    const QString dir = smokeDir();
+    const QString jpg = dir + "/exif_probe.jpg";
+    QFile::remove(jpg);
+    {
+        QFile f(jpg);
+        if (!f.open(QIODevice::WriteOnly)) return smokeFail("검사용 그림 파일을 만들지 못했습니다");
+        f.write(QByteArray::fromBase64(QByteArray(kJpeg1x1)));
+    }
+
+    const QString marker = QStringLiteral("자가진단-テスト-")
+                           + QString::number(QDateTime::currentSecsSinceEpoch());
+
+    // 앱 본체(Common::addExifMetadata)와 똑같은 방식 — UTF-8 argfile + -charset.
+    // 다른 방식으로 시험하면 '시험은 되는데 앱은 안 되는' 상태를 못 잡는다.
+    auto runWithArgs = [&](const QStringList &lines, QByteArray *out) -> bool {
+        const QString argPath = dir + "/exif_probe.args";
+        QFile a(argPath);
+        if (!a.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+        {
+            QTextStream ts(&a);
+            ts.setEncoding(QStringConverter::Utf8);
+            ts << "-charset\nfilename=UTF8\n-charset\nUTF8\n";
+            for (const QString &l : lines) ts << l << "\n";
+        }
+        a.close();
+        QProcess p;
+        p.setProcessEnvironment(Common::bundledProcessEnv());
+        p.start(launchPath(QStringLiteral("exiftool"), exe),
+                QStringList() << "-@" << Common::ansiSafePath(argPath));
+        if (!p.waitForStarted(5000)) return false;
+        if (!p.waitForFinished(20000)) { p.kill(); return false; }
+        if (out) *out = p.readAllStandardOutput();
+        return p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0;
+    };
+
+    if (!runWithArgs({"-overwrite_original", "-ImageDescription=" + marker, jpg}, nullptr))
+        return smokeFail("태그를 쓰지 못했습니다");
+
+    QByteArray back;
+    if (!runWithArgs({"-s", "-s", "-s", "-ImageDescription", jpg}, &back))
+        return smokeFail("쓴 태그를 되읽지 못했습니다");
+
+    const QString got = QString::fromUtf8(back).trimmed();
+    if (got != marker)
+        return smokeFail(QString("되읽은 값이 다릅니다 (쓴 값 %1 / 읽은 값 %2)")
+                             .arg(marker, got.isEmpty() ? QStringLiteral("(빈 값)") : got));
+    QFile::remove(jpg);
+    return smokePass("한글·일본어 태그 쓰기·되읽기 확인");
+}
+
+// ── ffmpeg: 실제로 인코딩해 파일을 만든다 ────────────────────────────────
+//   앱이 쓰는 두 경로를 그대로 시킨다 — 우고이라 GIF(palettegen/paletteuse)와
+//   mp4 먹싱. 코덱 하나만 빠져도 여기서 드러난다.
+inline SmokeResult smokeFfmpeg(const QString &exe)
+{
+    const QString dir = smokeDir();
+    auto make = [&](const QString &outFile, const QStringList &extra) -> qint64 {
+        QFile::remove(outFile);
+        QProcess p;
+        p.setProcessEnvironment(Common::bundledProcessEnv());
+        QStringList args;
+        args << "-hide_banner" << "-loglevel" << "error" << "-nostdin" << "-y"
+             << "-f" << "lavfi" << "-i" << "testsrc=size=32x32:rate=10:duration=0.3";
+        args += extra;
+        args << outFile;
+        p.start(exe, args);
+        if (!p.waitForStarted(5000)) return -1;
+        if (!p.waitForFinished(60000)) { p.kill(); return -1; }
+        if (p.exitCode() != 0) return -1;
+        return QFileInfo(outFile).size();
+    };
+
+    const qint64 gif = make(dir + "/ff_probe.gif",
+        {"-vf", "split[a][b];[a]palettegen=max_colors=32[p];[b][p]paletteuse"});
+    if (gif <= 0) return smokeFail("GIF 변환이 되지 않습니다 (우고이라 변환이 쓰는 경로)");
+
+    const qint64 mp4 = make(dir + "/ff_probe.mp4", {"-c:v", "mpeg4", "-pix_fmt", "yuv420p"});
+    if (mp4 <= 0) return smokeFail("mp4 만들기가 되지 않습니다 (유튜브 영상·음성 합치기가 쓰는 경로)");
+
+    QFile::remove(dir + "/ff_probe.gif");
+    QFile::remove(dir + "/ff_probe.mp4");
+    return smokePass(QString("GIF %1B · mp4 %2B 생성 확인").arg(gif).arg(mp4));
+}
+
+// ── python: 앱 스크립트가 실제로 import 하는 것들을 불러 본다 ────────────
+//   pip 환경이 조용히 깨지는 것은 오래 방치한 앱에서 가장 흔한 고장이다.
+//   한글 출력도 같이 본다 — 예전에 자식 파이썬이 한글을 찍다가 죽었다.
+inline SmokeResult smokePython(const QString &exe)
+{
+    const QString dir = smokeDir();
+    const QString py  = dir + "/py_probe.py";
+    {
+        QFile f(py);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            return smokeFail("검사용 스크립트를 만들지 못했습니다");
+        QTextStream ts(&f);
+        ts.setEncoding(QStringConverter::Utf8);
+        ts << "# -*- coding: utf-8 -*-\n"
+              "import sys, importlib\n"
+              "mods = ['ssl','sqlite3','json','twikit','httpx','atproto','openpyxl',\n"
+              "        'PIL','piexif','bs4','lxml','websockets','m3u8','browser_cookie3']\n"
+              "missing = []\n"
+              "for m in mods:\n"
+              "    try: importlib.import_module(m)\n"
+              "    except Exception: missing.append(m)\n"
+              "try: sys.stdout.reconfigure(encoding='utf-8')\n"
+              "except Exception: pass\n"
+              "print('KOREAN:자가진단')\n"
+              "print('MISSING:' + ','.join(missing))\n";
+    }
+
+    QProcess p;
+    p.setProcessEnvironment(Common::bundledProcessEnv());
+    p.start(exe, QStringList() << py);
+    if (!p.waitForStarted(5000)) return smokeFail("파이썬을 실행하지 못했습니다");
+    if (!p.waitForFinished(120000)) { p.kill(); return smokeFail("파이썬이 응답하지 않습니다"); }
+    const QString out = QString::fromUtf8(p.readAllStandardOutput());
+
+    if (!out.contains(QStringLiteral("KOREAN:자가진단")))
+        return smokeFail("한글 출력이 깨집니다 (수집 스크립트가 같은 자리에서 죽는다)");
+
+    QString missing;
+    for (const QString &line : out.split('\n'))
+        if (line.startsWith("MISSING:")) missing = line.mid(8).trimmed();
+    if (!missing.isEmpty())
+        return smokeFail("빠진 모듈: " + missing + " — 설정 → 모듈 업데이트로 받으세요");
+    return smokePass("필수 모듈 14개 import · 한글 출력 확인");
+}
+
+// ── 인터넷에 닿는지 ──────────────────────────────────────────────────────
+//   실패를 '도구 고장' 으로 적기 전에 반드시 확인한다.
+inline bool internetReachable()
+{
+    return !httpGet(QStringLiteral("https://www.youtube.com/robots.txt"), 5000).isEmpty();
+}
+
+// ── yt-dlp: 실제로 미디어 바이트를 받아 본다 ─────────────────────────────
+//   형식 목록만 보는 검사는 2026.07.04 고장을 못 잡는다 — 목록은 나왔고
+//   본문만 403 이었다. 그래서 '받아진다' 를 직접 확인한다.
+//   기준 영상은 사라질 가능성이 가장 낮은 둘을 쓰고, 둘 다 실패했을 때만
+//   네트워크를 의심한다.
+inline SmokeResult smokeYtDlp(const QString &exe)
+{
+    // 기준 영상 — 사라질 가능성이 가장 낮은 둘을 쓴다.
+    //   그래도 10년 뒤에는 모른다. 그때 코드를 못 고치는 사람도 쓸 수 있도록
+    //   환경변수로 갈아끼울 수 있게 열어 둔다 (쉼표로 여러 개).
+    //   1년을 방치할 앱이라면 '내가 박아 둔 상수' 도 언젠가 틀린다고 봐야 한다.
+    QStringList urls;
+    const QString custom = qEnvironmentVariable("PREDORMITION_SMOKE_YT");
+    if (!custom.isEmpty()) urls = custom.split(',', Qt::SkipEmptyParts);
+    else urls << QStringLiteral("https://www.youtube.com/watch?v=jNQXAC9IVRw")   // 2005년, 유튜브 첫 영상
+              << QStringLiteral("https://www.youtube.com/watch?v=BaW_jenozKc");  // yt-dlp 가 자기 시험에 쓰는 영상
+
+    const qint64 kNeed = 32768;   // 32KB 면 '본문이 흐른다' 는 증거로 충분하다
+
+    QString lastErr;
+    for (const QString &url : urls) {
+        QProcess p;
+        p.setProcessEnvironment(Common::bundledProcessEnv());
+        p.start(launchPath(QStringLiteral("yt-dlp"), exe), QStringList()
+                << "--no-warnings" << "--no-progress" << "--no-playlist"
+                << "-f" << "worstaudio/worst" << "-o" << "-" << url.trimmed());
+        if (!p.waitForStarted(8000)) { lastErr = p.errorString(); continue; }
+
+        qint64 got = 0;
+        QElapsedTimer t; t.start();
+        while (t.elapsed() < 90000 && got < kNeed) {
+            if (!p.waitForReadyRead(3000)) {
+                if (p.state() != QProcess::Running) break;
+                continue;
+            }
+            got += p.readAllStandardOutput().size();
+        }
+        const QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();
+        p.kill();
+        p.waitForFinished(5000);
+
+        if (got >= kNeed)
+            return smokePass(QString("영상 데이터 %1KB 수신 확인").arg(got / 1024));
+        lastErr = err.section('\n', -1).left(160);
+    }
+
+    if (!internetReachable())
+        return smokeSkip("인터넷에 닿지 않아 건너뜁니다 (도구 문제가 아닙니다)");
+    return smokeFail(QStringLiteral("영상 데이터를 받지 못했습니다")
+                     + (lastErr.isEmpty() ? QString() : " — " + lastErr));
+}
+
+inline SmokeResult smokeTest(const QString &name, const QString &path, bool allowNetwork)
+{
+    if (name == "exiftool") return smokeExiftool(path);
+    if (name == "ffmpeg")   return smokeFfmpeg(path);
+    if (name == "python")   return smokePython(path);
+    if (name == "yt-dlp")   return allowNetwork ? smokeYtDlp(path)
+                                                : smokeSkip("최근에 확인해서 이번엔 건너뜁니다");
+    // rclone 은 원격 저장소가 있어야 의미 있는 시험이 된다.
+    // 없는 시험을 있는 척하지 않는다 — 그게 [OK] 를 못 믿게 만드는 지름길이다.
+    return smokeSkip("실기능 확인 항목 없음 (버전 확인만)");
 }
 
 // 잔존 상태 정리 — 캡쳐 Chrome 프로필 stale lock, temp 폴더
@@ -339,7 +631,7 @@ inline QString updateYtDlpIfDue(int everyDays = 7, bool force = false)
     QFile::copy(userCopy, backup);
 
     QProcess p;
-    p.start(Common::ansiSafePath(userCopy), QStringList() << "-U");
+    p.start(launchPath(name, userCopy), QStringList() << "-U");
     if (!p.waitForStarted(5000) || !p.waitForFinished(180000)) {
         p.kill();
         QFile::remove(backup);
@@ -545,39 +837,144 @@ inline QString llmDiagnose(const QString &reportText)
         .value("message").toObject().value("content").toString().trimmed();
 }
 
+// ── 결과를 바깥(화면)으로 내보내는 통로 ─────────────────────────────────
+//
+// 예전에는 AppData 안의 텍스트 파일에만 남겼다. 그러면 아무도 안 본다.
+// EXIF 가 1668건 전부 실패하는 동안 앱은 화면에 한 마디도 하지 않았고,
+// 사람은 잘 되고 있다고 믿었다. 파일에만 적는 진단은 진단이 아니라 기록이다.
+//
+// 그래서 한 줄짜리 요약을 앱에 넘길 통로를 둔다. 넘기는 쪽은 백그라운드
+// 스레드이므로, 받는 쪽(백엔드)이 메인 스레드로 넘겨서 화면을 건드린다.
+// ─────────────────────────────────────────────────────────────────────────
+
+inline QMutex &stateMutex()      { static QMutex m;   return m; }
+inline QString &lastReportRef()  { static QString s;  return s; }
+
+using Notifier = std::function<void(QString, QString)>;   // (한 줄, 등급: success/error/info)
+inline Notifier &notifierRef()   { static Notifier f;  return f; }
+
+inline void setNotifier(Notifier f)
+{
+    QMutexLocker lk(&stateMutex());
+    notifierRef() = std::move(f);
+}
+
+inline void notify(const QString &line, const QString &level)
+{
+    Notifier f;
+    { QMutexLocker lk(&stateMutex()); f = notifierRef(); }
+    if (f) f(line, level);
+}
+
+inline QString reportPath()
+{
+    const QString d = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                      + "/selfrepair";
+    QDir().mkpath(d);
+    return d + "/last_report.txt";
+}
+
+// 마지막 보고서 — 메모리에 있으면 그것, 없으면 지난 실행이 남긴 파일.
+// (앱을 막 켠 직후 화면이 물어보면 아직 이번 것이 없다. 그때는 지난 것이라도 보여 준다.)
+inline QString lastReport()
+{
+    { QMutexLocker lk(&stateMutex());
+      if (!lastReportRef().isEmpty()) return lastReportRef(); }
+    QFile f(reportPath());
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return QString::fromUtf8(f.readAll());
+    return QString();
+}
+
 // ── 오케스트레이터 ───────────────────────────────────────────────────────
 
-inline QString runStartupMaintenance()
+// deep       = 사용자가 화면에서 직접 눌렀다는 뜻.
+//              그때는 하루 한 번 제한을 무시하고 네트워크 확인까지 전부 다시 한다.
+// cleanLocks = 캡쳐 Chrome 의 잔존 잠금 파일을 지울지.
+//              앱을 켤 때는 지운다(지난 세션의 찌꺼기다). 그런데 켜 둔 채로 도는
+//              주기 점검에서 지우면 지금 돌고 있는 캡쳐의 잠금을 뺏을 수 있다.
+//              시작할 때만 지운다.
+inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
 {
     QString report;
     report += "═ SelfRepair 자가진단 " + QDateTime::currentDateTime().toString(Qt::ISODate) + " ═\n";
     report += "appDir: " + appDir() + "\n";
 
+    // 네트워크가 필요한 확인은 하루에 한 번만 한다.
+    //   앱을 자주 켜는 사람에게 매번 유튜브를 두드리게 하면 그것 자체가 민폐다.
+    //   사용자가 버튼을 누른 경우(deep)는 무조건 한다 — 지금 확인하고 싶은 것이니까.
+    const bool netCheck = deep || updateDue("smoke_net", 1);
+    bool netCheckRan = false;
+
     // ★ 검사보다 갱신을 먼저 한다. 낡은 것을 검사해 [OK] 를 찍어 봐야 소용없다.
     //   (실측: 두 달 묵은 yt-dlp 도 --version 은 통과하는데 유튜브는 전부 403 이었다)
-    report += updateYtDlpIfDue();
+    report += updateYtDlpIfDue(7, deep);
 
     const QStringList tools = {"yt-dlp", "ffmpeg", "python", "exiftool", "rclone"};
-    int broken = 0;
+    int broken = 0, repaired = 0, smokeBad = 0;
+    QStringList badNames;
+
     for (const QString &t : tools) {
         ToolStatus st = checkTool(t);
         if (!st.runs) {
             repairTool(st);   // 발견 여부와 무관하게 번들 재복사 경로로 복구 시도
             if (st.runs) {
-                report += QString("[OK*]  %1 — %2 (자동 복구됨: %3)\n")
-                              .arg(t, st.version, st.path);
+                report += QString("[OK*]  %1 — %2 (자동 복구됨: %3)\n").arg(t, st.version, st.path);
+                ++repaired;
+                // ★ 복구는 낡은 쪽으로 되돌린다 — 번들본은 배포 시점에 굳은 물건이다.
+                //   yt-dlp 는 바깥 서비스를 따라가야 하는 도구라서, 낡은 것으로 되살려 놓고
+                //   다음 갱신일(7일 뒤)까지 두면 그 사이 내내 안 되는 상태로 있는다.
+                //   되살렸으면 곧바로 최신으로 끌어올린다. '복구' 가 '퇴행' 이 되면 안 된다.
+                if (t == "yt-dlp") {
+                    report += updateYtDlpIfDue(0, true);
+                    ToolStatus re = checkTool(t);
+                    if (re.runs) st = re;
+                }
             } else {
                 report += QString("[FAIL] %1 — %2\n").arg(t, st.error);
                 ++broken;
+                badNames << t;
+                continue;     // 실행도 안 되는 것에 실기능 확인은 의미가 없다
             }
         } else {
             report += QString("[OK]   %1 — %2 (%3)\n").arg(t, st.version, st.path);
         }
+
+        // ★ 여기부터가 핵심 — 버전이 아니라 '실제로 되는가' 를 본다.
+        SmokeResult sm = smokeTest(t, st.path, netCheck);
+
+        if (t == "yt-dlp" && sm.verdict != SmokeSkip) netCheckRan = true;
+
+        if (sm.verdict == SmokeFail && t == "yt-dlp") {
+            // 유튜브가 바뀌어서 낡은 yt-dlp 가 막힌 것일 수 있다 — 실제로 그랬다.
+            // 사람이 없어도 여기서 스스로 최신을 받아 다시 해 본다.
+            // 이 한 덩어리가 "1년을 방치해도 도는가" 의 대부분이다.
+            report += "[UPD]  yt-dlp — 실기능 확인 실패, 최신본을 받아 다시 해 봅니다\n";
+            report += updateYtDlpIfDue(0, true);
+            st = checkTool(t);
+            if (st.runs) sm = smokeTest(t, st.path, true);
+        }
+
+        if (sm.verdict == SmokePass) {
+            report += "       └ 실기능 확인: 통과 — " + sm.detail + "\n";
+        } else if (sm.verdict == SmokeSkip) {
+            report += "       └ 실기능 확인: 건너뜀 — " + sm.detail + "\n";
+        } else {
+            report += "       └ 실기능 확인: 실패 — " + sm.detail + "\n";
+            ++smokeBad;
+            if (!badNames.contains(t)) badNames << t;
+        }
     }
 
-    const QStringList cleaned = cleanStaleState();
-    for (const QString &c : cleaned)
-        report += "[CLEAN] stale lock 제거: " + c + "\n";
+    // 네트워크 확인이 실제로 이뤄졌을 때만 시각을 적는다.
+    //   오프라인으로 켠 것 때문에 하루치를 써 버리면, 정작 온라인일 때 안 본다.
+    if (netCheckRan) markUpdated("smoke_net");
+
+    if (cleanLocks) {
+        const QStringList cleaned = cleanStaleState();
+        for (const QString &c : cleaned)
+            report += "[CLEAN] stale lock 제거: " + c + "\n";
+    }
 
     if (broken > 0) {
         report += QString("\n%1개 도구 복구 실패 — 로컬 LLM 진단 시도…\n").arg(broken);
@@ -588,14 +985,26 @@ inline QString runStartupMaintenance()
             : "┌ LLM 진단 ┐\n" + diag + "\n└──────────┘\n";
     }
 
-    // 보고서 저장
-    const QString outDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-                           + "/selfrepair";
-    QDir().mkpath(outDir);
-    QFile f(outDir + "/last_report.txt");
+    // 한 줄 요약 — 이게 화면에 뜨는 문장이다. 길면 안 읽는다.
+    QString summary, level;
+    if (broken == 0 && smokeBad == 0) {
+        summary = QString("자가진단 이상 없음 — 도구 %1개가 실제로 동작합니다").arg(tools.size());
+        if (repaired > 0) summary += QString(" (%1개는 자동 복구했습니다)").arg(repaired);
+        level = QStringLiteral("success");
+    } else {
+        summary = QString("자가진단에서 문제를 찾았습니다 — %1 (설정 → 자가진단에서 자세히)")
+                      .arg(badNames.join(", "));
+        level = QStringLiteral("error");
+    }
+    report += "\n" + summary + "\n";
+
+    { QMutexLocker lk(&stateMutex()); lastReportRef() = report; }
+    QFile f(reportPath());
     if (f.open(QIODevice::WriteOnly | QIODevice::Text))
         f.write(report.toUtf8());
     qInfo().noquote() << report;
+
+    notify(summary, level);
     return report;
 }
 
@@ -607,14 +1016,21 @@ inline void runStartupMaintenanceAsync()
 }
 
 // ★ 켜 두고 쓰는 기계를 위한 진입점.
-//   시작 시 한 번만 보면, 한 달 내내 켜 둔 앱은 그 한 달 동안 낡은 채로 있는다.
-//   백엔드가 하루에 한 번 이것을 부른다. 갱신 주기(7일)는 안에서 다시 따지므로
-//   매일 불러도 실제 통신은 일주일에 한 번뿐이다.
+//
+//   시작 시 한 번만 보면, 한 달 내내 켜 둔 앱은 그 한 달 동안 아무도 안 본다.
+//   유튜브가 바뀌어 다운로드가 막혀도 앱은 모른 채로 계속 돈다 — 실제로 그랬다.
+//   그래서 하루에 한 번 '전부' 다시 본다. 갱신만이 아니라 실기능 확인까지.
+//   (전에는 여기서 yt-dlp 갱신만 했다. 갱신은 고장을 고칠 뿐 고장을 알려주진 않는다.)
+//
+//   비용은 걱정하지 않아도 된다 — 안쪽에서 다시 따진다.
+//     · yt-dlp 갱신: 7일에 한 번만 실제 통신
+//     · 유튜브 실기능 확인: 하루에 한 번만
+//     · 나머지(ffmpeg·exiftool·python)는 전부 오프라인이고 5초 안에 끝난다
+//   잠금 파일 정리는 하지 않는다 — 지금 돌고 있는 캡쳐의 잠금을 뺏을 수 있다.
 inline void runPeriodicUpdateAsync()
 {
     QThread *t = QThread::create([] {
-        const QString line = updateYtDlpIfDue();
-        if (!line.isEmpty()) qInfo().noquote() << "[SelfRepair]" << line.trimmed();
+        runStartupMaintenance(/*deep=*/false, /*cleanLocks=*/false);
     });
     QObject::connect(t, &QThread::finished, t, &QObject::deleteLater);
     t->start(QThread::LowPriority);

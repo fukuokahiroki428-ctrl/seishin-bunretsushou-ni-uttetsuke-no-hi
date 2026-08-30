@@ -28,6 +28,15 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
 //   로 바꿔 준다. 바꿀 수 없으면(8.3 이 꺼진 볼륨 등) 원본을 그대로 돌려준다.
 //   Windows 외에서는 항상 원본을 그대로 돌려준다.
 QString ansiSafePath(const QString &path);
+#ifdef Q_OS_WIN
+// exiftool 전용 — 경로에 ANSI 로 못 쓰는 글자(한글·일본어)가 있으면 exiftool 과
+// exiftool_files 를 ANSI 로 쓸 수 있는 자리로 옮겨서 그 경로를 돌려준다.
+//   ansiSafePath(8.3 단축 경로)만으로는 부족하다 — 8.3 이름 생성이 꺼진 드라이브가
+//   흔하고(이 기계의 D: 가 그렇다) 그때는 단축 경로가 아예 안 만들어진다.
+// ★ 자가진단도 반드시 이것을 써야 한다. 앱과 다른 방법으로 실행해 보면
+//   "앱은 되는데 진단만 [FAIL]" 이 난다 — 실제로 그랬다.
+QString asciiSafeExiftool(const QString &exePath);
+#endif
 
 // Cross-platform path helpers
 // macOS: <쓰기가능 복사본>/bin/python3  (아래 activePythonEnvDir 참고)

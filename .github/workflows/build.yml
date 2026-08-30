@@ -53,6 +53,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 맥판과 갈라진 곳을 매 빌드마다 눈에 보이게 적어 둔다.
+      #   한쪽에서 고친 것이 다른 쪽에 안 넘어가도 빌드는 그냥 성공한다 —
+      #   그래서 조용히 낡는다. 실제로 SelfRepair.h 가 "동일" 이라고 적힌 채
+      #   1240줄이 갈라져 있었다.
+      #   막지는 않는다(continue-on-error). 빌드를 세우면 사람들은 검사를 끈다.
+      - name: 맥·윈도우 갈라짐 검사
+        continue-on-error: true
+        shell: bash
+        run: |
+          python scripts/port_parity.py --github >> "$GITHUB_STEP_SUMMARY"
+          python scripts/port_parity.py
+
       # 2) Qt 6.7 + WebEngine 설치
       #    ★ 6.7.3 의 MSVC 데스크탑 arch 는 win64_msvc2019_64 (Qt 명명 규칙 — 실제로는 VS2022 로 빌드 가능).
       #      win64_msvc2022_64 는 6.7.3 에 존재하지 않아 "packages not found" 로 실패함.

@@ -290,16 +290,37 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
         log(msg, type, "settings");
     });
 
-    // ★ 도구 자동 갱신 — 하루에 한 번 확인한다.
-    //   시작 시 한 번만 보면, 한 달 내내 켜 둔 앱은 그동안 낡은 채로 있는다.
+    // ★ 하루에 한 번 자가진단을 다시 돌린다 (갱신 + 실기능 확인).
+    //   시작할 때 한 번만 보면, 한 달 내내 켜 둔 앱은 그동안 아무도 안 본다.
     //   실제로 그래서 멈춘 적이 있다: 두 달 묵은 yt-dlp 가 유튜브 미디어 요청을
-    //   전부 403 로 받았다. 갱신 주기(7일)는 SelfRepair 안에서 다시 따지므로
-    //   매일 불러도 실제 통신은 일주일에 한 번이다.
+    //   전부 403 으로 받았고, 앱은 그걸 모른 채 계속 돌았다.
+    //   실제 비용은 SelfRepair 안에서 다시 따진다 — 갱신은 7일에 한 번,
+    //   유튜브 확인은 하루에 한 번, 나머지는 오프라인 5초.
     {
         QTimer *upd = new QTimer(this);
         upd->setInterval(24 * 60 * 60 * 1000);   // 24시간
         connect(upd, &QTimer::timeout, this, [] { SelfRepair::runPeriodicUpdateAsync(); });
         upd->start();
+    }
+
+    // ★ 자가진단 결과를 화면으로 끌어낸다.
+    //   전에는 AppData 안 텍스트 파일에만 적었다. 그러면 아무도 안 본다 —
+    //   EXIF 가 1668건 전부 실패하는 동안 앱은 화면에 한 마디도 하지 않았고,
+    //   사람은 잘 되고 있다고 믿었다. 안 보이는 진단은 없는 진단이다.
+    //   통보는 백그라운드 스레드에서 온다. this 를 거기서 만지면 안 되므로
+    //   QPointer 로 살아있는지 확인하고 메인 스레드로 넘겨서 화면을 건드린다.
+    {
+        QPointer<MiyoBackend> self(this);
+        SelfRepair::setNotifier([self](QString line, QString level) {
+            QMetaObject::invokeMethod(qApp, [self, line, level]() {
+                if (!self) return;
+                self->log("🩺 " + line, level, "settings");
+                const QByteArray j = QJsonDocument(QJsonObject{
+                    {"line", line}, {"level", level}}).toJson(QJsonDocument::Compact);
+                self->runJs("if(window.onSelfDiagnosisSummary) onSelfDiagnosisSummary("
+                            + QString::fromUtf8(j) + ");");
+            }, Qt::QueuedConnection);
+        });
     }
     // ★ 앱 시작 시 이전 세션의 좀비 capture Chrome 청소
     //   매치 패턴 3종 — 일반 Chrome 영향 없음:
@@ -495,6 +516,9 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
 
 MiyoBackend::~MiyoBackend()
 {
+    // 자가진단 통보 통로부터 끊는다 — 종료 중에 죽은 객체를 부르지 않게
+    SelfRepair::setNotifier(nullptr);
+
     // 内閣会 타이머 정리
     m_naikakukaiRunning = false;
     if (m_naikakukaiTimer) { m_naikakukaiTimer->stop(); }
@@ -4185,6 +4209,57 @@ void MiyoBackend::setStorageMode(const QString &mode)
                       " })();").arg(safeMode, safeRoot);
         runJs(js);
     }, Qt::QueuedConnection);
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 자가진단 — 화면에서 부르는 쪽
+//
+//   runSelfDiagnosis()      : 지금 검사한다. 네트워크 확인까지 전부 한다.
+//   loadLastSelfDiagnosis() : 마지막 결과를 다시 띄운다 (설정 탭을 열 때).
+//
+//   검사는 최대 1~2분 걸린다(유튜브에서 실제로 데이터를 받아 보므로).
+//   그래서 백그라운드 스레드에서 돌리고, 결과만 메인 스레드로 넘긴다.
+// ═════════════════════════════════════════════════════════════════════════
+void MiyoBackend::pushSelfDiagnosisReport(const QString &report)
+{
+    // JSON 으로 감싸서 넘긴다. 따옴표·줄바꿈을 손으로 이스케이프하면 언젠가 깨진다
+    //   — 실제로 이 파일 곳곳의 replace("'","\\'") 방식이 한글 경로에서 깨졌다.
+    const QByteArray j = QJsonDocument(QJsonObject{{"report", report}})
+                             .toJson(QJsonDocument::Compact);
+    runJs("if(window.onSelfDiagnosisReport) onSelfDiagnosisReport("
+          + QString::fromUtf8(j) + ");");
+}
+
+void MiyoBackend::runSelfDiagnosis()
+{
+    log("🩺 자가진단 시작 — 도구가 '실제로 되는지' 까지 확인합니다. "
+        "유튜브에서 데이터를 받아 보므로 1~2분 걸릴 수 있습니다.", "info", "settings");
+    runJs("if(window.onSelfDiagnosisBusy) onSelfDiagnosisBusy(true);");
+
+    QPointer<MiyoBackend> self(this);
+    QThread *t = QThread::create([self]() {
+        const QString rep = SelfRepair::runStartupMaintenance(/*deep=*/true);
+        QMetaObject::invokeMethod(qApp, [self, rep]() {
+            if (!self) return;
+            self->pushSelfDiagnosisReport(rep);
+            self->runJs("if(window.onSelfDiagnosisBusy) onSelfDiagnosisBusy(false);");
+        }, Qt::QueuedConnection);
+    });
+    connect(t, &QThread::finished, t, &QObject::deleteLater);
+    t->start(QThread::LowPriority);
+}
+
+void MiyoBackend::loadLastSelfDiagnosis()
+{
+    const QString rep = SelfRepair::lastReport();
+    pushSelfDiagnosisReport(rep.isEmpty()
+        ? QStringLiteral("아직 결과가 없습니다. [지금 검사] 를 누르면 도구를 실제로 돌려 봅니다.")
+        : rep);
+}
+
+void MiyoBackend::openSelfDiagnosisFolder()
+{
+    openFolder(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/selfrepair");
 }
 
 void MiyoBackend::openDiagnosticsFolder()

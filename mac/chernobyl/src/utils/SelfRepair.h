@@ -2,7 +2,12 @@
 #include <QStorageInfo>
 // ═════════════════════════════════════════════════════════════════════════
 // SelfRepair.h — 앱 자가진단 · 자가복구 + 로컬 LLM 진단 계층 (header-only)
-// 설치 위치: windows/src/utils/SelfRepair.h  (mac/chernobyl/src/utils/ 동일)
+// 설치 위치: mac/chernobyl/src/utils/SelfRepair.h
+//   ※ windows/src/utils/SelfRepair.h 와 '같은 파일이어야 한다' 는 뜻이 아니다.
+//     실제로 두 판은 갈라져 있다 — 맥 쪽엔 서명 자동복구가, 윈도우 쪽엔
+//     도구 자동 갱신·실기능 확인이 따로 들어갔다. 전에 여기 "동일" 이라고
+//     적혀 있었고, 그것을 믿고 한쪽만 고치면 다른 쪽은 조용히 낡는다.
+//     어디가 갈라졌는지는 `python scripts/port_parity.py` 가 매번 말해 준다.
 //
 // 목적:
 //   1) 시작 시 번들 도구(yt-dlp/ffmpeg/exiftool/rclone/python) 존재·실행 자가진단
