@@ -4526,6 +4526,16 @@
             document.getElementById('twitter-ct0').value='';
             appendLog('계정 추가: '+(name||'Account'),'success','twitter');
         }
+        // ★ 단일 대상 칸이 채워져 있으면 그것을 우선한다.
+        //   예전엔 저장된 목록이 하나라도 있으면 단일 칸을 '보지도 않고' 다중 수집으로
+        //   넘어갔다. 그래서 목록을 만들어 둔 사람은 한 명만 급히 받아 보려고 칸에
+        //   적어 넣어도 목록 전체가 돌아갔다(실측으로 확인함).
+        //   목록을 쓰고 싶으면 칸을 비우면 된다 — 예전 동작 그대로다.
+        function singleTargetOverride(id) {
+            const e = document.getElementById(id);
+            return e ? (e.value || '').trim() : '';
+        }
+
         function startTwitter() {
             if (!backend) return;
             const type = document.getElementById('twitter-type').value;
@@ -4536,7 +4546,7 @@
                 target = document.getElementById('twitter-url').value.trim();
                 if (!target) { appendLog(urlInfo.label + '을(를) 입력하세요','error','twitter'); return; }
             } else {
-                if (platformTargets.twitter && platformTargets.twitter.length) { startPlatformMulti('twitter'); return; }
+                if (!singleTargetOverride('twitter-target') && (platformTargets.twitter||[]).length) { startPlatformMulti('twitter'); return; }
                 target = document.getElementById('twitter-target').value.trim().replace(/^@/,'').split(/[\s\n\r]/)[0].trim();
                 document.getElementById('twitter-target').value = target;
                 if (!target) { appendLog('대상 유저이름을 입력하세요','error','twitter'); return; }
@@ -4699,7 +4709,7 @@
             if (!backend) return;
             if (!accounts.discord||accounts.discord.length===0) { appendLog('계정을 먼저 추가하세요','error','discord'); return; }
             // 다중대상 큐에 항목 있으면 startPlatformMulti로 위임
-            if (platformTargets.discord && platformTargets.discord.length) { startPlatformMulti('discord'); return; }
+            if (!singleTargetOverride('discord-channel') && (platformTargets.discord||[]).length) { startPlatformMulti('discord'); return; }
             const server=document.getElementById('discord-server').value.trim();
             const channel=document.getElementById('discord-channel').value.trim();
             const dtype=document.getElementById('discord-type').value;
@@ -4772,7 +4782,7 @@
             //   (기존 버그: 계정지정이 있을 때만 멀티로 가고, 전부 '전체 계정'이면 단일 경로로 빠져
             //    enabled 를 무시한 채 targets[0](목록 첫 번째)만 받아 → 체크한 대상이 아니라
             //    다른 타겟이 다운로드되던 문제. Twitter 처럼 목록 있으면 무조건 멀티로 통일.)
-            if ((platformTargets.instagram||[]).length) { startPlatformMulti('instagram'); return; }
+            if (!singleTargetOverride('instagram-target') && (platformTargets.instagram||[]).length) { startPlatformMulti('instagram'); return; }
             // 목록이 비어 있으면 단일 입력 필드 사용
             const singleUser = ((document.getElementById('instagram-target')||{value:''}).value||'').trim().replace(/^@/,'');
             let targets = [];
@@ -4830,7 +4840,7 @@
         }
         function startPixiv() {
             if (!backend) return;
-            if (platformTargets.pixiv && platformTargets.pixiv.length) { startPlatformMulti('pixiv'); return; }
+            if (!singleTargetOverride('pixiv-target') && (platformTargets.pixiv||[]).length) { startPlatformMulti('pixiv'); return; }
             const target = document.getElementById('pixiv-target').value.trim();
             if (!target) { appendLog('대상을 입력하세요 (유저 ID, 일러스트 URL 등)','error','pixiv'); return; }
             if (!accounts.pixiv || accounts.pixiv.length === 0) { appendLog('PHPSESSID 계정을 먼저 추가하세요','error','pixiv'); return; }
@@ -4866,7 +4876,7 @@
         // ── Pixiv Fanbox ──
         function startFanbox() {
             if (!backend) return;
-            if (platformTargets.fanbox && platformTargets.fanbox.length) { startPlatformMulti('fanbox'); return; }
+            if (!singleTargetOverride('fanbox-target') && (platformTargets.fanbox||[]).length) { startPlatformMulti('fanbox'); return; }
             const target = document.getElementById('fanbox-target').value.trim();
             if (!target) { appendLog('크리에이터 ID 또는 URL을 입력하세요','error','fanbox'); return; }
             const sessionId = document.getElementById('fanbox-session').value.trim();
@@ -4914,7 +4924,7 @@
         }
         function startTumblr() {
             if (!backend) return;
-            if (platformTargets.tumblr && platformTargets.tumblr.length) { startPlatformMulti('tumblr'); return; }
+            if (!singleTargetOverride('tumblr-target') && (platformTargets.tumblr||[]).length) { startPlatformMulti('tumblr'); return; }
             if (!accounts.tumblr || accounts.tumblr.length === 0) { appendLog('계정을 먼저 추가하세요 (API Key)','error','tumblr'); return; }
             const config = {
                 platform:'tumblr',
@@ -4958,7 +4968,7 @@
         }
         function startSpinSpin() {
             if (!backend) return;
-            if (platformTargets.spinspin && platformTargets.spinspin.length) { startPlatformMulti('spinspin'); return; }
+            if (!singleTargetOverride('spinspin-target') && (platformTargets.spinspin||[]).length) { startPlatformMulti('spinspin'); return; }
             const config = {
                 platform:'spinspin',
                 cookie: (accounts.spinspin && accounts.spinspin.length > 0) ? accounts.spinspin[0].cookie : document.getElementById('spinspin-cookie').value,
@@ -4998,7 +5008,7 @@
         }
         function startAsked() {
             if (!backend) return;
-            if (platformTargets.asked && platformTargets.asked.length) { startPlatformMulti('asked'); return; }
+            if (!singleTargetOverride('asked-target') && (platformTargets.asked||[]).length) { startPlatformMulti('asked'); return; }
             const config = {
                 platform:'asked',
                 cookie: (accounts.asked && accounts.asked.length > 0) ? accounts.asked[0].cookie : document.getElementById('asked-cookie').value,
@@ -5187,7 +5197,7 @@
         }
         function startBluesky() {
             if (!backend) return;
-            if (platformTargets.bluesky && platformTargets.bluesky.length) { startPlatformMulti('bluesky'); return; }
+            if (!singleTargetOverride('bsky-target') && (platformTargets.bluesky||[]).length) { startPlatformMulti('bluesky'); return; }
             if (!accounts.bluesky||accounts.bluesky.length===0) { appendLog('계정을 먼저 추가하세요','error','bluesky'); return; }
             const type = document.getElementById('bsky-type').value;
             const firstAcct = accounts.bluesky[0];
