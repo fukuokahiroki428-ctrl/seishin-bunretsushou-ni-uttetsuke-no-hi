@@ -148,6 +148,12 @@ MainWindow::MainWindow(QWidget *parent)
         qDebug() << "[HTML] loading external:" << externalHtml;
     } else {
         m_webView->setUrl(QUrl("qrc:/html/index.html"));
+
+    // ★ 화면이 다 뜬 뒤에야 사이드바 항목을 읽을 수 있다. 그때 '기능' 메뉴를 채운다.
+    //   페이지가 다시 로드돼도(자가수리·새로고침) 다시 채워지도록 매번 건다.
+    connect(m_webView, &QWebEngineView::loadFinished, this, [this](bool ok) {
+        if (ok) populatePlatformMenu();
+    });
         qDebug() << "[HTML] loading qrc:/html/index.html (no external found)";
     }
 
@@ -204,6 +210,41 @@ MainWindow::MainWindow(QWidget *parent)
     // ★ 앱 시작 시 sleep 방지 어설션 자동 활성 — collection 안 돌고 있어도 항상 활성
     //   lid close 시 sleep 막는 데 최대 효과. (Apple 정책상 100% 보장은 외부 모니터 필요)
     QTimer::singleShot(500, this, &MainWindow::holdAwake);
+}
+
+
+// 상단 막대의 '기능' 메뉴를 화면의 실제 항목으로 채운다.
+//   ★ 목록을 코드에 적지 않는다. 사이드바가 진짜 목록이므로 거기서 읽는다.
+//     그래야 탭이 늘거나 이름이 바뀌어도 메뉴만 옛것으로 남지 않는다.
+void MainWindow::populatePlatformMenu()
+{
+    if (!m_platformMenu || !m_webView) return;
+    m_webView->page()->runJavaScript(
+        "JSON.stringify(Array.from(document.querySelectorAll('.nav-item'))"
+        ".map(function(e){var m=(e.getAttribute('onclick')||'').match(/switchTab\\('([a-z]+)'\\)/);"
+        "return m ? {id:m[1], label:(e.textContent||'').trim().replace(/\\s+/g,' ')} : null})"
+        ".filter(Boolean))",
+        [this](const QVariant &v) {
+            const QJsonArray arr = QJsonDocument::fromJson(v.toString().toUtf8()).array();
+            if (arr.isEmpty()) return;
+            m_platformMenu->clear();
+            for (const QJsonValue &it : arr) {
+                const QJsonObject o = it.toObject();
+                const QString id = o.value("id").toString();
+                QString label = o.value("label").toString();
+                if (id.isEmpty()) continue;
+                // 라벨 앞의 짧은 아이콘 글자(T, B, Tu …)를 떼어 낸다.
+                const int sp = label.indexOf(' ');
+                if (sp > 0 && sp <= 3) label = label.mid(sp + 1).trimmed();
+                if (label.isEmpty()) label = id;
+                QAction *a = m_platformMenu->addAction(label);
+                connect(a, &QAction::triggered, this, [this, id]() {
+                    show(); raise(); activateWindow();
+                    m_webView->page()->runJavaScript(
+                        QString("if(window.switchTab) switchTab('%1')").arg(id));
+                });
+            }
+        });
 }
 
 QMenu *MainWindow::createDockMenu()
@@ -316,6 +357,21 @@ void MainWindow::setupMenu()
     //     타이틀바 더블클릭인데 — 이 앱은 타이틀바를 투명하게 만들어(FullSizeContentView)
     //     그 자리를 웹뷰가 덮고 있어 더블클릭이 먹지 않는다.
     //     메뉴와 단축키로 확실한 경로를 만든다.
+    // ── 기능 메뉴 ─────────────────────────────────────────────────────────
+    //   ★ 왜 필요한가. 각 플랫폼으로 들어가는 길이 앱 안 사이드바 하나뿐이었다.
+    //     창을 좁히면 그 목록이 자리를 많이 먹고, macOS 상단 막대에는 File·창밖에
+    //     없어서 '어디로 가야 하는지' 가 앱 안에만 있었다.
+    //     상단 막대에서도 바로 들어갈 수 있게 한다.
+    //
+    //   ★ 이름을 코드에 박지 않는다. 탭이 늘거나 이름이 바뀌면 메뉴만 옛것으로
+    //     남는다 — 이 저장소에서 그런 어긋남을 여러 번 겪었다.
+    //     화면이 다 뜬 뒤 사이드바에서 실제 항목을 읽어 메뉴를 만든다.
+    {
+        m_platformMenu = menubar->addMenu("기능");
+        auto *loading = m_platformMenu->addAction("목록을 읽는 중…");
+        loading->setEnabled(false);
+    }
+
     auto *winMenu = menubar->addMenu("창");
 
     auto *zoomAction = new QAction("확대 / 원래대로", this);
