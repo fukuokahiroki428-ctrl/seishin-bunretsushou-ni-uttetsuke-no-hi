@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "Config.h"   // 창 크기 복원 — config()->windowGeometry()
 #include "MiyoBackend.h"
 #include "PenBackend.h"   // ★ PEN(팬을 잘 쓰고 싶다) 통합
 
@@ -91,6 +92,51 @@ MainWindow::MainWindow(QWidget *parent)
     m_channel = new QWebChannel(this);
     m_backend = new MiyoBackend(this);
     m_channel->registerObject(QStringLiteral("backend"), m_backend);
+
+    // ★ 지난번 창 크기·위치를 되살린다.
+    //   전엔 켤 때마다 1180x820 으로 열려서, 좁게 줄여 놔도 다음 실행이면
+    //   되돌아갔다 — 화면에 넣어 둔 좁은 폭(680px) 배치를 쓸 수가 없었다.
+    //
+    //   ※ 왜 Qt 의 saveGeometry/restoreGeometry 를 안 쓰나.
+    //     처음엔 그걸 썼다. 그런데 이 빌드(Qt 6.7.3)에서 restoreGeometry 가
+    //     자기가 방금 만든 66바이트 blob 을 되읽지 못하고 false 를 돌려줬다.
+    //     저장은 되는데 복원만 조용히 안 되는, 가장 알아채기 어려운 형태였다.
+    //     그리고 그 blob 은 Qt 판이 올라가면 형식이 바뀔 수 있다 — 1년을
+    //     방치할 앱에서 '언젠가 못 읽게 되는 값' 을 쓸 이유가 없다.
+    //     그래서 사람이 읽을 수 있는 숫자 넷으로 적는다: "x,y,너비,높이,최대화".
+    //     설정 파일을 열어 보면 무엇이 저장됐는지 바로 보이고, 이상하면 손으로
+    //     고칠 수도 있다.
+    //
+    //   ※ 설정은 원래 화면이 다 뜬 뒤 JS 가 backend.loadConfig() 를 불러야 읽힌다.
+    //     창을 만드는 이 시점엔 아직 비어 있으므로 여기서 먼저 읽는다.
+    //   ※ 모니터 구성이 바뀌어 창이 화면 밖에 놓이면 그냥 기본값으로 둔다 —
+    //     안 그러면 보이지 않는 자리에서 열려 앱이 안 뜬 것처럼 보인다.
+    if (m_backend && m_backend->config()) {
+        m_backend->config()->load();
+        const QStringList p = m_backend->config()->windowGeometry().split(',');
+        bool restored = false;
+        if (p.size() >= 4) {
+            const int x = p[0].trimmed().toInt(), y = p[1].trimmed().toInt();
+            const int w = p[2].trimmed().toInt(), h = p[3].trimmed().toInt();
+            const bool wantMax = (p.size() >= 5 && p[4].trimmed().toInt() != 0);
+            const QRect want(x, y, w, h);
+            // 최소 크기보다 작거나, 지금 붙어 있는 화면 어디와도 안 겹치면 버린다.
+            bool onScreen = false;
+            for (QScreen *sc : QGuiApplication::screens())
+                if (sc->availableGeometry().intersects(want)) { onScreen = true; break; }
+            if (w >= minimumWidth() && h >= minimumHeight() && onScreen) {
+                setGeometry(want);
+                if (wantMax) setWindowState(windowState() | Qt::WindowMaximized);
+                restored = true;
+            }
+        }
+        qInfo().noquote() << QString("창 크기 복원: 저장값 '%1' → %2 (%3x%4)")
+                                 .arg(m_backend->config()->windowGeometry(),
+                                      restored ? QStringLiteral("복원함")
+                                               : QStringLiteral("기본값 사용"))
+                                 .arg(width()).arg(height());
+    }
+
     // ★ PEN(팬을 잘 쓰고 싶다) 통합 — 같은 페이지에 2번째 백엔드 객체로 노출.
     //   UI 의 사이트 미러 탭이 penBackend.crawl* 를 호출. runJs/log 는 jsSignal/logSignal
     //   로 동작(JS 측에서 connect) — MiyoBackend 와 동일 메커니즘, 같은 webView 공유.
@@ -363,6 +409,17 @@ void MainWindow::closeEvent(QCloseEvent *event)
             event->ignore();
             return;
         }
+    }
+
+    // ★ 창 크기·위치를 남긴다. 다음에 켤 때 그대로 열린다.
+    //   최대화 상태에서는 normalGeometry() 를 적는다 — 최대화된 화면 전체 크기를
+    //   적어 두면, 최대화를 풀었을 때 돌아갈 자리가 없어진다.
+    if (m_backend && m_backend->config()) {
+        const QRect g = isMaximized() ? normalGeometry() : geometry();
+        m_backend->config()->setWindowGeometry(
+            QString("%1,%2,%3,%4,%5").arg(g.x()).arg(g.y())
+                .arg(g.width()).arg(g.height()).arg(isMaximized() ? 1 : 0));
+        m_backend->config()->save();
     }
 
     // 브라우저 창 닫기

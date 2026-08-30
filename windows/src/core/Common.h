@@ -110,6 +110,23 @@ QString checkFileIntegrity(const QString &filePath);
 
 // macOS: Contents/Resources/
 // Windows: <exe_dir>/
+// ── 요청에 실을 User-Agent ────────────────────────────────────────────────
+// ★ 왜 코드에 박으면 안 되나.
+//   이 앱은 사용자의 '진짜 브라우저 세션 쿠키' 로 요청한다. 그런데 윈도우판의 UA 는
+//   Chrome/120·Chrome/131, 심지어 macOS Safari 17.5 로 박혀 있었다 — 윈도우에서
+//   도는 앱이 맥 사파리인 척하면서 윈도우 크롬의 쿠키를 쓰고 있었다는 뜻이다.
+//   쿠키를 만든 브라우저와 UA 가 어긋나면 그 자체가 자동화 신호다.
+//   게다가 박아 둔 판은 시간이 지나면 저절로 낡는다 — 이 앱이 1년을 버텨야 한다면
+//   '가만히 두면 점점 수상해지는 값' 을 코드에 두면 안 된다.
+//   → 설치된 브라우저에서 실제 판을 읽어 만든다. 한 번 만들고 캐시한다.
+//   (맥판 Common 의 같은 이름 함수와 짝이다. 맥은 맥 UA, 윈도우는 윈도우 UA.)
+QString browserUserAgent();
+
+// ── 파일을 통째로 갈아 끼우기 ──────────────────────────────────────────────
+// 임시 파일에 다 쓴 뒤 원자적으로 갈아 끼운다. 중간 상태(잘린 파일)가 없다.
+//   설정 파일처럼 '망가지면 계정·토큰이 통째로 날아가는' 것에 쓴다.
+bool writeFileAtomic(const QString &path, const QByteArray &bytes, QString *err = nullptr);
+
 QString bundledResourcesDir();
 QStringList bundledRequirements();   // 번들 requirements.txt 의 패키지 목록(버전 고정 포함)
 

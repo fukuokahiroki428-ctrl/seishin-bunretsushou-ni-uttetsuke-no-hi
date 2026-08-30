@@ -261,8 +261,7 @@ QMap<QString, QString> InstagramCollector::igWebHeaders(const QString &sessionId
     h["X-ASBD-ID"] = "129477";
     h["X-IG-WWW-Claim"] = "0";
     // ★ 실제 브라우저 User-Agent 가 없으면 Instagram 웹 API 가 빈 응답(소프트 차단)을 준다.
-    h["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+    h["User-Agent"] = Common::browserUserAgent();
     h["Accept"] = "*/*";
     h["Referer"] = "https://www.instagram.com/";
     h["Origin"] = "https://www.instagram.com";

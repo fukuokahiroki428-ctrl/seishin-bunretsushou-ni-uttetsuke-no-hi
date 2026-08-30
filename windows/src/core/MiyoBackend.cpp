@@ -8599,7 +8599,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     HttpClient http;
     http.setRunFlag(&m_isRunning["instagram"]);  // 중지 시 즉시 abort
     QMap<QString, QString> baseHeaders;
-    baseHeaders["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+    baseHeaders["User-Agent"] = Common::browserUserAgent();
     baseHeaders["Cookie"] = "sessionid=" + sessionId;
     baseHeaders["X-IG-App-ID"] = "936619743392459";
     // ★ www.instagram.com 웹 API 가 요구하는 XHR 헤더. 특히 X-ASBD-ID 누락 시 '빈 200' 소프트 차단
@@ -10192,7 +10192,7 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
     http.setRunFlag(&m_isRunning["pixiv"]);  // 중지 시 즉시 abort
 
     QMap<QString, QString> apiHeaders;
-    apiHeaders["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    apiHeaders["User-Agent"] = Common::browserUserAgent();
     // ★ NSFW (R-18) 보강:
     //   1) PHPSESSID 외에 사용자가 직접 추가 raw cookie 줄 수 있음 (config["pixivExtraCookie"])
     //      예: "device_token=xxx; user_token=yyy" — Pixiv가 일부 R-18에 추가 쿠키 검증
@@ -15678,7 +15678,7 @@ void MiyoBackend::runFanboxCollection(const QJsonObject &config)
     HttpClient http;
     http.setRunFlag(&m_isRunning["fanbox"]);
     QMap<QString, QString> headers;
-    headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+    headers["User-Agent"] = Common::browserUserAgent();
     headers["Cookie"] = cookie;
     headers["Origin"] = "https://www.fanbox.cc";
     headers["Referer"] = "https://www.fanbox.cc/";
@@ -16557,8 +16557,7 @@ void MiyoBackend::runSpinSpinCollection(const QJsonObject &config)
     const QString API_BASE = "https://web-api.spin-spin.com";
 
     QMap<QString, QString> headers;
-    headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                             "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+    headers["User-Agent"] = Common::browserUserAgent();
     headers["Accept"] = "application/json, text/plain, */*";
     headers["Accept-Language"] = "ko-KR,ko;q=0.9,en;q=0.8";
     headers["Origin"] = "https://spin-spin.com";
@@ -17303,7 +17302,7 @@ void MiyoBackend::runAskedCollection(const QJsonObject &config)
     http.setRunFlag(&m_isRunning["asked"]);  // 중지 시 즉시 abort
 
     QMap<QString, QString> headers;
-    headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+    headers["User-Agent"] = Common::browserUserAgent();
     headers["Accept"] = "application/json, text/html";
     if (!cookie.isEmpty()) headers["Cookie"] = cookie;
 

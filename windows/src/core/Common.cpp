@@ -5,6 +5,7 @@
 #include <QLocale>
 #include <QFile>
 #include <QDir>
+#include <QSaveFile>
 #include <QDirIterator>
 #include <QJsonObject>
 #include <QJsonDocument>
@@ -499,6 +500,137 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
 }
 
 // ─── Cross-platform path helpers ───
+
+// ── User-Agent ───────────────────────────────────────────────────────────
+// 설치된 크로미움 계열 브라우저의 판을 읽는다.
+//   윈도우 크롬/엣지는 설치 폴더 밑에 판 번호를 폴더 이름으로 둔다:
+//     C:\Program Files\Google\Chrome\Application\151.0.7204.101\
+//   그래서 실행 파일을 돌려 볼 필요 없이 폴더 이름만 읽으면 된다 — 빠르고,
+//   백신이 실행을 가로막는 기계에서도 실패하지 않는다.
+//   못 찾으면 exe 를 --version 으로 물어보고, 그것도 안 되면 보수적 기본값을 쓴다.
+static QString detectChromeMajor()
+{
+    QStringList appDirs;
+#ifdef Q_OS_WIN
+    const QStringList roots = {
+        QString::fromLocal8Bit(qgetenv("ProgramFiles")),
+        QString::fromLocal8Bit(qgetenv("ProgramFiles(x86)")),
+        QString::fromLocal8Bit(qgetenv("LOCALAPPDATA")),
+    };
+    for (const QString &r : roots) {
+        if (r.isEmpty()) continue;
+        appDirs << r + "/Google/Chrome/Application"
+                << r + "/Google/Chrome Beta/Application"
+                << r + "/Microsoft/Edge/Application"
+                // ★ 요즘 엣지는 여기 깔린다. 예전 자리(Edge/Application)만 보면
+                //   엣지만 깔린 기계에서 판을 못 읽는다 — 이 기계가 실제로 그렇다.
+                //   (EdgeWebView 는 브라우저가 아니지만 같은 세대의 크로미움이다.)
+                << r + "/Microsoft/EdgeCore"
+                << r + "/Microsoft/EdgeWebView/Application"
+                << r + "/BraveSoftware/Brave-Browser/Application";
+    }
+    // 앱이 들고 다니는 크로미움도 본다 — 사용자 브라우저가 아예 없을 수 있다.
+    appDirs << QCoreApplication::applicationDirPath() + "/chromium";
+#endif
+
+    int best = 0;
+    static const QRegularExpression verDir(QStringLiteral("^(\\d+)\\.\\d+\\.\\d+\\.\\d+$"));
+    // 번들 크로미움은 판을 폴더가 아니라 "152.0.7977.42.manifest" 파일 이름으로 둔다.
+    static const QRegularExpression verManifest(
+        QStringLiteral("^(\\d+)\\.\\d+\\.\\d+\\.\\d+\\.manifest$"));
+    for (const QString &d : appDirs) {
+        QDir dir(d);
+        if (!dir.exists()) continue;
+        for (const QString &name : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+            const auto m = verDir.match(name);
+            if (!m.hasMatch()) continue;
+            const int major = m.captured(1).toInt();
+            if (major > best) best = major;
+        }
+        for (const QString &name : dir.entryList({QStringLiteral("*.manifest")}, QDir::Files)) {
+            const auto m = verManifest.match(name);
+            if (!m.hasMatch()) continue;
+            const int major = m.captured(1).toInt();
+            if (major > best) best = major;
+        }
+    }
+    if (best >= 100) return QString::number(best);
+
+    // 폴더 이름으로 못 찾았으면 실행 파일에 물어본다.
+    QStringList exes;
+#ifdef Q_OS_WIN
+    for (const QString &d : appDirs) {
+        for (const QString &n : {QStringLiteral("chrome.exe"), QStringLiteral("msedge.exe"),
+                                 QStringLiteral("msedgewebview2.exe"), QStringLiteral("brave.exe")}) {
+            const QString p = d + "/" + n;
+            if (QFile::exists(p)) exes << p;
+        }
+    }
+#endif
+    for (const QString &exe : exes) {
+        QProcess p;
+        p.start(exe, {"--version"});
+        if (!p.waitForStarted(3000)) continue;
+        if (!p.waitForFinished(5000)) { p.kill(); continue; }
+        // "Google Chrome 151.0.7204.101" / "Microsoft Edge 151.0.3..."
+        const QString out = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+        static const QRegularExpression verAny(QStringLiteral("(\\d+)\\.\\d+\\.\\d+\\.\\d+"));
+        const auto m = verAny.match(out);
+        if (!m.hasMatch()) continue;
+        const int major = m.captured(1).toInt();
+        if (major >= 100) return QString::number(major);
+    }
+    return QString();
+}
+
+QString browserUserAgent()
+{
+    static QString cached;
+    if (!cached.isEmpty()) return cached;
+
+    // 탈출구 — 특정 판이 필요하면 환경변수로 갈아끼운다.
+    //   (기준 영상과 같은 이유다. 박아 둔 값은 언젠가 틀린다.)
+    const QString forced = qEnvironmentVariable("PREDORMITION_USER_AGENT");
+    if (!forced.isEmpty()) { cached = forced; return cached; }
+
+    QString major = detectChromeMajor();
+    if (major.isEmpty()) major = QStringLiteral("140");   // 아무것도 못 읽었을 때의 보수적 기본값
+
+#ifdef Q_OS_WIN
+    cached = QStringLiteral(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/%1.0.0.0 Safari/537.36").arg(major);
+#else
+    // Chrome 은 macOS 판을 10_15_7 로 고정해 보낸다(UA 고정 정책). 그대로 맞춘다.
+    cached = QStringLiteral(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/%1.0.0.0 Safari/537.36").arg(major);
+#endif
+    qInfo().noquote() << "[UA] 요청에 쓸 User-Agent — Chrome" << major;
+    return cached;
+}
+
+bool writeFileAtomic(const QString &path, const QByteArray &bytes, QString *err)
+{
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QSaveFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) {
+        if (err) *err = f.errorString();
+        return false;
+    }
+    // ★ write 의 반환값을 본다. 디스크가 꽉 차면 open 은 성공하고 write 만 모자라게
+    //   쓰는데, 그것을 무시하면 반쪽짜리 설정이 조용히 남는다.
+    if (f.write(bytes) != bytes.size()) {
+        if (err) *err = QStringLiteral("쓴 크기가 모자랍니다(디스크 공간?)");
+        f.cancelWriting();
+        return false;
+    }
+    if (!f.commit()) {                 // 여기서야 실제 파일이 갈아 끼워진다
+        if (err) *err = f.errorString();
+        return false;
+    }
+    return true;
+}
 
 QString bundledResourcesDir()
 {

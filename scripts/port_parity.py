@@ -62,15 +62,25 @@ EXPECTED_ONLY = {
 }
 
 # 함수 머리 — 완벽한 C++ 파서가 아니다. 이름만 뽑으면 충분하다.
-FUNC = re.compile(
-    r"^(?:inline\s+|static\s+|virtual\s+|explicit\s+)*"      # 수식어
-    r"(?:[A-Za-z_][\w:<>,\s\*&]*?\s+)?"                      # 반환형(생성자는 없음)
-    r"([A-Za-z_]\w*)\s*\(",                                  # 이름
-    re.M)
+#
+# ★ 들여쓰기를 어떻게 다룰지가 이 스크립트의 전부다. 두 번 틀렸다.
+#     1) 줄 맨 앞만 봤다 → 헤더 안의 들여쓴 멤버 선언을 통째로 놓쳤고,
+#        양쪽에 다 있는 setRunFlag·startDaemon 을 "한쪽에만 있다" 고 알렸다.
+#     2) 들여쓰기를 전부 허용했다 → 이번엔 지역 변수(QFileInfo fi(path);)까지
+#        함수로 세서 MiyoBackend.cpp 하나에 56개가 쏟아졌다. 신호가 잡음에 묻혔다.
+#   답은 파일 종류로 나누는 것이다:
+#     .cpp — 정의는 반드시 1열에서 시작한다. 지역 변수는 반드시 들여써 있다.
+#     .h   — 멤버 선언은 들여써 있다. 지역 변수는 (거의) 없다.
+#   그래서 .cpp 는 1열만, .h 는 들여쓰기를 허용해서 본다.
+_BODY = (r"(?:[A-Za-z_][\w:<>,\s\*&]*?\s+)?"     # 반환형 (생성자는 없음)
+         r"([A-Za-z_]\w*)\s*\(")                 # 이름
+FUNC_CPP = re.compile(r"^(?:inline\s+|static\s+|virtual\s+|explicit\s+)*" + _BODY, re.M)
+FUNC_HDR = re.compile(r"^[ \t]*(?:inline\s+|static\s+|virtual\s+|explicit\s+)*" + _BODY, re.M)
 
-# 흔한 오검출 — 제어문은 함수가 아니다
+# 흔한 오검출 — 제어문·매크로는 함수가 아니다
 NOT_FUNCS = {"if", "for", "while", "switch", "catch", "return", "sizeof",
-             "throw", "else", "do", "case", "defined", "Q_UNUSED", "emit"}
+             "throw", "else", "do", "case", "defined", "Q_UNUSED", "emit",
+             "Q_OBJECT", "Q_PROPERTY", "signals", "public", "private", "protected"}
 
 
 def funcs_of(path):
@@ -79,11 +89,12 @@ def funcs_of(path):
             src = f.read()
     except OSError:
         return set()
-    # 주석과 문자열은 걷어낸다 — 주석 속 예시가 함수로 잡히면 노이즈만 는다
+    # 주석과 문자열은 걷어낸다 — 주석 속 예시가 함수로 잡히면 잡음만 는다
     src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
     src = re.sub(r"//[^\n]*", "", src)
     src = re.sub(r'"(?:[^"\\\n]|\\.)*"', '""', src)
-    return {m.group(1) for m in FUNC.finditer(src)} - NOT_FUNCS
+    rx = FUNC_HDR if path.endswith(".h") else FUNC_CPP
+    return {m.group(1) for m in rx.finditer(src)} - NOT_FUNCS
 
 
 def rel_files(base):

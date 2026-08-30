@@ -899,6 +899,11 @@ inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
     QString report;
     report += "═ SelfRepair 자가진단 " + QDateTime::currentDateTime().toString(Qt::ISODate) + " ═\n";
     report += "appDir: " + appDir() + "\n";
+    // ★ 요청에 실을 User-Agent 도 적어 둔다.
+    //   이건 '가만히 두면 저절로 낡는' 값이라 눈에 보이는 데 있어야 한다.
+    //   예전엔 코드에 Chrome/120·131, 심지어 맥 사파리로 박혀 있었다 —
+    //   윈도우에서 도는 앱이 맥인 척하면서 윈도우 크롬 쿠키를 쓰고 있었다.
+    report += "User-Agent: " + Common::browserUserAgent() + "\n";
 
     // 네트워크가 필요한 확인은 하루에 한 번만 한다.
     //   앱을 자주 켜는 사람에게 매번 유튜브를 두드리게 하면 그것 자체가 민폐다.

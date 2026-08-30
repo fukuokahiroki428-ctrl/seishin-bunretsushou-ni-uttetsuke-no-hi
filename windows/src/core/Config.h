@@ -34,6 +34,9 @@ public:
     static QString defaultConfigPath();
     // 백업: ~/Library/Application Support/Miyo/.../miyo_config.backup.json (재빌드 시 복원용)
     static QString backupConfigPath();
+    // 설정을 되찾아 올 자리들 (백업 -> 옛 위치 -> 앱 이름이 바뀌기 전 폴더).
+    //   깨진 설정을 읽었을 때도 여기서 되찾는다.
+    QStringList recoveryCandidates() const;
 
     QJsonArray getAccounts(const QString &platform) const;
     void setAccounts(const QString &platform, const QJsonArray &accounts);
@@ -134,6 +137,13 @@ public:
     int maxConcurrent() const { return m_maxConcurrent; }
     void setMaxConcurrent(int n) { m_maxConcurrent = n; }
 
+    // ★ 창 크기·위치 (QWidget::saveGeometry 를 base64 로).
+    //   맥판엔 있었는데 윈도우판엔 없었다. 그래서 윈도우에서는 켤 때마다
+    //   1180x820 으로 열렸고, 좁게 줄여 놔도 다음 실행이면 되돌아갔다 —
+    //   화면에 넣어 둔 좁은 폭(680px) 배치를 쓸 방법이 자체가 없었다.
+    QString windowGeometry() const { return m_windowGeometry; }
+    void setWindowGeometry(const QString &v) { m_windowGeometry = v; }
+
 private:
     QMap<QString, QJsonArray> m_accounts;
     QString m_configPath;
@@ -165,5 +175,6 @@ private:
     bool m_firstRunCompleted = false;
     bool m_unixFilenames = false;
     bool m_nasAutoReconnect = true;  // 기본 ON (대부분 원하는 동작)
+    QString m_windowGeometry;
     int m_maxConcurrent = 0;         // 0 = 플랫폼별 기본값
 };

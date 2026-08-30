@@ -1,3 +1,4 @@
+#include "core/Common.h"
 #include "HttpClient.h"
 #include "FileHelper.h"
 #include <QTimer>
@@ -408,8 +409,7 @@ void HttpClient::applyHeaders(QNetworkRequest &request, const QMap<QString, QStr
     }
     // Fallback if no User-Agent was provided
     if (!headers.contains("User-Agent")) {
-        request.setHeader(QNetworkRequest::UserAgentHeader,
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15");
+        request.setHeader(QNetworkRequest::UserAgentHeader, Common::browserUserAgent());
     }
 }
 
