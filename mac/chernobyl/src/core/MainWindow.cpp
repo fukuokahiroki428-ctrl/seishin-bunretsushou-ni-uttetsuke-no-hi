@@ -148,14 +148,17 @@ MainWindow::MainWindow(QWidget *parent)
         qDebug() << "[HTML] loading external:" << externalHtml;
     } else {
         m_webView->setUrl(QUrl("qrc:/html/index.html"));
+        qDebug() << "[HTML] loading qrc:/html/index.html (no external found)";
+    }
 
     // ★ 화면이 다 뜬 뒤에야 사이드바 항목을 읽을 수 있다. 그때 '기능' 메뉴를 채운다.
     //   페이지가 다시 로드돼도(자가수리·새로고침) 다시 채워지도록 매번 건다.
+    //   ★ 이 연결은 반드시 if/else '바깥' 이어야 한다. 처음엔 else 안에 넣는 바람에,
+    //     번들 HTML(Resources/html/index.html)을 쓰는 실제 경로에서는 한 번도 걸리지
+    //     않았다. 그래서 메뉴가 '목록을 읽는 중…' 에서 멈춰 있었다.
     connect(m_webView, &QWebEngineView::loadFinished, this, [this](bool ok) {
         if (ok) populatePlatformMenu();
     });
-        qDebug() << "[HTML] loading qrc:/html/index.html (no external found)";
-    }
 
     layout->addWidget(m_webView);
 
@@ -227,7 +230,11 @@ void MainWindow::populatePlatformMenu()
         ".filter(Boolean))",
         [this](const QVariant &v) {
             const QJsonArray arr = QJsonDocument::fromJson(v.toString().toUtf8()).array();
-            if (arr.isEmpty()) return;
+            if (arr.isEmpty()) {
+                // 조용히 돌아가면 메뉴가 '목록을 읽는 중…' 에 멈춘 채로 남는다.
+                qWarning() << "[기능메뉴] 사이드바에서 항목을 읽지 못했다 — 메뉴가 비어 있다";
+                return;
+            }
             m_platformMenu->clear();
             for (const QJsonValue &it : arr) {
                 const QJsonObject o = it.toObject();
@@ -251,6 +258,7 @@ void MainWindow::populatePlatformMenu()
                         QString("if(window.switchTab) switchTab('%1')").arg(id));
                 });
             }
+            qInfo() << "[기능메뉴] 항목" << arr.size() << "개 채움";
         });
 }
 
