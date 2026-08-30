@@ -247,9 +247,20 @@ int main(int argc, char *argv[])
         id delegate = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(nsApp, sel_registerName("delegate"));
         if (delegate) {
             Class delegateClass = object_getClass(delegate);
-            class_addMethod(delegateClass,
-                sel_registerName("applicationShouldHandleReopen:hasVisibleWindows:"),
-                (IMP)appShouldHandleReopen, "B@:@B");
+            SEL sel = sel_registerName("applicationShouldHandleReopen:hasVisibleWindows:");
+            // ★ class_addMethod 는 그 클래스가 '이미 그 메서드를 갖고 있으면' 아무 일도
+            //   하지 않고 NO 만 돌려준다. Qt 의 QCocoaApplicationDelegate 가 바로 이
+            //   메서드를 이미 구현하고 있어서, 우리 처리기는 한 번도 설치된 적이 없었다.
+            //   그래서 창을 닫으면 Dock 아이콘을 눌러도 창이 돌아오지 않았다 —
+            //   앱은 살아 있는데 손이 닿지 않는 상태다. 사용자에겐 '튕긴 것' 으로 보인다.
+            //   (실측: open -a 를 해도 CPU 가 0% 에서 꿈쩍하지 않았다)
+            //   → class_replaceMethod 로 반드시 우리 것이 걸리게 한다.
+            class_replaceMethod(delegateClass, sel, (IMP)appShouldHandleReopen, "B@:@B");
+            const bool installed =
+                class_getMethodImplementation(delegateClass, sel) == (IMP)appShouldHandleReopen;
+            qInfo() << "[reopen] Dock 클릭 처리기 설치:" << (installed ? "성공" : "실패");
+        } else {
+            qWarning() << "[reopen] NSApplication delegate 없음 — Dock 클릭으로 창을 되살릴 수 없다";
         }
     }
 #endif

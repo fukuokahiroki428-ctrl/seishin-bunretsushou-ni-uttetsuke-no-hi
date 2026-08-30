@@ -222,7 +222,8 @@ void MainWindow::populatePlatformMenu()
     m_webView->page()->runJavaScript(
         "JSON.stringify(Array.from(document.querySelectorAll('.nav-item'))"
         ".map(function(e){var m=(e.getAttribute('onclick')||'').match(/switchTab\\('([a-z]+)'\\)/);"
-        "return m ? {id:m[1], label:(e.textContent||'').trim().replace(/\\s+/g,' ')} : null})"
+        "return m ? {id:m[1], label:(e.textContent||'').trim().replace(/\\s+/g,' '),"
+        " windowOnly: e.getAttribute('data-window-only')==='1'} : null})"
         ".filter(Boolean))",
         [this](const QVariant &v) {
             const QJsonArray arr = QJsonDocument::fromJson(v.toString().toUtf8()).array();
@@ -237,14 +238,61 @@ void MainWindow::populatePlatformMenu()
                 const int sp = label.indexOf(' ');
                 if (sp > 0 && sp <= 3) label = label.mid(sp + 1).trimmed();
                 if (label.isEmpty()) label = id;
-                QAction *a = m_platformMenu->addAction(label);
-                connect(a, &QAction::triggered, this, [this, id]() {
+                // ★ 별도 창으로만 여는 기능(사이드바에서 감춘 것들)은 창을 띄운다.
+                //   판정을 코드에 박지 않고 화면의 표시(data-window-only)를 그대로 쓴다 —
+                //   나중에 대상이 늘어도 HTML 한쪽만 고치면 된다.
+                const bool windowOnly = o.value("windowOnly").toBool();
+                QAction *a = m_platformMenu->addAction(
+                    windowOnly ? (label + "  (별도 창)") : label);
+                connect(a, &QAction::triggered, this, [this, id, label, windowOnly]() {
+                    if (windowOnly) { openFeatureWindow(id, label); return; }
                     show(); raise(); activateWindow();
                     m_webView->page()->runJavaScript(
                         QString("if(window.switchTab) switchTab('%1')").arg(id));
                 });
             }
         });
+}
+
+
+// 기능 하나를 별도 창으로 연다.
+//   ★ 왜 같은 index.html 을 다시 띄우나.
+//     탭 본문·입력칸·저장 로직이 전부 그 문서에 얹혀 있다. 따로 만들면 두 벌을
+//     유지해야 하고, 이 저장소에서 그런 이중 관리는 늘 한쪽만 갱신되어 어긋났다.
+//     같은 문서를 띄우고 #window=<탭> 으로 '이 창은 이 기능만' 이라고 알려 준다.
+//   ★ 백엔드는 같은 QWebChannel 을 공유한다. runJs()/log() 가 Qt 신호로 나가므로
+//     이 창도 진행상황과 로그를 그대로 받는다. 백엔드를 손댈 필요가 없다.
+void MainWindow::openFeatureWindow(const QString &tabId, const QString &title)
+{
+    if (QWidget *w = m_featureWindows.value(tabId).data()) {
+        w->show(); w->raise(); w->activateWindow();
+        return;
+    }
+
+    auto *win = new QWidget(nullptr);
+    win->setAttribute(Qt::WA_DeleteOnClose);
+    win->setWindowTitle(QStringLiteral(APP_NAME_DISPLAY) + " — " + title);
+    win->resize(900, 700);
+    win->setMinimumSize(360, 420);
+
+    auto *view = new QWebEngineView(win);
+    view->setPage(new DebugWebEnginePage(view));
+    view->setContextMenuPolicy(Qt::NoContextMenu);
+    view->page()->setWebChannel(m_channel);        // 같은 채널 — 백엔드 공유
+    view->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, true);
+    view->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessFileUrls, true);
+
+    auto *lay = new QVBoxLayout(win);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->addWidget(view);
+
+    QUrl url = m_webView ? m_webView->url() : QUrl("qrc:/html/index.html");
+    url.setFragment("window=" + tabId);
+    view->setUrl(url);
+
+    connect(win, &QObject::destroyed, this, [this, tabId]() { m_featureWindows.remove(tabId); });
+    m_featureWindows.insert(tabId, win);
+    win->show(); win->raise(); win->activateWindow();
 }
 
 QMenu *MainWindow::createDockMenu()

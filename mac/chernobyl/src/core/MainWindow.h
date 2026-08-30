@@ -1,4 +1,6 @@
 #pragma once
+#include <QPointer>
+#include <QHash>
 
 #include <QMainWindow>
 #include <QWebEngineView>
@@ -59,9 +61,14 @@ private:
     PenBackend *m_penBackend = nullptr;
     QMenu *m_dockMenu = nullptr;
     QMenu *m_platformMenu = nullptr;   // 상단 막대의 '기능' 메뉴
+    // 별도 창으로 여는 기능들(탭이름 → 창). 같은 탭을 다시 열면 새로 만들지 않고
+    // 이미 있는 창을 앞으로 가져온다.
+    QHash<QString, QPointer<QWidget>> m_featureWindows;
 public:
     // 화면이 뜬 뒤 사이드바에서 실제 항목을 읽어 '기능' 메뉴를 채운다.
     void populatePlatformMenu();
+    // 기능 하나를 별도 창으로 연다(이미 열려 있으면 앞으로).
+    void openFeatureWindow(const QString &tabId, const QString &title);
 private:
 
 #ifdef Q_OS_MACOS

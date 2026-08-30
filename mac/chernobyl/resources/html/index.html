@@ -86,6 +86,39 @@
             font-size: 11px; font-weight: 600; color: var(--text-tertiary);
             text-transform: uppercase; letter-spacing: 0.5px;
         }
+        /* ── 사이드바 접기/펴기 ────────────────────────────────────────────
+           ★ 좁은 폭에서 목록을 위로 눕혀 봤더니 항목 13개가 네 줄로 쌓여
+             화면 위쪽을 통째로 먹었다(실측 182px, 창 높이의 23%). 너저분하다.
+             옆에 세로로 두되 '접을 수 있게' 하는 편이 낫다 —
+             접으면 본문이 폭을 다 쓰고, 펴면 원래대로다. */
+        /* ★ 별도 창으로만 여는 기능 — 사이드바에서는 감춘다.
+           요소를 지우지 않고 감추기만 하는 이유: 같은 문서를 별도 창이 그대로
+           띄워 쓰고, switchTab()·탭 본문·저장 로직이 전부 이 DOM 에 얹혀 있다.
+           지우면 그 창에서도 못 쓴다. 상단 '기능' 메뉴에서 연다. */
+        .app:not(.window-mode) .nav-item[data-window-only="1"] { display: none; }
+        /* 별도 창에서는 사이드바 자체가 필요 없다 */
+        .app.window-mode .sidebar, .app.window-mode .sidebar-toggle { display: none; }
+        .app.window-mode .main { max-width: 100%; }
+
+        .sidebar-toggle {
+            position: absolute; top: 8px; left: 8px; z-index: 30;
+            width: 26px; height: 26px; padding: 0;
+            display: flex; align-items: center; justify-content: center;
+            border: 1px solid var(--border-light); border-radius: 6px;
+            background: var(--bg-card); color: var(--text-secondary);
+            cursor: pointer; font-size: 13px; line-height: 1;
+            -webkit-app-region: no-drag;
+        }
+        .sidebar-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
+        .app.nav-collapsed .sidebar {
+            width: 0; min-width: 0; max-width: 0;
+            padding: 0; border-right: none; overflow: hidden;
+        }
+        .app.nav-collapsed .sidebar * { visibility: hidden; }
+        .app.nav-collapsed .main { max-width: 100%; }
+        /* 접힘 버튼이 툴바 제목과 겹치지 않게 자리를 비운다 */
+        .app.nav-collapsed .toolbar { padding-left: 42px; }
+
         .sidebar-nav { flex: 1; padding: 10px 8px 0; -webkit-app-region: no-drag; overflow-y: auto; }
         .nav-item {
             display: flex; align-items: center; gap: 6px;
@@ -125,6 +158,20 @@
         }
         .nav-badge:not(:empty) { display: inline-block; }
         .nav-item.active .nav-badge { background: var(--accent); color: #fff; }
+        @media (max-width: 680px) {
+            /* 세로 배치를 유지한다. 위로 눕히지 않는다. */
+            .sidebar { width: 190px; min-width: 190px; }
+            .main { max-width: 100%; }
+            .toolbar { height: auto; min-height: 44px; flex-wrap: wrap; padding: 6px 12px 6px 42px; }
+            .toolbar * { white-space: nowrap; }
+            .toolbar-stats { flex-wrap: wrap; gap: 10px; font-size: 11px; }
+            .input-row { flex-direction: column; align-items: stretch; }
+            .input-row > .field { width: 100% !important; flex: 1 1 auto !important; }
+            .field-label { white-space: normal; }
+            .input, input.input, select.input, textarea.input { width: 100%; box-sizing: border-box; }
+            .log-panel, #log-panel { display: none; }
+        }
+
         .sidebar-footer {
             padding: 12px 8px; border-top: 1px solid var(--border-light);
             -webkit-app-region: no-drag;
@@ -334,10 +381,6 @@
         .scroll-area::-webkit-scrollbar-track { background: transparent; }
         .scroll-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
         /* 창이 좁을 때 패딩 축소 — 유효 공간 확보 */
-        @media (max-width: 680px) {
-            .scroll-area { padding: 16px; }
-            .toolbar { padding: 0 16px; }
-        }
         @media (max-width: 480px) {
             .scroll-area { padding: 12px; }
             .toolbar { padding: 0 12px; gap: 8px; }
@@ -350,65 +393,6 @@
              최소 크기를 낮추면서 이 폭에서 실제로 무엇이 깨지는지 재고 고쳤다.
              390px 에서: 사이드바가 148px(38%)를 먹어 본문이 242px 만 남고,
              툴바 글자가 세로로 쪼개지고("설/정"), 입력칸 placeholder 가 잘렸다. */
-        @media (max-width: 680px) {
-            /* 세로로 쌓는다 — 옆에 두기엔 폭이 없다 */
-            .app { flex-direction: column; }
-
-            /* 사이드바를 가로로 스크롤되는 탭줄로 */
-            .sidebar {
-                width: 100%; max-width: none; height: auto;
-                flex-direction: row; align-items: center;
-                overflow: visible;
-                border-right: none; border-bottom: 1px solid var(--border-light);
-                padding: 6px 8px; gap: 4px;
-                flex: 0 0 auto;
-                -webkit-overflow-scrolling: touch;
-            }
-            .sidebar::-webkit-scrollbar { height: 0; }
-            .sidebar-header { display: none; }      /* 세로 배치용 여백 — 가로줄에선 자리만 먹는다 */
-            /* ★ 사이드바만 가로로 눕혀서는 안 된다. 안쪽 .sidebar-nav 가 block 이라
-               항목들이 그대로 세로로 쌓여, 폭 390px 에서 사이드바 높이가 503px 이
-               되어 버렸다(실측). 안쪽도 같이 눕힌다. */
-            /* ★ 처음엔 한 줄로 눕히고 가로 스크롤하게 했다. 그런데 390px 에서
-               12개 중 3개만 보이고 나머지 9개(Tumblr·SpinSpin·Asked 등)는
-               옆으로 밀어야 닿았다 — 게다가 스크롤 막대를 감춰 놔서 더 있다는
-               표시조차 없었다. 좁은 화면에서 '있는데 안 보이는' 것은 없는 것과 같다.
-               → 줄바꿈으로 전부 펼친다. 대신 항목을 촘촘하게 만들어 줄 수를 줄인다. */
-            .sidebar-nav {
-                display: flex; flex-direction: row; flex-wrap: wrap;
-                gap: 3px; overflow: visible;
-                width: 100%; padding: 0;
-            }
-            /* '설정' 은 sidebar-footer 안에 따로 있어 오른쪽에 떨어져 보였다.
-               같은 줄바꿈 흐름에 넣어 다른 항목과 나란히 놓는다. */
-            .sidebar-footer {
-                flex: 0 0 auto; border-top: none; padding: 0; margin: 0;
-                display: contents;
-            }
-            .nav-item {
-                flex: 0 0 auto; white-space: nowrap;
-                padding: 4px 7px; font-size: 11px; gap: 3px;
-            }
-            /* 아이콘 상자를 줄여 한 줄에 더 많이 들어가게 */
-            .nav-item > :first-child { width: 18px; height: 18px; font-size: 9px; }
-
-            /* 본문이 남은 세로 공간을 전부 갖는다 */
-            .main { max-width: 100%; flex: 1 1 auto; min-height: 0; }
-
-            /* 툴바 — 글자가 세로로 쪼개지지 않게 */
-            .toolbar { height: auto; min-height: 44px; flex-wrap: wrap; padding: 6px 12px; }
-            .toolbar * { white-space: nowrap; }
-            .toolbar-stats { flex-wrap: wrap; gap: 10px; font-size: 11px; }
-
-            /* 한 줄에 두 칸씩 두면 각각 170px 밖에 안 된다 — 세로로 쌓는다 */
-            .input-row { flex-direction: column; align-items: stretch; }
-            .input-row > .field { width: 100% !important; flex: 1 1 auto !important; }
-            .field-label { white-space: normal; }
-            .input, input.input, select.input, textarea.input { width: 100%; box-sizing: border-box; }
-
-            /* 로그판은 이 폭에서 자리를 차지할 수 없다 */
-            .log-panel, #log-panel { display: none; }
-        }
 
         /* ── Section ── */
         .section { margin-bottom: 20px; overflow: visible; }
@@ -962,6 +946,7 @@
 
     <div class="app">
         <!-- Sidebar -->
+        <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()" title="목록 접기 / 펴기">☰</button>
         <div class="sidebar">
             <div class="sidebar-header"></div>
             <div class="sidebar-nav">
@@ -992,14 +977,17 @@
                 <div class="nav-item" onclick="switchTab('fanbox')">
                     <div class="nav-icon" style="background:#fb923c">F</div> Fanbox <span class="nav-badge" id="nav-badge-fanbox"></span>
                 </div>
-                <div class="nav-item" onclick="switchTab('tumblr')">
+                <div class="nav-item" onclick="switchTab('tumblr')" data-window-only="1">
                     <div class="nav-icon tumblr">Tu</div> Tumblr <span class="nav-badge" id="nav-badge-tumblr"></span>
                 </div>
-                <div class="nav-item" onclick="switchTab('spinspin')">
+                <div class="nav-item" onclick="switchTab('spinspin')" data-window-only="1">
                     <div class="nav-icon spinspin">S</div> SpinSpin <span class="nav-badge" id="nav-badge-spinspin"></span>
                 </div>
-                <div class="nav-item" onclick="switchTab('asked')">
+                <div class="nav-item" onclick="switchTab('asked')" data-window-only="1">
                     <div class="nav-icon asked">A</div> Asked <span class="nav-badge" id="nav-badge-asked"></span>
+                </div>
+                <div class="nav-item" onclick="switchTab('proxy')" data-window-only="1">
+                    <div class="nav-icon">V</div> 프록시 (VPN)
                 </div>
                 <!-- 経済産業省 (crawl) — 메뉴에서 숨김. 향후 개발은 "펜을 잘 쓰고 싶다" 앱으로 이전.
                      코드는 #tab-crawl + runCrawlCollection + SiteCrawler 그대로 유지 (제거 안 함).
@@ -2598,51 +2586,6 @@
                          백엔드 getAppInfo() 가 빌드 때 박힌 매크로를 그대로 넘겨준다
                          (CODENAME·APP_VENDOR·APP_NAME_DISPLAY 단일 출처).
                          손으로 적어 두면 이름이 바뀔 때 이 화면만 옛 이름으로 남는다. -->
-                    <!-- ★ 프록시(VPN) — 켜면 '전부' 이 길로 나가야 한다.
-                         Qt·파이썬 데몬·yt-dlp·rclone·번들 크로미움 다섯 갈래 중
-                         하나라도 빠지면 같은 세션이 두 IP 에서 온 것처럼 보여
-                         오히려 더 눈에 띈다. 그래서 부분 적용을 만들지 않았다. -->
-                    <div class="section">
-                        <div class="section-label">프록시 (VPN)</div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
-                            켜면 <b>모든 요청</b>이 이 프록시로 나갑니다 — 수집·다운로드·캡처·백업까지 전부.
-                            NordVPN 등의 <b>SOCKS5</b> 주소와 <b>서비스 자격증명</b>(계정 비밀번호가 아닙니다)을 넣으십시오.
-                            <br>비밀번호는 이 컴퓨터에만 본인만 읽을 수 있게 저장되고, 다른 프로그램의 명령줄에 실리지 않습니다.
-                        </p>
-                        <div class="input-row" style="margin-bottom:6px;">
-                            <div class="field" style="flex:2;">
-                                <label class="field-label">주소 (SOCKS5)</label>
-                                <input type="text" class="input" id="proxy-host" placeholder="예) amsterdam.nl.socks.nordhold.net">
-                            </div>
-                            <div class="field" style="width:110px;">
-                                <label class="field-label">포트</label>
-                                <input type="text" class="input" id="proxy-port" placeholder="1080" value="1080">
-                            </div>
-                        </div>
-                        <div class="input-row" style="margin-bottom:6px;">
-                            <div class="field" style="flex:1;">
-                                <label class="field-label">사용자명 <span style="font-weight:400;color:var(--text-tertiary);">· 서비스 자격증명</span></label>
-                                <input type="text" class="input" id="proxy-user" placeholder="service username">
-                            </div>
-                            <div class="field" style="flex:1;">
-                                <label class="field-label">비밀번호</label>
-                                <input type="password" class="input" id="proxy-pass" placeholder="service password">
-                            </div>
-                        </div>
-                        <label class="option-item" style="margin-bottom:8px;">
-                            <input type="checkbox" id="proxy-enabled">
-                            <span>프록시 사용 — 모든 요청을 이 길로 내보냅니다</span>
-                        </label>
-                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                            <button class="btn btn-primary btn-sm" onclick="saveProxyConfig()">저장하고 적용</button>
-                            <button class="btn btn-secondary btn-sm" onclick="backend&&backend.testProxy&&backend.testProxy()"
-                                    title="앱 요청과 데몬 요청이 각각 어떤 IP 로 나가는지 확인합니다">나가는 IP 확인</button>
-                        </div>
-                        <p style="font-size:11px;color:var(--text-tertiary);margin:8px 0 0;">
-                            켠 뒤에는 <b>반드시 '나가는 IP 확인'</b> 을 눌러 두 줄이 같은 IP 인지 보십시오.
-                            서로 다르면 일부만 프록시를 타는 상태라, 안 쓰느니만 못합니다.
-                        </p>
-                    </div>
 
                     <div class="section">
                         <div class="section-label">앱 정보</div>
@@ -2881,6 +2824,58 @@
                         <div class="log-box" id="settings-log"></div>
                     </div>
                 </div>
+
+        <!-- 프록시(VPN) — 설정 탭에 묻혀 있던 것을 자체 탭으로 뺐다.
+             상단 「기능」 메뉴에서 별도 창으로 연다. -->
+        <div class="tab-content" id="tab-proxy">
+            <div class="content">
+                    <!-- ★ 프록시(VPN) — 켜면 '전부' 이 길로 나가야 한다.
+                         Qt·파이썬 데몬·yt-dlp·rclone·번들 크로미움 다섯 갈래 중
+                         하나라도 빠지면 같은 세션이 두 IP 에서 온 것처럼 보여
+                         오히려 더 눈에 띈다. 그래서 부분 적용을 만들지 않았다. -->
+                    <div class="section">
+                        <div class="section-label">프록시 (VPN)</div>
+                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                            켜면 <b>모든 요청</b>이 이 프록시로 나갑니다 — 수집·다운로드·캡처·백업까지 전부.
+                            NordVPN 등의 <b>SOCKS5</b> 주소와 <b>서비스 자격증명</b>(계정 비밀번호가 아닙니다)을 넣으십시오.
+                            <br>비밀번호는 이 컴퓨터에만 본인만 읽을 수 있게 저장되고, 다른 프로그램의 명령줄에 실리지 않습니다.
+                        </p>
+                        <div class="input-row" style="margin-bottom:6px;">
+                            <div class="field" style="flex:2;">
+                                <label class="field-label">주소 (SOCKS5)</label>
+                                <input type="text" class="input" id="proxy-host" placeholder="예) amsterdam.nl.socks.nordhold.net">
+                            </div>
+                            <div class="field" style="width:110px;">
+                                <label class="field-label">포트</label>
+                                <input type="text" class="input" id="proxy-port" placeholder="1080" value="1080">
+                            </div>
+                        </div>
+                        <div class="input-row" style="margin-bottom:6px;">
+                            <div class="field" style="flex:1;">
+                                <label class="field-label">사용자명 <span style="font-weight:400;color:var(--text-tertiary);">· 서비스 자격증명</span></label>
+                                <input type="text" class="input" id="proxy-user" placeholder="service username">
+                            </div>
+                            <div class="field" style="flex:1;">
+                                <label class="field-label">비밀번호</label>
+                                <input type="password" class="input" id="proxy-pass" placeholder="service password">
+                            </div>
+                        </div>
+                        <label class="option-item" style="margin-bottom:8px;">
+                            <input type="checkbox" id="proxy-enabled">
+                            <span>프록시 사용 — 모든 요청을 이 길로 내보냅니다</span>
+                        </label>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <button class="btn btn-primary btn-sm" onclick="saveProxyConfig()">저장하고 적용</button>
+                            <button class="btn btn-secondary btn-sm" onclick="backend&&backend.testProxy&&backend.testProxy()"
+                                    title="앱 요청과 데몬 요청이 각각 어떤 IP 로 나가는지 확인합니다">나가는 IP 확인</button>
+                        </div>
+                        <p style="font-size:11px;color:var(--text-tertiary);margin:8px 0 0;">
+                            켠 뒤에는 <b>반드시 '나가는 IP 확인'</b> 을 눌러 두 줄이 같은 IP 인지 보십시오.
+                            서로 다르면 일부만 프록시를 타는 상태라, 안 쓰느니만 못합니다.
+                        </p>
+                    </div>
+            </div>
+        </div>
 
             </div>
         </div>
@@ -4526,6 +4521,56 @@
             document.getElementById('twitter-ct0').value='';
             appendLog('계정 추가: '+(name||'Account'),'success','twitter');
         }
+        // ★ 단일 대상 칸이 채워져 있으면 그것을 우선한다.
+        //   예전엔 저장된 목록이 하나라도 있으면 단일 칸을 '보지도 않고' 다중 수집으로
+        //   넘어갔다. 그래서 목록을 만들어 둔 사람은 한 명만 급히 받아 보려고 칸에
+        //   적어 넣어도 목록 전체가 돌아갔다(실측으로 확인함).
+        //   목록을 쓰고 싶으면 칸을 비우면 된다 — 예전 동작 그대로다.
+        // ── 별도 창 모드 ────────────────────────────────────────────────────
+        //   같은 index.html 을 별도 창이 그대로 띄우되, 주소 뒤 #window=<탭이름>
+        //   으로 어느 기능인지 알려 준다. 사이드바를 감추고 그 탭만 보여 준다.
+        //   백엔드는 같은 WebChannel 을 공유하므로 로그·진행상황이 그대로 온다.
+        function applyWindowMode() {
+            const m = (location.hash || '').match(/window=([a-z]+)/);
+            if (!m) return false;
+            const app = document.querySelector('.app');
+            if (app) app.classList.add('window-mode');
+            const go = function () { if (window.switchTab) switchTab(m[1]); };
+            go(); setTimeout(go, 300); setTimeout(go, 1200);
+            return true;
+        }
+        document.addEventListener('DOMContentLoaded', applyWindowMode);
+        if (document.readyState !== 'loading') applyWindowMode();
+
+        // ── 사이드바 접기/펴기 ──────────────────────────────────────────────
+        //   접힘 여부를 기억한다. 좁은 폭에서 처음 열면 접힌 채로 시작한다 —
+        //   그 폭에서는 목록이 본문을 너무 많이 밀어낸다.
+        function applySidebarState(collapsed) {
+            const app = document.querySelector('.app');
+            const btn = document.getElementById('sidebar-toggle');
+            if (!app) return;
+            app.classList.toggle('nav-collapsed', !!collapsed);
+            if (btn) btn.title = collapsed ? '목록 펴기' : '목록 접기';
+            try { localStorage.setItem('navCollapsed', collapsed ? '1' : '0'); } catch (e) {}
+        }
+        function toggleSidebar() {
+            const app = document.querySelector('.app');
+            applySidebarState(!(app && app.classList.contains('nav-collapsed')));
+        }
+        function initSidebarState() {
+            let saved = null;
+            try { saved = localStorage.getItem('navCollapsed'); } catch (e) {}
+            if (saved === null) saved = (window.innerWidth <= 680) ? '1' : '0';
+            applySidebarState(saved === '1');
+        }
+        document.addEventListener('DOMContentLoaded', initSidebarState);
+        if (document.readyState !== 'loading') initSidebarState();
+
+        function singleTargetOverride(id) {
+            const e = document.getElementById(id);
+            return e ? (e.value || '').trim() : '';
+        }
+
         function startTwitter() {
             if (!backend) return;
             const type = document.getElementById('twitter-type').value;
@@ -4536,7 +4581,7 @@
                 target = document.getElementById('twitter-url').value.trim();
                 if (!target) { appendLog(urlInfo.label + '을(를) 입력하세요','error','twitter'); return; }
             } else {
-                if (platformTargets.twitter && platformTargets.twitter.length) { startPlatformMulti('twitter'); return; }
+                if (!singleTargetOverride('twitter-target') && (platformTargets.twitter||[]).length) { startPlatformMulti('twitter'); return; }
                 target = document.getElementById('twitter-target').value.trim().replace(/^@/,'').split(/[\s\n\r]/)[0].trim();
                 document.getElementById('twitter-target').value = target;
                 if (!target) { appendLog('대상 유저이름을 입력하세요','error','twitter'); return; }
@@ -4699,7 +4744,7 @@
             if (!backend) return;
             if (!accounts.discord||accounts.discord.length===0) { appendLog('계정을 먼저 추가하세요','error','discord'); return; }
             // 다중대상 큐에 항목 있으면 startPlatformMulti로 위임
-            if (platformTargets.discord && platformTargets.discord.length) { startPlatformMulti('discord'); return; }
+            if (!singleTargetOverride('discord-channel') && (platformTargets.discord||[]).length) { startPlatformMulti('discord'); return; }
             const server=document.getElementById('discord-server').value.trim();
             const channel=document.getElementById('discord-channel').value.trim();
             const dtype=document.getElementById('discord-type').value;
@@ -4772,7 +4817,7 @@
             //   (기존 버그: 계정지정이 있을 때만 멀티로 가고, 전부 '전체 계정'이면 단일 경로로 빠져
             //    enabled 를 무시한 채 targets[0](목록 첫 번째)만 받아 → 체크한 대상이 아니라
             //    다른 타겟이 다운로드되던 문제. Twitter 처럼 목록 있으면 무조건 멀티로 통일.)
-            if ((platformTargets.instagram||[]).length) { startPlatformMulti('instagram'); return; }
+            if (!singleTargetOverride('instagram-target') && (platformTargets.instagram||[]).length) { startPlatformMulti('instagram'); return; }
             // 목록이 비어 있으면 단일 입력 필드 사용
             const singleUser = ((document.getElementById('instagram-target')||{value:''}).value||'').trim().replace(/^@/,'');
             let targets = [];
@@ -4830,7 +4875,7 @@
         }
         function startPixiv() {
             if (!backend) return;
-            if (platformTargets.pixiv && platformTargets.pixiv.length) { startPlatformMulti('pixiv'); return; }
+            if (!singleTargetOverride('pixiv-target') && (platformTargets.pixiv||[]).length) { startPlatformMulti('pixiv'); return; }
             const target = document.getElementById('pixiv-target').value.trim();
             if (!target) { appendLog('대상을 입력하세요 (유저 ID, 일러스트 URL 등)','error','pixiv'); return; }
             if (!accounts.pixiv || accounts.pixiv.length === 0) { appendLog('PHPSESSID 계정을 먼저 추가하세요','error','pixiv'); return; }
@@ -4866,7 +4911,7 @@
         // ── Pixiv Fanbox ──
         function startFanbox() {
             if (!backend) return;
-            if (platformTargets.fanbox && platformTargets.fanbox.length) { startPlatformMulti('fanbox'); return; }
+            if (!singleTargetOverride('fanbox-target') && (platformTargets.fanbox||[]).length) { startPlatformMulti('fanbox'); return; }
             const target = document.getElementById('fanbox-target').value.trim();
             if (!target) { appendLog('크리에이터 ID 또는 URL을 입력하세요','error','fanbox'); return; }
             const sessionId = document.getElementById('fanbox-session').value.trim();
@@ -4914,7 +4959,7 @@
         }
         function startTumblr() {
             if (!backend) return;
-            if (platformTargets.tumblr && platformTargets.tumblr.length) { startPlatformMulti('tumblr'); return; }
+            if (!singleTargetOverride('tumblr-target') && (platformTargets.tumblr||[]).length) { startPlatformMulti('tumblr'); return; }
             if (!accounts.tumblr || accounts.tumblr.length === 0) { appendLog('계정을 먼저 추가하세요 (API Key)','error','tumblr'); return; }
             const config = {
                 platform:'tumblr',
@@ -4958,7 +5003,7 @@
         }
         function startSpinSpin() {
             if (!backend) return;
-            if (platformTargets.spinspin && platformTargets.spinspin.length) { startPlatformMulti('spinspin'); return; }
+            if (!singleTargetOverride('spinspin-target') && (platformTargets.spinspin||[]).length) { startPlatformMulti('spinspin'); return; }
             const config = {
                 platform:'spinspin',
                 cookie: (accounts.spinspin && accounts.spinspin.length > 0) ? accounts.spinspin[0].cookie : document.getElementById('spinspin-cookie').value,
@@ -4998,7 +5043,7 @@
         }
         function startAsked() {
             if (!backend) return;
-            if (platformTargets.asked && platformTargets.asked.length) { startPlatformMulti('asked'); return; }
+            if (!singleTargetOverride('asked-target') && (platformTargets.asked||[]).length) { startPlatformMulti('asked'); return; }
             const config = {
                 platform:'asked',
                 cookie: (accounts.asked && accounts.asked.length > 0) ? accounts.asked[0].cookie : document.getElementById('asked-cookie').value,
@@ -5187,7 +5232,7 @@
         }
         function startBluesky() {
             if (!backend) return;
-            if (platformTargets.bluesky && platformTargets.bluesky.length) { startPlatformMulti('bluesky'); return; }
+            if (!singleTargetOverride('bsky-target') && (platformTargets.bluesky||[]).length) { startPlatformMulti('bluesky'); return; }
             if (!accounts.bluesky||accounts.bluesky.length===0) { appendLog('계정을 먼저 추가하세요','error','bluesky'); return; }
             const type = document.getElementById('bsky-type').value;
             const firstAcct = accounts.bluesky[0];
