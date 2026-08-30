@@ -283,7 +283,10 @@ if(APPLE)
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:Miyo>/Contents/Resources/tools"
         COMMENT "Creating tools directory"
     )
-    foreach(TOOL_SCRIPT twitter_tid.py twitter_api.py twitter_daemon.py bluesky_daemon.py email_watch.py)
+    # ★ 새 도구 스크립트를 만들면 반드시 여기에도 넣어야 한다. 안 넣으면 개발 트리에서만
+    #   돌고 배포본에는 없어서, '내 기계에선 되는데' 가 된다.
+    foreach(TOOL_SCRIPT twitter_tid.py twitter_api.py twitter_daemon.py bluesky_daemon.py
+                        email_watch.py x_session.py)
         if(EXISTS "${TOOLS_DIR}/${TOOL_SCRIPT}")
             add_custom_command(TARGET Miyo POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -464,7 +467,10 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND} -E make_directory "${WIN_OUTPUT_DIR}/tools"
         COMMENT "Creating tools directory"
     )
-    foreach(TOOL_SCRIPT twitter_tid.py twitter_api.py twitter_daemon.py bluesky_daemon.py email_watch.py)
+    # ★ 새 도구 스크립트를 만들면 반드시 여기에도 넣어야 한다. 안 넣으면 개발 트리에서만
+    #   돌고 배포본에는 없어서, '내 기계에선 되는데' 가 된다.
+    foreach(TOOL_SCRIPT twitter_tid.py twitter_api.py twitter_daemon.py bluesky_daemon.py
+                        email_watch.py x_session.py)
         if(EXISTS "${TOOLS_DIR}/${TOOL_SCRIPT}")
             add_custom_command(TARGET Miyo POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different

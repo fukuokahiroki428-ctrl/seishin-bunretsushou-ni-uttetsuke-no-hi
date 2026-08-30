@@ -410,12 +410,26 @@ async def main():
     auth_token = init_args["auth_token"]
     ct0 = init_args["ct0"]
 
+    # ── 어느 세션 계층을 쓸지 ────────────────────────────────────────────
+    # x_session 은 이 저장소가 직접 들고 있는 얇은 계층이다(tools/x_session.py).
+    # twikit 은 최신이 2025-02 배포로 1년 넘게 멈춰 있고, 실제로 자기 TID 초기화가
+    # 지금 X 에서 실패한다("Couldn't get KEY_BYTE indices" — 실측). 데몬이 그것을
+    # 손으로 우회해 왔을 뿐이다. 그래서 우리 것을 먼저 쓰고, 안 되면 물러선다.
+    #   ★ 물러설 자리를 남겨 두는 이유: 우리 것에 아직 못 본 구멍이 있을 수 있다.
+    #     사용자의 주 수집기가 내 확신 때문에 멈추면 안 된다.
+    USING_SHIM = False
     try:
-        from twikit import Client
-        from twikit.client.gql import Endpoint, FEATURES, USER_FEATURES, flatten_params
-    except ImportError:
-        print(json.dumps({"error": "twikit not installed"}), flush=True)
-        sys.exit(1)
+        from x_session import Client, Endpoint, FEATURES, USER_FEATURES, flatten_params
+        USING_SHIM = True
+        print(json.dumps({"info": "세션 계층: x_session (앱 내장)"}), flush=True)
+    except Exception as _se:
+        try:
+            from twikit import Client
+            from twikit.client.gql import Endpoint, FEATURES, USER_FEATURES, flatten_params
+            print(json.dumps({"info": f"세션 계층: twikit 으로 물러섬 ({_se})"}), flush=True)
+        except ImportError:
+            print(json.dumps({"error": "x_session 도 twikit 도 없습니다"}), flush=True)
+            sys.exit(1)
 
     # ── Monkey-patch httpx.Cookies.get() BEFORE creating Client ──
     # Root cause: x.com sets duplicate cookies (guest_id_ads, etc.) via Set-Cookie headers.
@@ -438,14 +452,20 @@ async def main():
                         value = cookie.value
         return value if value is not None else default
 
-    httpx.Cookies.get = _safe_cookies_get
-    print(json.dumps({"info": "httpx.Cookies.get() patched: duplicate cookies tolerated"}), flush=True)
+    # ★ x_session 은 쿠키를 도메인까지 지정해 넣으므로 중복이 안 생긴다 —
+    #   이 패치는 twikit 을 쓸 때만 필요하다. 필요 없을 때 남의 라이브러리를
+    #   건드려 두면 나중에 원인 찾기만 어려워진다.
+    if not USING_SHIM:
+        httpx.Cookies.get = _safe_cookies_get
+        print(json.dumps({"info": "httpx.Cookies.get() patched: duplicate cookies tolerated"}), flush=True)
 
     # ── In-process source-level fix for twikit bug: 'code' KeyError ──
     # twikit/client/client.py line ~158 accesses response_data['errors'][0]['code']
     # unconditionally. Twitter sometimes returns errors without 'code' (only 'message'
     # or 'extensions.code'). We patch the bundled source file ONCE if needed.
     try:
+        if USING_SHIM:
+            raise RuntimeError("x_session 을 쓰므로 twikit 소스 패치는 건너뜁니다")
         import twikit.client.client as _twc
         import os as _os
         _twc_path = _twc.__file__
@@ -475,9 +495,21 @@ async def main():
         else:
             print(json.dumps({"info": "twikit client.py already patched or pattern not found"}), flush=True)
     except Exception as _pe:
-        print(json.dumps({"info": f"twikit source patch failed: {_pe}"}), flush=True)
+        # 껍데기를 쓰면 이 패치는 애초에 필요 없다 — '실패' 로 찍지 않는다.
+        if not USING_SHIM:
+            print(json.dumps({"info": f"twikit source patch failed: {_pe}"}), flush=True)
 
-    client = Client(language="ja")
+    # ★ UA 는 앱이 정한 것을 그대로 쓴다. twikit 기본값은 macOS 사파리였다 —
+    #   윈도우 크롬 쿠키를 쓰면서 맥 사파리라고 말하는 셈이라 그 자체가 신호였다.
+    _ua = init_args.get("user_agent") or None
+    if USING_SHIM:
+        client = Client(language="ja", user_agent=_ua,
+                        proxy=(init_args.get("proxy") or None))
+    else:
+        client = Client(language="ja")
+        if _ua:
+            try: client._user_agent = _ua
+            except Exception: pass
     client.set_cookies({
         "auth_token": auth_token,
         "ct0": ct0,
@@ -494,14 +526,16 @@ async def main():
         #   transport 를 통째로 바꾸므로 retries 설정도 여기서 같이 준다.
         _proxy = init_args.get("proxy") or ""
         if _proxy:
-            client.http._transport = _httpx.HTTPTransport(retries=3, proxy=_proxy)
+            if not USING_SHIM:
+                client.http._transport = _httpx.HTTPTransport(retries=3, proxy=_proxy)
             # 비밀번호는 찍지 않는다 — 로그가 그대로 남는다.
             _safe = _proxy
             if "@" in _safe:
                 _safe = _safe.split("://")[0] + "://***@" + _safe.rsplit("@", 1)[1]
             print(json.dumps({"info": f"프록시 사용: {_safe}"}), flush=True)
         else:
-            client.http._transport = _httpx.HTTPTransport(retries=3)
+            if not USING_SHIM:
+                client.http._transport = _httpx.HTTPTransport(retries=3)
         print(json.dumps({"info": "httpx timeout=30s + retries=3 적용"}), flush=True)
     except Exception as _te:
         print(json.dumps({"info": f"timeout 설정 실패 (무시): {_te}"}), flush=True)
@@ -538,8 +572,21 @@ async def main():
         'User-Agent': client._user_agent,
     }
 
+    # ★ x_session 은 초기화를 스스로 한다 — 이관 페이지 처리, ondemand.s 청크 찾기,
+    #   KEY_BYTE 인덱스 추출까지 유지되는 라이브러리가 맡는다. 아래 손으로 하던
+    #   정규식 뭉치는 twikit 을 쓸 때만 돈다.
+    if USING_SHIM:
+        try:
+            tid_ok = await client.client_transaction.init(client.http, ct_headers)
+        except Exception as _e:
+            tid_ok = False
+        print(json.dumps({"info": f"TID(x_session): {client.client_transaction.reason}"}),
+              flush=True)
+
     # Method 1: Direct manual TID init with auth cookies (most reliable)
     try:
+        if USING_SHIM:
+            raise RuntimeError("x_session 이 이미 처리했습니다")
         import bs4, hashlib, math, random as rand_mod, base64 as b64_mod
         from functools import reduce
 
@@ -598,16 +645,22 @@ async def main():
         print(json.dumps({"info": f"TID manual init OK (indices={key_byte_indices}, hash={od_hash})"}), flush=True)
 
     except Exception as e1:
-        print(json.dumps({"info": f"TID manual init failed: {e1}"}), flush=True)
+        # x_session 을 쓰면 이 경로는 '실패' 가 아니라 '안 한 것' 이다. 실패로 찍으면
+        # 로그를 읽는 사람이 없는 고장을 쫓게 된다.
+        if not USING_SHIM:
+            print(json.dumps({"info": f"TID manual init failed: {e1}"}), flush=True)
 
         # Method 2: Try twikit's built-in init
         try:
+            if USING_SHIM:
+                raise RuntimeError("x_session 이 이미 처리했습니다")
             await client.client_transaction.init(client.http, ct_headers)
             deduplicate_cookies(client)
             tid_ok = True
             print(json.dumps({"info": "TID twikit init OK"}), flush=True)
         except Exception as e2:
-            print(json.dumps({"info": f"TID twikit init also failed: {e2}"}), flush=True)
+            if not USING_SHIM:
+                print(json.dumps({"info": f"TID twikit init also failed: {e2}"}), flush=True)
 
     # If all TID methods failed, use random transaction IDs
     if not tid_ok:

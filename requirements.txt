@@ -20,6 +20,14 @@
 #   직접 의존성만 고정해도 '조용한 동작 변화'의 대부분은 막힌다.
 
 # ── Twitter/X 수집 ────────────────────────────────────────────────
+# ★ X-Client-Transaction-Id 서명. tools/x_session.py 가 이것을 쓴다.
+#   twikit 은 최신이 2.3.3(2025-02)로 1년 넘게 멈춰 있고, 자기 TID 초기화가 지금
+#   X 에서 실패한다("Couldn't get KEY_BYTE indices" — 실측). 데몬이 그것을 손으로
+#   우회해 왔을 뿐이다. 서명 계산만 살아 있는 이 꾸러미에 맡기고, 나머지(HTTP·쿠키·
+#   헤더)는 tools/x_session.py 가 httpx 로 직접 한다.
+xclienttransaction==1.0.3
+# twikit 은 아직 남겨 둔다 — x_session 이 안 뜰 때 물러설 자리.
+#   x_session 이 충분히 검증되면 이 줄을 지운다.
 twikit==2.3.3
 httpx==0.28.1
 

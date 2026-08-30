@@ -437,7 +437,7 @@ inline SmokeResult smokePython(const QString &exe)
         ts << "# -*- coding: utf-8 -*-\n"
               "import sys, importlib\n"
               "mods = ['ssl','sqlite3','json','twikit','httpx','atproto','openpyxl',\n"
-              "        'PIL','piexif','bs4','lxml','websockets','m3u8','browser_cookie3']\n"
+              "        'PIL','piexif','bs4','lxml','websockets','m3u8','browser_cookie3',\n        'x_client_transaction']\n"
               "missing = []\n"
               "for m in mods:\n"
               "    try: importlib.import_module(m)\n"
@@ -463,7 +463,7 @@ inline SmokeResult smokePython(const QString &exe)
         if (line.startsWith("MISSING:")) missing = line.mid(8).trimmed();
     if (!missing.isEmpty())
         return smokeFail("빠진 모듈: " + missing + " — 설정 → 모듈 업데이트로 받으세요");
-    return smokePass("필수 모듈 14개 import · 한글 출력 확인");
+    return smokePass("필수 모듈 15개 import · 한글 출력 확인");
 }
 
 // ── 인터넷에 닿는지 ──────────────────────────────────────────────────────
@@ -578,6 +578,7 @@ inline int compareVersions(const QString &a, const QString &b)
 inline QString serviceTracker(const QString &pkg)
 {
     if (pkg.compare("twikit", Qt::CaseInsensitive) == 0)          return "X(트위터)";
+    if (pkg.compare("xclienttransaction", Qt::CaseInsensitive) == 0) return "X(트위터) 요청 서명";
     if (pkg.compare("atproto", Qt::CaseInsensitive) == 0)         return "블루스카이";
     if (pkg.compare("yt-dlp", Qt::CaseInsensitive) == 0)          return "동영상 사이트들";
     if (pkg.compare("browser_cookie3", Qt::CaseInsensitive) == 0) return "브라우저 쿠키 저장 형식";
