@@ -593,6 +593,146 @@ inline QString distNameOf(const QString &pkg)
     return pkg;
 }
 
+// ── 미뤄 둔 꾸러미 맞추기 ────────────────────────────────────────────────
+//   수집 중이라 못 한 것을 적어 두고, 한가해지면 그것만 다시 한다.
+//   목표 판을 이미 알고 있으므로 재시도에는 네트워크가 필요 없다.
+inline QString pendingSyncPath()
+{
+    const QString d = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                      + "/selfrepair";
+    QDir().mkpath(d);
+    return d + "/pending_sync.json";
+}
+
+inline void savePendingSync(const QList<QPair<QString, QPair<QString, QString>>> &drift)
+{
+    QJsonObject o;
+    for (const auto &d : drift)
+        o[d.first] = QJsonArray{d.second.first, d.second.second};
+    QFile f(pendingSyncPath());
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        f.write(QJsonDocument(o).toJson(QJsonDocument::Compact));
+}
+
+inline QList<QPair<QString, QPair<QString, QString>>> loadPendingSync()
+{
+    QList<QPair<QString, QPair<QString, QString>>> out;
+    QFile f(pendingSyncPath());
+    if (!f.open(QIODevice::ReadOnly)) return out;
+    const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
+    for (auto it = o.constBegin(); it != o.constEnd(); ++it) {
+        const QJsonArray a = it.value().toArray();
+        if (a.size() == 2) out.append({it.key(), {a[0].toString(), a[1].toString()}});
+    }
+    return out;
+}
+
+inline void clearPendingSync() { QFile::remove(pendingSyncPath()); }
+
+// pythonBusy 의 정의는 아래 통보 통로 절에 있다. 여기서 먼저 쓰므로 선언만 앞세운다.
+inline bool pythonBusy();
+
+// pip 이름과 import 이름이 다른 것들 — 설치 뒤에 실제로 불러 봐야 하므로 필요하다.
+inline QString importNameOf(const QString &pkg)
+{
+    if (pkg.compare("Pillow", Qt::CaseInsensitive) == 0)         return "PIL";
+    if (pkg.compare("beautifulsoup4", Qt::CaseInsensitive) == 0) return "bs4";
+    if (pkg.compare("discord.py", Qt::CaseInsensitive) == 0)     return "discord";
+    if (pkg.compare("yt-dlp", Qt::CaseInsensitive) == 0)         return "yt_dlp";
+    return pkg;
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 설치본을 고정판에 맞춘다 — 사람이 버튼을 안 눌러도 되게.
+//
+// 왜 '고정판까지만' 인가:
+//   고정판(requirements.txt)은 이 프로젝트가 실제로 돌려 보고 정한 조합이다.
+//   PyPI 최신은 아무도 안 돌려 본 것이다. 자동으로 갈 수 있는 곳은 전자까지다.
+//   고정판 자체가 낡았으면 그건 사람이 커밋으로 올릴 일이고, 진단이 그렇게 적는다.
+//   (yt-dlp 자동 갱신과 같은 원칙이다 — 되살릴 때도 '검증된 자리' 로만 간다.)
+//
+// 안전 규칙:
+//   · 수집이 돌고 있으면 안 한다. pip 가 파일을 바꾸면 그 수집이 중간에 죽는다.
+//   · 갈아 끼운 뒤 반드시 import 해 본다. 안 되면 원래 판으로 되돌린다.
+//     새 것이 망가졌는데 그대로 두면 자동 갱신은 없느니만 못하다.
+//   · 하나가 실패해도 나머지는 계속한다. 전부 아니면 전무는 여기서 손해다.
+// ═════════════════════════════════════════════════════════════════════════
+inline QString syncModulesToPins(const QString &python,
+                                 const QList<QPair<QString, QPair<QString, QString>>> &drift)
+{
+    if (drift.isEmpty()) return QString();
+    if (pythonBusy()) {
+        // ★ 미룬 것을 적어 둔다. 안 적어 두면 '다음 기회' 는 하루 뒤 네트워크 확인일이고,
+        //   그때도 수집 중이면 또 하루 뒤다. 이 기계는 켜자마자 내각회가 수집을 시작해서
+        //   실제로 그렇게 됐다 — 미루기만 하고 영영 안 하는 상태.
+        //   적어 두면 30분마다 도는 주기 점검이 '이것만' 다시 해 본다.
+        //   목표 판은 이미 알고 있으므로 다시 물어볼 필요가 없다(네트워크도 안 쓴다).
+        savePendingSync(drift);
+        return QString("       └ 뒤처진 꾸러미 %1개 — 수집 중이라 미뤘습니다 "
+                       "(수집이 끝나면 알아서 맞춥니다)\n").arg(drift.size());
+    }
+
+    auto pip = [&](const QStringList &args, int ms) -> bool {
+        QProcess p;
+        p.setProcessEnvironment(Common::bundledProcessEnv());
+        p.start(python, QStringList() << "-m" << "pip" << args);
+        if (!p.waitForStarted(10000)) return false;
+        if (!p.waitForFinished(ms)) { p.kill(); return false; }
+        return p.exitCode() == 0;
+    };
+    auto canImport = [&](const QString &mod) -> bool {
+        QProcess p;
+        p.setProcessEnvironment(Common::bundledProcessEnv());
+        p.start(python, QStringList() << "-c" << ("import " + mod));
+        if (!p.waitForStarted(10000)) return false;
+        if (!p.waitForFinished(60000)) { p.kill(); return false; }
+        return p.exitCode() == 0;
+    };
+
+    QString out;
+    int ok = 0, bad = 0;
+    QList<QPair<QString, QPair<QString, QString>>> stillBad;
+    for (const auto &d : drift) {
+        const QString name = d.first;
+        const QString have = d.second.first;    // 지금 깔린 판
+        const QString want = d.second.second;   // 고정판
+        const QString mod  = importNameOf(name);
+
+        if (!pip({"install", "--upgrade", "--no-input", name + "==" + want}, 300000)) {
+            out += QString("       └ %1 %2 → %3 설치 실패 (기존 것 유지)\n").arg(name, have, want);
+            ++bad;
+            stillBad.append(d);
+            continue;
+        }
+        if (!canImport(mod)) {
+            // 새 판이 안 불러진다 — 원래 판으로 되돌린다.
+            const bool back = pip({"install", "--no-input", name + "==" + have}, 300000);
+            out += QString("       └ %1 %2 → %3 갈아 끼웠는데 불러오지 못해 %4\n")
+                       .arg(name, have, want,
+                            back ? QString("%1 로 되돌렸습니다").arg(have)
+                                 : QStringLiteral("되돌리기도 실패했습니다 — 설정 → 환경 복구"));
+            ++bad;
+            stillBad.append(d);
+            continue;
+        }
+        out += QString("       └ %1 %2 → %3 맞췄습니다\n").arg(name, have, want);
+        ++ok;
+    }
+    if (ok > 0 || bad > 0)
+        out = QString("       ↻ 고정판에 맞추기: 성공 %1, 실패 %2\n").arg(ok).arg(bad) + out;
+    // 전부 성공했으면 목록을 지우고, 실패가 남았으면 '실패한 것만' 다시 적어 둔다.
+    //   처음엔 함수 들머리에서 목록을 먼저 지웠다. 그러면 결과를 알기도 전에 기록을
+    //   버리는 셈이라, 실패한 것이 다시 시도되지 않았다 — 실측으로 잡았다.
+    //   계속 실패하는 것을 무한히 재시도하게 되지만, 그 사실이 매번 보고서에 남는다.
+    //   조용히 포기하는 것보다 낫다.
+    if (bad == 0) {
+        clearPendingSync();
+    } else {
+        savePendingSync(stillBad);
+    }
+    return out;
+}
+
 inline QString checkModuleFreshness(const QString &python, bool allowNetwork)
 {
     if (!allowNetwork) return QString();
@@ -640,6 +780,7 @@ inline QString checkModuleFreshness(const QString &python, bool allowNetwork)
     }
 
     QStringList behindLocal, behindPin, upstreamQuiet;
+    QList<QPair<QString, QPair<QString, QString>>> drift;   // 이름 → (설치판, 고정판)
     const QDateTime now = QDateTime::currentDateTimeUtc();
     int checked = 0;
 
@@ -654,8 +795,10 @@ inline QString checkModuleFreshness(const QString &python, bool allowNetwork)
         const QString pin = pinned.value(n);
         const QString have = installed.value(n);
 
-        if (!have.isEmpty() && have != "?" && compareVersions(have, pin) < 0)
+        if (!have.isEmpty() && have != "?" && compareVersions(have, pin) < 0) {
             behindLocal << QString("%1 설치 %2 < 고정 %3").arg(n, have, pin);
+            drift.append({n, {have, pin}});
+        }
         if (compareVersions(pin, latest) < 0)
             behindPin << QString("%1 고정 %2 < 최신 %3").arg(n, pin, latest);
 
@@ -681,7 +824,10 @@ inline QString checkModuleFreshness(const QString &python, bool allowNetwork)
         return r + " — 전부 최신\n";
     r += "\n";
     for (const QString &l : behindLocal)
-        r += "       └ " + l + " — 설정 → 모듈 업데이트로 받으세요\n";
+        r += "       └ " + l + "\n";
+    // ★ 적어만 두지 않고 바로 맞춘다. '설정 → 모듈 업데이트를 누르세요' 라고 적어 두면
+    //   누를 사람이 있을 때만 고쳐진다 — 1년 방치가 목표인 앱에서는 그게 안 고쳐지는 것이다.
+    r += syncModulesToPins(python, drift);
     for (const QString &l : behindPin)
         r += "       └ " + l + " — requirements.txt 를 올려야 합니다\n";
     for (const QString &l : upstreamQuiet)
@@ -1015,6 +1161,26 @@ inline QMutex &stateMutex()      { static QMutex m;   return m; }
 inline QString &lastReportRef()  { static QString s;  return s; }
 
 using Notifier = std::function<void(QString, QString)>;   // (한 줄, 등급: success/error/info)
+
+// ★ 파이썬 꾸러미를 갈아 끼우기 전에 '지금 건드려도 되나' 를 물어본다.
+//   수집이 도는 중에 pip 가 파일을 바꾸면 그 수집이 중간에 죽는다.
+//   백엔드만 그걸 안다(m_pythonBusy, 진행 중인 수집). 그래서 물어볼 통로를 둔다.
+//   통로가 안 걸려 있으면 '바쁘다' 로 본다 — 모를 때는 건드리지 않는 쪽이 맞다.
+using BusyCheck = std::function<bool()>;
+inline BusyCheck &busyCheckRef() { static BusyCheck f; return f; }
+
+inline void setBusyCheck(BusyCheck f)
+{
+    QMutexLocker lk(&stateMutex());
+    busyCheckRef() = std::move(f);
+}
+
+inline bool pythonBusy()
+{
+    BusyCheck f;
+    { QMutexLocker lk(&stateMutex()); f = busyCheckRef(); }
+    return f ? f() : true;
+}
 inline Notifier &notifierRef()   { static Notifier f;  return f; }
 
 inline void setNotifier(Notifier f)
@@ -1074,6 +1240,17 @@ inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
     //   사용자가 버튼을 누른 경우(deep)는 무조건 한다 — 지금 확인하고 싶은 것이니까.
     const bool netCheck = deep || updateDue("smoke_net", 1);
     bool netCheckRan = false;
+
+    // ★ 지난번에 '수집 중이라' 미뤄 둔 것이 있으면 그것부터 치운다.
+    //   네트워크 확인일이 아니어도 한다 — 목표 판을 이미 알고 있어서 물어볼 것이 없다.
+    //   이게 없으면 켜자마자 수집을 시작하는 기계에서는 영영 안 맞춰진다.
+    {
+        const auto pend = loadPendingSync();
+        if (!pend.isEmpty()) {
+            const QString r = syncModulesToPins(Common::bundledPythonPath(), pend);
+            if (!r.isEmpty()) report += "[MOD]  미뤄 둔 꾸러미 맞추기\n" + r;
+        }
+    }
 
     // ★ 검사보다 갱신을 먼저 한다. 낡은 것을 검사해 [OK] 를 찍어 봐야 소용없다.
     //   (실측: 두 달 묵은 yt-dlp 도 --version 은 통과하는데 유튜브는 전부 403 이었다)

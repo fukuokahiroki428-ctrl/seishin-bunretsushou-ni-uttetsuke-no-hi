@@ -298,7 +298,12 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     //   유튜브 확인은 하루에 한 번, 나머지는 오프라인 5초.
     {
         QTimer *upd = new QTimer(this);
-        upd->setInterval(24 * 60 * 60 * 1000);   // 24시간
+        // 30분마다 본다. 매번 다 하는 것이 아니다 —
+        //   유튜브 실기능 확인·PyPI 대조는 안에서 하루에 한 번으로 다시 걸러진다.
+        //   짧게 도는 이유는 '수집 중이라 미뤄 둔 일' 때문이다. 이 기계는 켜자마자
+        //   내각회가 수집을 시작해서, 24시간마다로는 미룬 일이 영영 안 됐다.
+        //   미뤄 둔 꾸러미 맞추기는 목표 판을 이미 알고 있어 네트워크를 안 쓴다.
+        upd->setInterval(30 * 60 * 1000);   // 30분
         connect(upd, &QTimer::timeout, this, [] { SelfRepair::runPeriodicUpdateAsync(); });
         upd->start();
     }
@@ -309,6 +314,13 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     //   사람은 잘 되고 있다고 믿었다. 안 보이는 진단은 없는 진단이다.
     //   통보는 백그라운드 스레드에서 온다. this 를 거기서 만지면 안 되므로
     //   QPointer 로 살아있는지 확인하고 메인 스레드로 넘겨서 화면을 건드린다.
+    // ★ 자가진단이 파이썬 꾸러미를 갈아 끼우기 전에 여기에 물어본다.
+    //   수집이 도는 중에 pip 가 파일을 바꾸면 그 수집이 중간에 죽는다.
+    //   m_pythonBusy(환경 복구·모듈 업데이트 중)와 진행 중인 수집을 둘 다 본다.
+    SelfRepair::setBusyCheck([this]() {
+        return m_pythonBusy.load() || isAnyRunning();
+    });
+
     {
         QPointer<MiyoBackend> self(this);
         SelfRepair::setNotifier([self](QString line, QString level) {
@@ -518,6 +530,7 @@ MiyoBackend::~MiyoBackend()
 {
     // 자가진단 통보 통로부터 끊는다 — 종료 중에 죽은 객체를 부르지 않게
     SelfRepair::setNotifier(nullptr);
+    SelfRepair::setBusyCheck(nullptr);
 
     // 内閣会 타이머 정리
     m_naikakukaiRunning = false;
