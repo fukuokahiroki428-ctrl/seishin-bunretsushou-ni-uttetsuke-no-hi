@@ -86,6 +86,39 @@
             font-size: 11px; font-weight: 600; color: var(--text-tertiary);
             text-transform: uppercase; letter-spacing: 0.5px;
         }
+        /* ── 사이드바 접기/펴기 ────────────────────────────────────────────
+           ★ 좁은 폭에서 목록을 위로 눕혀 봤더니 항목 13개가 네 줄로 쌓여
+             화면 위쪽을 통째로 먹었다(실측 182px, 창 높이의 23%). 너저분하다.
+             옆에 세로로 두되 '접을 수 있게' 하는 편이 낫다 —
+             접으면 본문이 폭을 다 쓰고, 펴면 원래대로다. */
+        /* ★ 별도 창으로만 여는 기능 — 사이드바에서는 감춘다.
+           요소를 지우지 않고 감추기만 하는 이유: 같은 문서를 별도 창이 그대로
+           띄워 쓰고, switchTab()·탭 본문·저장 로직이 전부 이 DOM 에 얹혀 있다.
+           지우면 그 창에서도 못 쓴다. 상단 '기능' 메뉴에서 연다. */
+        .app:not(.window-mode) .nav-item[data-window-only="1"] { display: none; }
+        /* 별도 창에서는 사이드바 자체가 필요 없다 */
+        .app.window-mode .sidebar, .app.window-mode .sidebar-toggle { display: none; }
+        .app.window-mode .main { max-width: 100%; }
+
+        .sidebar-toggle {
+            position: absolute; top: 8px; left: 8px; z-index: 30;
+            width: 26px; height: 26px; padding: 0;
+            display: flex; align-items: center; justify-content: center;
+            border: 1px solid var(--border-light); border-radius: 6px;
+            background: var(--bg-card); color: var(--text-secondary);
+            cursor: pointer; font-size: 13px; line-height: 1;
+            -webkit-app-region: no-drag;
+        }
+        .sidebar-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
+        .app.nav-collapsed .sidebar {
+            width: 0; min-width: 0; max-width: 0;
+            padding: 0; border-right: none; overflow: hidden;
+        }
+        .app.nav-collapsed .sidebar * { visibility: hidden; }
+        .app.nav-collapsed .main { max-width: 100%; }
+        /* 접힘 버튼이 툴바 제목과 겹치지 않게 자리를 비운다 */
+        .app.nav-collapsed .toolbar { padding-left: 42px; }
+
         .sidebar-nav { flex: 1; padding: 10px 8px 0; -webkit-app-region: no-drag; overflow-y: auto; }
         .nav-item {
             display: flex; align-items: center; gap: 6px;
@@ -125,6 +158,20 @@
         }
         .nav-badge:not(:empty) { display: inline-block; }
         .nav-item.active .nav-badge { background: var(--accent); color: #fff; }
+        @media (max-width: 680px) {
+            /* 세로 배치를 유지한다. 위로 눕히지 않는다. */
+            .sidebar { width: 190px; min-width: 190px; }
+            .main { max-width: 100%; }
+            .toolbar { height: auto; min-height: 44px; flex-wrap: wrap; padding: 6px 12px 6px 42px; }
+            .toolbar * { white-space: nowrap; }
+            .toolbar-stats { flex-wrap: wrap; gap: 10px; font-size: 11px; }
+            .input-row { flex-direction: column; align-items: stretch; }
+            .input-row > .field { width: 100% !important; flex: 1 1 auto !important; }
+            .field-label { white-space: normal; }
+            .input, input.input, select.input, textarea.input { width: 100%; box-sizing: border-box; }
+            .log-panel, #log-panel { display: none; }
+        }
+
         .sidebar-footer {
             padding: 12px 8px; border-top: 1px solid var(--border-light);
             -webkit-app-region: no-drag;
@@ -334,10 +381,6 @@
         .scroll-area::-webkit-scrollbar-track { background: transparent; }
         .scroll-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
         /* 창이 좁을 때 패딩 축소 — 유효 공간 확보 */
-        @media (max-width: 680px) {
-            .scroll-area { padding: 16px; }
-            .toolbar { padding: 0 16px; }
-        }
         @media (max-width: 480px) {
             .scroll-area { padding: 12px; }
             .toolbar { padding: 0 12px; gap: 8px; }
@@ -350,65 +393,6 @@
              최소 크기를 낮추면서 이 폭에서 실제로 무엇이 깨지는지 재고 고쳤다.
              390px 에서: 사이드바가 148px(38%)를 먹어 본문이 242px 만 남고,
              툴바 글자가 세로로 쪼개지고("설/정"), 입력칸 placeholder 가 잘렸다. */
-        @media (max-width: 680px) {
-            /* 세로로 쌓는다 — 옆에 두기엔 폭이 없다 */
-            .app { flex-direction: column; }
-
-            /* 사이드바를 가로로 스크롤되는 탭줄로 */
-            .sidebar {
-                width: 100%; max-width: none; height: auto;
-                flex-direction: row; align-items: center;
-                overflow: visible;
-                border-right: none; border-bottom: 1px solid var(--border-light);
-                padding: 6px 8px; gap: 4px;
-                flex: 0 0 auto;
-                -webkit-overflow-scrolling: touch;
-            }
-            .sidebar::-webkit-scrollbar { height: 0; }
-            .sidebar-header { display: none; }      /* 세로 배치용 여백 — 가로줄에선 자리만 먹는다 */
-            /* ★ 사이드바만 가로로 눕혀서는 안 된다. 안쪽 .sidebar-nav 가 block 이라
-               항목들이 그대로 세로로 쌓여, 폭 390px 에서 사이드바 높이가 503px 이
-               되어 버렸다(실측). 안쪽도 같이 눕힌다. */
-            /* ★ 처음엔 한 줄로 눕히고 가로 스크롤하게 했다. 그런데 390px 에서
-               12개 중 3개만 보이고 나머지 9개(Tumblr·SpinSpin·Asked 등)는
-               옆으로 밀어야 닿았다 — 게다가 스크롤 막대를 감춰 놔서 더 있다는
-               표시조차 없었다. 좁은 화면에서 '있는데 안 보이는' 것은 없는 것과 같다.
-               → 줄바꿈으로 전부 펼친다. 대신 항목을 촘촘하게 만들어 줄 수를 줄인다. */
-            .sidebar-nav {
-                display: flex; flex-direction: row; flex-wrap: wrap;
-                gap: 3px; overflow: visible;
-                width: 100%; padding: 0;
-            }
-            /* '설정' 은 sidebar-footer 안에 따로 있어 오른쪽에 떨어져 보였다.
-               같은 줄바꿈 흐름에 넣어 다른 항목과 나란히 놓는다. */
-            .sidebar-footer {
-                flex: 0 0 auto; border-top: none; padding: 0; margin: 0;
-                display: contents;
-            }
-            .nav-item {
-                flex: 0 0 auto; white-space: nowrap;
-                padding: 4px 7px; font-size: 11px; gap: 3px;
-            }
-            /* 아이콘 상자를 줄여 한 줄에 더 많이 들어가게 */
-            .nav-item > :first-child { width: 18px; height: 18px; font-size: 9px; }
-
-            /* 본문이 남은 세로 공간을 전부 갖는다 */
-            .main { max-width: 100%; flex: 1 1 auto; min-height: 0; }
-
-            /* 툴바 — 글자가 세로로 쪼개지지 않게 */
-            .toolbar { height: auto; min-height: 44px; flex-wrap: wrap; padding: 6px 12px; }
-            .toolbar * { white-space: nowrap; }
-            .toolbar-stats { flex-wrap: wrap; gap: 10px; font-size: 11px; }
-
-            /* 한 줄에 두 칸씩 두면 각각 170px 밖에 안 된다 — 세로로 쌓는다 */
-            .input-row { flex-direction: column; align-items: stretch; }
-            .input-row > .field { width: 100% !important; flex: 1 1 auto !important; }
-            .field-label { white-space: normal; }
-            .input, input.input, select.input, textarea.input { width: 100%; box-sizing: border-box; }
-
-            /* 로그판은 이 폭에서 자리를 차지할 수 없다 */
-            .log-panel, #log-panel { display: none; }
-        }
 
         /* ── Section ── */
         .section { margin-bottom: 20px; overflow: visible; }
@@ -962,6 +946,7 @@
 
     <div class="app">
         <!-- Sidebar -->
+        <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()" title="목록 접기 / 펴기">☰</button>
         <div class="sidebar">
             <div class="sidebar-header"></div>
             <div class="sidebar-nav">
@@ -992,13 +977,13 @@
                 <div class="nav-item" onclick="switchTab('fanbox')">
                     <div class="nav-icon" style="background:#fb923c">F</div> Fanbox <span class="nav-badge" id="nav-badge-fanbox"></span>
                 </div>
-                <div class="nav-item" onclick="switchTab('tumblr')">
+                <div class="nav-item" onclick="switchTab('tumblr')" data-window-only="1">
                     <div class="nav-icon tumblr">Tu</div> Tumblr <span class="nav-badge" id="nav-badge-tumblr"></span>
                 </div>
-                <div class="nav-item" onclick="switchTab('spinspin')">
+                <div class="nav-item" onclick="switchTab('spinspin')" data-window-only="1">
                     <div class="nav-icon spinspin">S</div> SpinSpin <span class="nav-badge" id="nav-badge-spinspin"></span>
                 </div>
-                <div class="nav-item" onclick="switchTab('asked')">
+                <div class="nav-item" onclick="switchTab('asked')" data-window-only="1">
                     <div class="nav-icon asked">A</div> Asked <span class="nav-badge" id="nav-badge-asked"></span>
                 </div>
                 <!-- 経済産業省 (crawl) — 메뉴에서 숨김. 향후 개발은 "펜을 잘 쓰고 싶다" 앱으로 이전.
@@ -4531,6 +4516,46 @@
         //   넘어갔다. 그래서 목록을 만들어 둔 사람은 한 명만 급히 받아 보려고 칸에
         //   적어 넣어도 목록 전체가 돌아갔다(실측으로 확인함).
         //   목록을 쓰고 싶으면 칸을 비우면 된다 — 예전 동작 그대로다.
+        // ── 별도 창 모드 ────────────────────────────────────────────────────
+        //   같은 index.html 을 별도 창이 그대로 띄우되, 주소 뒤 #window=<탭이름>
+        //   으로 어느 기능인지 알려 준다. 사이드바를 감추고 그 탭만 보여 준다.
+        //   백엔드는 같은 WebChannel 을 공유하므로 로그·진행상황이 그대로 온다.
+        function applyWindowMode() {
+            const m = (location.hash || '').match(/window=([a-z]+)/);
+            if (!m) return false;
+            const app = document.querySelector('.app');
+            if (app) app.classList.add('window-mode');
+            const go = function () { if (window.switchTab) switchTab(m[1]); };
+            go(); setTimeout(go, 300); setTimeout(go, 1200);
+            return true;
+        }
+        document.addEventListener('DOMContentLoaded', applyWindowMode);
+        if (document.readyState !== 'loading') applyWindowMode();
+
+        // ── 사이드바 접기/펴기 ──────────────────────────────────────────────
+        //   접힘 여부를 기억한다. 좁은 폭에서 처음 열면 접힌 채로 시작한다 —
+        //   그 폭에서는 목록이 본문을 너무 많이 밀어낸다.
+        function applySidebarState(collapsed) {
+            const app = document.querySelector('.app');
+            const btn = document.getElementById('sidebar-toggle');
+            if (!app) return;
+            app.classList.toggle('nav-collapsed', !!collapsed);
+            if (btn) btn.title = collapsed ? '목록 펴기' : '목록 접기';
+            try { localStorage.setItem('navCollapsed', collapsed ? '1' : '0'); } catch (e) {}
+        }
+        function toggleSidebar() {
+            const app = document.querySelector('.app');
+            applySidebarState(!(app && app.classList.contains('nav-collapsed')));
+        }
+        function initSidebarState() {
+            let saved = null;
+            try { saved = localStorage.getItem('navCollapsed'); } catch (e) {}
+            if (saved === null) saved = (window.innerWidth <= 680) ? '1' : '0';
+            applySidebarState(saved === '1');
+        }
+        document.addEventListener('DOMContentLoaded', initSidebarState);
+        if (document.readyState !== 'loading') initSidebarState();
+
         function singleTargetOverride(id) {
             const e = document.getElementById(id);
             return e ? (e.value || '').trim() : '';
