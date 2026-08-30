@@ -80,7 +80,21 @@ bool BlueskyCollector::startDaemon(const QString &handle, const QString &passwor
 
     QString argsJson = QString::fromUtf8(QJsonDocument(initArgs).toJson(QJsonDocument::Compact));
 
-    m_daemon = new QProcess(this);
+    // ★ 부모를 주면 안 된다. this(BlueskyCollector)는 메인 스레드에서 만들어졌고,
+    //   이 함수는 수집 워커 스레드에서 돈다. 부모가 있으면 QProcess 가 부모의
+    //   스레드(메인)에 속하게 되는데, start() 는 여기(워커)에서 부른다.
+    //   그러면 Qt 가 이렇게 경고하고, 이어서 앱이 죽는다:
+    //     QWinEventNotifier: Event notifiers cannot be enabled or disabled from another thread
+    //     QObject::moveToThread: Current thread is not the object's thread
+    //     → Qt6Core.dll 접근 위반(0xc0000005)
+    //   실측: 2026-08-31 00:05:26 크래시 로그가 정확히 이 세 줄이다. 바로 앞
+    //   00:05:04 에 파이썬 경로 해석이 두 번씩 찍혔다 — 수집기 둘이 동시에
+    //   데몬을 띄우는 참이었다. 오래 못 잡던 '병렬 수집 크래시' 가 이것이다.
+    //   TwitterCollector 는 같은 이유로 이미 부모 없이 만들고 있었다(99행).
+    //   여기만 안 고쳐져 있었다.
+    //   부모가 없어도 새지 않는다 — stopDaemon() 이 명시적으로 delete 하고,
+    //   소멸자가 stopDaemon() 을 부른다(트위터와 같은 구조).
+    m_daemon = new QProcess();
     m_daemon->setProcessEnvironment(Common::bundledProcessEnv());
 
     // 번들 Python 우선 → system fallback

@@ -632,6 +632,8 @@ inline void clearPendingSync() { QFile::remove(pendingSyncPath()); }
 
 // pythonBusy 의 정의는 아래 통보 통로 절에 있다. 여기서 먼저 쓰므로 선언만 앞세운다.
 inline bool pythonBusy();
+// 점검이 이미 돌고 있는지 — 정의는 아래에 있다.
+inline QAtomicInt &maintenanceRunning();
 
 // pip 이름과 import 이름이 다른 것들 — 설치 뒤에 실제로 불러 봐야 하므로 필요하다.
 inline QString importNameOf(const QString &pkg)
@@ -1227,6 +1229,16 @@ inline QString lastReport()
 //              시작할 때만 지운다.
 inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
 {
+    // 이미 돌고 있으면 그냥 돌아간다. 겹쳐 돌아서 좋을 것이 없다 —
+    // 같은 도구를 두 스레드가 동시에 실행하게 되고, 결과도 뒤섞인다.
+    if (!maintenanceRunning().testAndSetOrdered(0, 1)) {
+        qInfo().noquote() << "[SelfRepair] 이미 점검 중이라 이번 요청은 건너뜁니다";
+        return QString();
+    }
+    struct Guard {
+        ~Guard() { maintenanceRunning().storeRelease(0); }
+    } guard;
+
     QString report;
     report += "═ SelfRepair 자가진단 " + QDateTime::currentDateTime().toString(Qt::ISODate) + " ═\n";
     report += "appDir: " + appDir() + "\n";
@@ -1383,6 +1395,21 @@ inline void runStartupMaintenanceAsync()
     t->start(QThread::LowPriority);
 }
 
+// ★ 한 번에 하나만 돈다.
+//
+//   이건 크래시의 원인이어서 넣은 것이 아니다. 2026-08-31 00:05 크래시는
+//   BlueskyCollector 의 QProcess 부모 문제였고 따로 고쳤다(그쪽 주석 참고).
+//   시각을 맞춰 보면 그때 점검은 돌고 있지도 않았다(직전 실행 23:45, 다음 00:15).
+//   처음에 내 탓이라고 적었다가 로그의 실행 시각을 보고 취소했다.
+//
+//   그래도 이 셋은 남긴다. 점검이 도구를 실행하는 동안 수집도 도구를 실행하면,
+//   위와 같은 종류의 사고가 날 자리가 늘어난다. 이득도 없다 —
+//   무거운 확인을 30분마다 되풀이해서 새로 알게 되는 것은 거의 없다.
+//     1) 점검은 한 번에 하나만 (이 플래그)
+//     2) 수집이 도는 중에는 주기 점검을 건너뛴다
+//     3) 주기 점검은 가벼운 것만 — 무거운 실기능 확인은 앱을 켤 때 한 번
+inline QAtomicInt &maintenanceRunning() { static QAtomicInt v{0}; return v; }
+
 // ★ 켜 두고 쓰는 기계를 위한 진입점.
 //
 //   시작 시 한 번만 보면, 한 달 내내 켜 둔 앱은 그 한 달 동안 아무도 안 본다.
@@ -1398,7 +1425,28 @@ inline void runStartupMaintenanceAsync()
 inline void runPeriodicUpdateAsync()
 {
     QThread *t = QThread::create([] {
-        runStartupMaintenance(/*deep=*/false, /*cleanLocks=*/false);
+        // ★ 수집이 도는 중에는 아무것도 하지 않는다.
+        //   점검도 도구를 실행하고 수집도 도구를 실행한다. 굳이 같은 시각에
+        //   할 이유가 없다 — 기다렸다 다음 차례에 하면 된다.
+        if (pythonBusy()) return;
+
+        if (!maintenanceRunning().testAndSetOrdered(0, 1)) return;
+        struct Guard { ~Guard() { maintenanceRunning().storeRelease(0); } } guard;
+
+        // 1) 미뤄 둔 꾸러미 맞추기 — 목표 판을 이미 알고 있어 네트워크가 필요 없다.
+        const auto pend = loadPendingSync();
+        if (!pend.isEmpty()) {
+            const QString r = syncModulesToPins(Common::bundledPythonPath(), pend);
+            if (!r.isEmpty()) qInfo().noquote() << "[SelfRepair] 미뤄 둔 꾸러미\n" + r;
+        }
+
+        // 2) yt-dlp 갱신 — 안에서 7일에 한 번으로 다시 걸러진다.
+        const QString line = updateYtDlpIfDue();
+        if (!line.isEmpty()) qInfo().noquote() << "[SelfRepair]" << line.trimmed();
+
+        // ★ 무거운 실기능 확인(유튜브 내려받기·ffmpeg·exiftool·파이썬 import)은
+        //   여기서 하지 않는다. 앱을 켤 때 한 번이면 충분하다. 30분마다 되풀이해도
+        //   새로 알게 되는 것은 거의 없고, 수집과 겹칠 일만 늘어난다.
     });
     QObject::connect(t, &QThread::finished, t, &QObject::deleteLater);
     t->start(QThread::LowPriority);
