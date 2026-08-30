@@ -525,6 +525,170 @@ inline SmokeResult smokeYtDlp(const QString &exe)
                      + (lastErr.isEmpty() ? QString() : " — " + lastErr));
 }
 
+// ═════════════════════════════════════════════════════════════════════════
+// 꾸러미 신선도 — 파이썬 쪽의 '낡아서 멈추는 고장' 을 미리 본다.
+//
+// 왜 있는가:
+//   2026.08.29 에 유튜브가 통째로 멈춘 것은 코드 버그가 아니라 낡은 yt-dlp 였다.
+//   그 뒤 사람이 손으로 고정판 14개를 전부 최신과 대조해 넷을 올렸다(커밋 1c14aa2).
+//   맞는 일이었다. 그런데 그건 사람이 기억할 때만 되는 일이다 — 6개월 뒤엔 아무도
+//   안 한다. 이 앱의 목표가 '1년 방치' 라면 그 대조는 앱이 해야 한다.
+//
+// 세 자리를 본다. 셋이 다 다를 수 있고, 각각 뜻이 다르다:
+//   1) 실제 설치된 판   — 지금 이 기계에서 진짜로 도는 것
+//   2) requirements 고정판 — 빌드가 넣기로 한 것
+//   3) PyPI 최신        — 세상에 나와 있는 것
+//   1<2 면 이 기계만 뒤처진 것(설정 → 모듈 업데이트).
+//   2<3 면 고정 자체가 낡은 것(커밋이 필요하다).
+//
+// 그리고 하나 더 — '최신인데 상류가 멈춘' 경우도 본다.
+//   twikit 이 그렇다(최신 2.3.3, 2025-02 배포). 최신을 깔아도 그 라이브러리가
+//   더 이상 안 나오면, X 가 바뀌는 날 고쳐 줄 사람이 없다는 뜻이다.
+//   이건 업데이트로 못 고친다. 그래도 '모르고 있다가 당하는' 것보다는 낫다.
+//
+// 비용: 하루에 한 번, 꾸러미당 HTTP 한 번. 그마저도 네트워크 확인일에만 한다.
+// ═════════════════════════════════════════════════════════════════════════
+
+// "1.2.10" vs "1.2.9" 를 숫자로 비교한다. 문자열 비교면 9 가 10보다 크다.
+inline int compareVersions(const QString &a, const QString &b)
+{
+    const QStringList pa = a.split('.'), pb = b.split('.');
+    for (int i = 0; i < qMax(pa.size(), pb.size()); ++i) {
+        const QString xa = i < pa.size() ? pa[i] : QStringLiteral("0");
+        const QString xb = i < pb.size() ? pb[i] : QStringLiteral("0");
+        bool oka = false, okb = false;
+        const int na = xa.toInt(&oka), nb = xb.toInt(&okb);
+        if (oka && okb) { if (na != nb) return na < nb ? -1 : 1; }
+        else            { if (xa != xb) return xa < xb ? -1 : 1; }
+    }
+    return 0;
+}
+
+// ★ '상류가 조용하다' 가 위험한 꾸러미는 따로 있다.
+//
+//   처음엔 고정판이 최신이면서 1년 넘게 새 배포가 없는 것을 전부 경고했다.
+//   14개 중 6개가 걸렸다 — piexif(87개월), openpyxl(26개월) 까지. 그런데 그건
+//   위험이 아니라 '다 만들어져서 더 고칠 게 없는' 것이다. JPEG 태그 형식은
+//   안 바뀐다. 그렇게 적어 놓으니 정작 중요한 twikit 이 그 목록에 묻혔다.
+//   또 같은 실수였다 — 틀린 경보는 맞는 경보를 묻는다.
+//
+//   진짜 위험한 것은 '바깥 서비스를 따라가야 하는' 꾸러미다. 그 서비스가 바뀌는데
+//   라이브러리가 안 나오면, 바뀌는 날 고쳐 줄 사람이 없다는 뜻이다.
+//   그런 것만, 왜 그런지와 함께 적는다.
+inline QString serviceTracker(const QString &pkg)
+{
+    if (pkg.compare("twikit", Qt::CaseInsensitive) == 0)          return "X(트위터)";
+    if (pkg.compare("atproto", Qt::CaseInsensitive) == 0)         return "블루스카이";
+    if (pkg.compare("yt-dlp", Qt::CaseInsensitive) == 0)          return "동영상 사이트들";
+    if (pkg.compare("browser_cookie3", Qt::CaseInsensitive) == 0) return "브라우저 쿠키 저장 형식";
+    if (pkg.compare("discord.py", Qt::CaseInsensitive) == 0)      return "디스코드";
+    return QString();   // 나머지는 오래 안 나와도 정상이다
+}
+
+// 모듈 이름과 배포 이름이 다른 것들 (import PIL / pip install Pillow)
+inline QString distNameOf(const QString &pkg)
+{
+    if (pkg.compare("browser_cookie3", Qt::CaseInsensitive) == 0) return "browser-cookie3";
+    if (pkg.compare("discord.py", Qt::CaseInsensitive) == 0)      return "discord.py";
+    return pkg;
+}
+
+inline QString checkModuleFreshness(const QString &python, bool allowNetwork)
+{
+    if (!allowNetwork) return QString();
+
+    // requirements.txt 의 고정 목록을 그대로 쓴다 — 코드에 목록을 또 박으면 갈라진다.
+    const QStringList reqs = Common::bundledRequirements();
+    if (reqs.isEmpty()) return QStringLiteral("[MOD]  requirements.txt 를 찾지 못해 신선도 확인을 건너뜁니다\n");
+
+    QMap<QString, QString> pinned;          // 이름 → 고정판
+    QStringList names;
+    for (const QString &r : reqs) {
+        const int eq = r.indexOf("==");
+        if (eq <= 0) continue;
+        const QString n = r.left(eq).trimmed();
+        pinned[n] = r.mid(eq + 2).trimmed();
+        names << n;
+    }
+    if (names.isEmpty()) return QString();
+
+    // 이 기계에 실제로 깔린 판을 묻는다.
+    QMap<QString, QString> installed;
+    {
+        const QString dir = smokeDir();
+        const QString py = dir + "/mod_probe.py";
+        QFile f(py);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QTextStream ts(&f);
+            ts.setEncoding(QStringConverter::Utf8);
+            ts << "import sys, importlib.metadata as M\n"
+                  "for n in sys.argv[1:]:\n"
+                  "    try: print(n + '=' + M.version(n))\n"
+                  "    except Exception: print(n + '=?')\n";
+            f.close();
+            QProcess p;
+            p.setProcessEnvironment(Common::bundledProcessEnv());
+            p.start(python, QStringList() << py << names);
+            if (p.waitForStarted(5000) && p.waitForFinished(60000)) {
+                const QString out = QString::fromUtf8(p.readAllStandardOutput());
+                for (const QString &line : out.split('\n')) {
+                    const int eq = line.indexOf('=');
+                    if (eq > 0) installed[line.left(eq).trimmed()] = line.mid(eq + 1).trimmed();
+                }
+            }
+        }
+    }
+
+    QStringList behindLocal, behindPin, upstreamQuiet;
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    int checked = 0;
+
+    for (const QString &n : names) {
+        const QByteArray raw = httpGet("https://pypi.org/pypi/" + distNameOf(n) + "/json", 8000);
+        if (raw.isEmpty()) continue;                 // 못 물어봤으면 조용히 넘어간다
+        const QJsonObject o = QJsonDocument::fromJson(raw).object();
+        const QString latest = o.value("info").toObject().value("version").toString();
+        if (latest.isEmpty()) continue;
+        ++checked;
+
+        const QString pin = pinned.value(n);
+        const QString have = installed.value(n);
+
+        if (!have.isEmpty() && have != "?" && compareVersions(have, pin) < 0)
+            behindLocal << QString("%1 설치 %2 < 고정 %3").arg(n, have, pin);
+        if (compareVersions(pin, latest) < 0)
+            behindPin << QString("%1 고정 %2 < 최신 %3").arg(n, pin, latest);
+
+        // 최신판이 나온 지 얼마나 됐나 — 상류가 멈춘 것도 위험이다.
+        const QJsonArray files = o.value("releases").toObject().value(latest).toArray();
+        if (!files.isEmpty()) {
+            const QString up = files.first().toObject().value("upload_time").toString();
+            const QDateTime rel = QDateTime::fromString(up, Qt::ISODate);
+            if (rel.isValid()) {
+                const qint64 days = rel.daysTo(now);
+                const QString tracks = serviceTracker(n);
+                if (days > 365 && !tracks.isEmpty() && compareVersions(pin, latest) >= 0)
+                    upstreamQuiet << QString("%1 (%2) — %3 변화를 따라가야 하는 꾸러미인데 %4개월째 새 배포가 없습니다")
+                                         .arg(n, latest, tracks).arg(days / 30);
+            }
+        }
+    }
+
+    if (checked == 0) return QStringLiteral("[MOD]  꾸러미 신선도 — PyPI 에 닿지 못해 건너뜁니다\n");
+
+    QString r = QString("[MOD]  꾸러미 %1개 확인").arg(checked);
+    if (behindLocal.isEmpty() && behindPin.isEmpty() && upstreamQuiet.isEmpty())
+        return r + " — 전부 최신\n";
+    r += "\n";
+    for (const QString &l : behindLocal)
+        r += "       └ " + l + " — 설정 → 모듈 업데이트로 받으세요\n";
+    for (const QString &l : behindPin)
+        r += "       └ " + l + " — requirements.txt 를 올려야 합니다\n";
+    for (const QString &l : upstreamQuiet)
+        r += "       └ " + l + "\n";
+    return r;
+}
+
 inline SmokeResult smokeTest(const QString &name, const QString &path, bool allowNetwork)
 {
     if (name == "exiftool") return smokeExiftool(path);
@@ -916,7 +1080,7 @@ inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
     report += updateYtDlpIfDue(7, deep);
 
     const QStringList tools = {"yt-dlp", "ffmpeg", "python", "exiftool", "rclone"};
-    int broken = 0, repaired = 0, smokeBad = 0;
+    int broken = 0, repaired = 0, smokeBad = 0, moduleStale = 0;
     QStringList badNames;
 
     for (const QString &t : tools) {
@@ -962,6 +1126,19 @@ inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
 
         if (sm.verdict == SmokePass) {
             report += "       └ 실기능 확인: 통과 — " + sm.detail + "\n";
+            // 파이썬이 실제로 도는 것이 확인됐을 때만 꾸러미 신선도를 본다.
+            //   안 도는 파이썬에 판을 물어봐야 답이 없다.
+            if (t == "python") {
+                const QString mod = checkModuleFreshness(st.path, netCheck);
+                if (!mod.isEmpty()) {
+                    report += mod;
+                    if (netCheck) netCheckRan = true;
+                    // 꾸러미가 뒤처진 것은 '고장' 은 아니지만 조용히 넘길 일도 아니다.
+                    //   실제로 낡은 꾸러미 하나가 유튜브를 통째로 세운 적이 있다.
+                    for (const QString &ln : mod.split('\n'))
+                        if (ln.contains("모듈 업데이트")) ++moduleStale;
+                }
+            }
         } else if (sm.verdict == SmokeSkip) {
             report += "       └ 실기능 확인: 건너뜀 — " + sm.detail + "\n";
         } else {
@@ -995,7 +1172,15 @@ inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
     if (broken == 0 && smokeBad == 0) {
         summary = QString("자가진단 이상 없음 — 도구 %1개가 실제로 동작합니다").arg(tools.size());
         if (repaired > 0) summary += QString(" (%1개는 자동 복구했습니다)").arg(repaired);
-        level = QStringLiteral("success");
+        if (moduleStale > 0) {
+            // 도구는 다 도는데 파이썬 꾸러미가 뒤처진 상태. 지금 당장은 되지만
+            // 그대로 두면 언젠가 멈춘다 — '주의' 로 알린다(빨간 띠는 안 띄운다).
+            summary += QString(". 다만 파이썬 꾸러미 %1개가 뒤처져 있습니다 — "
+                               "설정 → 모듈 업데이트").arg(moduleStale);
+            level = QStringLiteral("warning");
+        } else {
+            level = QStringLiteral("success");
+        }
     } else {
         summary = QString("자가진단에서 문제를 찾았습니다 — %1 (설정 → 자가진단에서 자세히)")
                       .arg(badNames.join(", "));
