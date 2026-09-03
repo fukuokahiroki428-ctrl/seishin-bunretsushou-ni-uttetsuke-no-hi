@@ -13498,18 +13498,51 @@ void HanishikiBackend::testAiOnline()
               .arg(ok ? "true" : "false", msg));
 }
 
+// 힌트로 어느 모델 파일을 쓸지 정한다.
+//   ★ 이 판단이 두 곳에 필요하다 — 기동할 때, 그리고 '이미 켜진 것과 같은 모델인가'
+//     를 볼 때. 규칙이 갈라지면 "바꿨다는데 안 바뀐" 상태가 된다.
+QString HanishikiBackend::resolveLlmModel(const QString &modelHint) const
+{
+    const QStringList heads = bundledLlmModelHeads();
+    if (heads.isEmpty()) return QString();
+    const QString hint = modelHint.isEmpty() ? m_llmModelHint : modelHint;
+    if (!hint.isEmpty())
+        for (const QString &h : heads)
+            if (h.contains(hint, Qt::CaseInsensitive)) return h;
+    // 기본: 코드 특화 중 가장 작은 것(빨리 뜨는 쪽). 없으면 첫 번째.
+    QStringList coders;
+    for (const QString &h : heads) if (h.contains("coder", Qt::CaseInsensitive)) coders << h;
+    coders.sort();
+    return coders.isEmpty() ? heads.first() : coders.first();
+}
+
 void HanishikiBackend::startLocalLlm(const QString &modelHint)
 {
+    // ★ 이미 켜져 있어도 '다른 모델을 골랐다면' 바꿔 줘야 한다.
+    //   예전엔 무조건 "이미 실행 중" 이라며 돌아갔다. 그래서 자가진단이 기본 모델로
+    //   먼저 켜 버린 뒤에는, 사용자가 목록에서 그림 읽는 모델을 골라 켜도 아무 일도
+    //   일어나지 않았다 — 글 전용 서버가 그대로 쓰이고, 그림을 보내면 서버가
+    //   "image input is not supported" 로 거절한다(실측). 이유는 화면에 안 나온다.
     if (m_llmProc && m_llmProc->state() != QProcess::NotRunning) {
-        log("로컬 AI 가 이미 실행 중입니다.", "info", "settings");
-        getLlmStatus();
-        return;
+        const QString want = resolveLlmModel(modelHint);
+        if (want.isEmpty() || want == m_llmRunningModel) {
+            log("로컬 AI 가 이미 실행 중입니다.", "info", "settings");
+            getLlmStatus();
+            return;
+        }
+        log(QString("모델을 바꿉니다: %1 → %2").arg(m_llmRunningModel, want), "info", "settings");
+        stopLocalLlm();
+        QThread::msleep(600);
     }
     // 이미 8737 포트에 서버가 떠 있으면(자동기동/직접실행/이전 세션 잔류) 중복 기동하지 않고 채택.
     //  — 중복 기동은 포트 충돌로 즉시 종료돼 '켜자마자 꺼짐'처럼 보였다.
+    //   우리 프로세스가 아닌 서버가 포트를 물고 있으면 그 모델을 알 수 없다.
+    //   그대로 쓰되, 고른 모델과 다를 수 있다는 것을 말해 준다 — 조용히 넘기면
+    //   "골랐는데 왜 안 되지" 가 된다.
     { HttpClient h; h.setTimeout(600);
       if (h.get(llmBase() + "/v1/models", llmHeaders()).isOk()) {
-          log("로컬 AI 가 이미 실행 중입니다(기존 서버 사용).", "info", "settings");
+          log("로컬 AI 가 이미 실행 중입니다(기존 서버 사용). "
+              "다른 모델로 바꾸려면 먼저 '끄기' 를 누르십시오.", "info", "settings");
           getLlmStatus();
           return;
       } }
@@ -13538,10 +13571,8 @@ void HanishikiBackend::startLocalLlm(const QString &modelHint)
     //     로딩을 마쳐 고아로 남아 포트를 물었다(다음에 켤 때 또 꼬인다).
     //     기본은 코드 특화 중 '가장 작은' 것으로 — 빨리 뜨는 쪽이 기본이어야 한다.
     //     더 큰 모델은 사용자가 고르면 그때 쓴다.
-    { QStringList coders; for (const QString &h : heads) if (h.contains("coder", Qt::CaseInsensitive)) coders << h;
-      coders.sort(); model = coders.isEmpty() ? heads.first() : coders.first(); }
-    if (!effHint.isEmpty())
-        for (const QString &h : heads) if (h.contains(effHint, Qt::CaseInsensitive)) { model = h; break; }
+    model = resolveLlmModel(effHint);
+    if (model.isEmpty()) { log("❌ 쓸 수 있는 모델을 찾지 못했습니다.", "error", "settings"); getLlmStatus(); return; }
 
     log(QString("🩺 로컬 AI 기동 중 (%1)...").arg(model), "info", "settings");
     QFile::setPermissions(server,
@@ -13562,6 +13593,7 @@ void HanishikiBackend::startLocalLlm(const QString &modelHint)
         log(QString("🖼 그림 읽기 켜짐 — %1").arg(QFileInfo(mmproj).fileName()), "info", "settings");
     }
     m_llmProc->setArguments(llmArgs);
+    m_llmRunningModel = model;   // '다른 모델을 골랐나' 를 나중에 이걸로 본다
     m_llmProc->setWorkingDirectory(dir);
     connect(m_llmProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int, QProcess::ExitStatus) { getLlmStatus(); });
