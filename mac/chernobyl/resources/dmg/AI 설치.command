@@ -88,6 +88,8 @@ echo ""
 echo "  1) 기본        1.0GB  — 대화용. 가볍고 빠름."
 echo "  2) 코드 수리   3.0GB  — 기본 + 코드 자가수리용(권장)."
 echo "  3) 전체        9.3GB  — 위 전부 + 최고 품질 7B."
+echo "  4) 그림 읽기   3.0GB  — 기본 + 그림을 보고 답하는 모델."
+echo "  5) 전체+그림  12.3GB  — 3) 과 4) 를 모두."
 echo ""
 read -r -p "선택 [2]: " CHOICE
 CHOICE="${CHOICE:-2}"
@@ -148,9 +150,22 @@ MC3="$HF/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/qwen2.5-coder-3b-instruct-q
 MC7A="$HF/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m-00001-of-00002.gguf"
 MC7B="$HF/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m-00002-of-00002.gguf"
 
+# ── 그림을 읽는 모델 ───────────────────────────────────────────────────────
+#   ★ 두 파일이 한 벌이다. 모델만 받으면 그림을 못 읽는다.
+#     mmproj 는 그림을 모델이 알아듣는 형태로 바꿔 주는 부품이다.
+#   ★ 받는 곳이 Qwen 공식이 아니라 ggml-org 인 이유:
+#     Qwen 공식 VL GGUF 저장소는 접근이 막혀 있다(실측 HTTP 401).
+#     ggml-org 는 llama.cpp 를 만드는 쪽이고, 이 앱의 엔진과 같은 계열이다.
+#     실측: 모델 1.8GB · mmproj 1.2GB, 둘 다 정상 응답(HTTP 206).
+VLHF="https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main"
+MV3="$VLHF/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf"
+MV3P="$VLHF/mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf"
+
 case "$CHOICE" in
     1) MODELS="$M15" ;;
     3) MODELS="$M15 $M3 $MC3 $MC7A $MC7B" ;;
+    4) MODELS="$M15 $MV3 $MV3P" ;;
+    5) MODELS="$M15 $M3 $MC3 $MC7A $MC7B $MV3 $MV3P" ;;
     *) MODELS="$M15 $MC3" ;;
 esac
 

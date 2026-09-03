@@ -13331,12 +13331,42 @@ static QString llmInstallDir()
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/llm";
 }
 
+// 고른 모델에 짝이 되는 mmproj(그림 읽기 부속)를 찾는다. 없으면 빈 문자열.
+//   ★ 왜 이름으로 짝을 찾나. 한 폴더에 텍스트 모델과 시각 모델이 섞여 있을 수 있다.
+//     시각 모델이 아닌 것에 mmproj 를 붙이면 서버가 뜨지 않는다. 그래서
+//     ① 이름이 겹치는 mmproj 를 먼저 찾고
+//     ② 없으면, 고른 모델이 시각 모델(VL/vision)일 때만 폴더의 mmproj 를 쓴다.
+static QString mmprojFor(const QString &modelFile)
+{
+    QDir dir(llmDir());
+    const QStringList projs = dir.entryList(QStringList() << "mmproj*.gguf", QDir::Files, QDir::Name);
+    if (projs.isEmpty()) return QString();
+
+    // ① 이름 겹침 — "Qwen2.5-VL-3B-Instruct" 같은 알맹이를 뽑아 맞춰 본다.
+    QString base = modelFile;
+    base.remove(QRegularExpression("\\.gguf$", QRegularExpression::CaseInsensitiveOption));
+    base.remove(QRegularExpression("-(0\\d{4})-of-(\\d{5})$"));
+    base.remove(QRegularExpression("-(q|iq|f)\\d.*$", QRegularExpression::CaseInsensitiveOption));
+    if (!base.isEmpty())
+        for (const QString &pj : projs)
+            if (pj.contains(base, Qt::CaseInsensitive)) return dir.filePath(pj);
+
+    // ② 시각 모델일 때만 폴더의 것을 쓴다.
+    const bool looksVision = modelFile.contains("-vl", Qt::CaseInsensitive)
+                          || modelFile.contains("vision", Qt::CaseInsensitive)
+                          || modelFile.contains("llava",  Qt::CaseInsensitive);
+    return looksVision ? dir.filePath(projs.first()) : QString();
+}
+
 static QStringList bundledLlmModelHeads()
 {
     QDir dir(llmDir());
     const QStringList all = dir.entryList(QStringList() << "*.gguf", QDir::Files, QDir::Name);
     QStringList heads;
     for (const QString &g : all) {
+        // ★ mmproj 는 '모델' 이 아니라 그림을 읽게 해 주는 부속이다.
+        //   목록에 섞이면 사용자가 그걸 모델로 고를 수 있고, 고르면 서버가 뜨지 않는다.
+        if (g.startsWith("mmproj", Qt::CaseInsensitive)) continue;
         const int ofIdx = g.indexOf("-of-");
         if (ofIdx >= 5) {
             const QString part = g.mid(ofIdx - 5, 5);
@@ -13522,8 +13552,16 @@ void HanishikiBackend::startLocalLlm(const QString &modelHint)
     //   -c 는 AI 가 한 번에 기억하는 분량이다. 4096 은 보관함 질의(자료 수십 건을
     //   함께 넘긴다)에 모자랐다 — 넘친 만큼 앞쪽 지시문이 잘려 나가, 무엇을 하라고
     //   했는지 모르는 채 번호만 나열하는 답이 나왔다. 8192 로 늘린다.
-    m_llmProc->setArguments({"-m", dir + "/" + model, "--port", "8737",
-                             "--host", "127.0.0.1", "-c", "8192"});
+    QStringList llmArgs{"-m", dir + "/" + model, "--port", "8737",
+                        "--host", "127.0.0.1", "-c", "8192"};
+    // ★ 그림 읽기. 이 모델과 짝인 mmproj 가 있으면 넘긴다 — 없으면 예전처럼 글만 읽는다.
+    //   엔진(번들 llama-server)은 이미 --mmproj 를 지원한다. 막고 있던 건 모델뿐이었다.
+    const QString mmproj = mmprojFor(model);
+    if (!mmproj.isEmpty()) {
+        llmArgs << "--mmproj" << mmproj;
+        log(QString("🖼 그림 읽기 켜짐 — %1").arg(QFileInfo(mmproj).fileName()), "info", "settings");
+    }
+    m_llmProc->setArguments(llmArgs);
     m_llmProc->setWorkingDirectory(dir);
     connect(m_llmProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int, QProcess::ExitStatus) { getLlmStatus(); });
@@ -13664,6 +13702,25 @@ QString HanishikiBackend::appStateBrief() const
     return out.join('\n');
 }
 
+// 메시지 본문에서 '글' 만 뽑는다.
+//   ★ 그림을 붙이면 content 가 문자열이 아니라 배열이 된다(OpenAI 호환 형식).
+//     [{"type":"text","text":"..."},{"type":"image_url","image_url":{"url":"data:..."}}]
+//     예전엔 toString() 하나로 읽어서, 그림을 붙이면 질문이 빈 문자열이 됐다 —
+//     웹 검색이 아무 말도 없이 검색어 없이 돌아간다.
+static QString messageText(const QJsonValue &content)
+{
+    if (content.isString()) return content.toString();
+    if (content.isArray()) {
+        QStringList parts;
+        for (const QJsonValue &v : content.toArray()) {
+            const QJsonObject o = v.toObject();
+            if (o.value("type").toString() == "text") parts << o.value("text").toString();
+        }
+        return parts.join(" ").trimmed();
+    }
+    return QString();
+}
+
 void HanishikiBackend::llmChat(const QString &historyJson)
 {
     const QJsonArray history = QJsonDocument::fromJson(historyJson.toUtf8()).array();
@@ -13674,7 +13731,7 @@ void HanishikiBackend::llmChat(const QString &historyJson)
             QString lastUser;
             for (int i = history.size() - 1; i >= 0; --i) {
                 const QJsonObject m = history.at(i).toObject();
-                if (m.value("role").toString() == "user") { lastUser = m.value("content").toString(); break; }
+                if (m.value("role").toString() == "user") { lastUser = messageText(m.value("content")); break; }
             }
             auto has = [&lastUser](const QString &k) { return lastUser.contains(k, Qt::CaseInsensitive); };
             const bool wantsRepair =
@@ -13728,7 +13785,7 @@ void HanishikiBackend::llmChat(const QString &historyJson)
             QString lastUser;
             for (int i = history.size() - 1; i >= 0; --i) {
                 const QJsonObject m = history.at(i).toObject();
-                if (m.value("role").toString() == "user") { lastUser = m.value("content").toString(); break; }
+                if (m.value("role").toString() == "user") { lastUser = messageText(m.value("content")); break; }
             }
             const QString web = webSearchSnippets(m_searchKey, lastUser);
             if (!web.isEmpty())
