@@ -1071,6 +1071,21 @@ QStringList bundledRequirements(bool stripPins)
             "browser_cookie3", "cryptography"};
 }
 
+// 사용자 쪽 꾸러미 덧씌우기 폴더.
+//   ★ 왜 번들을 직접 안 고치나.
+//     번들 python_env 에 pip 로 설치하면 codesign 봉인이 깨진다("a sealed resource is
+//     missing or invalid"). 그러면 앱이 스스로 재서명해야 하고, 그 과정이 실패하면
+//     앱 자체가 안 뜬다. 갱신하려다 앱을 못 쓰게 되는 것은 갱신을 안 하느니만 못하다.
+//   → 쓰기 가능한 곳에 새 판을 깔고 PYTHONPATH 로 '먼저' 읽게 한다. 번들은 손대지
+//     않으므로 봉인이 유지되고, 덧씌운 것을 지우면 즉시 원래 판으로 돌아온다.
+QString userPyOverlayDir()
+{
+    const QString d = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                      + "/pypkgs";
+    QDir().mkpath(d);
+    return d;
+}
+
 QProcessEnvironment bundledProcessEnv()
 {
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -1091,6 +1106,15 @@ QProcessEnvironment bundledProcessEnv()
     //   명령줄이 아니라 환경으로 주는 이유: 명령줄은 같은 기계의 아무 프로세스나
     //   ps 로 읽지만, 환경은 같은 사용자만 볼 수 있다.
     {
+        // 덧씌운 꾸러미를 번들보다 먼저 읽게 한다 — 낡은 것을 새것이 가린다.
+        {
+            const QString ov = userPyOverlayDir();
+            if (QDir(ov).exists()) {
+                const QString cur = env.value("PYTHONPATH");
+                env.insert("PYTHONPATH", cur.isEmpty() ? ov : (ov + ":" + cur));
+            }
+        }
+
         const QString pu = proxyUrl();
         if (!pu.isEmpty()) {
             env.insert("ALL_PROXY",   pu);

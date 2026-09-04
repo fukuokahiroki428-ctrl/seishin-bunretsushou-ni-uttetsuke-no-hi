@@ -391,6 +391,123 @@ inline QString llmDiagnose(const QString &reportText)
 //       색인 없음 · 설정 파일 권한이 열림 · 디스크 여유 부족
 //     진단서에 안 나오니 자가수리가 "이상 없음" 이라고 답할 수밖에 없었다.
 //     고칠 수 있는지와 별개로, '보이기는 해야' 사람이 다음 수를 둔다.
+// ── 꾸러미 신선도: 낡은 것을 찾아 스스로 맞춘다 ────────────────────────────
+//
+// 왜 필요한가 (실측).
+//   2026-08 에 유튜브 다운로드가 통째로 멈췄다. 코드 버그가 아니었다.
+//   배포본에 딸려 온 yt-dlp 2026.07.04 가 유튜브의 변경을 못 따라가 미디어 요청이
+//   전부 403 으로 막혔다(형식 목록은 나오는데 본문만 거부). 2026.08.19 로 바꾸니
+//   같은 영상을 2초에 받았다. 두 달 만에 정지한 것이다.
+//
+//   기존 자가진단은 이 고장을 원리적으로 못 잡는다 — 낡은 yt-dlp 도 --version 은
+//   멀쩡히 출력하므로 [OK] 로 통과한다. 게다가 고장 시 '번들본 재복사' 를 하는데,
+//   그것은 더 낡은 쪽으로 되돌리는 일이다. 낡음에 무방비일 뿐 아니라 낡는 쪽으로 민다.
+//
+// 어떻게 하는가.
+//   · 번들을 직접 고치지 않는다. pip 로 번들 python_env 에 설치하면 codesign 봉인이
+//     깨지고, 재서명이 실패하면 앱 자체가 안 뜬다. 갱신하려다 앱을 못 쓰게 되는 것은
+//     갱신을 안 하느니만 못하다.
+//   · 쓰기 가능한 덧씌우기 폴더에 새 판을 깔고 PYTHONPATH 로 먼저 읽게 한다.
+//     번들은 그대로라 봉인이 유지되고, 덧씌운 것을 지우면 즉시 원래대로 돌아온다.
+//   · 갱신 뒤 실제로 불러 보고, 안 되면 지워서 되돌린다.
+//     새 것이 망가졌는데 그대로 두면 자동 갱신은 없느니만 못하다.
+//   · 대상은 '바깥 서비스를 따라가야 하는 것' 만. 나머지는 낡아도 멈추지 않는다.
+
+inline QString freshStampPath()
+{
+    const QString d = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                      + "/selfrepair";
+    QDir().mkpath(d);
+    return d + "/last_pkg_check.txt";
+}
+
+inline bool freshCheckDue(int everyDays)
+{
+    QFile f(freshStampPath());
+    if (!f.open(QIODevice::ReadOnly)) return true;
+    const qint64 last = QString::fromUtf8(f.readAll()).trimmed().toLongLong();
+    f.close();
+    if (last <= 0) return true;
+    return (QDateTime::currentSecsSinceEpoch() - last) >= qint64(everyDays) * 86400;
+}
+
+inline void markFreshChecked()
+{
+    QFile f(freshStampPath());
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        f.write(QByteArray::number(QDateTime::currentSecsSinceEpoch()));
+}
+
+// 낡으면 '느려지는' 게 아니라 '안 되는' 것들. 목록을 좁게 잡는다 —
+// 전부 최신으로 밀면 멀쩡하던 것이 깨질 위험이 오히려 커진다.
+inline QStringList serviceFollowingPackages()
+{
+    return {"yt-dlp", "twikit", "atproto", "discord.py", "browser_cookie3"};
+}
+
+inline QString updatePackagesIfDue(const QString &python, bool allowNetwork,
+                                   int everyDays = 3, bool force = false)
+{
+    if (!allowNetwork) return QString();
+    if (!force && !freshCheckDue(everyDays)) return QString();
+    if (python.isEmpty() || !QFile::exists(python)) return QString();
+
+    const QString overlay = Common::userPyOverlayDir();
+    QString out;
+    int updated = 0, failed = 0;
+
+    for (const QString &pkg : serviceFollowingPackages()) {
+        // 지금 실제로 쓰이는 판 (덧씌우기가 있으면 그것이 잡힌다)
+        auto versionNow = [&]() -> QString {
+            QProcess q;
+            QProcessEnvironment e = Common::bundledProcessEnv();
+            q.setProcessEnvironment(e);
+            q.start(python, {"-c",
+                "import importlib.metadata as m,sys\n"
+                "try: print(m.version(sys.argv[1]))\n"
+                "except Exception: print('')", pkg});
+            q.waitForFinished(20000);
+            return QString::fromUtf8(q.readAllStandardOutput()).trimmed();
+        };
+        const QString before = versionNow();
+
+        // 최신으로 덧씌운다. --target 이라 번들은 손대지 않는다.
+        QProcess pip;
+        pip.setProcessEnvironment(Common::bundledProcessEnv());
+        pip.start(python, {"-m", "pip", "install", "--quiet", "--upgrade",
+                           "--target", overlay, "--no-input", pkg});
+        if (!pip.waitForFinished(300000)) { pip.kill(); pip.waitForFinished(3000); continue; }
+        if (pip.exitCode() != 0) continue;      // 오프라인 등 — 다음 기회에 다시
+
+        const QString after = versionNow();
+        if (after.isEmpty() || after == before) continue;   // 바뀐 게 없으면 조용히 넘어간다
+
+        // ★ 갱신했으면 반드시 '실제로 되는지' 본다. 안 되면 되돌린다.
+        QProcess chk;
+        chk.setProcessEnvironment(Common::bundledProcessEnv());
+        const QString mod = QString(pkg).replace('-', '_');
+        chk.start(python, {"-c", QString("import %1").arg(mod)});
+        chk.waitForFinished(30000);
+        if (chk.exitStatus() != QProcess::NormalExit || chk.exitCode() != 0) {
+            // 덧씌운 것만 지우면 번들의 옛 판으로 즉시 돌아간다.
+            QDir(overlay).removeRecursively();
+            QDir().mkpath(overlay);
+            out += QString("[UPD]  %1 %2 → %3 이 불러오기에 실패해 되돌렸습니다\n")
+                       .arg(pkg, before.isEmpty() ? "?" : before, after);
+            ++failed;
+            continue;
+        }
+        out += QString("[UPD]  %1 %2 → %3 으로 맞췄습니다\n")
+                   .arg(pkg, before.isEmpty() ? "(없음)" : before, after);
+        ++updated;
+    }
+
+    markFreshChecked();
+    if (updated == 0 && failed == 0)
+        return QStringLiteral("[UPD]  꾸러미 신선도 확인 — 맞출 것이 없었습니다\n");
+    return out;
+}
+
 inline QString checkEnvironment()
 {
     QString out;
@@ -532,6 +649,15 @@ inline QString runStartupMaintenance()
 
     // 도구 밖의 상태도 본다 — 실제로 사람을 막는 것은 대부분 여기다.
     report += checkEnvironment();
+
+    // ★ 낡음 확인 — 며칠에 한 번, 바깥 서비스를 따라가야 하는 꾸러미만.
+    //   유튜브를 통째로 세운 것이 코드 버그가 아니라 '낡은 꾸러미' 였다.
+    //   버전이 찍히는지만 보는 진단은 그 고장을 원리적으로 못 잡는다.
+    {
+        const QString py = Common::bundledPythonPath();
+        const QString upd = updatePackagesIfDue(py, /*allowNetwork=*/true);
+        if (!upd.isEmpty()) report += upd;
+    }
 
 #ifdef Q_OS_MACOS
     // ── 코드 서명 봉인 자동 복구 ─────────────────────────────────────────────

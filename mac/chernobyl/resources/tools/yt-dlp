@@ -8,6 +8,14 @@
 #   그 환경을 못 쓰는' 고장이 되살아난다(실제로 두 번 겪었다).
 #   → 적지 않고 양쪽을 훑는다. 갱신 시각 역순이라 지금 쓰는 것이 먼저 잡힌다.
 export PYTHONDONTWRITEBYTECODE=1
+# ★ 사용자 쪽 덧씌우기 폴더를 '먼저' 읽는다.
+#   번들 python_env 에 직접 설치하면 codesign 봉인이 깨진다. 그래서 자동 갱신은
+#   여기에 새 판을 깔고, 이 줄이 그것을 번들보다 앞에 세운다.
+#   앱을 거치지 않고 이 스크립트를 직접 불러도 같은 판이 쓰이도록 여기에도 둔다.
+for _OV in "$HOME/Library/Application Support"/*/pypkgs; do
+  [ -d "$_OV" ] && PYTHONPATH="$_OV${PYTHONPATH:+:$PYTHONPATH}"
+done
+export PYTHONPATH
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 SUP="$HOME/Library/Application Support"
