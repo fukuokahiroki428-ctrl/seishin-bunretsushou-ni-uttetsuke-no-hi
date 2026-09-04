@@ -1,4 +1,5 @@
 #include "Common.h"
+#include <QHash>
 #include <QLockFile>
 #include <QProcess>
 #include <QUrl>
@@ -539,9 +540,44 @@ struct ProxyCfg {
     int port = 1080;
 };
 QMutex   g_proxyMutex;
-ProxyCfg g_proxy;
-QProcess *g_relay = nullptr;      // 크로미움용 로컬 중계기
-int       g_relayPort = 0;
+ProxyCfg g_proxy;                 // 전역(기본) 프록시 — 계정별 지정이 없을 때 쓴다
+
+// ★ 계정마다 다른 프록시를 쓰려면 '스레드마다 다른 값' 이어야 한다.
+//   수집은 스레드로 병렬로 돈다(병렬 다중 수집). 전역 하나만 두고 계정마다
+//   바꿔 끼우면, 동시에 도는 두 수집이 서로의 설정을 덮어써서 엉뚱한 IP 로 나간다.
+//   그래서 수집 스레드가 자기 것을 들고, 지정이 없으면 전역으로 떨어진다.
+thread_local ProxyCfg *t_proxy = nullptr;
+
+// 중계기는 '상위 프록시마다' 하나씩 둔다. 계정별로 상위가 다르면 중계기도 달라야
+// 한다 — 하나를 돌려쓰면 모든 계정이 같은 IP 로 나간다(계정별 지정이 무의미해진다).
+struct Relay { QProcess *proc = nullptr; int port = 0; };
+QHash<QString, Relay> g_relays;   // 키: 상위 프록시 서명(host:port:user)
+}
+
+// 지금 이 스레드에 적용되는 프록시. 스레드 지정이 있으면 그것, 없으면 전역.
+static ProxyCfg effectiveProxy()
+{
+    if (t_proxy) return *t_proxy;
+    QMutexLocker lock(&g_proxyMutex);
+    return g_proxy;
+}
+
+static QString proxySignature(const ProxyCfg &c)
+{
+    return QStringLiteral("%1:%2:%3").arg(c.host).arg(c.port).arg(c.user);
+}
+
+void setThreadProxy(bool enabled, const QString &host, int port,
+                    const QString &user, const QString &pass)
+{
+    clearThreadProxy();
+    t_proxy = new ProxyCfg{enabled, host, user, pass, port};
+}
+
+void clearThreadProxy()
+{
+    delete t_proxy;
+    t_proxy = nullptr;
 }
 
 void setProxyConfig(bool enabled, const QString &host, int port,
@@ -552,40 +588,45 @@ void setProxyConfig(bool enabled, const QString &host, int port,
                       || (g_proxy.port != port) || (g_proxy.user != user)
                       || (g_proxy.pass != pass);
     g_proxy = {enabled, host, user, pass, port};
-    if (changed && g_relay) {     // 설정이 바뀌면 중계기를 다시 띄운다
-        g_relay->kill();
-        g_relay->waitForFinished(2000);
-        g_relay->deleteLater();
-        g_relay = nullptr;
-        g_relayPort = 0;
+    if (changed) {     // 설정이 바뀌면 중계기를 모두 정리한다(다음 요청 때 새로 뜬다)
+        for (auto it = g_relays.begin(); it != g_relays.end(); ++it) {
+            if (!it->proc) continue;
+            it->proc->kill();
+            it->proc->waitForFinished(2000);
+            it->proc->deleteLater();
+        }
+        g_relays.clear();
     }
 }
 
 bool proxyEnabled()
 {
-    QMutexLocker lock(&g_proxyMutex);
-    return g_proxy.enabled && !g_proxy.host.isEmpty() && g_proxy.port > 0;
+    const ProxyCfg c = effectiveProxy();
+    return c.enabled && !c.host.isEmpty() && c.port > 0;
 }
 
 QString proxyUrl()
 {
-    QMutexLocker lock(&g_proxyMutex);
-    if (!g_proxy.enabled || g_proxy.host.isEmpty() || g_proxy.port <= 0) return QString();
+    const ProxyCfg c = effectiveProxy();
+    if (!c.enabled || c.host.isEmpty() || c.port <= 0) return QString();
     QString auth;
-    if (!g_proxy.user.isEmpty()) {
-        auth = QUrl::toPercentEncoding(g_proxy.user) + ":"
-             + QUrl::toPercentEncoding(g_proxy.pass) + "@";
+    if (!c.user.isEmpty()) {
+        auth = QUrl::toPercentEncoding(c.user) + ":"
+             + QUrl::toPercentEncoding(c.pass) + "@";
     }
-    return QStringLiteral("socks5://%1%2:%3").arg(auth, g_proxy.host).arg(g_proxy.port);
+    return QStringLiteral("socks5://%1%2:%3").arg(auth, c.host).arg(c.port);
 }
 
 QString proxyLocalRelayUrl()
 {
     if (!proxyEnabled()) return QString();
+    const ProxyCfg cfg = effectiveProxy();
+    const QString sig = proxySignature(cfg);
     {
         QMutexLocker lock(&g_proxyMutex);
-        if (g_relay && g_relay->state() != QProcess::NotRunning && g_relayPort > 0)
-            return QStringLiteral("socks5://127.0.0.1:%1").arg(g_relayPort);
+        const Relay r = g_relays.value(sig);
+        if (r.proc && r.proc->state() != QProcess::NotRunning && r.port > 0)
+            return QStringLiteral("socks5://127.0.0.1:%1").arg(r.port);
     }
 
     const QString script = activeToolScriptPath(QStringLiteral("socks_relay.py"));
@@ -603,8 +644,8 @@ QString proxyLocalRelayUrl()
 
     // ★ 자격증명은 stdin 첫 줄로만 넘긴다 — 명령줄에 실으면 ps 로 남이 읽는다.
     QJsonObject init{{"listen_port", 0},
-                     {"host", g_proxy.host}, {"port", g_proxy.port},
-                     {"user", g_proxy.user}, {"pass", g_proxy.pass}};
+                     {"host", cfg.host}, {"port", cfg.port},
+                     {"user", cfg.user}, {"pass", cfg.pass}};
     p->write(QJsonDocument(init).toJson(QJsonDocument::Compact) + "\n");
     p->waitForBytesWritten(3000);
 
@@ -624,21 +665,22 @@ QString proxyLocalRelayUrl()
         p->kill(); p->waitForFinished(2000); p->deleteLater();
         return QString();
     }
-    g_relay = p;
-    g_relayPort = port;
-    qInfo() << "[proxy] 로컬 중계기 준비 — 127.0.0.1:" << port;
+    g_relays.insert(sig, Relay{p, port});
+    qInfo() << "[proxy] 로컬 중계기 준비 — 127.0.0.1:" << port
+            << "(상위" << cfg.host << ")";
     return QStringLiteral("socks5://127.0.0.1:%1").arg(port);
 }
 
 void stopProxyRelay()
 {
     QMutexLocker lock(&g_proxyMutex);
-    if (!g_relay) return;
-    g_relay->kill();
-    g_relay->waitForFinished(2000);
-    g_relay->deleteLater();
-    g_relay = nullptr;
-    g_relayPort = 0;
+    for (auto it = g_relays.begin(); it != g_relays.end(); ++it) {
+        if (!it->proc) continue;
+        it->proc->kill();
+        it->proc->waitForFinished(2000);
+        it->proc->deleteLater();
+    }
+    g_relays.clear();
 }
 
 // 설치된 브라우저의 판을 읽는다. 없으면 번들 크로미움, 그것도 없으면 안전한 최신값.

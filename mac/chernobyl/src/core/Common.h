@@ -142,6 +142,12 @@ QString proxyUrl();
 // 크로미움처럼 '인증을 못 넣는' 프로그램용. 로컬 중계기를 띄우고 그 주소를 준다.
 // (인증 없는 127.0.0.1 → 중계기가 상위에 인증해 연결)
 QString proxyLocalRelayUrl();
+
+// 이 스레드에만 적용되는 프록시(계정별 지정). 지우면 전역 설정으로 돌아간다.
+//   수집이 병렬로 도므로 전역 하나를 바꿔 끼우면 서로 덮어쓴다 — 그래서 스레드별이다.
+void setThreadProxy(bool enabled, const QString &host, int port,
+                    const QString &user, const QString &pass);
+void clearThreadProxy();
 void  stopProxyRelay();
 
 
