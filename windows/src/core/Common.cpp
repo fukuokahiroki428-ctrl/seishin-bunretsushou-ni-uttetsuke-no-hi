@@ -26,6 +26,7 @@
 #include <QSet>
 #include <QVarLengthArray>
 #include <QTemporaryFile>
+#include <QTemporaryDir>
 #include <QTextStream>
 #include <QStringConverter>
 
@@ -442,6 +443,9 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
     //   실측: 이 기계의 로그에 1668건 전부 그 오류. EXIF 가 하나도 안 쓰이고 있었다.
     //   여기서 만들면 함수가 끝날 때까지 — waitForFinished 이후까지 — 살아 있다.
     QTemporaryFile argFile(QDir::tempPath() + "/predormition_exif_XXXXXX.args");
+    // ★ 줄바꿈이 든 값(트윗 본문 등)을 담을 파일들. argfile 과 같은 수명이어야 한다 —
+    //   exiftool 이 다 읽기 전에 사라지면 안 된다(argfile 이 그래서 한 번 물렸다).
+    QTemporaryDir valDir(QDir::tempPath() + "/predormition_exifval_XXXXXX");
 #endif
     if (!exiftoolPerl.isEmpty()) {
         // 번들 exiftool: perl -I<lib> exiftool <args>
@@ -474,7 +478,37 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
             QTextStream ts(&argFile);
             ts.setEncoding(QStringConverter::Utf8);
             ts << "-charset\nfilename=UTF8\n-charset\nUTF8\n";
-            for (const QString &a : args) ts << a << "\n";
+
+            // ★ argfile 은 '한 줄에 인자 하나' 다. 그런데 트윗 본문에는 줄바꿈이 흔하다.
+            //   그대로 쓰면 두 번째 줄부터 exiftool 이 파일 이름으로 읽는다:
+            //     Error: File not found - 두 번째 줄 https://t.co/...
+            //   그리고 설명은 첫 줄만 남는다. 내각회 로그가 이 오류로 뒤덮여 있었다.
+            //   (실측: 줄바꿈 하나당 오류 한 줄, 한 게시물에 여러 건)
+            //
+            //   해결: 값에 줄바꿈이 있으면 그 값을 파일에 담고 '-태그<=파일' 로 넘긴다.
+            //   exiftool 이 파일 내용을 그대로 값으로 쓴다 — 줄바꿈까지 원문대로.
+            //   (실측: 64바이트 원문과 되읽은 값이 바이트 단위로 완전히 동일)
+            //   줄바꿈을 공백으로 바꿔 버리는 쪽이 더 쉽지만, 그러면 저장한 것이
+            //   게시물 원문과 달라진다. 보관이 목적인 앱에서 그건 손실이다.
+            int valIdx = 0;
+            for (const QString &a : args) {
+                const int eq = a.indexOf('=');
+                const bool isTagValue = a.startsWith('-') && eq > 1;
+                const QString val = isTagValue ? a.mid(eq + 1) : QString();
+                if (isTagValue && (val.contains('\n') || val.contains('\r')) && valDir.isValid()) {
+                    const QString vp = valDir.filePath(QString("v%1.txt").arg(valIdx++));
+                    QFile vf(vp);
+                    if (vf.open(QIODevice::WriteOnly)) {
+                        vf.write(val.toUtf8());   // 그대로. 끝에 줄바꿈을 붙이지 않는다.
+                        vf.close();
+                        // 경로도 argfile 안에 있으므로 -charset filename=UTF8 이 적용된다.
+                        ts << a.left(eq) << "<=" << vp << "\n";
+                        continue;
+                    }
+                    qWarning() << "[Common] EXIF 값 파일을 못 만들어 한 줄로 줄입니다:" << vp;
+                }
+                ts << a << "\n";
+            }
         }
         argFile.close();
         // argfile 자체는 exiftool 이 읽기만 하므로 8.3 로 넘겨도 안전하다.

@@ -303,7 +303,17 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
         //   짧게 도는 이유는 '수집 중이라 미뤄 둔 일' 때문이다. 이 기계는 켜자마자
         //   내각회가 수집을 시작해서, 24시간마다로는 미룬 일이 영영 안 됐다.
         //   미뤄 둔 꾸러미 맞추기는 목표 판을 이미 알고 있어 네트워크를 안 쓴다.
-        upd->setInterval(30 * 60 * 1000);   // 30분
+        // ★ 시험용 조절 손잡이. 30분을 기다려야 확인되는 문제를 잡을 때 필요하다 —
+        //   실제로 이 타이머 주기에만 나는 경고를 쫓느라 필요했다.
+        //   1..3600초만 받는다. 값이 없거나 이상하면 30분.
+        int maintSec = 30 * 60;
+        { bool ok = false;
+          const int v = qEnvironmentVariableIntValue("PREDORMITION_MAINT_INTERVAL_SEC", &ok);
+          if (ok && v >= 1 && v <= 3600) {
+              maintSec = v;
+              qInfo().noquote() << "[SelfRepair] 주기 점검 간격을 환경변수로" << maintSec << "초로 둡니다";
+          } }
+        upd->setInterval(maintSec * 1000);
         connect(upd, &QTimer::timeout, this, [] { SelfRepair::runPeriodicUpdateAsync(); });
         upd->start();
     }
