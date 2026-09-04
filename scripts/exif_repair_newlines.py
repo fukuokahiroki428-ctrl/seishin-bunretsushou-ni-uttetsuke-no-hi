@@ -115,10 +115,10 @@ def load_texts(account_dir: str) -> dict:
     return out
 
 
-def read_descriptions(exiftool: str, paths: list) -> dict:
+def read_descriptions(exiftool: str, paths: list) -> list:
     """여러 파일의 ImageDescription 을 한 번에 읽는다 (파일마다 부르면 너무 느리다)."""
     if not paths:
-        return {}
+        return []
     # ★ 바이너리로 쓴다. 파일 이름에 짝 없는 서러게이트(\ud83c 같은)가 들어 있는
     #   자료가 실제로 있었다 — 이모지가 잘린 채 파일명이 된 것이다. 보통의 UTF-8
     #   인코딩은 거기서 죽는다. surrogatepass 로 바이트를 그대로 흘려보낸다.
@@ -139,13 +139,19 @@ def read_descriptions(exiftool: str, paths: list) -> dict:
         #   있음' 으로 보였다. 실제로는 exiftool 이 자기 DLL 을 못 찾아 한 건도
         #   못 읽고 있었다. 그 상태로 --apply 를 돌렸으면 멀쩡한 설명을 덮어썼다.
         #   읽어 온 것이 없으면 조용히 넘어가지 않고 멈춘다.
-        if len(data) < len(paths):
+        if len(data) != len(paths):
             err = r.stderr.decode("utf-8", "replace").strip()
             raise SystemExit(
                 "exiftool 이 %d개 중 %d개만 읽었습니다 — 멈춥니다.\n"
                 "  종료코드 %s\n  %s" % (len(paths), len(data), r.returncode, err[:400]))
-        return {os.path.normcase(os.path.abspath(d.get("SourceFile", ""))):
-                d.get("ImageDescription") for d in data}
+        # ★ 경로를 키로 쓰지 않는다. 순서로 맞춘다.
+        #   파일 이름에 짝 없는 서러게이트가 든 자료가 있는데(이모지가 잘린 채
+        #   파일명이 된 것), 그런 경로는 exiftool 이 돌려주는 SourceFile 과
+        #   글자 단위로 같아지지 않는다. 실측: 그런 파일 6개에서 키가 0/6 맞았다.
+        #   그래서 스크립트가 '설명이 비었다' 고 보고했고, 실제로는 멀쩡히
+        #   들어가 있었다. 매번 다시 쓰게 만드는 조용한 오진이었다.
+        #   exiftool 은 준 순서대로 돌려주므로 순서로 맞추면 이 문제가 없다.
+        return [d.get("ImageDescription") for d in data]
     finally:
         os.unlink(argfile)
 
@@ -262,9 +268,9 @@ def main():
         for i in range(0, len(images), 500):
             chunk = images[i:i + 500]
             got = read_descriptions(exiftool, chunk)
-            for p in chunk:
+            for ci, p in enumerate(chunk):
                 total += 1
-                cur = got.get(os.path.normcase(os.path.abspath(p)))
+                cur = got[ci]
                 m = ID_RE.findall(os.path.basename(p))
                 if not m:
                     # 프로필 사진(profile_20260827.jpg) 처럼 게시물 미디어가 아닌 것.
