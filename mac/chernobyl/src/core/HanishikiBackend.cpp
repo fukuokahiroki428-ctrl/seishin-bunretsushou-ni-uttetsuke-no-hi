@@ -4297,6 +4297,31 @@ void HanishikiBackend::startCollection(const QString &configJson)
         //   thread-local lookup을 통해 trackKey의 터미널 파일에만 라우팅된다.
         //   이게 없으면 모든 터미널이 platform="twitter"로 수렴된 같은 로그를 보게 됨.
         if (isParallel) setThreadTrackKey(trackKey);
+
+        // ★ 계정별 프록시 — 이 수집이 쓸 계정에 프록시가 지정돼 있으면 이 스레드에만 건다.
+        //   전역 하나를 바꿔 끼우면 동시에 도는 다른 수집이 그 설정을 같이 타 버린다.
+        //   지정이 없으면 아무것도 걸지 않고 전역 설정을 그대로 쓴다.
+        {
+            const QJsonArray accs = config["accounts"].toArray();
+            int idx = 0;
+            const QJsonValue ai = config["accountIdx"];
+            if (ai.isDouble()) idx = ai.toInt();
+            else if (ai.isString() && ai.toString() != "all") idx = ai.toString().toInt();
+            if (idx >= 0 && idx < accs.size()) {
+                const QJsonObject a = accs.at(idx).toObject();
+                const QString ph = a.value("proxyHost").toString();
+                const int    pp = a.value("proxyPort").toInt();
+                if (!ph.isEmpty() && pp > 0) {
+                    Common::setThreadProxy(true, ph, pp,
+                                           a.value("proxyUser").toString(),
+                                           a.value("proxyPass").toString());
+                    log(QString("🔒 이 계정은 %1:%2 로 나갑니다").arg(ph).arg(pp), "info", platformName);
+                }
+            }
+        }
+        // 스레드가 끝나면 반드시 지운다 — 남겨 두면 이 스레드를 재사용할 때 엉뚱한 IP 로 나간다.
+        struct ProxyScope { ~ProxyScope() { Common::clearThreadProxy(); } } _proxyScope;
+
         QString safe = trackKey;
         QMetaObject::invokeMethod(this, [this, safe]() {
             runJs(QString("window.cppDbgLog && cppDbgLog('WORKER THREAD ENTERED','%1')").arg(safe));

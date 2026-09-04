@@ -100,6 +100,20 @@
         .app.window-mode .sidebar, .app.window-mode .sidebar-toggle { display: none; }
         .app.window-mode .main { max-width: 100%; }
 
+        /* 계정별 프록시 표시 — 목록에서 한눈에 보이게 */
+        .account-proxy-tag {
+            margin-left: auto; margin-right: 8px; cursor: pointer;
+            font-size: 11px; padding: 1px 7px; border-radius: 10px;
+            border: 1px solid var(--border-light); color: var(--text-tertiary);
+            white-space: nowrap;
+        }
+        .account-proxy-tag:hover { color: var(--text-primary); background: var(--bg-hover); }
+        .account-proxy-edit {
+            padding: 6px 10px 10px; margin: 0 0 6px;
+            border: 1px solid var(--border-light); border-radius: 8px;
+            background: var(--bg-card);
+        }
+
         .sidebar-toggle {
             position: absolute; top: 8px; left: 8px; z-index: 30;
             width: 26px; height: 26px; padding: 0;
@@ -4079,9 +4093,59 @@
             c.style.display = 'block';
             accounts[platform].forEach(function(a,i) {
                 const d = document.createElement('div'); d.className='account-item';
-                d.innerHTML='<span class="account-name">'+(a.name||a.handle||'Account')+'</span><span class="account-delete" onclick="removeAccount(\''+platform+'\','+i+')">×</span>';
+                // ★ 계정마다 다른 프록시를 쓸 수 있다. 비워 두면 전역 설정을 따른다.
+                //   한 곳(renderAccounts)에만 두는 이유: 플랫폼별 추가 화면에 각각
+                //   넣으면 아홉 벌을 유지해야 하고, 이 저장소에서 그런 이중 관리는
+                //   늘 한쪽만 갱신되어 어긋났다.
+                const on = !!(a.proxyHost && a.proxyPort);
+                d.innerHTML =
+                  '<span class="account-name">' + (a.name||a.handle||'Account') + '</span>'
+                + '<span class="account-proxy-tag" title="' + (on ? (a.proxyHost+':'+a.proxyPort) : '전역 설정을 따릅니다')
+                + '" onclick="toggleAccountProxy(\''+platform+'\','+i+')">'
+                + (on ? '🔒 ' + String(a.proxyHost).slice(0,18) : '프록시 없음') + '</span>'
+                + '<span class="account-delete" onclick="removeAccount(\''+platform+'\','+i+')">×</span>';
                 c.appendChild(d);
+                const ed = document.createElement('div');
+                ed.className = 'account-proxy-edit';
+                ed.id = 'acct-proxy-' + platform + '-' + i;
+                ed.style.display = 'none';
+                ed.innerHTML =
+                  '<div class="input-row" style="margin:4px 0;">'
+                + '<div class="field" style="flex:2;"><label class="field-label">주소 (SOCKS5)</label>'
+                +   '<input type="text" class="input" id="ap-h-'+platform+'-'+i+'" placeholder="비우면 전역 설정" value="'+(a.proxyHost||'')+'"></div>'
+                + '<div class="field" style="flex:1;"><label class="field-label">포트</label>'
+                +   '<input type="text" class="input" id="ap-p-'+platform+'-'+i+'" placeholder="1080" value="'+(a.proxyPort||'')+'"></div>'
+                + '</div>'
+                + '<div class="input-row" style="margin:4px 0;">'
+                + '<div class="field"><label class="field-label">사용자명 · 서비스 자격증명</label>'
+                +   '<input type="text" class="input" id="ap-u-'+platform+'-'+i+'" value="'+(a.proxyUser||'')+'"></div>'
+                + '<div class="field"><label class="field-label">비밀번호</label>'
+                +   '<input type="password" class="input" id="ap-w-'+platform+'-'+i+'" value="'+(a.proxyPass||'')+'"></div>'
+                + '</div>'
+                + '<button class="btn btn-primary" onclick="saveAccountProxy(\''+platform+'\','+i+')">이 계정에 적용</button> '
+                + '<button class="btn btn-secondary" onclick="clearAccountProxy(\''+platform+'\','+i+')">지우고 전역 쓰기</button>';
+                c.appendChild(ed);
             });
+        }
+        function toggleAccountProxy(p,i) {
+            const e = document.getElementById('acct-proxy-'+p+'-'+i);
+            if (e) e.style.display = (e.style.display === 'none') ? 'block' : 'none';
+        }
+        function saveAccountProxy(p,i) {
+            const a = accounts[p][i];
+            const g = function(k){ const e=document.getElementById('ap-'+k+'-'+p+'-'+i); return e?e.value.trim():''; };
+            const host = g('h'), port = parseInt(g('p')) || 0;
+            if (host && !port) { appendLog('포트를 입력하세요','error',p); return; }
+            a.proxyHost = host; a.proxyPort = port; a.proxyUser = g('u'); a.proxyPass = g('w');
+            renderAccounts(p); saveConfig();
+            appendLog(host ? ('계정 「'+(a.name||a.handle||'Account')+'」 는 '+host+':'+port+' 로 나갑니다')
+                           : ('계정 「'+(a.name||a.handle||'Account')+'」 는 전역 설정을 따릅니다'), 'success', p);
+        }
+        function clearAccountProxy(p,i) {
+            const a = accounts[p][i];
+            delete a.proxyHost; delete a.proxyPort; delete a.proxyUser; delete a.proxyPass;
+            renderAccounts(p); saveConfig();
+            appendLog('계정 「'+(a.name||a.handle||'Account')+'」 — 전역 설정을 따릅니다','info',p);
         }
         function removeAccount(p,i) { accounts[p].splice(i,1); renderAccounts(p); saveConfig(); refreshTargetAccountPickers(); }
         function saveConfig() {
