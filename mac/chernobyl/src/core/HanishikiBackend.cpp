@@ -13331,12 +13331,42 @@ static QString llmInstallDir()
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/llm";
 }
 
+// 고른 모델에 짝이 되는 mmproj(그림 읽기 부속)를 찾는다. 없으면 빈 문자열.
+//   ★ 왜 이름으로 짝을 찾나. 한 폴더에 텍스트 모델과 시각 모델이 섞여 있을 수 있다.
+//     시각 모델이 아닌 것에 mmproj 를 붙이면 서버가 뜨지 않는다. 그래서
+//     ① 이름이 겹치는 mmproj 를 먼저 찾고
+//     ② 없으면, 고른 모델이 시각 모델(VL/vision)일 때만 폴더의 mmproj 를 쓴다.
+static QString mmprojFor(const QString &modelFile)
+{
+    QDir dir(llmDir());
+    const QStringList projs = dir.entryList(QStringList() << "mmproj*.gguf", QDir::Files, QDir::Name);
+    if (projs.isEmpty()) return QString();
+
+    // ① 이름 겹침 — "Qwen2.5-VL-3B-Instruct" 같은 알맹이를 뽑아 맞춰 본다.
+    QString base = modelFile;
+    base.remove(QRegularExpression("\\.gguf$", QRegularExpression::CaseInsensitiveOption));
+    base.remove(QRegularExpression("-(0\\d{4})-of-(\\d{5})$"));
+    base.remove(QRegularExpression("-(q|iq|f)\\d.*$", QRegularExpression::CaseInsensitiveOption));
+    if (!base.isEmpty())
+        for (const QString &pj : projs)
+            if (pj.contains(base, Qt::CaseInsensitive)) return dir.filePath(pj);
+
+    // ② 시각 모델일 때만 폴더의 것을 쓴다.
+    const bool looksVision = modelFile.contains("-vl", Qt::CaseInsensitive)
+                          || modelFile.contains("vision", Qt::CaseInsensitive)
+                          || modelFile.contains("llava",  Qt::CaseInsensitive);
+    return looksVision ? dir.filePath(projs.first()) : QString();
+}
+
 static QStringList bundledLlmModelHeads()
 {
     QDir dir(llmDir());
     const QStringList all = dir.entryList(QStringList() << "*.gguf", QDir::Files, QDir::Name);
     QStringList heads;
     for (const QString &g : all) {
+        // ★ mmproj 는 '모델' 이 아니라 그림을 읽게 해 주는 부속이다.
+        //   목록에 섞이면 사용자가 그걸 모델로 고를 수 있고, 고르면 서버가 뜨지 않는다.
+        if (g.startsWith("mmproj", Qt::CaseInsensitive)) continue;
         const int ofIdx = g.indexOf("-of-");
         if (ofIdx >= 5) {
             const QString part = g.mid(ofIdx - 5, 5);
@@ -13468,18 +13498,51 @@ void HanishikiBackend::testAiOnline()
               .arg(ok ? "true" : "false", msg));
 }
 
+// 힌트로 어느 모델 파일을 쓸지 정한다.
+//   ★ 이 판단이 두 곳에 필요하다 — 기동할 때, 그리고 '이미 켜진 것과 같은 모델인가'
+//     를 볼 때. 규칙이 갈라지면 "바꿨다는데 안 바뀐" 상태가 된다.
+QString HanishikiBackend::resolveLlmModel(const QString &modelHint) const
+{
+    const QStringList heads = bundledLlmModelHeads();
+    if (heads.isEmpty()) return QString();
+    const QString hint = modelHint.isEmpty() ? m_llmModelHint : modelHint;
+    if (!hint.isEmpty())
+        for (const QString &h : heads)
+            if (h.contains(hint, Qt::CaseInsensitive)) return h;
+    // 기본: 코드 특화 중 가장 작은 것(빨리 뜨는 쪽). 없으면 첫 번째.
+    QStringList coders;
+    for (const QString &h : heads) if (h.contains("coder", Qt::CaseInsensitive)) coders << h;
+    coders.sort();
+    return coders.isEmpty() ? heads.first() : coders.first();
+}
+
 void HanishikiBackend::startLocalLlm(const QString &modelHint)
 {
+    // ★ 이미 켜져 있어도 '다른 모델을 골랐다면' 바꿔 줘야 한다.
+    //   예전엔 무조건 "이미 실행 중" 이라며 돌아갔다. 그래서 자가진단이 기본 모델로
+    //   먼저 켜 버린 뒤에는, 사용자가 목록에서 그림 읽는 모델을 골라 켜도 아무 일도
+    //   일어나지 않았다 — 글 전용 서버가 그대로 쓰이고, 그림을 보내면 서버가
+    //   "image input is not supported" 로 거절한다(실측). 이유는 화면에 안 나온다.
     if (m_llmProc && m_llmProc->state() != QProcess::NotRunning) {
-        log("로컬 AI 가 이미 실행 중입니다.", "info", "settings");
-        getLlmStatus();
-        return;
+        const QString want = resolveLlmModel(modelHint);
+        if (want.isEmpty() || want == m_llmRunningModel) {
+            log("로컬 AI 가 이미 실행 중입니다.", "info", "settings");
+            getLlmStatus();
+            return;
+        }
+        log(QString("모델을 바꿉니다: %1 → %2").arg(m_llmRunningModel, want), "info", "settings");
+        stopLocalLlm();
+        QThread::msleep(600);
     }
     // 이미 8737 포트에 서버가 떠 있으면(자동기동/직접실행/이전 세션 잔류) 중복 기동하지 않고 채택.
     //  — 중복 기동은 포트 충돌로 즉시 종료돼 '켜자마자 꺼짐'처럼 보였다.
+    //   우리 프로세스가 아닌 서버가 포트를 물고 있으면 그 모델을 알 수 없다.
+    //   그대로 쓰되, 고른 모델과 다를 수 있다는 것을 말해 준다 — 조용히 넘기면
+    //   "골랐는데 왜 안 되지" 가 된다.
     { HttpClient h; h.setTimeout(600);
       if (h.get(llmBase() + "/v1/models", llmHeaders()).isOk()) {
-          log("로컬 AI 가 이미 실행 중입니다(기존 서버 사용).", "info", "settings");
+          log("로컬 AI 가 이미 실행 중입니다(기존 서버 사용). "
+              "다른 모델로 바꾸려면 먼저 '끄기' 를 누르십시오.", "info", "settings");
           getLlmStatus();
           return;
       } }
@@ -13508,10 +13571,8 @@ void HanishikiBackend::startLocalLlm(const QString &modelHint)
     //     로딩을 마쳐 고아로 남아 포트를 물었다(다음에 켤 때 또 꼬인다).
     //     기본은 코드 특화 중 '가장 작은' 것으로 — 빨리 뜨는 쪽이 기본이어야 한다.
     //     더 큰 모델은 사용자가 고르면 그때 쓴다.
-    { QStringList coders; for (const QString &h : heads) if (h.contains("coder", Qt::CaseInsensitive)) coders << h;
-      coders.sort(); model = coders.isEmpty() ? heads.first() : coders.first(); }
-    if (!effHint.isEmpty())
-        for (const QString &h : heads) if (h.contains(effHint, Qt::CaseInsensitive)) { model = h; break; }
+    model = resolveLlmModel(effHint);
+    if (model.isEmpty()) { log("❌ 쓸 수 있는 모델을 찾지 못했습니다.", "error", "settings"); getLlmStatus(); return; }
 
     log(QString("🩺 로컬 AI 기동 중 (%1)...").arg(model), "info", "settings");
     QFile::setPermissions(server,
@@ -13522,8 +13583,17 @@ void HanishikiBackend::startLocalLlm(const QString &modelHint)
     //   -c 는 AI 가 한 번에 기억하는 분량이다. 4096 은 보관함 질의(자료 수십 건을
     //   함께 넘긴다)에 모자랐다 — 넘친 만큼 앞쪽 지시문이 잘려 나가, 무엇을 하라고
     //   했는지 모르는 채 번호만 나열하는 답이 나왔다. 8192 로 늘린다.
-    m_llmProc->setArguments({"-m", dir + "/" + model, "--port", "8737",
-                             "--host", "127.0.0.1", "-c", "8192"});
+    QStringList llmArgs{"-m", dir + "/" + model, "--port", "8737",
+                        "--host", "127.0.0.1", "-c", "8192"};
+    // ★ 그림 읽기. 이 모델과 짝인 mmproj 가 있으면 넘긴다 — 없으면 예전처럼 글만 읽는다.
+    //   엔진(번들 llama-server)은 이미 --mmproj 를 지원한다. 막고 있던 건 모델뿐이었다.
+    const QString mmproj = mmprojFor(model);
+    if (!mmproj.isEmpty()) {
+        llmArgs << "--mmproj" << mmproj;
+        log(QString("🖼 그림 읽기 켜짐 — %1").arg(QFileInfo(mmproj).fileName()), "info", "settings");
+    }
+    m_llmProc->setArguments(llmArgs);
+    m_llmRunningModel = model;   // '다른 모델을 골랐나' 를 나중에 이걸로 본다
     m_llmProc->setWorkingDirectory(dir);
     connect(m_llmProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int, QProcess::ExitStatus) { getLlmStatus(); });
@@ -13664,6 +13734,25 @@ QString HanishikiBackend::appStateBrief() const
     return out.join('\n');
 }
 
+// 메시지 본문에서 '글' 만 뽑는다.
+//   ★ 그림을 붙이면 content 가 문자열이 아니라 배열이 된다(OpenAI 호환 형식).
+//     [{"type":"text","text":"..."},{"type":"image_url","image_url":{"url":"data:..."}}]
+//     예전엔 toString() 하나로 읽어서, 그림을 붙이면 질문이 빈 문자열이 됐다 —
+//     웹 검색이 아무 말도 없이 검색어 없이 돌아간다.
+static QString messageText(const QJsonValue &content)
+{
+    if (content.isString()) return content.toString();
+    if (content.isArray()) {
+        QStringList parts;
+        for (const QJsonValue &v : content.toArray()) {
+            const QJsonObject o = v.toObject();
+            if (o.value("type").toString() == "text") parts << o.value("text").toString();
+        }
+        return parts.join(" ").trimmed();
+    }
+    return QString();
+}
+
 void HanishikiBackend::llmChat(const QString &historyJson)
 {
     const QJsonArray history = QJsonDocument::fromJson(historyJson.toUtf8()).array();
@@ -13674,7 +13763,7 @@ void HanishikiBackend::llmChat(const QString &historyJson)
             QString lastUser;
             for (int i = history.size() - 1; i >= 0; --i) {
                 const QJsonObject m = history.at(i).toObject();
-                if (m.value("role").toString() == "user") { lastUser = m.value("content").toString(); break; }
+                if (m.value("role").toString() == "user") { lastUser = messageText(m.value("content")); break; }
             }
             auto has = [&lastUser](const QString &k) { return lastUser.contains(k, Qt::CaseInsensitive); };
             const bool wantsRepair =
@@ -13728,7 +13817,7 @@ void HanishikiBackend::llmChat(const QString &historyJson)
             QString lastUser;
             for (int i = history.size() - 1; i >= 0; --i) {
                 const QJsonObject m = history.at(i).toObject();
-                if (m.value("role").toString() == "user") { lastUser = m.value("content").toString(); break; }
+                if (m.value("role").toString() == "user") { lastUser = messageText(m.value("content")); break; }
             }
             const QString web = webSearchSnippets(m_searchKey, lastUser);
             if (!web.isEmpty())

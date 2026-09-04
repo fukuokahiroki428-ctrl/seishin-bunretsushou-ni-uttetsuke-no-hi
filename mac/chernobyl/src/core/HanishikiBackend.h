@@ -309,6 +309,8 @@ public:
 private:
     std::atomic<bool> m_tradCancelled{false};
     std::atomic<bool> m_pythonBusy{false};    // Python 환경 작업 중 (업그레이드/복구/업데이트 동시 방지)
+    QString resolveLlmModel(const QString &modelHint) const;  // 힌트 → 실제 모델 파일명
+    QString m_llmRunningModel;               // 지금 떠 있는 서버가 물고 있는 모델 파일명
     QProcess *m_llmProc = nullptr;            // 설정에서 켠 번들 로컬 LLM(llama-server) 프로세스
     QString m_llmModelHint;                   // 드롭다운에서 고른 모델(부분일치). 자동기동 시 이 모델을 씀.
     QProcess *m_archiveProc = nullptr;        // 산출물 색인 진행 중인 프로세스(중단용)
