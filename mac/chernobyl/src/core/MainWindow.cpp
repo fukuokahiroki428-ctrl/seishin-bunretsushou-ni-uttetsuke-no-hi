@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "Config.h"
+#include <QResizeEvent>
 #include "HanishikiBackend.h"
 #include "PenBackend.h"
 
@@ -157,7 +158,7 @@ MainWindow::MainWindow(QWidget *parent)
     //     번들 HTML(Resources/html/index.html)을 쓰는 실제 경로에서는 한 번도 걸리지
     //     않았다. 그래서 메뉴가 '목록을 읽는 중…' 에서 멈춰 있었다.
     connect(m_webView, &QWebEngineView::loadFinished, this, [this](bool ok) {
-        if (ok) populatePlatformMenu();
+        if (ok) { populatePlatformMenu(); applyZoom(); }
     });
 
     layout->addWidget(m_webView);
@@ -297,6 +298,10 @@ void MainWindow::openFeatureWindow(const QString &tabId, const QString &title)
     QUrl url = m_webView ? m_webView->url() : QUrl("qrc:/html/index.html");
     url.setFragment("window=" + tabId);
     view->setUrl(url);
+
+    // 별도 창도 자기 크기에 맞춰 배율을 맞춘다 — 본 창만 맞추면 이 창은 늘 100%%다.
+    view->setZoomFactor(zoomForWidth(win->width()));
+    win->installEventFilter(this);
 
     connect(win, &QObject::destroyed, this, [this, tabId]() { m_featureWindows.remove(tabId); });
     m_featureWindows.insert(tabId, win);
@@ -480,6 +485,37 @@ void MainWindow::openFolderDialog()
     }
 }
 
+
+// 창 폭에 맞는 화면 배율.
+//   기준은 1180px — 이 화면이 그 폭에 맞춰 짜여 있다(생성자의 기본 크기와 같다).
+//   그보다 좁으면 줄이고 넓으면 키우되, 양쪽을 묶어 둔다.
+//     · 아래로 0.72 까지 — 더 줄이면 글자가 읽을 수 없게 된다. 핸드폰 폭(390)에서
+//       비례대로면 0.33 이 되는데, 그건 화면이 아니라 그림이 된다.
+//     · 위로 1.60 까지 — 더 키우면 큰 화면에서 글자만 커지고 한 번에 보이는 양이
+//       오히려 줄어든다.
+qreal MainWindow::zoomForWidth(int w)
+{
+    const qreal ref = 1180.0;
+    qreal z = w / ref;
+    if (z < 0.72) z = 0.72;
+    if (z > 1.60) z = 1.60;
+    return z;
+}
+
+void MainWindow::applyZoom()
+{
+    if (!m_webView) return;
+    const qreal z = zoomForWidth(width());
+    if (qAbs(m_webView->zoomFactor() - z) < 0.01) return;   // 미세한 변화로 다시 그리지 않는다
+    m_webView->setZoomFactor(z);
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event)
+{
+    QMainWindow::resizeEvent(event);
+    applyZoom();
+}
+
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     if (m_backend && m_backend->isAnyRunning()) {
@@ -606,6 +642,20 @@ void MainWindow::releaseAwake()
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
+    // 별도 창(기능 창)도 자기 폭에 맞춰 배율을 따라간다.
+    //   본 창만 맞추면 이 창들은 늘 100% 로 남아, 같은 앱인데 글자 크기가 다르다.
+    if (event->type() == QEvent::Resize) {
+        for (auto it = m_featureWindows.begin(); it != m_featureWindows.end(); ++it) {
+            QWidget *w = it->data();
+            if (w != obj) continue;
+            if (auto *v = w->findChild<QWebEngineView *>()) {
+                const qreal z = zoomForWidth(w->width());
+                if (qAbs(v->zoomFactor() - z) >= 0.01) v->setZoomFactor(z);
+            }
+            break;
+        }
+    }
+
     // ★ 상단 띠(신호등이 있는 52px) 더블클릭 → 확대/원복.
     //   macOS 의 기본 동작이지만, 이 앱은 타이틀바를 투명하게 만들고
     //   (FullSizeContentView) 그 자리를 웹뷰가 덮고 있어 더블클릭이 창까지

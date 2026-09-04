@@ -43,6 +43,7 @@ public:
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 public:
     // 웹(테마 토글)에서 호출 — 네이티브 창 배경/외관을 앱 상단색과 맞춰 타이틀바 띠를 숨김
@@ -67,6 +68,12 @@ private:
 public:
     // 화면이 뜬 뒤 사이드바에서 실제 항목을 읽어 '기능' 메뉴를 채운다.
     void populatePlatformMenu();
+    // 창 크기에 맞춰 화면 배율을 맞춘다(글자·여백·아이콘이 한꺼번에 비례한다).
+    //   CSS 를 고치지 않는 이유: 이 화면은 px 지정이 1,200곳 넘고 font-size 규칙이
+    //   215개다. 하나씩 상대 단위로 바꾸면 빠뜨린 곳이 반드시 생기고, 그때부터
+    //   어떤 곳은 커지고 어떤 곳은 그대로인 어긋난 화면이 된다.
+    static qreal zoomForWidth(int w);
+    void applyZoom();
     // 기능 하나를 별도 창으로 연다(이미 열려 있으면 앞으로).
     void openFeatureWindow(const QString &tabId, const QString &title);
 private:
