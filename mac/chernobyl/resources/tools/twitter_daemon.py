@@ -422,12 +422,26 @@ async def main():
     auth_token = init_args["auth_token"]
     ct0 = init_args["ct0"]
 
+    # ── 어느 세션 계층을 쓸지 ──────────────────────────────────────────────
+    # x_session 은 이 저장소가 직접 들고 있는 얇은 계층이다(tools/x_session.py).
+    # twikit 은 최신이 2025-02 배포로 1년 넘게 멈춰 있고, 실제로 자기 TID 초기화가
+    # 지금 X 에서 실패한다("Couldn't get KEY_BYTE indices"). 데몬이 그것을 손으로
+    # 우회해 왔을 뿐이다. 그래서 우리 것을 먼저 쓰고, 안 되면 물러선다.
+    #   ★ 물러설 자리를 남겨 두는 이유: 우리 것에 아직 못 본 구멍이 있을 수 있다.
+    #     사용자의 주 수집기가 내 확신 때문에 멈추면 안 된다.
+    USING_SHIM = False
     try:
-        from twikit import Client
-        from twikit.client.gql import Endpoint, FEATURES, USER_FEATURES, flatten_params
-    except ImportError:
-        print(json.dumps({"error": "twikit not installed"}), flush=True)
-        sys.exit(1)
+        from x_session import Client, Endpoint, FEATURES, USER_FEATURES, flatten_params
+        USING_SHIM = True
+        print(json.dumps({"info": "세션 계층: x_session (앱 내장)"}), flush=True)
+    except Exception as _se:
+        try:
+            from twikit import Client
+            from twikit.client.gql import Endpoint, FEATURES, USER_FEATURES, flatten_params
+            print(json.dumps({"info": f"세션 계층: twikit 으로 물러섬 ({_se})"}), flush=True)
+        except ImportError:
+            print(json.dumps({"error": "x_session 도 twikit 도 없습니다"}), flush=True)
+            sys.exit(1)
 
     # ── Monkey-patch httpx.Cookies.get() BEFORE creating Client ──
     # Root cause: x.com sets duplicate cookies (guest_id_ads, etc.) via Set-Cookie headers.
@@ -467,6 +481,8 @@ async def main():
     #     아래 Client() 를 만들기 전이라 이미 만들어진 객체가 없어 안전하다.
     #     (바로 위 httpx.Cookies.get 과 같은 방식 — 실행 중에만 고친다)
     try:
+        if USING_SHIM:
+            raise RuntimeError("x_session 을 쓰므로 twikit 소스 패치는 건너뜁니다")
         import twikit.client.client as _twc
         _twc_path = _twc.__file__
         with open(_twc_path, 'r', encoding='utf-8') as _f:
@@ -494,8 +510,18 @@ async def main():
         new_timeout = _httpx.Timeout(30.0, connect=15.0, read=30.0, write=15.0, pool=10.0)
         client.http.timeout = new_timeout
         # 재시도 transport — connection error 시 자동 3회 retry
-        client.http._transport = _httpx.HTTPTransport(retries=3)
-        print(json.dumps({"info": "httpx timeout=30s + retries=3 적용"}), flush=True)
+        #   ★ x_session 을 쓸 때는 건드리지 않는다. 그쪽 생성자가 이미
+        #     AsyncHTTPTransport(retries=3) 과 30초 시간제한을 넣어 둔다.
+        #   ★ 그리고 여기서 쓰던 것은 '동기' HTTPTransport 였다. 비동기 클라이언트에
+        #     동기 전송기를 꽂으면 첫 요청에서 바로 깨진다 —
+        #       'HTTPTransport' object has no attribute 'handle_async_request'
+        #     twikit 시절에는 이 대입이 그쪽 구조 때문에 효력이 없어 드러나지 않았을
+        #     뿐이고, 애초에 틀린 줄이었다. 비동기 것으로 바로잡는다.
+        if not USING_SHIM:
+            client.http._transport = _httpx.AsyncHTTPTransport(retries=3)
+            print(json.dumps({"info": "httpx timeout=30s + retries=3 적용"}), flush=True)
+        else:
+            print(json.dumps({"info": "httpx 설정은 x_session 이 이미 함 — 건너뜀"}), flush=True)
     except Exception as _te:
         print(json.dumps({"info": f"timeout 설정 실패 (무시): {_te}"}), flush=True)
 
