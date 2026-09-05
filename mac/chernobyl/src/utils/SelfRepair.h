@@ -541,7 +541,7 @@ inline SmokeResult smokePython(const QString &exe)
         ts << "# -*- coding: utf-8 -*-\n"
               "import sys, importlib\n"
               "mods = ['ssl','sqlite3','json','twikit','httpx','atproto','openpyxl',\n"
-              "        'PIL','piexif','bs4','lxml','websockets','m3u8','browser_cookie3',\n        'x_client_transaction']\n"
+              "        'PIL','bs4','lxml','websockets','m3u8','browser_cookie3',\n        'x_client_transaction']\n"
               "missing = []\n"
               "for m in mods:\n"
               "    try: importlib.import_module(m)\n"
@@ -759,7 +759,7 @@ inline QString checkEnvironment()
             pc.setProcessEnvironment(Common::bundledProcessEnv());
             pc.start(py, {"-c",
                 "import importlib.util as u\n"
-                "mods=['twikit','httpx','atproto','openpyxl','PIL','piexif',"
+                "mods=['twikit','httpx','atproto','openpyxl','PIL',"
                 "'browser_cookie3','bs4','websockets','lxml','m3u8','cryptography']\n"
                 "miss=[m for m in mods if u.find_spec(m) is None]\n"
                 "print(','.join(miss))"});

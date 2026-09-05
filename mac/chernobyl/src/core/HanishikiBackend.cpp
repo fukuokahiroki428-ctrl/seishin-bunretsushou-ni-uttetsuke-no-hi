@@ -13111,7 +13111,7 @@ void HanishikiBackend::getSystemInfo()
             proc.setProcessEnvironment(env);
             proc.start(python, {"-c",
                 "import json, importlib.metadata as md\n"
-                "pkgs = ['twikit','httpx','atproto','openpyxl','Pillow','piexif','bs4','websockets','lxml','m3u8']\n"
+                "pkgs = ['twikit','httpx','atproto','openpyxl','Pillow','bs4','websockets','lxml','m3u8']\n"
                 "result = {}\n"
                 "for p in pkgs:\n"
                 "    try:\n"
@@ -13317,7 +13317,7 @@ static QStringList diagnosePythonEnv(const QString &python)
     if (proc.exitCode() != 0) problems << "pip_broken";
 
     // 핵심 패키지 확인
-    QStringList required = {"twikit", "httpx", "atproto", "openpyxl", "PIL", "piexif", "bs4", "lxml", "websockets", "m3u8"};
+    QStringList required = {"twikit", "httpx", "atproto", "openpyxl", "PIL", "bs4", "lxml", "websockets", "m3u8"};
     for (const QString &mod : required) {
         QProcess check;
         check.setProcessEnvironment(Common::bundledProcessEnv());
@@ -15013,7 +15013,7 @@ void HanishikiBackend::repairPython()
         QMap<QString, QString> modToPkg = {
             {"PIL", "Pillow"}, {"bs4", "beautifulsoup4"},
             {"twikit", "twikit"}, {"httpx", "httpx"}, {"atproto", "atproto"},
-            {"openpyxl", "openpyxl"}, {"piexif", "piexif"},
+            {"openpyxl", "openpyxl"},
             {"lxml", "lxml"}, {"websockets", "websockets"}, {"m3u8", "m3u8"}
         };
 

@@ -501,36 +501,47 @@ def main():
 
     # EXIF metadata
     def add_exif(filepath, post_data):
+        # ★ 예전엔 piexif 를 썼다. 최신 배포가 2019-07 로 7년째 멈춰 있는데,
+        #   우리가 쓰는 것은 태그 여섯 개뿐이었다. EXIF 는 바깥 서비스가 아니라
+        #   1998년에 굳은 파일 규격이라 따라다닐 일이 없다 — 직접 쓴다.
+        #   (tools/exif_tags.py · exiftool 로 되읽어 검증했다)
         try:
-            import piexif
-            from PIL import Image
-            img = Image.open(filepath)
-            exif_dict = piexif.load(img.info.get('exif', b'')) if 'exif' in img.info else {"0th":{}, "Exif":{}, "1st":{}}
+            import exif_tags
 
             author = post_data[5] if len(post_data) > 5 else ''
             text = (post_data[2] if len(post_data) > 2 else '')[:200]
             url = post_data[1] if len(post_data) > 1 else ''
             date_str = post_data[4] if len(post_data) > 4 else ''
 
-            exif_dict['0th'][piexif.ImageIFD.Artist] = f"@{author}".encode()
-            exif_dict['0th'][piexif.ImageIFD.ImageDescription] = text.encode()
-            exif_dict['0th'][piexif.ImageIFD.Copyright] = f"Bluesky @{author}".encode()
-
+            kw = {
+                "artist": f"@{author}",
+                "description": text,
+                "copyright": f"Bluesky @{author}",
+            }
             if date_str:
-                exif_date = date_str.replace('/', ':').replace(' ', ' ')[:19]
-                exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = exif_date.encode()
-                exif_dict['0th'][piexif.ImageIFD.DateTime] = exif_date.encode()
-
+                exif_date = date_str.replace('/', ':')[:19]
+                kw["datetime"] = exif_date
+                kw["datetime_original"] = exif_date
             if url:
-                exif_dict['Exif'][piexif.ExifIFD.UserComment] = piexif.helper.UserComment.dump(url, encoding='ascii')
+                kw["user_comment"] = url
 
-            exif_bytes = piexif.dump(exif_dict)
-            img.save(filepath, quality=95, exif=exif_bytes)
+            with open(filepath, 'rb') as f:
+                raw = f.read()
+            out = exif_tags.set_tags(raw, **kw)
+            # ★ 원본을 곧바로 덮지 않는다. 쓰다 실패하면 사진이 깨진 채로 남는다.
+            tmp = filepath + '.exif_tmp'
+            with open(tmp, 'wb') as f:
+                f.write(out)
+            os.replace(tmp, filepath)
         except ImportError:
             # Fallback: Finder comment
             add_finder_comment(filepath, post_data)
-        except:
-            pass
+        except Exception:
+            try:
+                if os.path.exists(filepath + '.exif_tmp'):
+                    os.remove(filepath + '.exif_tmp')
+            except Exception:
+                pass
 
     # Finder comment (macOS)
     def add_finder_comment(filepath, post_data):
