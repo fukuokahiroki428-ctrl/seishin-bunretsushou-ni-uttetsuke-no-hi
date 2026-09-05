@@ -582,6 +582,71 @@ inline bool internetReachable()
 //   본문만 403 이었다. 그래서 '받아진다' 를 직접 확인한다.
 //   기준 영상은 사라질 가능성이 가장 낮은 둘을 쓰고, 둘 다 실패했을 때만
 //   네트워크를 의심한다.
+// 브라우저 쿠키를 실제로 꺼내 본다.
+//
+// 왜 이 검사가 필요한가.
+//   browser_cookie3 는 최신 배포가 2025-01 이다. 그런데 이건 규격이 아니라
+//   '브라우저 내부 구현' 을 따라간다 — 크롬이 쿠키 암호화를 바꾸면 그날로 깨진다.
+//   우리가 대신 만들 수도 없다(그러면 그 추격을 우리가 떠안는다).
+//   대신 '깨진 것을 즉시 아는 것' 은 할 수 있다. 그게 이 검사다.
+//
+// 무엇을 성공으로 보나.
+//   특정 사이트의 쿠키가 있느냐가 아니라 '복호화가 되느냐' 다.
+//   로그인을 안 했으면 쿠키가 없는 게 정상이므로 그것으로 실패를 매기면 안 된다.
+//   · 하나라도 값을 읽어 냈다  → 통과 (장치가 살아 있다)
+//   · 브라우저가 없다·비었다   → 건너뜀 (고장이 아니다)
+//   · 브라우저는 있는데 복호화가 터진다 → 실패 (이게 진짜 신호다)
+inline SmokeResult smokeBrowserCookies(const QString &python)
+{
+    if (python.isEmpty() || !QFile::exists(python))
+        return smokeSkip(QStringLiteral("파이썬이 없어 건너뜁니다"));
+
+    static const char *kCode =
+        "import warnings,sys,json\n"
+        "warnings.filterwarnings('ignore')\n"
+        "try:\n"
+        "    import browser_cookie3 as b\n"
+        "except Exception as e:\n"
+        "    print(json.dumps({'v':'skip','d':'browser_cookie3 없음'})); sys.exit(0)\n"
+        "found=0; tried=0; broke=[]\n"
+        "for n in ('chrome','firefox','brave','edge','arc','vivaldi','opera'):\n"
+        "    f=getattr(b,n,None)\n"
+        "    if not f: continue\n"
+        "    try:\n"
+        "        tried+=1\n"
+        "        for c in f():\n"
+        "            if c.value: found+=1\n"
+        "            if found>=3: break\n"
+        "    except Exception as e:\n"
+        "        m=str(e).lower()\n"
+        "        # '없어서 못 찾음' 은 고장이 아니다 — 안 깔린 브라우저다.\n"
+        "        if any(k in m for k in ('could not find','not found','no such',\n"
+        "                                'does not exist','no cookies')):\n"
+        "            continue\n"
+        "        broke.append('%s: %s' % (n, type(e).__name__))\n"
+        "if found:\n"
+        "    print(json.dumps({'v':'pass','d':'쿠키 복호화 확인 (%d개 읽음)' % found}))\n"
+        "elif broke:\n"
+        "    print(json.dumps({'v':'fail','d':'복호화 실패 — ' + '; '.join(broke[:2])}))\n"
+        "else:\n"
+        "    print(json.dumps({'v':'skip','d':'읽을 쿠키가 없습니다 (브라우저 미설치·로그아웃)'}))\n";
+
+    QProcess p;
+    p.setProcessEnvironment(Common::bundledProcessEnv());
+    p.start(python, {"-c", QString::fromUtf8(kCode)});
+    if (!p.waitForFinished(60000)) {
+        p.kill(); p.waitForFinished(3000);
+        return smokeFail(QStringLiteral("60초 안에 끝나지 않았습니다"));
+    }
+    const QByteArray out = p.readAllStandardOutput().trimmed();
+    const QJsonObject o = QJsonDocument::fromJson(out).object();
+    const QString v = o.value("v").toString();
+    const QString d = o.value("d").toString();
+    if (v == "pass") return smokePass(d);
+    if (v == "fail") return smokeFail(d);
+    return smokeSkip(d.isEmpty() ? QString::fromUtf8(out).left(120) : d);
+}
+
 inline SmokeResult smokeYtDlp(const QString &exe)
 {
     // 기준 영상 — 사라질 가능성이 가장 낮은 둘을 쓴다.
@@ -921,6 +986,12 @@ inline QString runStartupMaintenance()
                                   : (r.verdict == SmokeFail) ? QStringLiteral("[실패]")
                                                              : QStringLiteral("[건너뜀]");
                 report += QString("%1 python — %2\n").arg(tag, r.detail);
+
+                const SmokeResult ck = smokeBrowserCookies(py);
+                const QString ctag = (ck.verdict == SmokePass) ? QStringLiteral("[실행]")
+                                   : (ck.verdict == SmokeFail) ? QStringLiteral("[실패]")
+                                                               : QStringLiteral("[건너뜀]");
+                report += QString("%1 브라우저 쿠키 — %2\n").arg(ctag, ck.detail);
             }
         }
     }

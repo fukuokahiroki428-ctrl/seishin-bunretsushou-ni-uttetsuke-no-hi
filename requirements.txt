@@ -11,7 +11,7 @@
 # 업데이트 방법
 #   1) 앱의 설정 → "모듈 업데이트" 로 최신을 받아 실사용으로 검증한 뒤
 #   2) 아래 명령으로 이 파일을 갱신하고 커밋한다:
-#        <python> -m pip list --format=freeze | grep -iE '^(twikit|httpx|atproto|openpyxl|pillow|piexif|browser.cookie3|yt-dlp|beautifulsoup4|websockets|lxml|m3u8|cryptography)='
+#        <python> -m pip list --format=freeze | grep -iE '^(twikit|httpx|atproto|openpyxl|pillow|browser.cookie3|yt-dlp|beautifulsoup4|websockets|lxml|m3u8|cryptography)='
 #   ※ 런타임 업데이트(앱 안에서 최신 받기)는 이 파일과 무관하게 계속 동작한다.
 #      이 파일은 '빌드 시점에 무엇을 넣을지'만 정한다.
 #
