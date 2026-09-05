@@ -411,24 +411,42 @@ async def main():
     ct0 = init_args["ct0"]
 
     # ── 어느 세션 계층을 쓸지 ────────────────────────────────────────────
-    # x_session 은 이 저장소가 직접 들고 있는 얇은 계층이다(tools/x_session.py).
-    # twikit 은 최신이 2025-02 배포로 1년 넘게 멈춰 있고, 실제로 자기 TID 초기화가
-    # 지금 X 에서 실패한다("Couldn't get KEY_BYTE indices" — 실측). 데몬이 그것을
-    # 손으로 우회해 왔을 뿐이다. 그래서 우리 것을 먼저 쓰고, 안 되면 물러선다.
-    #   ★ 물러설 자리를 남겨 두는 이유: 우리 것에 아직 못 본 구멍이 있을 수 있다.
-    #     사용자의 주 수집기가 내 확신 때문에 멈추면 안 된다.
+    #
+    # twikit 을 먼저 쓴다. 오래 써서 검증된 쪽이고, 지금 이 기계에서 실제로
+    # 수집이 되고 있는 쪽이기 때문이다.
+    #
+    # x_session(tools/x_session.py)은 우리가 직접 만든 얇은 계층이고, 여기서는
+    # '물러설 자리' 로 둔다. 다만 두 자리에서 실제로 넘어간다:
+    #   1) twikit 이 아예 없을 때
+    #   2) twikit 으로 X-Client-Transaction-Id 서명을 못 만들 때
+    #      (twikit 자기 초기화는 지금 X 에서 실패한다 — "Couldn't get KEY_BYTE
+    #       indices". 데몬이 손으로 우회해 왔지만 그 우회도 언젠가 안 맞게 된다.)
+    #      전에는 그때 무작위 서명으로 넘어갔다. 그건 되는 척하는 상태다 —
+    #      X 가 막으면 그제서야 알게 된다. 되는 것이 있으면 그것을 쓰는 게 낫다.
+    #   ※ 손으로 넘기고 싶을 때: 환경변수 PREDORMITION_X_SESSION=1
+    #     (twikit 이 멀쩡해 보이는데 수집만 이상할 때 갈아 끼워 보는 용도.
+    #      이 스위치가 있어야 '물러설 자리' 가 실제로 도는지 확인할 수 있다 —
+    #      한 번도 안 도는 대비책은 필요한 날 같이 고장 나 있다.)
     USING_SHIM = False
+    _forced = os.environ.get("PREDORMITION_X_SESSION", "").strip() not in ("", "0")
     try:
-        from x_session import Client, Endpoint, FEATURES, USER_FEATURES, flatten_params
-        USING_SHIM = True
-        print(json.dumps({"info": "세션 계층: x_session (앱 내장)"}), flush=True)
-    except Exception as _se:
+        if _forced:
+            raise ImportError("PREDORMITION_X_SESSION 으로 강제 전환")
+        from twikit import Client
+        from twikit.client.gql import Endpoint, FEATURES, USER_FEATURES, flatten_params
+        print(json.dumps({"info": "세션 계층: twikit"}), flush=True)
+    except ImportError as _te:
         try:
-            from twikit import Client
-            from twikit.client.gql import Endpoint, FEATURES, USER_FEATURES, flatten_params
-            print(json.dumps({"info": f"세션 계층: twikit 으로 물러섬 ({_se})"}), flush=True)
-        except ImportError:
-            print(json.dumps({"error": "x_session 도 twikit 도 없습니다"}), flush=True)
+            from x_session import Client, Endpoint, FEATURES, USER_FEATURES, flatten_params
+            USING_SHIM = True
+            # 강제 전환과 '진짜로 twikit 이 없음' 을 구분해서 적는다.
+            #   섞어 적으면 로그를 읽는 사람이 없는 고장을 쫓게 된다.
+            print(json.dumps({"info": "세션 계층: x_session (환경변수로 강제 전환)"
+                              if _forced else f"세션 계층: x_session (twikit 이 없음: {_te})"}),
+                  flush=True)
+        except Exception as _se:
+            print(json.dumps({"error": f"twikit 도 x_session 도 못 불러왔습니다: {_te} / {_se}"}),
+                  flush=True)
             sys.exit(1)
 
     # ── Monkey-patch httpx.Cookies.get() BEFORE creating Client ──
@@ -663,8 +681,39 @@ async def main():
                 print(json.dumps({"info": f"TID twikit init also failed: {e2}"}), flush=True)
 
     # If all TID methods failed, use random transaction IDs
+    # ★ twikit 으로 서명을 못 만들었으면 여기서 x_session 으로 갈아탄다.
+    #   무작위 서명으로 계속 가는 것보다 낫다 — 그건 되는 척하다가 X 가 막을 때
+    #   비로소 드러나는 상태다. x_session 은 유지되는 라이브러리로 서명하므로
+    #   적어도 '왜 안 되는지' 가 분명해진다.
+    if not tid_ok and not USING_SHIM:
+        try:
+            import x_session as _xs
+            print(json.dumps({"info": "twikit 으로 서명을 못 만들어 x_session 으로 갈아탑니다"}),
+                  flush=True)
+            Endpoint = _xs.Endpoint
+            FEATURES = _xs.FEATURES
+            USER_FEATURES = _xs.USER_FEATURES
+            flatten_params = _xs.flatten_params
+            client = _xs.Client(language="ja",
+                                user_agent=(init_args.get("user_agent") or None),
+                                proxy=(init_args.get("proxy") or None))
+            client.set_cookies({"auth_token": auth_token, "ct0": ct0})
+            USING_SHIM = True
+            # 갈아탄 뒤에도 앱이 긁어 둔 최신 해시를 그대로 얹는다
+            _c = _load_cached_hashes()
+            if _c:
+                apply_hashes_to_endpoint(Endpoint, _c)
+            tid_ok = await client.client_transaction.init(client.http, ct_headers)
+            print(json.dumps({"info": f"TID(x_session): {client.client_transaction.reason}"}),
+                  flush=True)
+        except Exception as _xe:
+            print(json.dumps({"info": f"x_session 으로도 못 갈아탔습니다: {_xe}"}), flush=True)
+
     if not tid_ok:
-        import base64, os
+        # ★ 여기서 'import os' 를 하면 안 된다. 함수 안 어디서든 import 하면 파이썬이
+        #   그 이름을 함수 전체의 지역 변수로 잡아, 이 줄보다 위에서 os 를 쓰는 곳이
+        #   UnboundLocalError 로 죽는다. os 는 이미 파일 맨 위에 있다.
+        import base64
         def _fake_transaction_id(*args, **kwargs):
             return base64.b64encode(os.urandom(72)).decode('ascii')[:96]
         client.client_transaction.generate_transaction_id = _fake_transaction_id
