@@ -87,6 +87,11 @@ public slots:
     void archiveStatus();                            // JS onArchiveStatus(json) — 색인 규모·AI 상태
     void archiveIndex(const QString &root);          // 색인 만들기/갱신 (증분). 진행은 onArchiveProgress
     void archiveIndexCancel();                       // 진행 중인 색인 중단
+
+    // 보관물 대조 — 예전에 남긴 기록(manifest·해시)과 지금 디스크를 견준다.
+    //   record=true 면 해시를 새로(또는 바뀐 것만) 남긴다. false 면 대조만 한다.
+    //   해시가 없으면 파일 수·크기만 본다 — 그것만으로도 '사라짐·잘림' 은 잡힌다.
+    void archiveVerify(const QString &root, bool record);
     void archiveAsk(const QString &question);        // 질문 → JS onArchiveAnswer(json)
     void setSearchKey(const QString &key);           // 웹 검색 API 키(Brave) 저장 — 읽기전용 인터넷 검색용
     void setLlmUseWeb(bool on);                       // AI 답변 시 웹 검색 참고 on/off (읽기전용)

@@ -397,8 +397,7 @@ if(APPLE)
     # ★ 새 도구 스크립트를 만들면 반드시 여기에도 넣어야 한다. 안 넣으면 개발 트리에서만
     #   돌고 배포본에는 없어서, '내 기계에선 되는데' 가 된다.
     foreach(TOOL_SCRIPT twitter_tid.py twitter_api.py twitter_daemon.py bluesky_daemon.py
-                        email_watch.py socks_relay.py x_session.py exif_tags.py
-                        archive_verify.py)
+                        email_watch.py socks_relay.py x_session.py exif_tags.py)
         if(EXISTS "${TOOLS_DIR}/${TOOL_SCRIPT}")
             add_custom_command(TARGET Hanishiki POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -483,7 +482,7 @@ if(APPLE)
             "$<TARGET_BUNDLE_DIR:Hanishiki>/Contents/Resources/tools/archive"
         COMMENT "Bundling archive scripts"
     )
-    foreach(_af archive_index.py archive_ask.py archive_bot.py archive_cog.py README_archive.md)
+    foreach(_af archive_index.py archive_verify.py archive_ask.py archive_bot.py archive_cog.py README_archive.md)
         if(EXISTS "${CMAKE_SOURCE_DIR}/../../scripts/${_af}")
             add_custom_command(TARGET Hanishiki POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -590,8 +589,7 @@ if(WIN32)
     # ★ 새 도구 스크립트를 만들면 반드시 여기에도 넣어야 한다. 안 넣으면 개발 트리에서만
     #   돌고 배포본에는 없어서, '내 기계에선 되는데' 가 된다.
     foreach(TOOL_SCRIPT twitter_tid.py twitter_api.py twitter_daemon.py bluesky_daemon.py
-                        email_watch.py socks_relay.py x_session.py exif_tags.py
-                        archive_verify.py)
+                        email_watch.py socks_relay.py x_session.py exif_tags.py)
         if(EXISTS "${TOOLS_DIR}/${TOOL_SCRIPT}")
             add_custom_command(TARGET Hanishiki POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different

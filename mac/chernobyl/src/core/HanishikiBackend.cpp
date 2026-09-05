@@ -14382,6 +14382,87 @@ void HanishikiBackend::archiveStatus()
     cnt->start();
 }
 
+// 보관물 대조 — 남겨 둔 기록과 지금을 견준다.
+//   ★ 왜 필요한가. 폴더마다 __ARCHIVE_MANIFEST__.json 을 남기고 있었는데 그것을
+//     다시 읽는 코드가 없었다. 몇 년 뒤 파일이 조용히 사라져도 아무도 모른다.
+//     보관이 목적인 앱에서 그건 가장 나쁜 고장이다.
+void HanishikiBackend::archiveVerify(const QString &root, bool record)
+{
+    const QString script = archiveScriptPath("archive_verify.py");
+    if (script.isEmpty()) {
+        log("❌ 대조 스크립트를 찾을 수 없습니다 (번들 손상).", "error", "settings");
+        return;
+    }
+    QString dir = root.trimmed();
+    if (dir.isEmpty() && m_config) dir = m_config->tempDir();
+    if (dir.isEmpty() || !QDir(dir).exists()) {
+        log(QString("❌ 산출물 폴더가 없습니다: %1").arg(dir.isEmpty() ? "(지정 안 됨)" : dir),
+            "error", "settings");
+        return;
+    }
+
+    log(record ? "해시를 남기는 중… (처음 한 번은 오래 걸립니다)"
+               : "보관물을 대조하는 중…", "info", "settings");
+
+    QThread *t = QThread::create([this, script, dir, record]() {
+        QProcess p;
+        QProcessEnvironment env = Common::bundledProcessEnv();
+        env.insert("PYTHONIOENCODING", "utf-8");
+        p.setProcessEnvironment(env);
+        QStringList args{script};
+        if (record) args << "--record";
+        args << dir;
+        p.start(Common::bundledPythonPath(), args);
+        if (!p.waitForStarted(10000)) {
+            QMetaObject::invokeMethod(this, [this]() {
+                log("❌ 대조를 시작하지 못했습니다.", "error", "settings"); });
+            return;
+        }
+        // 수만 건이면 오래 걸린다 — 넉넉히 기다리되 영원히는 아니다.
+        p.waitForFinished(30 * 60 * 1000);
+        const QByteArray out = p.readAllStandardOutput();
+        const QJsonObject o = QJsonDocument::fromJson(out).object();
+
+        QMetaObject::invokeMethod(this, [this, o, record]() {
+            if (o.contains("error")) {
+                log(QString("❌ %1").arg(o.value("error").toString()), "error", "settings");
+                return;
+            }
+            if (record) {
+                const QJsonArray a = o.value("recorded").toArray();
+                for (const QJsonValue &v : a) {
+                    const QJsonObject r = v.toObject();
+                    log(QString("🔒 %1 — %2개 기록 (새로 %3 · 그대로 %4)")
+                            .arg(r.value("dir").toString())
+                            .arg(r.value("total").toInt())
+                            .arg(r.value("hashed").toInt())
+                            .arg(r.value("reused").toInt()), "info", "settings");
+                }
+                log(QString("✅ 해시 기록 완료 — 폴더 %1곳").arg(a.size()), "success", "settings");
+                return;
+            }
+            const int fail = o.value("fail").toInt();
+            const int warn = o.value("warn").toInt();
+            for (const QJsonValue &v : o.value("results").toArray()) {
+                const QJsonObject r = v.toObject();
+                const QString lv = r.value("level").toString();
+                const QString mark = (lv == "fail") ? "❌" : (lv == "warn") ? "⚠" : "✅";
+                log(QString("%1 %2 — %3").arg(mark, r.value("dir").toString(),
+                                              r.value("msg").toString()),
+                    lv == "fail" ? "error" : (lv == "warn" ? "warning" : "info"), "settings");
+            }
+            if (fail == 0 && warn == 0)
+                log(QString("✅ 대조 완료 — 폴더 %1곳, 잃은 것 없음")
+                        .arg(o.value("checked").toInt()), "success", "settings");
+            else
+                log(QString("대조 완료 — 문제 %1 · 주의 %2").arg(fail).arg(warn),
+                    fail ? "error" : "warning", "settings");
+        }, Qt::QueuedConnection);
+    });
+    connect(t, &QThread::finished, t, &QObject::deleteLater);
+    t->start();
+}
+
 void HanishikiBackend::archiveIndex(const QString &root)
 {
     if (m_archiveProc && m_archiveProc->state() != QProcess::NotRunning) {
