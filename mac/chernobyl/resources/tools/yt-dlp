@@ -32,4 +32,15 @@ for P in \
   "$DIR/../python_env/bin/python3"; do
   [ -x "$P" ] && exec "$P" -m yt_dlp "$@"
 done
+
+# ★ 이 껍데기는 사용자 도구 폴더로 '복사되어' 쓰이기도 한다(자가복구가 그렇게 한다).
+#   그 자리에서는 위의 상대 경로가 아무 데도 안 맞아, 아래 마지막 줄의 시스템 파이썬
+#   으로 떨어졌다 — 그러면 "No module named yt_dlp" 로 죽는다.
+#   실측으로 걸린 자리다: 자가진단이 [OK] 로 통과한 직후 같은 도구가 code 1 로 실패했다.
+#   설치된 앱 번들을 직접 찾아 그 안의 파이썬을 쓴다.
+for A in \
+  /Applications/*.app "$HOME/Applications"/*.app; do
+  P="$A/Contents/Resources/python_env/bin/python3"
+  [ -x "$P" ] && [ -d "$A/Contents/Resources/tools" ] && exec "$P" -m yt_dlp "$@"
+done
 exec python3 -m yt_dlp "$@"
