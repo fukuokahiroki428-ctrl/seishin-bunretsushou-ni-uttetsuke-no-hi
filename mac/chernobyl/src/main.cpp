@@ -10,6 +10,7 @@
 #include <QFileInfo>
 #include <QStringList>
 #include "core/MainWindow.h"
+#include "core/Common.h"
 #include "utils/SelfRepair.h"   // ★ 자가진단·자가복구 + 로컬 LLM 진단
 
 #ifdef Q_OS_MACOS
@@ -228,6 +229,15 @@ int main(int argc, char *argv[])
         std::signal(SIGTERM, onSignal);
         std::signal(SIGINT,  onSignal);
     }
+
+    // ★ 끌 때 SOCKS5 중계기를 반드시 거둔다.
+    //   stopProxyRelay() 는 사용자가 프록시를 '끌 때' 만 불리고 있었다. 켠 채로
+    //   앱을 끄면 중계기(socks_relay.py)가 그대로 남는다 — 인증 없는 로컬 프록시가
+    //   계속 열려 있게 되고, 다음에 앱을 켜면 또 하나가 붙어 쌓인다.
+    //   (실측: 8월 28일에 뜬 중계기가 9월 6일까지 살아 있었다.)
+    //   위에서 SIGTERM 을 정상 종료로 바꿔 두었으므로 재시동·로그아웃도 여기를 탄다.
+    QObject::connect(&app, &QCoreApplication::aboutToQuit,
+                     []() { Common::stopProxyRelay(); });
 
     MainWindow window;
     window.show();
