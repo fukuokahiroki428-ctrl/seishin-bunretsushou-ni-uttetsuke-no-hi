@@ -260,71 +260,87 @@ QString ansiSafePath(const QString &path)
 }
 
 // exiftool 실행 방법 — 한 곳에서만 정한다(선언부 주석 참고).
+namespace {
+// exiftool 실행 방법을 한 번만 정해서 들고 있는다.
+//   ★ 왜 구조체 하나로 묶어 함수 지역 static 으로 두나.
+//     예전엔 static QString 넷을 두고 "비었으면 채운다" 로 썼다. 그런데 EXIF 는
+//     여러 수집 스레드가 동시에 쓴다. 두 스레드가 같이 '비었다' 를 보면 둘 다
+//     채우기에 들어가고, QString 대입은 원자적이지 않아 찢어진 값을 읽을 수 있다.
+//     C++11 부터 함수 지역 static 의 '초기화' 는 한 번만·스레드 안전하게 일어난다.
+//     그 보장을 받으려면 대입이 아니라 초기화여야 한다.
+struct ExiftoolWay {
+    QString program;        // 실제로 띄울 것 (perl 또는 exiftool)
+    QStringList lead;       // 그 앞에 붙일 인자 (-I… + exiftool 스크립트 경로)
+};
+
+ExiftoolWay resolveExiftoolWay()
+{
+    ExiftoolWay w;
+    const QString bundledExiftool = bundledResourcesDir() + "/tools/exiftool/exiftool";
+    if (!QFile::exists(bundledExiftool)) {
+        QStringList candidates = {
+#ifdef Q_OS_WIN
+            QCoreApplication::applicationDirPath() + "/exiftool.exe",
+#endif
+            "/opt/homebrew/bin/exiftool",
+            "/usr/local/bin/exiftool",
+            "/usr/bin/exiftool",
+        };
+        for (const QString &c : candidates)
+            if (QFile::exists(c)) { w.program = c; break; }
+        if (w.program.isEmpty()) w.program = QStringLiteral("exiftool");
+        qInfo() << "[Common] system exiftool:" << w.program;
+        return w;                       // lead 비어 있음 = perl 안 거침
+    }
+
+#ifdef Q_OS_WIN
+    // 윈도우 번들은 exe 라 perl 을 거치지 않는다.
+    w.program = bundledExiftool;
+    return w;
+#else
+    // ★ 예전엔 exiftool 모듈 경로로 ".../lib/perl5" 를 넘겼는데 그런 폴더는 없다.
+    //   실제 위치는 .../tools/exiftool/lib (그 밑에 Image/ · File/).
+    //   exiftool 스크립트가 스스로 자기 lib 을 찾아 주는 덕에 티가 안 났을 뿐,
+    //   우리가 준 -I 는 내내 허공을 가리키고 있었다.
+    const QString exiftoolLib = bundledResourcesDir() + "/tools/exiftool/lib";
+
+    // ★ 번들 perl 우선. Apple 은 /usr/bin/perl 을 언젠가 뺀다고 예고했다.
+    //   그날 EXIF 기록이 통째로 죽지 않도록 perl 을 들고 다닌다.
+    QString perl = bundledResourcesDir() + "/tools/perl/bin/perl";
+    QStringList coreIncs;
+    if (QFile::exists(perl)) {
+        const QString core = bundledResourcesDir() + "/tools/perl/lib";
+        // 아키텍처 폴더 이름(darwin-thread-multi-2level)을 코드에 박지 않는다.
+        // perl 판이 바뀌면 이름도 바뀐다 — 실제로 있는 것을 찾아 넣는다.
+        for (const QString &d : QDir(core).entryList(QStringList() << "darwin*",
+                                                     QDir::Dirs | QDir::NoDotAndDotDot))
+            coreIncs << (core + "/" + d);
+        coreIncs << core;
+    } else {
+        perl.clear();
+        for (const QString &p : {QStringLiteral("/usr/bin/perl"),
+                                 QStringLiteral("/usr/local/bin/perl"),
+                                 QStringLiteral("/opt/homebrew/bin/perl")}) {
+            if (QFile::exists(p)) { perl = p; break; }
+        }
+        if (perl.isEmpty()) perl = QStringLiteral("perl");
+    }
+    w.program = perl;
+    for (const QString &inc : coreIncs) w.lead << ("-I" + inc);
+    w.lead << ("-I" + exiftoolLib);
+    w.lead << bundledExiftool;
+    qInfo() << "[Common] exiftool:" << bundledExiftool << "perl:" << perl
+            << (coreIncs.isEmpty() ? "(시스템 perl)" : "(번들 perl)");
+    return w;
+#endif
+}
+} // namespace
+
 QString exiftoolProgram(QStringList *leadingArgs)
 {
-    static QString exiftoolPath;
-    static QString exiftoolPerl;         // 번들 exiftool 을 돌릴 perl
-    static QString exiftoolLib;          // exiftool 자기 모듈(Image/ExifTool.pm)
-    static QStringList perlCoreIncs;     // 번들 perl 의 코어 @INC
-    if (exiftoolPath.isEmpty()) {
-        const QString bundledExiftool = bundledResourcesDir() + "/tools/exiftool/exiftool";
-        if (QFile::exists(bundledExiftool)) {
-            exiftoolPath = bundledExiftool;
-            // ★ 예전엔 여기에 ".../lib/perl5" 를 넣었는데 그런 폴더는 없다.
-            //   실제 위치는 .../tools/exiftool/lib (그 밑에 Image/ · File/).
-            //   exiftool 스크립트가 스스로 자기 lib 을 찾아 주는 덕에 티가 안 났을 뿐,
-            //   우리가 준 -I 는 내내 허공을 가리키고 있었다.
-            exiftoolLib = bundledResourcesDir() + "/tools/exiftool/lib";
-
-            // ★ 번들 perl 우선. Apple 은 /usr/bin/perl 을 언젠가 뺀다고 예고했다.
-            //   그날 EXIF 기록이 통째로 죽지 않도록 perl 을 들고 다닌다.
-            const QString bundledPerl = bundledResourcesDir() + "/tools/perl/bin/perl";
-            if (QFile::exists(bundledPerl)) {
-                exiftoolPerl = bundledPerl;
-                const QString core = bundledResourcesDir() + "/tools/perl/lib";
-                // 아키텍처 폴더 이름(darwin-thread-multi-2level)을 코드에 박지 않는다.
-                // perl 판이 바뀌면 이름도 바뀐다 — 실제로 있는 것을 찾아 넣는다.
-                for (const QString &d : QDir(core).entryList(QStringList() << "darwin*",
-                                                             QDir::Dirs | QDir::NoDotAndDotDot))
-                    perlCoreIncs << (core + "/" + d);
-                perlCoreIncs << core;
-            } else {
-                for (const QString &p : {QStringLiteral("/usr/bin/perl"),
-                                         QStringLiteral("/usr/local/bin/perl"),
-                                         QStringLiteral("/opt/homebrew/bin/perl")}) {
-                    if (QFile::exists(p)) { exiftoolPerl = p; break; }
-                }
-                if (exiftoolPerl.isEmpty()) exiftoolPerl = QStringLiteral("perl");
-            }
-            qInfo() << "[Common] exiftool:" << exiftoolPath << "perl:" << exiftoolPerl
-                    << (perlCoreIncs.isEmpty() ? "(시스템 perl)" : "(번들 perl)");
-        } else {
-            QStringList candidates = {
-#ifdef Q_OS_WIN
-                QCoreApplication::applicationDirPath() + "/exiftool.exe",
-#endif
-                "/opt/homebrew/bin/exiftool",
-                "/usr/local/bin/exiftool",
-                "/usr/bin/exiftool",
-            };
-            for (const QString &c : candidates)
-                if (QFile::exists(c)) { exiftoolPath = c; break; }
-            if (exiftoolPath.isEmpty()) exiftoolPath = QStringLiteral("exiftool");
-            qInfo() << "[Common] system exiftool:" << exiftoolPath;
-        }
-    }
-    if (leadingArgs) leadingArgs->clear();
-#ifndef Q_OS_WIN
-    if (!exiftoolPerl.isEmpty() && exiftoolPath.startsWith(bundledResourcesDir())) {
-        if (leadingArgs) {
-            for (const QString &inc : perlCoreIncs) *leadingArgs << ("-I" + inc);
-            if (!exiftoolLib.isEmpty()) *leadingArgs << ("-I" + exiftoolLib);
-            *leadingArgs << exiftoolPath;
-        }
-        return exiftoolPerl;
-    }
-#endif
-    return exiftoolPath;
+    static const ExiftoolWay way = resolveExiftoolWay();   // 1회·스레드 안전
+    if (leadingArgs) *leadingArgs = way.lead;
+    return way.program;
 }
 
 void addExifMetadata(const QString &imagePath, const QString &artist,
