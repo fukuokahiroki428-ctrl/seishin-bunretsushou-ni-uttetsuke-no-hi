@@ -636,7 +636,11 @@ QString proxyLocalRelayUrl()
         return QString();
     }
 
-    QMutexLocker lock(&g_proxyMutex);
+    // ★ 잠금을 쥐지 않은 채 띄운다.
+    //   예전엔 여기서 잠금을 잡고 기동(최대 5초)과 준비 신호(최대 8초)를 기다렸다.
+    //   그동안 다른 수집 스레드의 effectiveProxy() 조회가 전부 이 잠금에서 멈췄다 —
+    //   병렬 수집이 최대 13초씩 통째로 얼어붙는다.
+    //   대신 마지막에 잠금을 짧게 잡고, 그 사이 남이 먼저 만들었으면 내 것을 버린다.
     auto *p = new QProcess();
     p->setProcessEnvironment(QProcessEnvironment::systemEnvironment());
     p->start(python, {script, QStringLiteral("--stdin-args")});
@@ -665,7 +669,17 @@ QString proxyLocalRelayUrl()
         p->kill(); p->waitForFinished(2000); p->deleteLater();
         return QString();
     }
-    g_relays.insert(sig, Relay{p, port});
+    {
+        QMutexLocker lock(&g_proxyMutex);
+        // 기다리는 사이에 다른 스레드가 같은 상위 프록시로 먼저 띄웠을 수 있다.
+        const Relay other = g_relays.value(sig);
+        if (other.proc && other.proc->state() != QProcess::NotRunning && other.port > 0) {
+            lock.unlock();
+            p->kill(); p->waitForFinished(2000); p->deleteLater();
+            return QStringLiteral("socks5://127.0.0.1:%1").arg(other.port);
+        }
+        g_relays.insert(sig, Relay{p, port});
+    }
     qInfo() << "[proxy] 로컬 중계기 준비 — 127.0.0.1:" << port
             << "(상위" << cfg.host << ")";
     return QStringLiteral("socks5://127.0.0.1:%1").arg(port);

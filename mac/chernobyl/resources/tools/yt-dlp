@@ -12,10 +12,21 @@ export PYTHONDONTWRITEBYTECODE=1
 #   번들 python_env 에 직접 설치하면 codesign 봉인이 깨진다. 그래서 자동 갱신은
 #   여기에 새 판을 깔고, 이 줄이 그것을 번들보다 앞에 세운다.
 #   앱을 거치지 않고 이 스크립트를 직접 불러도 같은 판이 쓰이도록 여기에도 둔다.
-for _OV in "$HOME/Library/Application Support"/*/pypkgs; do
-  [ -d "$_OV" ] && PYTHONPATH="$_OV${PYTHONPATH:+:$PYTHONPATH}"
-done
-export PYTHONPATH
+# ★ 앱을 거쳐 불렸으면 앱이 이미 옳은 덧씌우기를 PYTHONPATH 에 넣어 두었다.
+#   그때는 손대지 않는다 — 여기서 더 붙이면 앱이 고른 것을 덮어쓸 수 있다.
+# ★ 직접 불렸을 때만 고른다. 예전엔 조건에 맞는 폴더를 '전부' 앞에 붙였는데,
+#   붙이는 순서가 뒤집혀 알파벳상 마지막 것이 이겼다. 게다가 글롭이
+#   Application Support/*/pypkgs 라서 우리 앱이 아닌 다른 앱 폴더까지 잡았고,
+#   옛 이름(カメラ·Chernobyl·Predormition) 의 낡은 꾸러미가 지금 것을 가릴 수 있었다.
+#   → 아래 python_env 탐색과 같은 규칙(갱신 시각 역순)으로 '하나만' 고른다.
+if [ -z "$PYTHONPATH" ]; then
+  _OV="$(ls -1dt "$HOME/Library/Application Support"/*/pypkgs \
+                 "$HOME/Library/Application Support"/Miyo/*/pypkgs 2>/dev/null | head -1)"
+  if [ -n "$_OV" ] && [ -d "$_OV" ]; then
+    PYTHONPATH="$_OV"
+    export PYTHONPATH
+  fi
+fi
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 SUP="$HOME/Library/Application Support"

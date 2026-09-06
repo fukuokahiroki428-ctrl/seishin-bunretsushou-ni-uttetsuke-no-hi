@@ -4194,6 +4194,38 @@ static QProcessEnvironment bundledEnv()
     return Common::bundledProcessEnv();
 }
 
+// config 의 계정 목록에서 이 수집이 쓸 계정의 프록시를 골라 '지금 이 스레드' 에 건다.
+//   ★ 왜 함수로 빼는가. 수집 워커 스레드에서 한 번 걸어 두면 되는 줄 알았다.
+//     그런데 Chrome 계열(진짜 Chrome·캡쳐·펜)은 곧바로 QMetaObject::invokeMethod 로
+//     메인 스레드에 넘어가 거기서 중계기를 만든다. 메인 스레드에는 이 수집의
+//     thread_local 이 없으니 전역 프록시가 쓰였다 — 계정별 프록시가 Chrome 에서만
+//     조용히 무시되고 있었다. 두 자리가 같은 규칙을 쓰게 한 곳에 둔다.
+//   ★ 일괄(batch) 경로는 JS 가 계정을 미리 걸러 넘기므로 목록의 0번이 곧 그 계정이다.
+//     평소 경로는 전체 목록이 오고 accountIdx 가 없어 0번이 걸린다 — 수집기가
+//     0번부터 쓰기 시작하므로 시작 시점에는 맞고, 계정이 도는 순간부터는
+//     수집기 쪽(switchToAccount)에서 다시 건다.
+static bool applyAccountProxyToCurrentThread(const QJsonObject &config,
+                                             QString *hostOut = nullptr,
+                                             int *portOut = nullptr)
+{
+    const QJsonArray accs = config["accounts"].toArray();
+    int idx = 0;
+    const QJsonValue ai = config["accountIdx"];
+    if (ai.isDouble()) idx = ai.toInt();
+    else if (ai.isString() && ai.toString() != "all") idx = ai.toString().toInt();
+    if (idx < 0 || idx >= accs.size()) return false;
+    const QJsonObject a = accs.at(idx).toObject();
+    const QString ph = a.value("proxyHost").toString();
+    const int    pp = a.value("proxyPort").toInt();
+    if (ph.isEmpty() || pp <= 0) return false;
+    Common::setThreadProxy(true, ph, pp,
+                           a.value("proxyUser").toString(),
+                           a.value("proxyPass").toString());
+    if (hostOut) *hostOut = ph;
+    if (portOut) *portOut = pp;
+    return true;
+}
+
 void HanishikiBackend::startCollection(const QString &configJson)
 {
     // [DEBUG] window._debugLogsEnabled가 true일 때만 [CPP] 라인 출력 — 직접 runJs로 호출
@@ -4314,22 +4346,9 @@ void HanishikiBackend::startCollection(const QString &configJson)
         //   전역 하나를 바꿔 끼우면 동시에 도는 다른 수집이 그 설정을 같이 타 버린다.
         //   지정이 없으면 아무것도 걸지 않고 전역 설정을 그대로 쓴다.
         {
-            const QJsonArray accs = config["accounts"].toArray();
-            int idx = 0;
-            const QJsonValue ai = config["accountIdx"];
-            if (ai.isDouble()) idx = ai.toInt();
-            else if (ai.isString() && ai.toString() != "all") idx = ai.toString().toInt();
-            if (idx >= 0 && idx < accs.size()) {
-                const QJsonObject a = accs.at(idx).toObject();
-                const QString ph = a.value("proxyHost").toString();
-                const int    pp = a.value("proxyPort").toInt();
-                if (!ph.isEmpty() && pp > 0) {
-                    Common::setThreadProxy(true, ph, pp,
-                                           a.value("proxyUser").toString(),
-                                           a.value("proxyPass").toString());
-                    log(QString("🔒 이 계정은 %1:%2 로 나갑니다").arg(ph).arg(pp), "info", platformName);
-                }
-            }
+            QString ph; int pp = 0;
+            if (applyAccountProxyToCurrentThread(config, &ph, &pp))
+                log(QString("🔒 이 계정은 %1:%2 로 나갑니다").arg(ph).arg(pp), "info", platformName);
         }
         // 스레드가 끝나면 반드시 지운다 — 남겨 두면 이 스레드를 재사용할 때 엉뚱한 IP 로 나간다.
         struct ProxyScope { ~ProxyScope() { Common::clearThreadProxy(); } } _proxyScope;
@@ -7222,6 +7241,23 @@ void HanishikiBackend::runRealChromeCollection(const QJsonObject &config)
             }
         }
 
+        // ★ 여기는 메인 스레드다 — 수집 워커에 걸어 둔 thread_local 프록시가 없다.
+        //   start() 안에서 중계기를 만들어 --proxy-server 인자를 짓기 때문에,
+        //   그 전에 이 스레드에도 같은 계정 프록시를 걸어야 한다.
+        //   인자를 다 지은 뒤(=start 반환 뒤) 곧바로 지운다 — 메인 스레드에 남기면
+        //   앱의 다른 통신까지 그 계정 프록시를 타게 된다.
+        struct MainProxyScope {
+            bool on = false;
+            ~MainProxyScope() { if (on) Common::clearThreadProxy(); }
+        } _mainProxy;
+        {
+            QString ph; int pp = 0;
+            if (applyAccountProxyToCurrentThread(config, &ph, &pp)) {
+                _mainProxy.on = true;
+                log(QString("🔒 Chrome 도 %1:%2 로 내보냅니다").arg(ph).arg(pp), "info", platform);
+            }
+        }
+
         m_realChrome->start([this, done, platformCopy, targetCopy, userDirCopy, capturesDirCopy,
                               mediaDirCopy, targetUrlCopy, maxScrolls, loginCookies](bool ok) {
             if (!ok) {
@@ -8709,7 +8745,15 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                         .arg(fullCookie.count(';') + 1), "success", "instagram");
                     // UI 업데이트 — JS-safe 인코딩
                     QString safeSid = Common::jsStringLiteral(sessionId);
-                    runJs(QString("document.getElementById('instagram-session-id').value=%1;"
+                    // ★ instagram-session-id 는 지금 화면에 없는 id 다(이름이 바뀌었다).
+                    //   널 검사 없이 .value 를 건드리면 그 자리에서 TypeError 가 나고,
+                    //   바로 뒷줄의 계정 갱신과 saveConfig() 가 통째로 안 돈다.
+                    //   즉 애써 갱신한 세션을 그대로 버리고 있었다.
+                    //   같은 일을 하는 15351 줄에는 진작 널 검사가 있었다.
+                    runJs(QString("var _sid=document.getElementById('instagram-session-id');"
+                                  "if(_sid) _sid.value=%1;"
+                                  "var _ck=document.getElementById('instagram-cookie');"
+                                  "if(_ck && !_ck.value) _ck.value=%1;"
                                   "if(accounts.instagram && accounts.instagram.length>0) accounts.instagram[0].session_id=%1;"
                                   "saveConfig();").arg(safeSid));
                     continue;  // 갱신된 세션으로 재시도
@@ -13271,6 +13315,16 @@ void HanishikiBackend::updateModules()
                 if (output.contains("Successfully installed")) {
                     log(QString("  ✅ %1 업데이트됨").arg(pkg), "success", "settings");
                     updated++;
+                    // ★ 덧씌운 폴더(pypkgs)는 PYTHONPATH 앞에 있어 번들을 가린다.
+                    //   방금 번들에 최신을 깔아도, 자동 갱신이 며칠 전에 덧씌워 둔
+                    //   옛 판이 그대로 이긴다 — 버튼을 눌러도 아무 일이 없는 것처럼 보인다.
+                    //   양쪽 다 '최신으로' 올리는 자리이므로 방금 깐 번들 판이 최소한
+                    //   덧씌움과 같거나 더 새롭다. 그러니 가림막만 걷어 낸다.
+                    if (SelfRepair::removeOnePackageFromOverlay(
+                            python, Common::userPyOverlayDir(), pkg)) {
+                        log(QString("     (덧씌워 둔 옛 %1 을 걷어 냈습니다)").arg(pkg),
+                            "info", "settings");
+                    }
                 } else {
                     log(QString("  ✅ %1 최신").arg(pkg), "info", "settings");
                 }
@@ -16018,7 +16072,10 @@ void HanishikiBackend::refreshTumblrCookie()
     log("Tumblr: 공식 API는 Consumer Key가 필요합니다 (수동 입력).", "info", "tumblr");
     log("  https://www.tumblr.com/oauth/apps 에서 발급받으세요.", "info", "tumblr");
     // tumblr.com 쿠키도 추출 (향후 웹 스크래핑 대체 경로용)
-    refreshDomainCookies("tumblr.com", "tumblr-apikey-cookie-hint", "tumblr", "Tumblr", "setTumblrRefreshing");
+    // ★ tumblr-apikey-cookie-hint 는 화면에 없는 id 였다 — 뽑아 낸 쿠키를 넣을 곳이
+    //   없어 '필드 없음' 경고만 남기고 매번 버리고 있었다. 다른 플랫폼은 모두
+    //   <플랫폼>-cookie 를 쓴다(twitter-cookie·spinspin-cookie·asked-cookie).
+    refreshDomainCookies("tumblr.com", "tumblr-cookie", "tumblr", "Tumblr", "setTumblrRefreshing");
 }
 
 void HanishikiBackend::refreshSpinSpinCookie()

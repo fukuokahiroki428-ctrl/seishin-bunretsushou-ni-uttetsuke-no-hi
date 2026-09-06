@@ -560,6 +560,7 @@ inline SmokeResult smokePython(const QString &exe)
               "    except Exception: missing.append(m)\n"
               "try: sys.stdout.reconfigure(encoding='utf-8')\n"
               "except Exception: pass\n"
+              "print('TOTAL:%d' % len(mods))\n"
               "print('KOREAN:자가진단')\n"
               "print('MISSING:' + ','.join(missing))\n";
     }
@@ -590,7 +591,14 @@ inline SmokeResult smokePython(const QString &exe)
         if (line.startsWith("MISSING:")) missing = line.mid(8).trimmed();
     if (!missing.isEmpty())
         return smokeFail("빠진 모듈: " + missing + " — 설정 → 모듈 업데이트로 받으세요");
-    return smokePass("필수 모듈 15개 import · 한글 출력 확인");
+    // ★ 개수를 코드에 박아 두면 목록을 고칠 때마다 어긋난다. 실제로 목록은 14개인데
+    //   "15개" 라고 적고 있었다. 진단서가 검사한 것보다 많게 말하면 그 보고서 전체를
+    //   믿을 수 없게 된다 — 세어서 쓴다.
+    QString total;
+    for (const QString &line : out.split('\n'))
+        if (line.startsWith("TOTAL:")) total = line.mid(6).trimmed();
+    return smokePass(QStringLiteral("필수 모듈 %1개 import · 한글 출력 확인")
+                         .arg(total.isEmpty() ? QStringLiteral("?") : total));
 }
 
 // ── 인터넷에 닿는지 ──────────────────────────────────────────────────────
@@ -662,6 +670,16 @@ inline SmokeResult smokeBrowserCookies(const QString &python)
         return smokeFail(QStringLiteral("60초 안에 끝나지 않았습니다"));
     }
     const QByteArray out = p.readAllStandardOutput().trimmed();
+    const QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();
+    // ★ 자식이 죽으면 표준출력이 비고, 그러면 아래에서 '건너뜀' 으로 빠진다.
+    //   건너뜀은 '검사할 대상이 없었다' 는 뜻이지 '고장났다' 가 아니다.
+    //   둘을 섞으면 진단서를 보고도 고장을 못 알아챈다 — 종료코드를 먼저 본다.
+    if (p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
+        const QString first = err.isEmpty() ? QStringLiteral("(오류 출력 없음)")
+                                            : err.section('\n', -1).left(160);
+        return smokeFail(QStringLiteral("쿠키 검사가 종료코드 %1 로 죽었습니다 — %2")
+                             .arg(p.exitCode()).arg(first));
+    }
     const QJsonObject o = QJsonDocument::fromJson(out).object();
     const QString v = o.value("v").toString();
     const QString d = o.value("d").toString();
@@ -832,6 +850,14 @@ inline QString updatePackagesIfDue(const QString &python, bool allowNetwork,
     if (!force && !freshCheckDue(everyDays)) return QString();
     if (python.isEmpty() || !QFile::exists(python)) return QString();
 
+    // ★ 인터넷이 없으면 '맞출 것이 없었다' 가 아니라 '확인하지 못했다' 이다.
+    //   예전엔 오프라인에서도 pip 가 전부 실패한 뒤 markFreshChecked() 를 찍어
+    //   3일을 더 미뤘고, 화면에는 '맞출 것이 없었습니다' 라고 적었다.
+    //   켤 때만 잠깐 연결되는 기계에서는 갱신이 영영 자리를 못 잡는다.
+    //   시각을 찍지 않고 물러난다 — 다음에 켤 때 다시 해 본다.
+    if (!internetReachable())
+        return QStringLiteral("[UPD]  꾸러미 신선도 확인 — 인터넷에 닿지 않아 미룹니다\n");
+
     const QString overlay = Common::userPyOverlayDir();
     QString out;
     int updated = 0, failed = 0;
@@ -907,13 +933,21 @@ inline QString checkEnvironment()
                 "mods=['twikit','httpx','atproto','openpyxl','PIL',"
                 "'browser_cookie3','bs4','websockets','lxml','m3u8','cryptography']\n"
                 "miss=[m for m in mods if u.find_spec(m) is None]\n"
-                "print(','.join(miss))"});
+                "print(','.join(miss))\n"
+                "print('TOTAL:%d' % len(mods))"});
             pc.waitForFinished(20000);
-            const QString miss = QString::fromUtf8(pc.readAllStandardOutput()).trimmed();
+            const QString raw = QString::fromUtf8(pc.readAllStandardOutput());
+            QString miss, pkgTotal;
+            for (const QString &line : raw.split('\n')) {
+                const QString t = line.trimmed();
+                if (t.startsWith("TOTAL:")) pkgTotal = t.mid(6).trimmed();
+                else if (!t.isEmpty()) miss = t;
+            }
             if (!miss.isEmpty())
                 out += "[FAIL] 파이썬 패키지 없음: " + miss + " — 수집이 실패합니다\n";
             else
-                out += "[OK]   파이썬 패키지 12종 정상\n";
+                out += "[OK]   파이썬 패키지 " + (pkgTotal.isEmpty() ? QStringLiteral("?") : pkgTotal)
+                     + "종 정상\n";
         }
     }
 
@@ -1115,8 +1149,26 @@ inline QString runStartupMaintenance()
                 report += "[SEAL] 코드 서명 봉인이 깨져 있습니다 — 자동 복구를 시도합니다"
                           " (1분쯤 걸립니다 — 끄지 마십시오)…\n";
                 QString serr;
-                if (Common::resealAppBundle(&serr))
+                if (Common::resealAppBundle(&serr)) {
                     report += "[SEAL] ✅ 서명 복구 완료.\n";
+                    // ★ 어떤 신원으로 다시 서명했는지 확인해 알린다.
+                    //   인증서가 만료되면 codesign_app.sh 는 조용히 ad-hoc 으로 떨어진다.
+                    //   ad-hoc 은 서명 해시가 매번 바뀌어 macOS 가 '다른 앱' 으로 본다 —
+                    //   자동화·화면 기록 같은 권한이 초기화되고 대화상자가 다시 뜬다.
+                    //   그때 사용자에게는 아무 설명 없이 권한만 사라지는 것으로 보인다.
+                    //   왜 그런지 여기서 말해 주지 않으면 알 길이 없다.
+                    QProcess idp;
+                    idp.start("/usr/bin/codesign", {"-dv", app});
+                    idp.waitForFinished(10000);
+                    const QString sig = QString::fromUtf8(idp.readAllStandardError());
+                    if (sig.contains(QLatin1String("Signature=adhoc"))) {
+                        report += "[SEAL] ⚠️ 인증서가 없어 ad-hoc 으로 서명했습니다.\n"
+                                  "       macOS 는 이것을 '다른 앱' 으로 봅니다 — 자동화·화면 기록\n"
+                                  "       같은 권한이 초기화되고 대화상자가 다시 뜹니다. 앱은 계속\n"
+                                  "       돌아갑니다. 원래대로 두려면 개발자 인증서를 새로 받아\n"
+                                  "       다시 빌드하십시오.\n";
+                    }
+                }
                 else
                     report += "[SEAL] ⚠️ 서명 복구 실패: " + serr.left(200) + "\n"
                               "       앱은 계속 쓸 수 있지만, 배포·공증 전에 다시 빌드하십시오.\n";

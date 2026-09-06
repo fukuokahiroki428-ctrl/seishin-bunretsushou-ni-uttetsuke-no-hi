@@ -259,6 +259,17 @@ void MainWindow::populatePlatformMenu()
                         QString("if(window.switchTab) switchTab('%1')").arg(id));
                 });
             }
+            // ★ 일괄 다운로드 — 모달은 완성돼 있는데 여는 곳이 어디에도 없어
+            //   기능 전체가 화면에서 닿을 수 없었다(window.openBatchModal 정의만 존재).
+            //   사이드바를 건드리지 않고 메뉴막대에 입구를 낸다.
+            m_platformMenu->addSeparator();
+            QAction *batch = m_platformMenu->addAction(QStringLiteral("일괄 다운로드…"));
+            connect(batch, &QAction::triggered, this, [this]() {
+                show(); raise(); activateWindow();
+                m_webView->page()->runJavaScript(
+                    QStringLiteral("if(window.openBatchModal) openBatchModal();"
+                                   "else appendLog('이 판에는 일괄 다운로드가 없습니다','error','settings');"));
+            });
             qInfo() << "[기능메뉴] 항목" << arr.size() << "개 채움";
         });
 }
@@ -269,8 +280,12 @@ void MainWindow::populatePlatformMenu()
 //     탭 본문·입력칸·저장 로직이 전부 그 문서에 얹혀 있다. 따로 만들면 두 벌을
 //     유지해야 하고, 이 저장소에서 그런 이중 관리는 늘 한쪽만 갱신되어 어긋났다.
 //     같은 문서를 띄우고 #window=<탭> 으로 '이 창은 이 기능만' 이라고 알려 준다.
-//   ★ 백엔드는 같은 QWebChannel 을 공유한다. runJs()/log() 가 Qt 신호로 나가므로
-//     이 창도 진행상황과 로그를 그대로 받는다. 백엔드를 손댈 필요가 없다.
+//   ★ 백엔드는 같은 QWebChannel 을 공유한다 — JS→C++ 호출은 이 창에서도 된다.
+//     그런데 C++→JS 는 아니었다. jsSignal 은 채널로 나가는 게 아니라 백엔드가
+//     자기 자신에게 연결해 두고 페이지 하나를 골라 실행하는 구조라, 오래도록
+//     본 창 페이지만 받고 있었다. 이 창은 명령은 보내는데 로그·진행·결과는
+//     한 줄도 못 받는 반쪽이었다. 지금은 MainWindow::allWebViews() 로 모든 창에
+//     보낸다 — 이 주석이 원래 말하려던 상태가 이제야 사실이 되었다.
 void MainWindow::openFeatureWindow(const QString &tabId, const QString &title)
 {
     if (QWidget *w = m_featureWindows.value(tabId).data()) {

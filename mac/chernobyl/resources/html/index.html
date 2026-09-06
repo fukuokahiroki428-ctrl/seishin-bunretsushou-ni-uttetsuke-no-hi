@@ -4073,6 +4073,10 @@
                 }
                 // 계정 드롭다운에 이름 반영 + 목록 재렌더
                 refreshTargetAccountPickers();
+                // ★ 여기까지 왔으면 이 창은 진짜 설정을 받았다 — 이제부터 저장을 허용한다.
+                //   중간에 예외가 나면 표시하지 않는다. 반쯤 읽은 설정으로 덮어쓰면
+                //   안 읽느니만 못하다.
+                _configLoaded = true;
             } catch(e) {}
         }
         // Platform name to DOM ID prefix mapping
@@ -4150,7 +4154,21 @@
             appendLog('계정 「'+(a.name||a.handle||'Account')+'」 — 전역 설정을 따릅니다','info',p);
         }
         function removeAccount(p,i) { accounts[p].splice(i,1); renderAccounts(p); saveConfig(); refreshTargetAccountPickers(); }
+        // ★★ 계정·대상 목록 wipe 방지 가드.
+        //   accounts 초기값은 {twitter:[],bluesky:[],…} 즉 '빈 목록' 이다.
+        //   setConfig 로 진짜 값을 받기 전에 saveConfig 가 한 번이라도 불리면
+        //   계정 전부와 대상 목록이 빈 값으로 덮여 저장된다.
+        //   폼 쪽에는 진작 _formLoaded 가드가 있었는데 이쪽엔 아무것도 없었다.
+        //   메뉴막대로 띄운 기능 창처럼 '설정을 아직 못 받은 창' 이 생기면서
+        //   실제로 닿을 수 있는 길이 되었다.
+        //   폴백 타이머를 두지 않는다 — loadConfig 는 설정이 비어 있어도 항상
+        //   setConfig 를 보내므로, 안 오면 그건 진짜 고장이고 저장하면 안 된다.
+        var _configLoaded = false;
         function saveConfig() {
+            if (!_configLoaded) {
+                try { console.warn('[설정] 아직 설정을 받지 못해 저장을 건너뜁니다'); } catch(e){}
+                return;
+            }
             if (backend) backend.saveConfig(JSON.stringify({
                 accounts: accounts,
                 platformTargets: platformTargets,
@@ -6275,6 +6293,7 @@
         //   restoreFormData(폼 복원) 전에 _doSaveForm 이 호출돼 '빈 폼'을 저장 → 저장된
         //   쿠키/세션을 통째로 wipe 하던 버그. restoreFormData 가 한 번 돌기 전엔 저장 금지.
         var _formLoaded = false;
+        var _formRestored = false;   // 폴백이 아니라 '진짜 복원' 을 받았는가
         setTimeout(function(){ _formLoaded = true; }, 8000);  // 폴백: 복원 콜백이 영영 안 와도 8초 뒤 저장 허용
         function _doSaveForm() {
             if (!_formLoaded) return;   // 폼 로드 전엔 저장 금지 (빈 폼 wipe 방지)
@@ -6285,6 +6304,18 @@
                 if (el.type === 'checkbox') data[id] = el.checked;
                 else data[id] = el.value;
             });
+            // ★ 8초 폴백으로 가드가 풀린 경우 — 복원을 못 받은 채라면 '전부 빈 값' 은
+            //   절대 저장하지 않는다. 저장된 쿠키·세션 140여 개를 빈 값으로 덮는 것이
+            //   이 함수가 낼 수 있는 최악의 사고다. 사용자가 뭐라도 입력했으면
+            //   그건 진짜 뜻이므로 통과시킨다.
+            if (!_formRestored) {
+                var any = false;
+                for (var k in data) {
+                    var v = data[k];
+                    if (v !== '' && v !== false && v !== null && v !== undefined) { any = true; break; }
+                }
+                if (!any) return;
+            }
             if (backend && backend.saveFormData) backend.saveFormData(JSON.stringify(data));
         }
         function saveFormDataToBackend() {
@@ -6302,6 +6333,7 @@
         // C++ 에서 호출 — config 파일에서 폼 복원
         function restoreFormData(jsonStr) {
             _formLoaded = true;   // ★ 복원 1회 완료 → 이후부터 저장 허용 (wipe 가드 해제)
+            _formRestored = true; // 폴백이 아니라 진짜로 받았다 — 빈 값 저장 금지를 푼다
             try {
                 var data = JSON.parse(jsonStr);
                 _formFieldIds.forEach(function(id) {
