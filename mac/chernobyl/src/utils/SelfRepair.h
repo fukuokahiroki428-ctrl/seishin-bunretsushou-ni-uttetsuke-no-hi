@@ -706,6 +706,14 @@ inline SmokeResult smokeYtDlp(const QString &exe)
     for (const QString &url : urls) {
         QProcess p;
         p.setProcessEnvironment(Common::bundledProcessEnv());
+        // ★ 작업 폴더를 검사용 폴더로 못박는다.
+        //   -o - 로 표준출력에 받더라도, 형식이 HLS(m3u8)로 잡히면 yt-dlp 는
+        //   조각 임시파일(--Frag1 …)을 '현재 작업 폴더' 에 만든다. 32KB 를 받자마자
+        //   프로세스를 죽이므로 그 조각이 그대로 남는다.
+        //   앱을 Finder 로 켜면 작업 폴더가 / 라서 쓰기에 실패해 우연히 안 남았을 뿐이다.
+        //   터미널에서 켜면 그 폴더에 조각이 쌓인다(실측: 33KB 짜리 AAC 조각).
+        //   '우연히 못 쓰는 것' 에 기대지 않고 쓸 자리를 정해 준다.
+        p.setWorkingDirectory(smokeDir());
         p.start(launchPath(QStringLiteral("yt-dlp"), exe), QStringList()
                 << "--no-warnings" << "--no-progress" << "--no-playlist"
                 << "-f" << "worstaudio/worst" << "-o" << "-" << url.trimmed());
