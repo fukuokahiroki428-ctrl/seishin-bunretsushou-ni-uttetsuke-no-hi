@@ -468,8 +468,20 @@ inline SmokeResult smokeExiftool(const QString &exe)
         a.close();
         QProcess p;
         p.setProcessEnvironment(Common::bundledProcessEnv());
-        p.start(launchPath(QStringLiteral("exiftool"), exe),
-                QStringList() << "-@" << Common::ansiSafePath(argPath));
+        // ★ 맥에서는 perl 을 명시적으로 거친다. exiftool 은 perl 스크립트이고
+        //   앱 본체(Common::addExifMetadata)도, checkTool 도 그렇게 부른다.
+        //   스크립트를 직접 execve 하면 재서명 직후 첫 실행에서 Gatekeeper 평가로
+        //   'execve: Permission denied' 위양성이 난다(checkTool 주석 참고 — 실측).
+        //   자가수리가 스스로 재서명한 바로 다음 기동이 정확히 그 상황이라,
+        //   도구는 멀쩡한데 진단서만 고장을 알리게 된다.
+        //   덤으로 shebang(#!/usr/bin/env perl)이 PATH 앞의 홈브루 perl 을 잡는 것도 막는다.
+        const QStringList exifArgs =
+            QStringList() << "-@" << Common::ansiSafePath(argPath);
+#ifdef Q_OS_WIN
+        p.start(launchPath(QStringLiteral("exiftool"), exe), exifArgs);
+#else
+        p.start(QStringLiteral("/usr/bin/perl"), QStringList() << exe << exifArgs);
+#endif
         if (!p.waitForStarted(5000)) return false;
         if (!p.waitForFinished(20000)) { p.kill(); return false; }
         if (out) *out = p.readAllStandardOutput();
@@ -558,6 +570,17 @@ inline SmokeResult smokePython(const QString &exe)
     if (!p.waitForStarted(5000)) return smokeFail("파이썬을 실행하지 못했습니다");
     if (!p.waitForFinished(120000)) { p.kill(); return smokeFail("파이썬이 응답하지 않습니다"); }
     const QString out = QString::fromUtf8(p.readAllStandardOutput());
+    const QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();
+
+    // ★ 종료코드를 먼저 본다. 파이썬이 아예 죽으면 표준출력이 비는데, 그것을
+    //   '한글이 깨졌다' 로 읽으면 엉뚱한 데를 고치게 된다. 자가진단이 틀린 곳을
+    //   가리키면 없느니만 못하다 — 무엇이 죽었는지 stderr 첫 줄을 그대로 보인다.
+    if (p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
+        const QString first = err.isEmpty() ? QStringLiteral("(오류 출력 없음)")
+                                            : err.section('\n', -1).left(160);
+        return smokeFail(QStringLiteral("파이썬이 종료코드 %1 로 죽었습니다 — %2")
+                             .arg(p.exitCode()).arg(first));
+    }
 
     if (!out.contains(QStringLiteral("KOREAN:자가진단")))
         return smokeFail("한글 출력이 깨집니다 (수집 스크립트가 같은 자리에서 죽는다)");

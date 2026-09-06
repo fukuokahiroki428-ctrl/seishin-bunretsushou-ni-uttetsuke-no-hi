@@ -3960,7 +3960,7 @@ void HanishikiBackend::setAllPathsToNas()
                 " }"
             ).arg(safeInput, safePath);
         }
-        js += " if(typeof saveForm==='function') saveForm();"
+        js += " if(typeof saveFormDataToBackend==='function') saveFormDataToBackend();"
               " alert('🌐 NAS 일괄 적용 완료 ('+c+'개 플랫폼)\\n경로: " + root + "/" + brandDir + "/...');"
               " })();";
         runJs(js);
@@ -4099,7 +4099,7 @@ void HanishikiBackend::setStorageMode(const QString &mode)
                 "   if(el){el.value=%2;el.dispatchEvent(new Event('change'));el.dispatchEvent(new Event('input'));c++;} }"
             ).arg(safeInput, safePath);
         }
-        js += QString(" if(typeof saveForm==='function') saveForm();"
+        js += QString(" if(typeof saveFormDataToBackend==='function') saveFormDataToBackend();"
                       " if(window.onStorageModeChanged) onStorageModeChanged(%1, %2);"
                       " })();").arg(safeMode, safeRoot);
         runJs(js);
@@ -15983,7 +15983,12 @@ void HanishikiBackend::refreshDomainCookies(const QString &domain, const QString
             QString js = QString(
                 "(function(){var el=document.getElementById('%1');"
                 "if(el){el.value='%2';"
-                "if(typeof saveFormData==='function')saveFormData();"
+                // ★ 값을 대입해도 input/change 는 저절로 나지 않는다. 이벤트를 쏘지 않으면
+                //   index.html 의 input/change 리스너가 안 걸려 저장이 통째로 빠진다.
+                //   게다가 부르던 이름(saveFormData)은 C++ 슬롯 이름이지 JS 함수가 아니라
+                //   typeof 가드에 걸려 조용히 넘어갔다 — 뽑아 놓은 쿠키가 설정에 안 내려갔다.
+                "el.dispatchEvent(new Event('input'));el.dispatchEvent(new Event('change'));"
+                "if(typeof saveFormDataToBackend==='function')saveFormDataToBackend();"
                 "appendLog('✅ %3 쿠키 자동 입력됨','success','%4');}"
                 "else{appendLog('필드 %1 없음','warning','%4');}})();"
             ).arg(fieldId, escaped, label, platform);

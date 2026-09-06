@@ -542,6 +542,16 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // 브라우저 창 닫기
     if (m_browserWindow) m_browserWindow->close();
 
+    // ★ 메뉴막대로 띄운 기능 창도 같이 닫는다.
+    //   main.cpp 에서 setQuitOnLastWindowClosed(false) 라 본 창을 닫아도 앱은 살아 있다.
+    //   그래서 이 창들이 화면에 그대로 남는데, 본 창이 사라진 뒤엔 아무것도 못 하는
+    //   빈 창이 된다. 목록을 복사해서 도는 이유는 close() 가 destroyed 를 타고
+    //   m_featureWindows 에서 자기를 지우기 때문이다(도는 중에 지우면 반복자가 깨진다).
+    const auto featureWins = m_featureWindows.values();
+    for (const auto &ref : featureWins) {
+        if (QWidget *w = ref.data()) w->close();
+    }
+
     // 모든 열린 터미널 로그 닫기 ([DONE] 마커 → 스크립트 자동 종료)
     if (m_backend) {
         m_backend->closeAllTerminalLogs();
