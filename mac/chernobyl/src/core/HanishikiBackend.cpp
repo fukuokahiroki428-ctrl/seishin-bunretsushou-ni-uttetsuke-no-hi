@@ -317,6 +317,7 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
     }
 
     connect(this, &HanishikiBackend::jsSignal, this, &HanishikiBackend::executeJsMainThread);
+    connect(this, &HanishikiBackend::jsAllSignal, this, &HanishikiBackend::executeJsAllWindows);
     connect(this, &HanishikiBackend::logSignal, this, &HanishikiBackend::appendLogMainThread);
 
     // Log batch flush timer — 300ms 간격으로 모아서 한번에 전송 (UI 부하 감소)
@@ -3198,17 +3199,25 @@ bool HanishikiBackend::isAnyRunning() const
 
 void HanishikiBackend::executeJsMainThread(const QString &js)
 {
-    // ★ 본 창에만 보내면 기능 창은 아무것도 못 받는다.
-    //   기능 창은 m_channel 을 공유하므로 JS→C++ 호출은 되지만, C++→JS 는
-    //   여기서 페이지를 골라 실행하는 구조라 본 창 페이지만 받고 있었다.
-    //   그래서 메뉴막대로 띄운 Tumblr·SpinSpin·Asked·프록시 창이 명령은
-    //   보내는데 로그·진행·결과는 한 줄도 안 보이는 반쪽이었다.
-    //   창들은 같은 설정을 보는 같은 앱의 창이므로 모두에게 보낸다.
+    // ★ 본 창에만 보낸다. 한때 여기서 모든 창에 뿌렸는데 그건 틀린 기본값이었다.
+    //   runJs 로 나가는 것 중에는 '보여 주는 것' 만 있는 게 아니라 '시키는 것' 도 있다 —
+    //   alert(15곳)·onAnalyzeComplete(분석이 끝나면 다운로드를 시작한다)·폼 저장 호출.
+    //   그걸 창 수만큼 실행하면 대화상자가 창 수만큼 뜨고, 다운로드가 겹쳐 돌고,
+    //   뒤늦은 창이 다른 창의 최신 입력을 통째로 되돌린다.
+    //   되풀이해도 안전한 것만 runJsAll 로 따로 보낸다.
+    if (m_window && m_window->webView())
+        m_window->webView()->page()->runJavaScript(js);
+}
+
+void HanishikiBackend::executeJsAllWindows(const QString &js)
+{
+    // 기능 창도 같은 앱의 창이다 — 화면을 '갱신' 하는 것은 모두가 받아야 한다.
+    //   여기로 보내는 것은 몇 번 실행돼도 결과가 같은 것들뿐이다
+    //   (설정 복원·폼 복원·실행 표시·통계·진행률·로그).
     if (!m_window) return;
     const auto views = m_window->allWebViews();
-    for (QWebEngineView *v : views) {
+    for (QWebEngineView *v : views)
         if (v && v->page()) v->page()->runJavaScript(js);
-    }
 }
 
 void HanishikiBackend::appendLogMainThread(const QString &message, const QString &type, const QString &platform)
@@ -3276,6 +3285,13 @@ void HanishikiBackend::flushLogs()
 void HanishikiBackend::runJs(const QString &js)
 {
     emit jsSignal(js);
+}
+
+// 모든 창에 보낸다 — '되풀이해도 결과가 같은' 화면 갱신에만 쓴다.
+//   무엇을 시키는 JS(alert·다운로드 시작·저장 호출)는 절대 이리로 보내지 마라.
+void HanishikiBackend::runJsAll(const QString &js)
+{
+    emit jsAllSignal(js);
 }
 
 void HanishikiBackend::log(const QString &message, const QString &type, const QString &platform)
@@ -3682,7 +3698,7 @@ void HanishikiBackend::updateStats(int posts, int media, const QString &status, 
         return;
     }
     m_lastStatsUpdate[p] = now;
-    runJs(QString("updateStats(%1, %2, '%3', '%4')").arg(posts).arg(media).arg(status, p));
+    runJsAll(QString("updateStats(%1, %2, '%3', '%4')").arg(posts).arg(media).arg(status, p));
 }
 
 // 트랙별 캡쳐 Chrome 디버그 포트 — 한 번 배정하면 그 트랙에는 계속 같은 포트를 준다.
@@ -3757,7 +3773,7 @@ void HanishikiBackend::loadConfig()
     // ★ JS literal 안전 전달 — base64 인코딩으로 모든 특수문자 우회.
     //   JS 의 atob() 가 풀어줌. ASCII-only 라서 JS string literal 깨질 일 없음.
     QString b64 = QString::fromUtf8(configStr.toUtf8().toBase64());
-    runJs(QString("setConfig(decodeURIComponent(escape(atob('%1'))))").arg(b64));
+    runJsAll(QString("setConfig(decodeURIComponent(escape(atob('%1'))))").arg(b64));
 
     // Check temp dir: prompt if not set OR path no longer exists
     {
@@ -3768,7 +3784,7 @@ void HanishikiBackend::loadConfig()
             m_config->save();
             td = "";
         }
-        runJs(QString("checkDiskSetup('%1')").arg(td));
+        runJsAll(QString("checkDiskSetup('%1')").arg(td));
     }
 
     // Restore form inputs (대상, 경로, 유형, 옵션 등)
@@ -3865,11 +3881,15 @@ void HanishikiBackend::saveFormData(const QString &formJson)
 void HanishikiBackend::loadFormData()
 {
     QJsonObject data = m_config->formData();
-    if (data.isEmpty()) return;
+    // ★ 비어 있어도 보낸다. 화면 쪽 가드(_formRestored)는 '복원을 한 번 받았는가' 로
+    //   저장 허용을 정하는데, 여기서 조용히 돌아가면 첫 실행(저장된 폼이 없는 상태)에는
+    //   그 신호가 영영 안 온다. 그러면 8초 폴백으로 가드가 풀리고, 창은 '복원을 못 받은
+    //   채' 저장을 시작한다 — 막으려던 바로 그 상황이다.
+    //   빈 객체라도 보내면 그 자리에서 '복원 완료' 가 되어 가드가 제 뜻대로 움직인다.
     QString json = QString::fromUtf8(QJsonDocument(data).toJson(QJsonDocument::Compact));
     // ★ base64 우회 — 모든 특수문자 안전
     QString b64 = QString::fromUtf8(json.toUtf8().toBase64());
-    runJs(QString("restoreFormData(decodeURIComponent(escape(atob('%1'))))").arg(b64));
+    runJsAll(QString("restoreFormData(decodeURIComponent(escape(atob('%1'))))").arg(b64));
 }
 
 void HanishikiBackend::browsePath(const QString &platform)
@@ -4261,7 +4281,7 @@ void HanishikiBackend::startCollection(const QString &configJson)
         if (td.isEmpty()) {
             dbg("EARLY RETURN: 디스크 설정 없음", platformName);
             log("디스크 설정을 먼저 해주세요!", "error", platformName);
-            runJs(QString("setRunning('%1', false)").arg(platformName));
+            runJsAll(QString("setRunning('%1', false)").arg(platformName));
             runJs("showDiskModal()");
             return;
         }
@@ -4332,7 +4352,7 @@ void HanishikiBackend::startCollection(const QString &configJson)
     // ★ 여기서 뮤텍스를 직접 잡으면 안 된다 — 접근자가 안에서 다시 잡는다(비재귀 뮤텍스).
     setPlatformRunning(trackKey, true);       // 병렬 키별 실행 표시
     setPlatformRunning(platformName, true);   // platform 단위도 true (collector 코드 호환)
-    runJs(QString("setRunning('%1', true)").arg(platformName));
+    runJsAll(QString("setRunning('%1', true)").arg(platformName));
     m_stopRequested[trackKey] = false;
     m_stopRequested[platformName] = false;
     dbg(QString("about to create QThread (%1)").arg(trackKey), platformName);
@@ -4428,7 +4448,7 @@ void HanishikiBackend::startCollection(const QString &configJson)
                                  || m_stopRequested.value(platformName, false);
             const QString statsKey = isParallel ? trackKey : platformName;
             if (wasStopped) {
-                runJs(QString("updateStats(0, 0, '중단됨', '%1')").arg(statsKey));
+                runJsAll(QString("updateStats(0, 0, '중단됨', '%1')").arg(statsKey));
                 m_lastStatsUpdate[statsKey] = QDateTime::currentMSecsSinceEpoch();
                 log(QString("⏹ 수집이 사용자 요청으로 중단되었습니다. (%1)").arg(trackKey), "warning", platformName);
             } else {
@@ -4440,7 +4460,7 @@ void HanishikiBackend::startCollection(const QString &configJson)
             // 병렬: platform 단위 setRunning(false)는 모든 trackKey가 끝났을 때만
             bool platformIdle = !platformRunning(platformName);
             if (platformIdle) {
-                runJs(QString("setRunning('%1', false)").arg(platformName));
+                runJsAll(QString("setRunning('%1', false)").arg(platformName));
             }
             m_stopRequested[trackKey] = false;
             closeTerminalLog(trackKey);
@@ -4575,9 +4595,9 @@ void HanishikiBackend::stopCollection(const QString &platformName)
 
     // 3) UI/터미널 즉시 동기화 — 시작 버튼 활성화, 중지 버튼 비활성화,
     //    상태 배지를 "중단됨"으로 바꿔서 실제 스레드 종료 전에 시각적 피드백 제공
-    runJs(QString("setRunning('%1', false)").arg(platformName));
+    runJsAll(QString("setRunning('%1', false)").arg(platformName));
     // updateStats를 직접 돌려 상태를 "중단됨"으로 바꿈 — throttle 우회 위해 runJs 직접 호출
-    runJs(QString("updateStats(0, 0, '중단됨', '%1')").arg(platformName));
+    runJsAll(QString("updateStats(0, 0, '중단됨', '%1')").arg(platformName));
     m_lastStatsUpdate[platformName] = QDateTime::currentMSecsSinceEpoch();
 }
 
@@ -17914,7 +17934,7 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
                 setPlatformRunning("crawl", false);
                 updateStats(saved, total, "Done", "crawl");
                 log(QString("✅ 크롤 완료: %1/%2 저장 → %3").arg(saved).arg(total).arg(capturesDir), "success", "crawl");
-                runJs("setRunning('crawl', false)");
+                runJsAll("setRunning('crawl', false)");
                 if (m_window) m_window->releaseAwake();
             }, Qt::QueuedConnection);
         });
@@ -17949,7 +17969,7 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
             m_crawler->deleteLater();
             m_crawler = nullptr;
         }
-        runJs("setRunning('crawl', false)");
+        runJsAll("setRunning('crawl', false)");
     });
 
     // Show crawled page in browser view

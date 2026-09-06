@@ -36,6 +36,8 @@ public:
 
     // Thread-safe JS execution
     void runJs(const QString &js);
+    // 모든 창에 — '되풀이해도 결과가 같은' 화면 갱신 전용.
+    void runJsAll(const QString &js);
     void log(const QString &message, const QString &type = "info", const QString &platform = QString());
     void updateStats(int posts, int media, const QString &status, const QString &platform = QString());
     // 수집 종료 후 로그 꼬리에서 오류 다발 감지 시 로컬 LLM 진단 (SelfRepair 연동)
@@ -50,6 +52,8 @@ public:
 
 signals:
     void jsSignal(const QString &js);
+    // ★ '모든 창' 용 통로. jsSignal 과 나눈 이유는 아래 runJsAll 주석 참고.
+    void jsAllSignal(const QString &js);
     void logSignal(const QString &message, const QString &type, const QString &platform);
 
 public slots:
@@ -277,6 +281,7 @@ public slots:
 
 private slots:
     void executeJsMainThread(const QString &js);
+    void executeJsAllWindows(const QString &js);
     void appendLogMainThread(const QString &message, const QString &type, const QString &platform);
 
 private:

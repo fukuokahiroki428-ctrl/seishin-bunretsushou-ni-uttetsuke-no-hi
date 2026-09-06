@@ -308,7 +308,23 @@ ExiftoolWay resolveExiftoolWay()
     //   그날 EXIF 기록이 통째로 죽지 않도록 perl 을 들고 다닌다.
     QString perl = bundledResourcesDir() + "/tools/perl/bin/perl";
     QStringList coreIncs;
-    if (QFile::exists(perl)) {
+    // ★ '파일이 있다' 와 '실제로 뜬다' 는 다르다. 서명이 깨졌거나 libperl 이 빠지면
+    //   파일은 그대로 있는데 커널이 실행을 거부한다. 그때 시스템 perl 로 물러나지
+    //   않으면 EXIF 가 통째로 죽는다 — 들고 다니는 것이 오히려 해가 된다.
+    //   한 번만 물어본다(결과는 이 함수째로 캐시된다).
+    auto perlRuns = [](const QString &p) {
+        QProcess t;
+        t.setProcessEnvironment(bundledProcessEnv());
+        t.start(p, {"-e", "1"});
+        if (!t.waitForStarted(3000)) return false;
+        if (!t.waitForFinished(5000)) { t.kill(); return false; }
+        return t.exitStatus() == QProcess::NormalExit && t.exitCode() == 0;
+    };
+    if (QFile::exists(perl) && !perlRuns(perl)) {
+        qWarning() << "[Common] 번들 perl 이 실행되지 않습니다 — 시스템 perl 로 물러납니다:" << perl;
+        perl.clear();
+    }
+    if (!perl.isEmpty() && QFile::exists(perl)) {
         const QString core = bundledResourcesDir() + "/tools/perl/lib";
         // 아키텍처 폴더 이름(darwin-thread-multi-2level)을 코드에 박지 않는다.
         // perl 판이 바뀌면 이름도 바뀐다 — 실제로 있는 것을 찾아 넣는다.

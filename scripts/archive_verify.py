@@ -48,7 +48,7 @@ def scan(d):
     n = 0
     total = 0
     empty = []
-    for root, dirs, files in os.walk(d, followlinks=False):
+    for root, dirs, files in os.walk(d, followlinks=False, onerror=_note_walk_error):
         for f in files:
             if f.startswith('.') or f.startswith('__ARCHIVE_MANIFEST') \
                or f.startswith('__CHERNOBYL_MANIFEST') \
@@ -99,7 +99,7 @@ def _hash(path, chunk=1 << 20):
 
 def _walk_files(d):
     """세는 규칙은 scan() 과 같아야 한다 — 두 곳이 갈라지면 또 거짓 경보가 난다."""
-    for root, dirs, files in os.walk(d, followlinks=False):
+    for root, dirs, files in os.walk(d, followlinks=False, onerror=_note_walk_error):
         for f in files:
             if f.startswith('.') or f.startswith('__ARCHIVE_MANIFEST') \
                or f.startswith('__CHERNOBYL_MANIFEST') or f == HASH_FILE \
@@ -180,6 +180,31 @@ def check_hashes(d):
     return len(rec), changed, missing
 
 
+_walk_errors = []
+
+
+def _note_walk_error(err):
+    """os.walk 가 폴더를 못 읽으면 조용히 빈 것으로 넘긴다.
+
+    ★ 그러면 권한 문제가 '파일이 사라졌습니다' 로 둔갑한다. 보관 앱에서 가장
+      나쁜 오보다 — 멀쩡한 자료를 잃은 줄 알고 사람이 엉뚱한 복구를 시작한다.
+      못 읽은 것은 못 읽었다고 따로 적는다.
+    """
+    _walk_errors.append("%s: %s" % (getattr(err, 'filename', '?'), err))
+
+
+def _excluded_dir(path):
+    """세는 쪽(scan·_walk_files)이 통째로 빼는 자리인가.
+
+    ★ 왜 필요한가. 숨은 폴더를 건너뛰지 않게 바꾸면서 verify 가 /.abiwa_ ·/.rsync-
+      안까지 들어가게 됐다. 그런데 세는 쪽은 그 안의 파일을 하나도 안 센다.
+      그 안에 매니페스트가 하나라도 있으면 '기록 N개 → 지금 0개', 즉 100% 거짓
+      '사라졌습니다' 가 난다. 지금 사용자 보관함에는 그런 매니페스트가 없지만,
+      규칙이 어긋난 채로 두면 언젠가 그 자리에 하나 생기는 날 터진다.
+    """
+    return '/.abiwa_' in path or '/.rsync-' in path
+
+
 def _manifest_in(files):
     """폴더에 남은 매니페스트 파일 이름을 돌려준다. 없으면 None.
 
@@ -204,7 +229,9 @@ def verify(root):
     # ★ 숨은 폴더를 건너뛰지 않는다. '.・🫀︴hibiki ꨄ︎…' 처럼 점으로 시작하는
     #   진짜 보관 폴더가 있다. 건너뛰면 그 안의 매니페스트를 영영 못 찾는다.
     #   세는 쪽(scan·_walk_files)도 폴더가 아니라 '파일 이름' 으로만 거른다.
-    for cur, dirs, files in os.walk(root, followlinks=False):
+    for cur, dirs, files in os.walk(root, followlinks=False, onerror=_note_walk_error):
+        if _excluded_dir(cur):
+            continue
         mname = _manifest_in(files)
         if mname is None:
             continue
@@ -266,8 +293,8 @@ if __name__ == "__main__":
             print(json.dumps({"error": "폴더를 지정하십시오"}, ensure_ascii=False)); sys.exit(1)
         base = sys.argv[2]
         done = []
-        for cur, dirs, files in os.walk(base, followlinks=False):
-            if _manifest_in(files) is None:
+        for cur, dirs, files in os.walk(base, followlinks=False, onerror=_note_walk_error):
+            if _excluded_dir(cur) or _manifest_in(files) is None:
                 continue
             n, hashed, reused = record_hashes(cur)
             done.append({"dir": os.path.relpath(cur, base),
@@ -282,5 +309,9 @@ if __name__ == "__main__":
     checked, results = verify(root)
     bad = sum(1 for r in results if r["level"] == "fail")
     warn = sum(1 for r in results if r["level"] == "warn")
-    print(json.dumps({"checked": checked, "fail": bad, "warn": warn,
-                      "results": results}, ensure_ascii=False))
+    out = {"checked": checked, "fail": bad, "warn": warn, "results": results}
+    if _walk_errors:
+        # ★ '못 읽었다' 를 '없어졌다' 와 절대 섞지 않는다.
+        out["unreadable"] = _walk_errors[:20]
+        out["unreadable_total"] = len(_walk_errors)
+    print(json.dumps(out, ensure_ascii=False))

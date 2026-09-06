@@ -58,6 +58,12 @@ echo "=== perl 번들 ($PERL_VER / $ARCHNAME) ==="
 echo "  실행 파일: $SRC_PERL"
 echo "  코어 lib : $SRC_LIB"
 
+# ★ 여기서부터는 실패하면 반드시 되돌린다.
+#   set -e 로 중간에 나가면 반쯤 만들어진 tools/perl 이 번들에 남고,
+#   부르는 쪽(build.sh)은 경고 한 줄만 내고 그대로 서명해서 내보낸다.
+#   잘린 perl 도 '파일로는 존재' 하므로 앱이 그것을 골라 EXIF 가 통째로 죽는다.
+trap 'rm -rf "$DEST"; echo "⚠ [perl] 중간에 실패해 넣던 것을 되돌렸습니다."' ERR
+
 rm -rf "$DEST"
 mkdir -p "$DEST/bin" "$DEST/lib"
 cp "$SRC_PERL" "$DEST/bin/perl"
@@ -70,32 +76,87 @@ if ! cp -R "$SRC_LIB"/ "$DEST/lib/" 2>/dev/null; then
     exit 0
 fi
 
+# ── ★ 가장 중요한 한 걸음: 시스템 libperl 에 매달린 줄을 끊는다 ──────────
+#   perl 실행 파일은 /System/Library/Perl/<판>/<arch>/CORE/libperl.dylib 를
+#   '절대경로' 로 적재한다. Apple 이 perl 을 걷어내면 그 dylib 도 같이 사라지고,
+#   그러면 번들 perl 조차 못 뜬다 — 들고 다니는 목적이 그 자리에서 무너진다.
+#   (실측으로 확인하고 고친 것이다. 이 줄이 없으면 이 스크립트 전체가 헛수고다.)
+LIBPERL_OLD="$("$SRC_PERL" -MConfig -e 'print "$Config{archlibexp}/CORE/$Config{libperl}"' 2>/dev/null)"
+LIBPERL_NEW="@executable_path/../lib/$ARCHNAME/CORE/$(basename "${LIBPERL_OLD:-libperl.dylib}")"
+if [ -n "$LIBPERL_OLD" ] && [ -f "$DEST/lib/$ARCHNAME/CORE/$(basename "$LIBPERL_OLD")" ]; then
+    install_name_tool -change "$LIBPERL_OLD" "$LIBPERL_NEW" "$DEST/bin/perl" 2>/dev/null
+    # dylib 자신의 이름표도 번들 것으로 — 남이 이걸 링크할 때 시스템을 가리키지 않게.
+    install_name_tool -id "$LIBPERL_NEW" "$DEST/lib/$ARCHNAME/CORE/$(basename "$LIBPERL_OLD")" 2>/dev/null
+    if otool -L "$DEST/bin/perl" 2>/dev/null | grep -q "^	/System/Library/Perl"; then
+        echo "⚠ [perl] 시스템 libperl 의존을 끊지 못했습니다 — 넣은 것을 되돌립니다."
+        rm -rf "$DEST"; trap - ERR; exit 0
+    fi
+    # ★ install_name_tool 은 서명을 무효로 만든다. 무효인 채로 두면 커널이 실행을
+    #   거부해 바로 아래 자립 확인이 '빈 출력' 으로 실패한다(실제로 겪었다).
+    #   여기서는 ad-hoc 으로 임시 서명만 해 둔다 — 빌드 마지막의 codesign_app.sh 가
+    #   번들 전체를 제대로 다시 서명한다.
+    codesign -f -s - "$DEST/lib/$ARCHNAME/CORE/$(basename "$LIBPERL_OLD")" 2>/dev/null || true
+    codesign -f -s - "$DEST/bin/perl" 2>/dev/null || true
+    echo "  적재 경로: $LIBPERL_NEW"
+else
+    echo "⚠ [perl] libperl 을 찾지 못했습니다 — 넣은 것을 되돌립니다."
+    rm -rf "$DEST"; trap - ERR; exit 0
+fi
+
 # ── 넣었으면 '진짜 되는지' 본다 ───────────────────────────────────────────
 #   시스템 @INC 를 걷어낸 채로 exiftool 을 적재해 본다. 여기서 시스템 것을 하나라도
 #   쓰면 이 번들은 자립하지 못한 것이고, 그러면 넣으나 마나다.
 EXIFTOOL="$APP/Contents/Resources/tools/exiftool/exiftool"
 EXIFLIB="$APP/Contents/Resources/tools/exiftool/lib"
 if [ -f "$EXIFTOOL" ]; then
-    ARCHDIR=""
-    [ -d "$DEST/lib/$ARCHNAME" ] && ARCHDIR="-I$DEST/lib/$ARCHNAME"
-    if OUT=$("$DEST/bin/perl" $ARCHDIR -I"$DEST/lib" -I"$EXIFLIB" -e '
+    # ★ -I 를 배열로 담는다. 예전엔 $ARCHDIR 를 따옴표 없이 넘겨서, 경로에 공백이
+    #   있으면(이 저장소 경로가 그렇다) 두 인자로 쪼개져 시험이 거짓 실패하고
+    #   멀쩡한 번들을 통째로 지웠다.
+    INCS=()
+    [ -d "$DEST/lib/$ARCHNAME" ] && INCS+=(-I"$DEST/lib/$ARCHNAME")
+    INCS+=(-I"$DEST/lib" -I"$EXIFLIB")
+
+    # ★ 적재만 보지 않는다. exiftool 은 태그를 '쓸 때' 모듈을 더 불러온다
+    #   (Image::ExifTool::Exif·Writer.pl 등). require 만 보고 OK 라 적으면
+    #   반쪽 lib 을 통과시키고, 시스템 perl 이 사라지는 그날 한꺼번에 드러난다.
+    #   실제 사용과 같은 순서로 — 32x32 JPEG 을 만들어 태그를 쓰고 되읽는다.
+    #   그림은 SelfRepair 의 연막 시험이 쓰는 것과 같은 1x1 JPEG(base64)을 쓴다.
+    #   바이트를 손으로 적으면 어딘가에서 반드시 뭉개진다(실제로 한 번 뭉갰다).
+    PROBE_DIR="$(mktemp -d)"
+    PROBE="$PROBE_DIR/probe.jpg"
+    printf '%s' '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==' \
+        | base64 --decode > "$PROBE"
+
+    if OUT=$("$DEST/bin/perl" "${INCS[@]}" -e '
         BEGIN { @INC = grep { $_ !~ m{^/System/|^/Library/|^/Network/} } @INC; }
+        my ($tool, $img) = (shift, shift);
         require Image::ExifTool;
+        my $et = Image::ExifTool->new;
+        $et->SetNewValue("Artist", "자립시험");
+        $et->SetNewValue("ImageDescription", "日本語");
+        my $n = $et->WriteInfo($img);
+        die "태그를 쓰지 못했습니다\n" unless $n;
+        my $back = Image::ExifTool->new->ImageInfo($img);
+        die "되읽기가 어긋납니다\n" unless ($back->{Artist} // "") eq "자립시험";
         my @sys = grep { $INC{$_} =~ m{^/System/|^/Library/|^/Network/} } keys %INC;
-        die "시스템 모듈 " . scalar(@sys) . "개를 아직 씁니다\n" if @sys;
-        print "OK ", Image::ExifTool->VERSION, " (모듈 ", scalar(keys %INC), "개, 시스템 0개)\n";
-    ' 2>&1); then
+        die "시스템 모듈 " . scalar(@sys) . "개를 아직 씁니다: @sys[0..2]\n" if @sys;
+        print "OK ", Image::ExifTool->VERSION, " (쓰기·되읽기 통과 · 모듈 ",
+              scalar(keys %INC), "개 · 시스템 0개)\n";
+    ' "$EXIFTOOL" "$PROBE" 2>&1); then
         echo "  자립 확인: $OUT"
+        rm -rf "$PROBE_DIR"
     else
         echo "⚠ [perl] 번들 perl 로 exiftool 을 적재하지 못했습니다:"
         echo "$OUT" | sed 's/^/     /'
         echo "   넣은 것을 되돌립니다 — 앱은 시스템 perl 로 폴백합니다."
-        rm -rf "$DEST"
+        rm -rf "$DEST" "$PROBE_DIR"; trap - ERR
         exit 0
     fi
 else
     echo "  (exiftool 이 아직 번들에 없어 자립 확인은 건너뜁니다)"
 fi
+trap - ERR
 
 echo "  크기: $(du -sh "$DEST" | cut -f1)"
+echo "  아키텍처: $(lipo -archs "$DEST/bin/perl" 2>/dev/null)"
 echo "=== perl 번들 완료 ==="
