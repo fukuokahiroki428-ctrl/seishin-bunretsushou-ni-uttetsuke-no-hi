@@ -166,6 +166,14 @@ QStringList pythonCandidates();
 // Cross-platform bundled environment (PATH, library paths, etc.)
 QProcessEnvironment bundledProcessEnv();
 
+// exiftool 을 실행할 '프로그램' 과 그 앞에 붙일 인자를 돌려준다.
+//   ★ 왜 함수 하나로 모으나. 본체(addExifMetadata)·도구 점검(checkTool)·연막 시험이
+//     제각각 exiftool 을 띄우고 있었고, 그중 하나만 방식이 달라 '시험은 되는데 앱은
+//     안 되는' (또는 그 반대) 상태가 실제로 났다. 한 곳에서만 정하게 한다.
+//   맥: perl 경로를 돌려주고 leadingArgs 에 -I… 와 exiftool 스크립트 경로가 담긴다.
+//   윈도우/시스템 exiftool: exiftool 경로를 돌려주고 leadingArgs 는 비어 있다.
+QString exiftoolProgram(QStringList *leadingArgs);
+
 // 저장 경로의 남은 공간 (바이트). 경로 없거나 마운트 안 됐으면 0.
 qint64 freeSpace(const QString &path);
 

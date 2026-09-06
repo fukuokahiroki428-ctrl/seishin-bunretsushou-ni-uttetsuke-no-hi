@@ -182,6 +182,11 @@ if [ -n "$DISPLAY_NAME" ] && [ "$(basename "$APPDIR" .app)" != "$DISPLAY_NAME" ]
     fi
 fi
 
+# ★ exiftool 용 perl 을 넣는다 — 서명 '전' 이어야 한다.
+#   Apple 이 /usr/bin/perl 을 걷어내는 날 EXIF 기록이 통째로 죽지 않게 들고 다닌다.
+#   실패해도 빌드를 멈추지 않는다(앱은 시스템 perl 로 폴백) — 다만 조용히 넘어가지는 않는다.
+bash "$(dirname "$0")/bundle_perl.sh" "$APPDIR" || echo "⚠ perl 번들 단계에서 문제가 있었습니다(계속 진행)."
+
 echo "=== Codesign (inside-out + --deep --strict verify) ==="
 # 단일 서명 경로로 위임 — 서명/검증 실패 시 codesign_app.sh 가 exit 1 → set -e 로 중단.
 bash "$(dirname "$0")/codesign_app.sh" "$APPDIR"

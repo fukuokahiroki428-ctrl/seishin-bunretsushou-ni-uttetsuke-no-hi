@@ -163,7 +163,11 @@ inline ToolStatus checkTool(const QString &name)
         // exiftool 은 perl 스크립트 — 앱도 perl 로 실행한다. 스크립트를 직접 execve 하면
         // 서명 직후 첫 실행에서 Gatekeeper 평가로 'execve: Permission denied' 위양성이 나
         // 매 실행마다 LLM 진단을 불필요하게 스폰했다. perl 경유로 실제 사용과 일치시킨다.
-        p.start("/usr/bin/perl", QStringList() << st.path << versionArgs(name));
+        // ★ perl 경로를 여기서 정하지 않는다 — 본체와 갈라지면 그 순간 이 점검은 거짓말이 된다.
+        //   Common::exiftoolProgram 이 번들 perl 이 있으면 그것을, 없으면 시스템 것을 준다.
+        QStringList lead;
+        const QString prog = Common::exiftoolProgram(&lead);
+        p.start(prog, lead + versionArgs(name));
     } else
 #endif
     // ★ 앱 본체(Common::addExifMetadata)와 같은 경로 처리를 쓴다. exiftool 은 argv 를
@@ -475,13 +479,11 @@ inline SmokeResult smokeExiftool(const QString &exe)
         //   자가수리가 스스로 재서명한 바로 다음 기동이 정확히 그 상황이라,
         //   도구는 멀쩡한데 진단서만 고장을 알리게 된다.
         //   덤으로 shebang(#!/usr/bin/env perl)이 PATH 앞의 홈브루 perl 을 잡는 것도 막는다.
-        const QStringList exifArgs =
-            QStringList() << "-@" << Common::ansiSafePath(argPath);
-#ifdef Q_OS_WIN
-        p.start(launchPath(QStringLiteral("exiftool"), exe), exifArgs);
-#else
-        p.start(QStringLiteral("/usr/bin/perl"), QStringList() << exe << exifArgs);
-#endif
+        // ★ 본체와 같은 함수로 실행 방법을 받는다. 여기서 따로 정하면 '시험은 되는데
+        //   앱은 안 되는' (또는 그 반대) 상태가 생긴다 — 실제로 겪었다.
+        QStringList lead;
+        const QString prog = Common::exiftoolProgram(&lead);
+        p.start(prog, lead + (QStringList() << "-@" << Common::ansiSafePath(argPath)));
         if (!p.waitForStarted(5000)) return false;
         if (!p.waitForFinished(20000)) { p.kill(); return false; }
         if (out) *out = p.readAllStandardOutput();
