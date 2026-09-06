@@ -771,6 +771,60 @@ inline QStringList serviceFollowingPackages()
     return {"yt-dlp", "twikit", "atproto", "discord.py", "browser_cookie3"};
 }
 
+// 꾸러미 이름과 import 이름은 같지 않다.
+//   하이픈만 밑줄로 바꾸면 되는 줄 알았는데 discord.py 에는 점이 들어 있어
+//   'import discord.py' 가 되고, 이건 discord 패키지의 py 속성을 찾는 뜻이라
+//   무조건 실패한다. 그 결과 discord.py 가 갱신될 때마다 검증이 실패하고,
+//   그 벌로 덧씌운 폴더 전체가 지워져 yt-dlp·twikit·atproto 갱신분까지 함께
+//   날아갔다. 3일마다 되풀이되니 갱신은 영영 자리를 못 잡는다.
+inline QString importModuleFor(const QString &pkg)
+{
+    if (pkg == QLatin1String("discord.py")) return QStringLiteral("discord");
+    QString m = pkg;
+    m.replace('-', '_');
+    return m;
+}
+
+// 덧씌운 것 중 '그 꾸러미만' 지운다.
+//   폴더째 지우면 멀쩡히 갱신된 다른 꾸러미까지 잃는다. pip 는 --target 에
+//   uninstall 을 지원하지 않으므로 dist-info 의 RECORD 를 읽어 그 파일들만 지운다.
+//   RECORD 를 못 찾으면 false 를 돌려준다 — 부르는 쪽이 옛 방식으로 물러선다.
+inline bool removeOnePackageFromOverlay(const QString &python,
+                                        const QString &overlay,
+                                        const QString &pkg)
+{
+    static const char kPy[] =
+        "import os,sys,glob,shutil\n"
+        "ov,pkg=sys.argv[1],sys.argv[2]\n"
+        "norm=pkg.replace('-','_').replace('.','_').lower()\n"
+        "hit=False\n"
+        "for di in glob.glob(os.path.join(ov,'*.dist-info')):\n"
+        "    name=os.path.basename(di).split('-')[0].replace('-','_').replace('.','_').lower()\n"
+        "    if name!=norm: continue\n"
+        "    hit=True\n"
+        "    rec=os.path.join(di,'RECORD')\n"
+        "    if os.path.exists(rec):\n"
+        "        for line in open(rec,encoding='utf-8',errors='replace'):\n"
+        "            rel=line.split(',')[0].strip()\n"
+        "            if not rel or rel.startswith('..') or os.path.isabs(rel): continue\n"
+        "            t=os.path.join(ov,rel)\n"
+        "            if os.path.isfile(t):\n"
+        "                try: os.remove(t)\n"
+        "                except OSError: pass\n"
+        "    shutil.rmtree(di,ignore_errors=True)\n"
+        "for root,dirs,files in os.walk(ov,topdown=False):\n"
+        "    if root!=ov and not dirs and not files:\n"
+        "        try: os.rmdir(root)\n"
+        "        except OSError: pass\n"
+        "print('OK' if hit else 'MISS')\n";
+    QProcess rm;
+    rm.setProcessEnvironment(Common::bundledProcessEnv());
+    rm.start(python, {"-c", QString::fromLatin1(kPy), overlay, pkg});
+    if (!rm.waitForFinished(60000)) { rm.kill(); return false; }
+    return rm.exitCode() == 0
+        && QString::fromUtf8(rm.readAllStandardOutput()).contains(QLatin1String("OK"));
+}
+
 inline QString updatePackagesIfDue(const QString &python, bool allowNetwork,
                                    int everyDays = 3, bool force = false)
 {
@@ -811,13 +865,16 @@ inline QString updatePackagesIfDue(const QString &python, bool allowNetwork,
         // ★ 갱신했으면 반드시 '실제로 되는지' 본다. 안 되면 되돌린다.
         QProcess chk;
         chk.setProcessEnvironment(Common::bundledProcessEnv());
-        const QString mod = QString(pkg).replace('-', '_');
+        const QString mod = importModuleFor(pkg);
         chk.start(python, {"-c", QString("import %1").arg(mod)});
         chk.waitForFinished(30000);
         if (chk.exitStatus() != QProcess::NormalExit || chk.exitCode() != 0) {
-            // 덧씌운 것만 지우면 번들의 옛 판으로 즉시 돌아간다.
-            QDir(overlay).removeRecursively();
-            QDir().mkpath(overlay);
+            // 그 꾸러미만 걷어내면 번들의 옛 판으로 즉시 돌아간다.
+            // 못 걷어냈을 때만 폴더째 지운다 — 다른 갱신분을 잃는 마지막 수단이다.
+            if (!removeOnePackageFromOverlay(python, overlay, pkg)) {
+                QDir(overlay).removeRecursively();
+                QDir().mkpath(overlay);
+            }
             out += QString("[UPD]  %1 %2 → %3 이 불러오기에 실패해 되돌렸습니다\n")
                        .arg(pkg, before.isEmpty() ? "?" : before, after);
             ++failed;

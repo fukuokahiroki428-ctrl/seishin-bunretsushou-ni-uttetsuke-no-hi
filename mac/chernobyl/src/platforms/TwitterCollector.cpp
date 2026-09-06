@@ -1968,6 +1968,30 @@ void TwitterCollector::handleRateLimit(const QJsonArray &accounts, int &currentI
         int prevIdx = currentIdx;
         currentIdx = idx;
         QJsonObject account = accounts[idx].toObject();
+
+        // ★ 계정이 바뀌면 나가는 길도 같이 바꾼다.
+        //   토큰만 갈아 끼우면 B 계정 세션이 A 계정 프록시로 나간다 — 계정마다
+        //   다른 IP 를 쓰려는 목적이 그 자리에서 깨진다. 수집 시작 때 한 번만
+        //   걸어 두고 있었는데, 레이트리밋으로 계정이 도는 순간부터 어긋났다.
+        //   여기는 수집 스레드 안이라 thread_local 이 이 수집에만 적용된다.
+        //   반드시 setupClient·startDaemon 보다 먼저 해야 한다 — 데몬은 뜨는
+        //   시점의 환경변수로 프록시를 물려받기 때문이다.
+        {
+            const QString ph = account.value("proxyHost").toString();
+            const int    pp = account.value("proxyPort").toInt();
+            if (!ph.isEmpty() && pp > 0) {
+                Common::setThreadProxy(true, ph, pp,
+                                       account.value("proxyUser").toString(),
+                                       account.value("proxyPass").toString());
+                m_backend->log(QString("🔒 %1 은 %2:%3 으로 나갑니다")
+                                   .arg(account["name"].toString("Account"), ph).arg(pp),
+                               "info", "twitter");
+            } else {
+                // 이 계정엔 지정이 없다 — 앞 계정 것을 물려받지 않도록 반드시 지운다.
+                Common::clearThreadProxy();
+            }
+        }
+
         setupClient(account["auth_token"].toString(), account["ct0"].toString());
         m_tidInitialized = false;
         m_backend->log(QString("계정 전환: %1 → %2 (%3/%4)")

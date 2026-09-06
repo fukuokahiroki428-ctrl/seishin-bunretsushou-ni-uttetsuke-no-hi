@@ -26,6 +26,11 @@ public:
     ~MainWindow() override;
 
     QWebEngineView *webView() const { return m_webView; }
+
+    // ★ 본 창 + 메뉴막대로 띄운 기능 창 전부의 웹뷰.
+    //   백엔드가 화면에 무언가를 보낼 때 본 창에만 보내면, 기능 창은 명령은
+    //   보낼 수 있는데(채널 공유) 로그·진행·결과는 하나도 못 받는 반쪽이 된다.
+    QList<QWebEngineView *> allWebViews() const;
     QWebEngineView *browserView() const { return m_browserView; }
     HanishikiBackend *backend() const { return m_backend; }
 

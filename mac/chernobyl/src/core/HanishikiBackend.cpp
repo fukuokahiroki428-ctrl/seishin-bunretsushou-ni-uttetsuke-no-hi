@@ -3198,8 +3198,16 @@ bool HanishikiBackend::isAnyRunning() const
 
 void HanishikiBackend::executeJsMainThread(const QString &js)
 {
-    if (m_window && m_window->webView()) {
-        m_window->webView()->page()->runJavaScript(js);
+    // ★ 본 창에만 보내면 기능 창은 아무것도 못 받는다.
+    //   기능 창은 m_channel 을 공유하므로 JS→C++ 호출은 되지만, C++→JS 는
+    //   여기서 페이지를 골라 실행하는 구조라 본 창 페이지만 받고 있었다.
+    //   그래서 메뉴막대로 띄운 Tumblr·SpinSpin·Asked·프록시 창이 명령은
+    //   보내는데 로그·진행·결과는 한 줄도 안 보이는 반쪽이었다.
+    //   창들은 같은 설정을 보는 같은 앱의 창이므로 모두에게 보낸다.
+    if (!m_window) return;
+    const auto views = m_window->allWebViews();
+    for (QWebEngineView *v : views) {
+        if (v && v->page()) v->page()->runJavaScript(js);
     }
 }
 
@@ -3257,7 +3265,11 @@ void HanishikiBackend::flushLogs()
     m_pendingLogs.clear();
 
     if (!js.isEmpty()) {
-        m_window->webView()->page()->runJavaScript(js);
+        // 로그도 모든 창에 — executeJsMainThread 와 같은 이유다.
+        const auto views = m_window->allWebViews();
+        for (QWebEngineView *v : views) {
+            if (v && v->page()) v->page()->runJavaScript(js);
+        }
     }
 }
 

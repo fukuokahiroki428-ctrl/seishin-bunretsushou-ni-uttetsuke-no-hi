@@ -516,6 +516,18 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     applyZoom();
 }
 
+QList<QWebEngineView *> MainWindow::allWebViews() const
+{
+    QList<QWebEngineView *> views;
+    if (m_webView) views << m_webView;
+    for (const auto &ref : m_featureWindows) {
+        QWidget *w = ref.data();
+        if (!w) continue;                       // 이미 닫힌 창
+        if (auto *v = w->findChild<QWebEngineView *>()) views << v;
+    }
+    return views;
+}
+
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     if (m_backend && m_backend->isAnyRunning()) {
