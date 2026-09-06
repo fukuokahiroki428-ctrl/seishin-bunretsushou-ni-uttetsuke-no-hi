@@ -180,15 +180,36 @@ def check_hashes(d):
     return len(rec), changed, missing
 
 
+def _manifest_in(files):
+    """폴더에 남은 매니페스트 파일 이름을 돌려준다. 없으면 None.
+
+    ★ 옛 이름도 알아본다. 앱 이름이 네 번 바뀌는 동안 사용자의 보관함에는
+      __CHERNOBYL_MANIFEST__.json 이 이미 쌓여 있다. C++ 쪽(isManifestName)은
+      진작 두 이름을 다 알아보는데 여기만 새 이름을 고집하고 있었다.
+      그 바람에 옛 이름을 가진 폴더 30 개가 통째로 대조에서 빠지고도
+      '문제 0 건' 이 나왔다 — 보고도 못 본 것이니, 보관 앱에서 가장 나쁜 고장이다.
+      세는 규칙(scan·_walk_files)은 진작 두 이름을 다 제외하고 있었다.
+      제외는 맞춰 놓고 탐색만 빠뜨린 것이라 더 오래 숨었다.
+      둘 다 있으면 새 이름을 쓴다 — 그쪽이 나중에 쓰인 것이다.
+    """
+    for name in ("__ARCHIVE_MANIFEST__.json", "__CHERNOBYL_MANIFEST__.json"):
+        if name in files:
+            return name
+    return None
+
+
 def verify(root):
     out = []
     checked = 0
-    for cur, dirs, files in os.walk(root):
-        dirs[:] = [x for x in dirs if not x.startswith('.')]
-        if "__ARCHIVE_MANIFEST__.json" not in files:
+    # ★ 숨은 폴더를 건너뛰지 않는다. '.・🫀︴hibiki ꨄ︎…' 처럼 점으로 시작하는
+    #   진짜 보관 폴더가 있다. 건너뛰면 그 안의 매니페스트를 영영 못 찾는다.
+    #   세는 쪽(scan·_walk_files)도 폴더가 아니라 '파일 이름' 으로만 거른다.
+    for cur, dirs, files in os.walk(root, followlinks=False):
+        mname = _manifest_in(files)
+        if mname is None:
             continue
         checked += 1
-        mpath = os.path.join(cur, "__ARCHIVE_MANIFEST__.json")
+        mpath = os.path.join(cur, mname)
         try:
             with open(mpath, encoding="utf-8") as f:
                 m = json.load(f)
@@ -245,8 +266,8 @@ if __name__ == "__main__":
             print(json.dumps({"error": "폴더를 지정하십시오"}, ensure_ascii=False)); sys.exit(1)
         base = sys.argv[2]
         done = []
-        for cur, dirs, files in os.walk(base):
-            if "__ARCHIVE_MANIFEST__.json" not in files:
+        for cur, dirs, files in os.walk(base, followlinks=False):
+            if _manifest_in(files) is None:
                 continue
             n, hashed, reused = record_hashes(cur)
             done.append({"dir": os.path.relpath(cur, base),
