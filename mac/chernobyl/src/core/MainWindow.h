@@ -64,7 +64,6 @@ private:
     QMainWindow *m_browserWindow = nullptr;
     QWebChannel *m_channel = nullptr;
     HanishikiBackend *m_backend = nullptr;
-    PenBackend *m_penBackend = nullptr;
     QMenu *m_dockMenu = nullptr;
     QMenu *m_platformMenu = nullptr;   // 상단 막대의 '기능' 메뉴
     // 별도 창으로 여는 기능들(탭이름 → 창). 같은 탭을 다시 열면 새로 만들지 않고

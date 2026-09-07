@@ -205,7 +205,7 @@ def _excluded_dir(path):
     return '/.abiwa_' in path or '/.rsync-' in path
 
 
-def _manifest_in(files):
+def _manifest_in(files, cur=None):
     """폴더에 남은 매니페스트 파일 이름을 돌려준다. 없으면 None.
 
     ★ 옛 이름도 알아본다. 앱 이름이 네 번 바뀌는 동안 사용자의 보관함에는
@@ -217,10 +217,23 @@ def _manifest_in(files):
       제외는 맞춰 놓고 탐색만 빠뜨린 것이라 더 오래 숨었다.
       둘 다 있으면 새 이름을 쓴다 — 그쪽이 나중에 쓰인 것이다.
     """
-    for name in ("__ARCHIVE_MANIFEST__.json", "__CHERNOBYL_MANIFEST__.json"):
-        if name in files:
-            return name
-    return None
+    have = [n for n in ("__ARCHIVE_MANIFEST__.json", "__CHERNOBYL_MANIFEST__.json")
+            if n in files]
+    if not have:
+        return None
+    if len(have) == 1 or cur is None:
+        return have[0]
+    # ★ 둘 다 있으면 '새 이름' 이 아니라 '나중에 쓴 것' 을 고른다.
+    #   이름만 보고 새 이름을 집으면, 옛 이름 쪽이 더 최근인 폴더에서 낡은 기준으로
+    #   대조하게 된다 — 그 사이에 늘어난 파일을 못 보거나, 줄어든 것을 못 잡는다.
+    #   기준이 틀리면 대조 자체가 거짓말이 된다.
+    def _when(n):
+        try:
+            with open(os.path.join(cur, n), encoding="utf-8") as f:
+                return json.load(f).get("created_at", "")
+        except Exception:
+            return ""
+    return max(have, key=_when)
 
 
 def verify(root):
@@ -232,7 +245,7 @@ def verify(root):
     for cur, dirs, files in os.walk(root, followlinks=False, onerror=_note_walk_error):
         if _excluded_dir(cur):
             continue
-        mname = _manifest_in(files)
+        mname = _manifest_in(files, cur)
         if mname is None:
             continue
         checked += 1
@@ -295,7 +308,7 @@ if __name__ == "__main__":
         done = []
         failed = []
         for cur, dirs, files in os.walk(base, followlinks=False, onerror=_note_walk_error):
-            if _excluded_dir(cur) or _manifest_in(files) is None:
+            if _excluded_dir(cur) or _manifest_in(files, cur) is None:
                 continue
             # ★ 한 폴더가 막혔다고 나머지를 통째로 버리지 않는다. 그리고 실패를
             #   삼킨 채 '✅ 완료' 라고 보고하지 않는다 — 해시를 남긴 줄 알고 넘어가면

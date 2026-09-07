@@ -579,6 +579,7 @@ inline SmokeResult smokePython(const QString &exe)
     //   '한글이 깨졌다' 로 읽으면 엉뚱한 데를 고치게 된다. 자가진단이 틀린 곳을
     //   가리키면 없느니만 못하다 — 무엇이 죽었는지 stderr 첫 줄을 그대로 보인다.
     if (p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
+        // 파이썬 역추적은 마지막 줄에 진짜 원인이 온다(ModuleNotFoundError 등).
         const QString first = err.isEmpty() ? QStringLiteral("(오류 출력 없음)")
                                             : err.section('\n', -1).left(160);
         return smokeFail(QStringLiteral("파이썬이 종료코드 %1 로 죽었습니다 — %2")
@@ -607,7 +608,16 @@ inline SmokeResult smokePython(const QString &exe)
 //   실패를 '도구 고장' 으로 적기 전에 반드시 확인한다.
 inline bool internetReachable()
 {
-    return !httpGet(QStringLiteral("https://www.youtube.com/robots.txt"), 5000).isEmpty();
+    // ★ 한 곳만 보면 그 한 곳이 막힌 망에서 '인터넷이 없다' 가 된다.
+    //   유튜브가 막힌 학교·회사·나라가 실제로 있고, 그러면 꾸러미 갱신이
+    //   영영 안 돈다 — 스스로 버티라고 넣은 장치가 그 자리에서 멈춘다.
+    //   서로 다른 곳 셋 중 하나만 닿으면 인터넷이 있는 것으로 본다.
+    for (const QString &u : {QStringLiteral("https://pypi.org/simple/"),
+                             QStringLiteral("https://www.cloudflare.com/robots.txt"),
+                             QStringLiteral("https://www.youtube.com/robots.txt")}) {
+        if (!httpGet(u, 4000).isEmpty()) return true;
+    }
+    return false;
 }
 
 // ── yt-dlp: 실제로 미디어 바이트를 받아 본다 ─────────────────────────────
@@ -692,6 +702,16 @@ inline SmokeResult smokeBrowserCookies(const QString &python)
 
 inline SmokeResult smokeYtDlp(const QString &exe)
 {
+    // ★ 지난 번 시험이 남긴 조각을 먼저 치운다. 작업 폴더는 smokeDir() 로 못박아
+    //   두었지만(그 전에는 앱 실행 폴더에 흘렸다) 치우는 사람이 없었다.
+    //   HLS 로 잡히면 32KB 받고 죽이는 사이에 조각이 생긴다 — 쌓이면 그것도 쓰레기다.
+    {
+        QDir d(smokeDir());
+        for (const QString &f : d.entryList(QStringList() << "*Frag*" << "*.part" << "*.ytdl",
+                                            QDir::Files))
+            QFile::remove(d.filePath(f));
+    }
+
     // 기준 영상 — 사라질 가능성이 가장 낮은 둘을 쓴다.
     //   그래도 10년 뒤에는 모른다. 그때 코드를 못 고치는 사람도 쓸 수 있도록
     //   환경변수로 갈아끼울 수 있게 열어 둔다 (쉼표로 여러 개).
@@ -807,7 +827,18 @@ inline QStringList serviceFollowingPackages()
 //   날아갔다. 3일마다 되풀이되니 갱신은 영영 자리를 못 잡는다.
 inline QString importModuleFor(const QString &pkg)
 {
-    if (pkg == QLatin1String("discord.py")) return QStringLiteral("discord");
+    // ★ 표로 둔다. discord.py 하나만 if 로 예외 처리해 두면, 다음에 이름이 다른
+    //   꾸러미가 들어올 때 같은 고장이 그대로 되돌아온다.
+    //   (PyPI 이름과 import 이름이 다른 것은 흔하다 — Pillow→PIL, beautifulsoup4→bs4 …)
+    static const QHash<QString, QString> kNameMap = {
+        {QStringLiteral("discord.py"),      QStringLiteral("discord")},
+        {QStringLiteral("Pillow"),          QStringLiteral("PIL")},
+        {QStringLiteral("beautifulsoup4"),  QStringLiteral("bs4")},
+        {QStringLiteral("python-dateutil"), QStringLiteral("dateutil")},
+        {QStringLiteral("xclienttransaction"), QStringLiteral("x_client_transaction")},
+    };
+    const auto it = kNameMap.constFind(pkg);
+    if (it != kNameMap.constEnd()) return it.value();
     QString m = pkg;
     m.replace('-', '_');
     return m;
@@ -974,6 +1005,10 @@ inline QString checkEnvironment()
                 "print(','.join(miss))\n"
                 "print('TOTAL:%d' % len(mods))"});
             pc.waitForFinished(20000);
+            // ★ 검사 자체가 죽으면 출력이 빈다. 그걸 '빠진 모듈 없음' 으로 읽어
+            //   '[OK] 파이썬 패키지 ?종 정상' 이라 적고 있었다. 진단서가 검사도
+            //   못 한 것을 정상이라 말하면, 그 보고서를 믿을 수 없게 된다.
+            const bool pcOk = (pc.exitStatus() == QProcess::NormalExit && pc.exitCode() == 0);
             const QString raw = QString::fromUtf8(pc.readAllStandardOutput());
             QString miss, pkgTotal;
             for (const QString &line : raw.split('\n')) {
@@ -981,11 +1016,13 @@ inline QString checkEnvironment()
                 if (t.startsWith("TOTAL:")) pkgTotal = t.mid(6).trimmed();
                 else if (!t.isEmpty()) miss = t;
             }
-            if (!miss.isEmpty())
+            if (!pcOk || pkgTotal.isEmpty())
+                out += "[FAIL] 파이썬 패키지를 확인하지 못했습니다 (종료코드 "
+                     + QString::number(pc.exitCode()) + ") — 정상인지 알 수 없습니다\n";
+            else if (!miss.isEmpty())
                 out += "[FAIL] 파이썬 패키지 없음: " + miss + " — 수집이 실패합니다\n";
             else
-                out += "[OK]   파이썬 패키지 " + (pkgTotal.isEmpty() ? QStringLiteral("?") : pkgTotal)
-                     + "종 정상\n";
+                out += "[OK]   파이썬 패키지 " + pkgTotal + "종 정상\n";
         }
     }
 

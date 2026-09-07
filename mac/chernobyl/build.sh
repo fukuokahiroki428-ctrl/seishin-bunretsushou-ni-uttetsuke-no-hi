@@ -187,6 +187,20 @@ fi
 #   실패해도 빌드를 멈추지 않는다(앱은 시스템 perl 로 폴백) — 다만 조용히 넘어가지는 않는다.
 bash "$(dirname "$0")/bundle_perl.sh" "$APPDIR" || echo "⚠ perl 번들 단계에서 문제가 있었습니다(계속 진행)."
 
+# ★ 번들 perl 은 위의 아키텍처 점검·최소 macOS 실측보다 뒤에 들어온다(그 단계들이
+#   먼저 돈다). 그래서 두 점검의 사각지대에 있다 — 여기서 따로 찍어 사람이 보게 한다.
+if [ -x "$APPDIR/Contents/Resources/tools/perl/bin/perl" ]; then
+    _P="$APPDIR/Contents/Resources/tools/perl/bin/perl"
+    echo "=== 번들 perl 점검 ==="
+    echo "  아키텍처   : $(lipo -archs "$_P" 2>/dev/null)"
+    echo "  최소 macOS : $(vtool -show-build "$_P" 2>/dev/null | awk '/minos/{print $2; exit}')"
+    if otool -L "$_P" 2>/dev/null | grep -q "/System/Library/Perl"; then
+        echo "  ⚠ 아직 시스템 perl 에 매달려 있습니다 — 들고 다니는 뜻이 없습니다."
+    else
+        echo "  시스템 의존: 없음 ✓"
+    fi
+fi
+
 echo "=== Codesign (inside-out + --deep --strict verify) ==="
 # 단일 서명 경로로 위임 — 서명/검증 실패 시 codesign_app.sh 가 exit 1 → set -e 로 중단.
 bash "$(dirname "$0")/codesign_app.sh" "$APPDIR"

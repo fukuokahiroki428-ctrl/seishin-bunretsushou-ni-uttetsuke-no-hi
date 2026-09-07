@@ -118,27 +118,17 @@ MainWindow::MainWindow(QWidget *parent)
     m_channel = new QWebChannel(this);
     m_backend = new HanishikiBackend(this);
     m_channel->registerObject(QStringLiteral("backend"), m_backend);
-    // ★ PEN(팬을 잘 쓰고 싶다) 통합 — 사이트 미러 엔진을 2번째 WebChannel 객체로 등록.
-    //
-    //   ⚠ 여기 적혀 있던 "UI 의 미러/캡쳐 탭이 penBackend.crawl* 를 호출" 은 사실이 아니다.
-    //     전수 대조로 확인했다(2026-09-06):
-    //       · index.html 의 penBackend 참조   0곳
-    //       · PenBackend 의 runJs 호출        18곳
-    //       · 그 18곳이 부르는 JS 콜백 9종(onConfigLoaded·onCrawlStarted·onEngineDetected 등)
-    //         가운데 화면에 정의된 것          0개
-    //     즉 이 객체는 채널에 올라가 있을 뿐 어느 쪽으로도 이어지지 않는다.
-    //     실제 크롤/미러 기능은 m_backend(HanishikiBackend) 로 돈다 —
-    //     SiteCrawler 가 부르는 showCrawlLoginConfirm 은 index.html 에 제대로 있다.
-    //
-    //   지금은 남겨 둔다. 지워도 기능은 안 줄지만(호출하는 곳이 없다) 이 판을 내보내는
-    //   시점에 손대면 확인할 시간이 없다. 다음에 이 파일을 열거든 둘 중 하나로 정하라:
-    //     (1) 미러/캡쳐 UI 를 실제로 붙인다 — index.html 에서 channel.objects.penBackend 를
-    //         꺼내고 위 콜백 9종을 정의한다.
-    //     (2) 안 쓸 거면 아래 두 줄을 지운다. 생성자가 Config·WebDavUploader 와
-    //         로그 타이머(계속 돈다)를 만드는데 전부 헛돈다.
-    //   고치지 않더라도 이 주석만은 사실이어야 한다 — 틀린 주석은 없느니만 못하다.
-    m_penBackend = new PenBackend(this);
-    m_channel->registerObject(QStringLiteral("penBackend"), m_penBackend);
+    // ★ PEN(사이트 미러 엔진, PenBackend)은 걷어냈다.
+    //   여기서 채널에 등록만 해 두고 어느 쪽으로도 이어지지 않았다(전수 대조):
+    //     · index.html 의 penBackend 참조   0곳
+    //     · PenBackend 의 runJs 호출        18곳
+    //     · 그 18곳이 부르는 JS 콜백 9종 중 화면에 정의된 것  0개
+    //   그런데 생성자가 Config·WebDavUploader 와 로그 타이머(계속 돈다)를 만든다.
+    //   아무도 안 쓰는 것을 매 실행마다 올리고 있었다.
+    //   실제 크롤/미러는 m_backend 로 돈다 — SiteCrawler 가 부르는
+    //   showCrawlLoginConfirm 은 index.html 에 제대로 있다.
+    //   클래스(PenBackend.cpp/.h)는 남겨 둔다. 나중에 미러 UI 를 붙일 생각이면
+    //   여기서 다시 등록하고 위 콜백 9종을 화면에 정의하면 된다.
     m_webView->page()->setWebChannel(m_channel);
 
     // ★ file:// 페이지에서 qrc:// 리소스 (qwebchannel.js, 폰트 등) 접근 허용 — CORS 우회
