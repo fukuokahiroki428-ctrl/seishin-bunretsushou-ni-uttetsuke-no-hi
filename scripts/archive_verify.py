@@ -293,13 +293,28 @@ if __name__ == "__main__":
             print(json.dumps({"error": "폴더를 지정하십시오"}, ensure_ascii=False)); sys.exit(1)
         base = sys.argv[2]
         done = []
+        failed = []
         for cur, dirs, files in os.walk(base, followlinks=False, onerror=_note_walk_error):
             if _excluded_dir(cur) or _manifest_in(files) is None:
                 continue
-            n, hashed, reused = record_hashes(cur)
-            done.append({"dir": os.path.relpath(cur, base),
-                         "total": n, "hashed": hashed, "reused": reused})
-        print(json.dumps({"recorded": done}, ensure_ascii=False))
+            # ★ 한 폴더가 막혔다고 나머지를 통째로 버리지 않는다. 그리고 실패를
+            #   삼킨 채 '✅ 완료' 라고 보고하지 않는다 — 해시를 남긴 줄 알고 넘어가면
+            #   정작 대조할 기준이 없다는 것을 몇 달 뒤에야 알게 된다.
+            try:
+                n, hashed, reused = record_hashes(cur)
+                done.append({"dir": os.path.relpath(cur, base),
+                             "total": n, "hashed": hashed, "reused": reused})
+            except Exception as e:
+                failed.append({"dir": os.path.relpath(cur, base),
+                               "error": "%s: %s" % (type(e).__name__, e)})
+        out = {"recorded": done}
+        if failed:
+            out["failed"] = failed
+            out["failed_total"] = len(failed)
+        if _walk_errors:
+            out["unreadable"] = _walk_errors[:20]
+            out["unreadable_total"] = len(_walk_errors)
+        print(json.dumps(out, ensure_ascii=False))
         sys.exit(0)
 
     root = sys.argv[1]

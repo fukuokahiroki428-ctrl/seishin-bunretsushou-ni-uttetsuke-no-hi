@@ -829,13 +829,22 @@ inline bool removeOnePackageFromOverlay(const QString &python,
         "for di in glob.glob(os.path.join(ov,'*.dist-info')):\n"
         "    name=os.path.basename(di).split('-')[0].replace('-','_').replace('.','_').lower()\n"
         "    if name!=norm: continue\n"
-        "    hit=True\n"
         "    rec=os.path.join(di,'RECORD')\n"
-        "    if os.path.exists(rec):\n"
+        "    if not os.path.exists(rec):\n"
+        // ★ RECORD 가 없으면 그 꾸러미의 파일을 지울 방법이 없다. 그런데도 'OK' 라
+        //   돌려주면, 부르는 쪽은 되돌리기가 끝난 줄 알고 폴더째 비우는 마지막 수단을
+        //   건너뛴다. 망가진 꾸러미가 그대로 남아 계속 번들을 가린다.
+        "        continue\n"
+        "    hit=True\n"
+        "    if True:\n"
         "        for line in open(rec,encoding='utf-8',errors='replace'):\n"
         "            rel=line.split(',')[0].strip()\n"
-        "            if not rel or rel.startswith('..') or os.path.isabs(rel): continue\n"
-        "            t=os.path.join(ov,rel)\n"
+        "            if not rel or os.path.isabs(rel): continue\n"
+        // ★ 앞이 '..' 인지만 보면 'a/../../etc' 같은 것을 못 막는다. 합친 뒤
+        //   정규화해서 '정말 오버레이 안인가' 로 판정한다. RECORD 는 pip 가
+        //   쓰는 파일이지만, 남이 쓴 파일을 믿고 지우는 코드는 그렇게 짜면 안 된다.
+        "            t=os.path.normpath(os.path.join(ov,rel))\n"
+        "            if not t.startswith(os.path.normpath(ov)+os.sep): continue\n"
         "            if os.path.isfile(t):\n"
         "                try: os.remove(t)\n"
         "                except OSError: pass\n"
@@ -907,7 +916,26 @@ inline QString updatePackagesIfDue(const QString &python, bool allowNetwork,
         if (chk.exitStatus() != QProcess::NormalExit || chk.exitCode() != 0) {
             // 그 꾸러미만 걷어내면 번들의 옛 판으로 즉시 돌아간다.
             // 못 걷어냈을 때만 폴더째 지운다 — 다른 갱신분을 잃는 마지막 수단이다.
-            if (!removeOnePackageFromOverlay(python, overlay, pkg)) {
+            bool rolledBack = removeOnePackageFromOverlay(python, overlay, pkg);
+            if (rolledBack) {
+                // ★ 그 꾸러미만 걷어냈다고 끝이 아니다. pip 는 갱신하면서 의존 꾸러미도
+                //   함께 올린다. 주인공만 빼면 그 새 의존만 덧씌운 채 남아, 번들의 옛
+                //   판과 짝이 안 맞을 수 있다. 남은 것들이 아직 다 불러와지는지 본다.
+                for (const QString &other : serviceFollowingPackages()) {
+                    if (other == pkg) continue;
+                    QProcess c2;
+                    c2.setProcessEnvironment(Common::bundledProcessEnv());
+                    c2.start(python, {"-c", QString("import %1").arg(importModuleFor(other))});
+                    c2.waitForFinished(30000);
+                    if (c2.exitStatus() != QProcess::NormalExit || c2.exitCode() != 0) {
+                        out += QString("[UPD]  %1 을 빼고 나니 %2 가 불러와지지 않습니다 — "
+                                       "덧씌운 것을 통째로 비웁니다\n").arg(pkg, other);
+                        rolledBack = false;     // 아래에서 폴더째 비운다
+                        break;
+                    }
+                }
+            }
+            if (!rolledBack) {
                 QDir(overlay).removeRecursively();
                 QDir().mkpath(overlay);
             }

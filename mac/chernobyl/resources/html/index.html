@@ -4006,6 +4006,12 @@
             try {
                 const config = JSON.parse(configJson);
                 if (config.accounts) { accounts = config.accounts; Object.keys(accounts).forEach(p => renderAccounts(p)); }
+                // ★ 저장 허용 표시는 '진짜 값을 받았다' 가 확인되는 여기서 켠다.
+                //   예전엔 함수 맨 끝에 두었는데, 뒤쪽의 곁가지 복원(WebDAV·백업·동시
+                //   다운로드 칸 등)에서 예외가 한 번만 나도 이 표시가 영영 꺼진 채 남아
+                //   그 뒤 모든 설정 저장이 조용히 사라졌다. JSON 을 읽고 계정을 받은
+                //   시점이면 '덮어써도 되는 상태' 로 충분하다.
+                _configLoaded = true;
                 if (config.platformTargets) {
                     // normalize legacy string entries + ensure enabled defaults to true
                     Object.keys(config.platformTargets).forEach(function(plat){
@@ -4073,10 +4079,6 @@
                 }
                 // 계정 드롭다운에 이름 반영 + 목록 재렌더
                 refreshTargetAccountPickers();
-                // ★ 여기까지 왔으면 이 창은 진짜 설정을 받았다 — 이제부터 저장을 허용한다.
-                //   중간에 예외가 나면 표시하지 않는다. 반쯤 읽은 설정으로 덮어쓰면
-                //   안 읽느니만 못하다.
-                _configLoaded = true;
             } catch(e) {}
         }
         // Platform name to DOM ID prefix mapping
