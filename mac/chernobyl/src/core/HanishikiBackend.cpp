@@ -3198,9 +3198,8 @@ bool HanishikiBackend::isAnyRunning() const
 
 void HanishikiBackend::executeJsMainThread(const QString &js)
 {
-    if (m_window && m_window->webView()) {
-        m_window->webView()->page()->runJavaScript(js);
-    }
+    // ★ 페이지가 뜨기 전이면 MainWindow 가 담아 둔다 — 직접 runJavaScript 하면 안 된다.
+    if (m_window) m_window->runJsOnUi(js);
 }
 
 void HanishikiBackend::appendLogMainThread(const QString &message, const QString &type, const QString &platform)
@@ -3257,7 +3256,7 @@ void HanishikiBackend::flushLogs()
     m_pendingLogs.clear();
 
     if (!js.isEmpty()) {
-        m_window->webView()->page()->runJavaScript(js);
+        m_window->runJsOnUi(js);
     }
 }
 

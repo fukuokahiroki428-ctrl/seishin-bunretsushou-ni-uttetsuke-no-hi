@@ -521,7 +521,14 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     //   예전엔 앱을 켤 때마다 内閣会 탭에 들어가 직접 시작해야 했다. 그러면 켜 두는 걸
     //   잊은 동안 올라온 글을 놓친다 — 자동 감시의 의미가 없다.
     //   설정에 대상이 없으면 아무 일도 하지 않는다(처음 쓰는 사람에게는 조용하다).
-    //   창이 다 뜨고 나서 시작하도록 이벤트 루프 한 바퀴 뒤로 미룬다.
+    //
+    //   ※ 여기 주석이 예전에 "창이 다 뜨고 나서 시작하도록" 이라고 적혀 있었는데
+    //     사실이 아니었다. singleShot(0) 은 생성자 밖으로 한 바퀴 미룰 뿐이고,
+    //     index.html 은 그 뒤로도 한참 더 읽힌다(이 기계에서 2.6초). 그래서 아래
+    //     startNaikakukai() 안의 setNaikakukaiRunning(true) 가 사라졌고, 수집은
+    //     도는데 화면의 '중지' 버튼만 잠긴 채로 남았다.
+    //     지금은 MainWindow::runJsOnUi 가 페이지가 뜰 때까지 담아 두므로,
+    //     수집은 곧바로 시작하고 화면은 페이지가 뜨는 순간 맞춰진다.
     QTimer::singleShot(0, this, [this]() {
         if (!m_config) return;
         const QJsonArray watches = m_config->naikakukaiWatches();
@@ -3436,9 +3443,8 @@ bool MiyoBackend::isAnyRunning() const
 
 void MiyoBackend::executeJsMainThread(const QString &js)
 {
-    if (m_window && m_window->webView()) {
-        m_window->webView()->page()->runJavaScript(js);
-    }
+    // ★ 페이지가 뜨기 전이면 MainWindow 가 담아 둔다 — 직접 runJavaScript 하면 안 된다.
+    if (m_window) m_window->runJsOnUi(js);
 }
 
 void MiyoBackend::appendLogMainThread(const QString &message, const QString &type, const QString &platform)
@@ -3495,7 +3501,7 @@ void MiyoBackend::flushLogs()
     m_pendingLogs.clear();
 
     if (!js.isEmpty()) {
-        m_window->webView()->page()->runJavaScript(js);
+        m_window->runJsOnUi(js);
     }
 }
 

@@ -5,6 +5,7 @@
 #include <QWebChannel>
 #include <QMenu>
 #include <QProcess>
+#include <QStringList>
 
 #ifdef Q_OS_MACOS
 #include <IOKit/pwr_mgt/IOPMLib.h>
@@ -24,6 +25,17 @@ public:
     ~MainWindow() override;
 
     QWebEngineView *webView() const { return m_webView; }
+
+    // ★ 메인 UI 페이지에 JS 를 넣는 단 하나의 통로.
+    //   페이지가 아직 안 읽혔으면 담아 두었다가 loadFinished 때 순서대로 흘린다.
+    //
+    //   왜 필요한가 — setUrl() 은 비동기다. index.html 은 이 기계에서 2.6초 걸린다.
+    //   그 사이에 넣은 JS 는 "appendLog is not defined" 로 조용히 사라졌다.
+    //   실측으로 内閣会 자동 시작이 여기 물렸다: 수집은 도는데 setNaikakukaiRunning(true)
+    //   가 사라져서, 화면의 '중지' 버튼이 잠긴 채로 남아 멈출 수가 없었다.
+    //   "돌고 있는데 화면은 아니라고 한다" 는 조용한 고장이라 더 나쁘다.
+    void runJsOnUi(const QString &js);
+    bool uiReady() const { return m_uiReady; }
     QWebEngineView *browserView() const { return m_browserView; }
     void setChromeTheme(bool dark);   // 창 배경을 HTML 테마(--bg)에 맞춘다
     MiyoBackend *backend() const { return m_backend; }
@@ -49,9 +61,14 @@ protected:
 #endif
 
 private:
+    void flushPendingJs();      // 페이지가 뜬 뒤 담아 둔 JS 를 순서대로 흘린다
     void setupMenu();
     void applyDarkTitlebar();
     void openFolderDialog();
+
+    bool m_uiReady = false;     // index.html 이 다 읽혔나
+    QStringList m_pendingJs;    // 그 전에 들어온 JS
+    int m_droppedJs = 0;        // 한도를 넘어 버린 개수(조용히 버리지 않기 위해)
 
     QWebEngineView *m_webView = nullptr;
     QWebEngineView *m_browserView = nullptr;

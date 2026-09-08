@@ -1166,6 +1166,14 @@
     [onclick], [role="button"], .tab, .cap-opt, input[type=checkbox], input[type=radio], .nt-check, summary{
         cursor:pointer !important;
     }
+    /* ★ 눌리지 않는 버튼에서는 손가락 커서를 지운다.
+       바로 위 cursor:pointer !important 가 .nt-btn:disabled{cursor:default} 를 덮어써서,
+       비활성 버튼이 흐려지기만 하고 커서로는 계속 "누를 수 있다" 고 말하고 있었다.
+       눌러 보고 나서야 안 되는 걸 아는 화면은 고장난 화면과 구분이 안 된다. */
+    button:disabled, .nt-btn:disabled, .btn:disabled, input:disabled, select:disabled,
+    textarea:disabled{
+        cursor:default !important;
+    }
     /* 마우스 클릭 시 파란 포커스 링 X — 키보드(Tab) 탐색일 때만 :focus-visible 로 표시 */
     :focus{ outline:none !important; }
     .nt-btn:focus-visible, .scroll-area .btn:focus-visible, .nav-item:focus-visible, input:focus-visible, select:focus-visible{ outline:2px solid var(--accent) !important; outline-offset:2px; }

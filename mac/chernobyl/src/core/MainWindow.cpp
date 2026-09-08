@@ -157,8 +157,21 @@ MainWindow::MainWindow(QWidget *parent)
     //   ★ 이 연결은 반드시 if/else '바깥' 이어야 한다. 처음엔 else 안에 넣는 바람에,
     //     번들 HTML(Resources/html/index.html)을 쓰는 실제 경로에서는 한 번도 걸리지
     //     않았다. 그래서 메뉴가 '목록을 읽는 중…' 에서 멈춰 있었다.
+    // ★ 다시 읽는 동안(새로고침·자가수리)에도 JS 상태가 날아가므로 같이 잠근다.
+    connect(m_webView, &QWebEngineView::loadStarted, this, [this]() {
+        m_uiReady = false;
+    });
     connect(m_webView, &QWebEngineView::loadFinished, this, [this](bool ok) {
-        if (ok) { populatePlatformMenu(); applyZoom(); }
+        if (ok) {
+            populatePlatformMenu(); applyZoom();
+        } else {
+            // 실패해도 큐를 영원히 붙들지 않는다. 붙들면 메모리만 늘고 원인은 안 보인다.
+            qWarning() << "[UI] 페이지 로드 실패 — 담아 둔 JS" << m_pendingJs.size()
+                       << "개를 그대로 흘린다";
+        }
+        // ★ 페이지가 뜨기 전에 들어온 JS 를 여기서 흘린다 — MainWindow.h 의 설명 참고.
+        m_uiReady = true;
+        flushPendingJs();
     });
 
     layout->addWidget(m_webView);
@@ -373,6 +386,40 @@ void MainWindow::updateDockMenu()
     if (stopAction) {
         stopAction->setEnabled(running);
     }
+}
+
+// ★ 메인 UI 페이지에 JS 를 넣는 단 하나의 통로 — MainWindow.h 의 설명 참고.
+void MainWindow::runJsOnUi(const QString &js)
+{
+    if (!m_webView || js.isEmpty()) return;
+    if (m_uiReady) {
+        m_webView->page()->runJavaScript(js);
+        return;
+    }
+    // 아직 안 읽혔다 — 담아 둔다.
+    //   한도를 둔다. 페이지가 끝내 안 뜨는 경우 무한히 쌓이면 그게 다음 고장이다.
+    //   넘치면 오래된 것부터 버린다(로그 배칭이 이미 쓰는 규칙과 같게).
+    constexpr int kMaxPending = 500;
+    m_pendingJs.append(js);
+    if (m_pendingJs.size() > kMaxPending) {
+        m_pendingJs.removeFirst();
+        ++m_droppedJs;
+    }
+}
+
+void MainWindow::flushPendingJs()
+{
+    if (m_droppedJs > 0) {
+        // 버린 것을 말하지 않으면 "다 전달됐다" 로 읽힌다.
+        qWarning() << "[UI] 페이지가 뜨기 전 JS" << m_droppedJs << "개를 버렸다(한도 초과)";
+        m_droppedJs = 0;
+    }
+    if (m_pendingJs.isEmpty()) return;
+    const QStringList queued = m_pendingJs;
+    m_pendingJs.clear();
+    // 한 덩어리로 합치지 않는다 — 중간 하나가 던지면 뒤가 통째로 죽는다.
+    for (const QString &js : queued)
+        m_webView->page()->runJavaScript(js);
 }
 
 void MainWindow::showBrowser(bool show)
