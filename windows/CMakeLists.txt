@@ -398,13 +398,30 @@ if(WIN32)
 
     set(WIN_OUTPUT_DIR "$<TARGET_FILE_DIR:Miyo>")
 
+    # ★ 소스에서 바로 오는 리소스(html·도구 스크립트·scripts·requirements)는
+    #   exe 링크에 매달지 않는다.
+    #
+    #   POST_BUILD 는 타깃이 다시 링크될 때만 돈다. html 이나 파이썬 도구만 고치고
+    #   빌드하면 ninja 가 "no work to do" 로 끝나서, 배포본에는 옛 파일이 그대로
+    #   남는다. 이 저장소에서 실제로 세 번 물렸다 — 고친 줄 알고 앱을 켰는데
+    #   안 고쳐져 있고, 원인을 코드에서 찾게 된다. 전형적인 '내 기계에선 되는데' 다.
+    #
+    #   OUTPUT 이 없는 커스텀 타깃은 매번 돈다. 복사는 대부분 copy_if_different 라
+    #   실제로 바뀐 것만 쓴다. 값싸고, 무엇보다 "빌드한 것 = 실행되는 것" 이 된다.
+    #   ※ 큰 정적 덩어리(chromium·exiftool_files·폰트·exe 들)는 여기 넣지 않는다.
+    #     그것들은 개발 중에 안 바뀌고, 매번 통째로 복사하면 빌드가 느려진다.
+    add_custom_target(deploy_win_resources ALL
+        COMMENT "소스 리소스 배포 (html · tools · scripts)")
+    add_dependencies(deploy_win_resources Miyo)
+
+
     # ★ UI(html) 를 exe 옆으로 — 이게 없으면 앱이 qrc:/html/index.html 로 폴백하는데,
     #   그때는 WebChannel transport 가 origin 차이로 안 붙어서 "화면은 뜨는데 버튼이
     #   전부 죽는" 상태가 된다 (MainWindow.cpp 112~114 주석이 적어 둔 그 증상).
     #   지금까지는 GitHub Actions 의 Deploy 단계(build.yml:284)만 이 복사를 했다.
     #   그래서 WINDOWS_BUILD.txt 가 안내하는 로컬 cmake 빌드는 만들자마자 깨져 있었다.
     #   맥 분기는 121행에서 이미 같은 복사를 하고 있다 — 윈도우만 빠져 있었다.
-    add_custom_command(TARGET Miyo POST_BUILD
+    add_custom_command(TARGET deploy_win_resources POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/resources/html" "${WIN_OUTPUT_DIR}/html"
         COMMENT "Bundling UI html (없으면 모든 버튼이 죽는다)"
@@ -430,7 +447,7 @@ if(WIN32)
     # 보관함 색인·질의응답 스크립트
     foreach(ARCHIVE_SCRIPT archive_index.py archive_ask.py)
         if(EXISTS "${CMAKE_SOURCE_DIR}/../scripts/${ARCHIVE_SCRIPT}")
-            add_custom_command(TARGET Miyo POST_BUILD
+            add_custom_command(TARGET deploy_win_resources POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${CMAKE_SOURCE_DIR}/../scripts/${ARCHIVE_SCRIPT}"
                     "${WIN_OUTPUT_DIR}/tools/${ARCHIVE_SCRIPT}"
@@ -446,7 +463,7 @@ if(WIN32)
     #   복사가 실패한다(실측: GLOB 도 마찬가지). copy_directory 는 제대로 처리한다.
     #   .bat 은 %~dp0 로 옆의 ps1 을 부르므로 폴더째 두면 그대로 동작한다.
     if(EXISTS "${CMAKE_SOURCE_DIR}/../scripts")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET deploy_win_resources POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_SOURCE_DIR}/../scripts" "${WIN_OUTPUT_DIR}/scripts"
             COMMENT "Bundling scripts (로컬 AI 설치 등)"
@@ -454,7 +471,7 @@ if(WIN32)
     endif()
 
     if(EXISTS "${CMAKE_SOURCE_DIR}/../requirements.txt")
-        add_custom_command(TARGET Miyo POST_BUILD
+        add_custom_command(TARGET deploy_win_resources POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/../requirements.txt" "${WIN_OUTPUT_DIR}/requirements.txt"
             COMMENT "Bundling requirements.txt"
@@ -463,7 +480,7 @@ if(WIN32)
 
     # Python tool scripts → <exe_dir>/tools/
     set(TOOLS_DIR "${CMAKE_SOURCE_DIR}/resources/tools")
-    add_custom_command(TARGET Miyo POST_BUILD
+    add_custom_command(TARGET deploy_win_resources POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${WIN_OUTPUT_DIR}/tools"
         COMMENT "Creating tools directory"
     )
@@ -472,7 +489,7 @@ if(WIN32)
     foreach(TOOL_SCRIPT twitter_tid.py twitter_api.py twitter_daemon.py bluesky_daemon.py
                         email_watch.py x_session.py)
         if(EXISTS "${TOOLS_DIR}/${TOOL_SCRIPT}")
-            add_custom_command(TARGET Miyo POST_BUILD
+            add_custom_command(TARGET deploy_win_resources POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${TOOLS_DIR}/${TOOL_SCRIPT}" "${WIN_OUTPUT_DIR}/tools/${TOOL_SCRIPT}"
                 COMMENT "Bundling ${TOOL_SCRIPT}"
