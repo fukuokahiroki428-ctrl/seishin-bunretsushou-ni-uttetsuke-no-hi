@@ -27,7 +27,9 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
 //   프로그램에 경로를 넘길 때 쓴다. 표현 불가능한 문자가 있으면 8.3 단축 경로(항상 ASCII)
 //   로 바꿔 준다. 바꿀 수 없으면(8.3 이 꺼진 볼륨 등) 원본을 그대로 돌려준다.
 //   Windows 외에서는 항상 원본을 그대로 돌려준다.
-QString ansiSafePath(const QString &path);
+//   who: 이 경로를 넘겨받을 도구 이름. 8.3 단축 경로를 못 만들었을 때 무엇이
+//        위험한지 정확히 적기 위해서만 쓴다(비우면 exiftool 로 본다).
+QString ansiSafePath(const QString &path, const QString &who = QString());
 #ifdef Q_OS_WIN
 // exiftool 전용 — 경로에 ANSI 로 못 쓰는 글자(한글·일본어)가 있으면 exiftool 과
 // exiftool_files 를 ANSI 로 쓸 수 있는 자리로 옮겨서 그 경로를 돌려준다.

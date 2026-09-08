@@ -183,7 +183,7 @@ inline QString launchPath(const QString &name, const QString &path)
 {
 #ifdef Q_OS_WIN
     if (name == "exiftool") return Common::asciiSafeExiftool(path);
-    return Common::ansiSafePath(path);
+    return Common::ansiSafePath(path, name);   // 경고가 도구 이름을 제대로 말하도록
 #else
     Q_UNUSED(name);
     return path;

@@ -303,7 +303,7 @@ QString asciiSafeExiftool(const QString &exePath)
 }
 #endif
 
-QString ansiSafePath(const QString &path)
+QString ansiSafePath(const QString &path, const QString &who)
 {
 #ifdef Q_OS_WIN
     if (path.isEmpty() || ansiRepresentable(path)) return path;
@@ -321,8 +321,19 @@ QString ansiSafePath(const QString &path)
     const QString shortPath = QString::fromWCharArray(shortBuf.data());
     // 볼륨에서 8.3 이 꺼져 있으면 원본이 그대로 돌아온다 — 그때는 우회가 불가능하다.
     if (!ansiRepresentable(shortPath)) {
-        qWarning() << "[Common] 경로에 ANSI 로 표현 못 하는 문자가 있는데 8.3 단축 경로도 없습니다."
-                   << "exiftool 이 실패할 수 있습니다:" << path;
+        // ★ 여기서 무조건 exiftool 을 지목하면 안 된다. 이 함수는 ffmpeg·python·rclone
+        //   경로에도 불린다. 그것들은 자기 경로를 넓은문자 API 로 받으므로 한글 경로에서도
+        //   멀쩡히 돈다 — 이 기계에서 셋 다 실기능 확인을 통과했다.
+        //   예전 문구는 그 셋에도 "exiftool 이 실패할 수 있습니다" 라고 찍혀서,
+        //   나중에 로그를 보는 사람을 멀쩡한 자리로 보냈다. 겁주는 로그는 없느니만 못하다.
+        const bool isExiftool = who.isEmpty() || who == QLatin1String("exiftool");
+        if (isExiftool) {
+            qWarning() << "[Common] 경로에 ANSI 로 못 쓰는 글자가 있는데 8.3 단축 경로도 없습니다."
+                       << "exiftool 이 옆의 exiftool_files\perl5*.dll 을 못 찾을 수 있습니다:" << path;
+        } else {
+            qDebug() << "[Common] 8.3 단축 경로가 없어 원본 경로를 그대로 넘깁니다 —"
+                     << who << "가 넓은문자 API 를 쓰면 문제 없습니다:" << path;
+        }
         return path;
     }
     return shortPath;
