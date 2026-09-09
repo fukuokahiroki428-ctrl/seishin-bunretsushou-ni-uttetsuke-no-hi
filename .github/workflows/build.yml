@@ -583,8 +583,17 @@ jobs:
           # 같은 제목으로 열려 있는 이슈를 찾는다.
           #   라벨을 안 쓰는 이유: 라벨이 저장소에 없으면 issue create 가 그냥 실패한다.
           #   제목은 env.TITLE 로 넘긴다 — 셸과 jq 의 따옴표가 겹치지 않게.
-          NUM=$(gh api "repos/$REPO/issues?state=open&per_page=100" \
-                  --jq '.[] | select(.title == env.TITLE) | .number' | head -1)
+          # ★ 조회가 실패하면 여기서 멈춘다.
+          #   파이프로 head 에 바로 물리면 gh 가 죽어도 종료 코드가 head 것이 되어
+          #   '이슈가 없다' 와 '조회를 못 했다' 가 똑같이 빈 문자열로 보인다.
+          #   그러면 이미 열려 있는 이슈를 못 찾고 실패할 때마다 새 이슈를 만든다 —
+          #   며칠이면 아무도 안 보는 이슈 더미가 된다.
+          if ! LIST=$(gh api "repos/$REPO/issues?state=open&per_page=100" \
+                        --jq '.[] | select(.title == env.TITLE) | .number'); then
+            echo "::error::열려 있는 알림 이슈를 조회하지 못했습니다"
+            exit 1
+          fi
+          NUM=$(printf '%s\n' "$LIST" | head -1)
           echo "열려 있는 알림 이슈: ${NUM:-없음}"
 
           if [ "$RESULT" = "success" ]; then
