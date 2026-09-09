@@ -1391,6 +1391,7 @@ inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
 inline void runStartupMaintenanceAsync()
 {
     QThread *t = QThread::create([] { runStartupMaintenance(); });
+    t->setObjectName(QStringLiteral("selfrepair-startup"));
     QObject::connect(t, &QThread::finished, t, &QObject::deleteLater);
     t->start(QThread::LowPriority);
 }
@@ -1449,6 +1450,7 @@ inline void runPeriodicUpdateAsync()
         //   새로 알게 되는 것은 거의 없고, 수집과 겹칠 일만 늘어난다.
     });
     QObject::connect(t, &QThread::finished, t, &QObject::deleteLater);
+    t->setObjectName(QStringLiteral("selfrepair-periodic"));
     t->start(QThread::LowPriority);
 }
 

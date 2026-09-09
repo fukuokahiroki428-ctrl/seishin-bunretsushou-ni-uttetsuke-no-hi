@@ -7,6 +7,7 @@
 #include <QSystemTrayIcon>
 #include "core/MainWindow.h"
 #include "utils/SelfRepair.h"   // ★ 자가진단·자가복구 + 로컬 LLM 진단
+#include <QThread>                 // 스레드 친화성 경고에 스레드 이름을 붙이려고
 
 #ifdef Q_OS_WIN
 #include <QFile>
@@ -71,9 +72,23 @@ static void predormitionLogHandler(QtMsgType type, const QMessageLogContext &, c
         case QtFatalMsg:    lvl = "F"; break;
         default: break;
     }
+    // ★ 스레드 친화성 경고는 "누가 냈는지" 를 모르면 쫓을 수가 없다.
+    //   Qt 는 주소만 찍어 준다. 주소는 매번 달라서 아무것도 알려주지 않는다.
+    //   그래서 이름을 붙여 둔 스레드면 이름을 같이 적는다.
+    QString extra;
+    if (msg.startsWith(QLatin1String("QObject::moveToThread"))
+        || msg.startsWith(QLatin1String("QObject::setParent"))
+        || msg.startsWith(QLatin1String("QObject::~QObject"))
+        || msg.startsWith(QLatin1String("QObject::killTimer"))
+        || msg.startsWith(QLatin1String("QObject::startTimer"))) {
+        QThread *cur = QThread::currentThread();
+        const QString nm = cur ? cur->objectName() : QString();
+        extra = QStringLiteral("  [낸 스레드: %1]")
+                    .arg(nm.isEmpty() ? QStringLiteral("(이름없음)") : nm);
+    }
     if (logFile && logFile->isOpen()) {
         const QByteArray line = (QDateTime::currentDateTime().toString("HH:mm:ss.zzz")
-                                 + " [" + lvl + "] " + msg + "\n").toUtf8();
+                                 + " [" + lvl + "] " + msg + extra + "\n").toUtf8();
         logFile->write(line);
         logFile->flush();
     }
