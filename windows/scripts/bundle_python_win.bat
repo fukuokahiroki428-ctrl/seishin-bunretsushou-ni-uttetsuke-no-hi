@@ -61,7 +61,7 @@ echo [bundle_python_win] Python:
 "%PYTHON_DIR%\python.exe" --version
 
 REM Install packages
-echo [bundle_python_win] Installing twikit, httpx, atproto, openpyxl, Pillow, piexif, bs4, websockets, lxml, m3u8, cryptography, browser_cookie3...
+echo [bundle_python_win] Installing from requirements.txt (twikit, httpx, atproto, openpyxl, Pillow, bs4, websockets, lxml, m3u8, cryptography, browser_cookie3, x_client_transaction)...
 REM ★ 버전 고정 — repo 루트의 requirements.txt 사용(재현 가능한 빌드)
 set "REQ=%~dp0..\..\requirements.txt"
 if exist "%REQ%" (
@@ -69,12 +69,12 @@ if exist "%REQ%" (
     "%PYTHON_DIR%\python.exe" -m pip install --quiet --no-cache-dir -r "%REQ%" 2>&1
 ) else (
     echo [bundle_python_win] WARN requirements.txt 없음 - 버전 미고정 설치
-    "%PYTHON_DIR%\python.exe" -m pip install --quiet --no-cache-dir twikit httpx atproto openpyxl Pillow piexif beautifulsoup4 websockets lxml m3u8 cryptography browser_cookie3 2>&1
+    "%PYTHON_DIR%\python.exe" -m pip install --quiet --no-cache-dir twikit httpx atproto openpyxl Pillow beautifulsoup4 websockets lxml m3u8 cryptography browser_cookie3 2>&1
 )
 
 REM Verify packages (browser_cookie3 포함 — Instagram/Pixiv/Tumblr Chrome 쿠키 추출에 필수)
 echo [bundle_python_win] Verifying...
-"%PYTHON_DIR%\python.exe" -c "import twikit, httpx, atproto, openpyxl, PIL, piexif, bs4, browser_cookie3; print('All packages verified!')"
+"%PYTHON_DIR%\python.exe" -c "import twikit, httpx, atproto, openpyxl, PIL, bs4, browser_cookie3; print('All packages verified!')"
 if !errorlevel! neq 0 (
     echo [bundle_python_win] WARN: package verification failed -- skipping marker ^(best-effort^). App re-bundles on first run.
     exit /b 0

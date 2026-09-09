@@ -437,7 +437,7 @@ inline SmokeResult smokePython(const QString &exe)
         ts << "# -*- coding: utf-8 -*-\n"
               "import sys, importlib\n"
               "mods = ['ssl','sqlite3','json','twikit','httpx','atproto','openpyxl',\n"
-              "        'PIL','piexif','bs4','lxml','websockets','m3u8','browser_cookie3',\n        'x_client_transaction']\n"
+              "        'PIL','bs4','lxml','websockets','m3u8','browser_cookie3',\n        'x_client_transaction']\n"
               "missing = []\n"
               "for m in mods:\n"
               "    try: importlib.import_module(m)\n"
@@ -463,7 +463,7 @@ inline SmokeResult smokePython(const QString &exe)
         if (line.startsWith("MISSING:")) missing = line.mid(8).trimmed();
     if (!missing.isEmpty())
         return smokeFail("빠진 모듈: " + missing + " — 설정 → 모듈 업데이트로 받으세요");
-    return smokePass("필수 모듈 15개 import · 한글 출력 확인");
+    return smokePass("필수 모듈 14개 import · 한글 출력 확인");
 }
 
 // ── 인터넷에 닿는지 ──────────────────────────────────────────────────────
