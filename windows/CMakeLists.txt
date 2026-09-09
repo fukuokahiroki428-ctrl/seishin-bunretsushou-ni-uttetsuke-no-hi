@@ -20,36 +20,72 @@ endif()
 #   실측 (2026-09-09, 이 저장소를 개발하는 윈도우 기계):
 #     ninja + MSVC 는 /showIncludes 출력을 파싱해 헤더 의존성을 기록한다.
 #     그 출력의 머리말은 컴파일러 UI 언어를 따른다 — 한국어판이면
-#     "참고: 포함 파일:" 이다. 그런데 시스템 ANSI 코드페이지가 그 글자를
-#     담지 못하면(이 기계는 1252) cl 이 스스로 "??: ?? ??: " 로 뭉개서
-#     내보낸다. CMake 는 그 뭉개진 문자열을 그대로 받아 적고, 결과적으로
-#     ninja 는 include 줄을 하나도 알아보지 못한다.
-#       ninja -t deps <obj>  →  #deps 0
+#     "참고: 포함 파일: " 이다.
+#
+#     그런데 CMake 가 컴파일러를 살펴볼 때는 그 머리말을 "??: ?? ??: " 로
+#     받아 적었다. 시스템 ANSI 코드페이지가 1252 라 한글이 물음표로 뭉개진
+#     것이다(CMakeCXXCompiler.cmake 에 0x3F 로 박혀 있는 것을 확인했다).
+#
+#     정작 ninja 가 빌드할 때 cl 이 내보내는 것은 UTF-8 한글이다.
+#     실측 — ninja 가 못 알아본 줄이 그대로 새어 나온 것을 바이트로 떴다:
+#       ec b0 b8 ea b3 a0 3a 20 ...   =  "참고: 포함 파일: "
+#     즉 CMake 가 적어 둔 머리말과 cl 이 내보내는 머리말이 서로 다르다.
+#     그래서 ninja 는 include 줄을 하나도 못 알아본다.
+#       ninja -t deps <obj>  →  #deps 0   (모든 obj 가 그랬다)
 #
 #   증상이 고약하다. 헤더만 고치고 빌드하면 "no work to do" 로 끝나고,
 #   배포본은 옛 코드 그대로다. 고친 줄 알고 앱을 켜서 옛 동작을 보고,
 #   원인을 엉뚱한 데서 찾게 된다. 이 저장소는 SelfRepair.h 하나에만
 #   헤더로 76KB 가 들어 있어서 특히 크게 물린다 — 실제로 물렸다.
 #
-#   CI(영문 러너)는 머리말이 "Note: including file: " 라 멀쩡하다.
+#   CI(영문 러너)는 "Note: including file: " 라 원래 멀쩡하다.
 #   그래서 이 문제는 사람 기계에서만, 조용히 난다.
 #
-#   고칠 방법이 마땅치 않다(영문 언어팩을 깔거나 시스템 로캘을 바꿔야 한다).
-#   그러면 최소한 조용히 틀리지는 않게 한다.
-if(CMAKE_GENERATOR MATCHES "Ninja" AND MSVC
-   AND CMAKE_CXX_CL_SHOWINCLUDES_PREFIX MATCHES "^[?: ]*$")
-    message(WARNING
-        "이 기계에서는 헤더를 고쳐도 다시 컴파일되지 않습니다.
-"
-        "  /showIncludes 머리말이 '${CMAKE_CXX_CL_SHOWINCLUDES_PREFIX}' 로 뭉개져 있습니다.
-"
-        "  (컴파일러가 한국어판인데 시스템 ANSI 코드페이지가 한글을 못 담아서 그렇습니다)
-"
-        "  헤더(.h)를 고쳤다면 그 헤더를 쓰는 .cpp 를 건드려 강제로 다시 컴파일하거나,
-"
-        "  build 디렉터리를 지우고 새로 빌드하십시오. 안 그러면 옛 코드가 그대로 돕니다.
-"
-        "  근본 해결: MSVC 영문 언어팩 설치 또는 시스템 로캘을 한국어로.")
+#   고치는 방법 — 언어를 짐작하지 않는다. ninja 가 하는 것과 똑같이
+#   (파이프로) 컴파일러를 한 번 돌려서 머리말을 직접 재고, 그것을 쓴다.
+#   한국어판이든 일본어판이든 영문판이든 그대로 맞는다.
+if(CMAKE_GENERATOR MATCHES "Ninja" AND MSVC)
+    set(_si_dir "${CMAKE_BINARY_DIR}/showincludes_probe")
+    file(MAKE_DIRECTORY "${_si_dir}")
+    file(WRITE "${_si_dir}/si_probe.h" "#pragma once\n")
+    # 표준 헤더를 하나도 안 쓴다 — INCLUDE 환경 없이도 컴파일되게.
+    file(WRITE "${_si_dir}/si_probe.cpp" "#include \"si_probe.h\"\nint si_probe(){ return 0; }\n")
+
+    execute_process(
+        COMMAND "${CMAKE_CXX_COMPILER}" /nologo /showIncludes /c si_probe.cpp /Fosi_probe.obj
+        WORKING_DIRECTORY "${_si_dir}"
+        OUTPUT_VARIABLE _si_out
+        ERROR_VARIABLE  _si_err
+        RESULT_VARIABLE _si_rc)
+    set(_si_all "${_si_out}${_si_err}")
+
+    set(_si_prefix "")
+    # si_probe.h 가 적힌 줄을 찾고, 그 경로 앞까지가 머리말이다.
+    string(REGEX MATCH "[^\r\n]*si_probe\\.h" _si_line "${_si_all}")
+    if(_si_line)
+        string(REGEX REPLACE "^(.*[:>] )[A-Za-z]:[\\\\/].*$" "\\1" _si_prefix "${_si_line}")
+        if(_si_prefix STREQUAL _si_line)   # 위 꼴이 아니면 못 뽑은 것
+            set(_si_prefix "")
+        endif()
+    endif()
+
+    if(_si_prefix)
+        if(NOT "${_si_prefix}" STREQUAL "${CMAKE_CXX_CL_SHOWINCLUDES_PREFIX}")
+            message(STATUS "/showIncludes 머리말을 직접 재서 고칩니다 — "
+                           "CMake 가 적어 둔 것: '${CMAKE_CXX_CL_SHOWINCLUDES_PREFIX}' / "
+                           "실제로 나오는 것: '${_si_prefix}'")
+        endif()
+        set(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX "${_si_prefix}")
+        set(CMAKE_CL_SHOWINCLUDES_PREFIX "${_si_prefix}")
+    else()
+        # ★ 못 쟀으면 조용히 넘어가지 않는다. 조용히 넘어가면 헤더를 고쳐도
+        #   다시 컴파일되지 않는 빌드를 모른 채로 쓰게 된다.
+        message(WARNING
+            "/showIncludes 머리말을 재지 못했습니다 (컴파일러 종료코드 ${_si_rc}).\n"
+            "  이 빌드는 헤더 변경을 못 따라갈 수 있습니다.\n"
+            "  헤더(.h)를 고쳤다면 그 헤더를 쓰는 .cpp 를 건드려 강제로 다시 컴파일하거나,\n"
+            "  build 디렉터리를 지우고 새로 빌드하십시오.")
+    endif()
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
