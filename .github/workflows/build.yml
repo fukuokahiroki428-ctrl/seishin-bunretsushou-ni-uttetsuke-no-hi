@@ -371,8 +371,13 @@ jobs:
           #   여기서 실제로 import 해보고, 깨졌으면 빌드를 세운다.
           $pyExe = "$dist/python_env/python.exe"
           if (Test-Path $pyExe) {
-            & $pyExe -c "import twikit, atproto, browser_cookie3; print('python_env OK')"
-            if ($LASTEXITCODE -ne 0) { throw "python_env 가 불완전합니다(twikit/atproto/browser_cookie3 import 실패) — Twitter/Bluesky 가 동작하지 않는 설치본이므로 중단" }
+            # ★ 앱의 자가진단(SelfRepair::smokePython)이 부르는 것과 같은 목록을 본다.
+            #   전에는 셋(twikit/atproto/browser_cookie3)만 봤다. 그래서 requirements.txt 와
+            #   코드가 갈라져도 빌드는 초록으로 지나갔다 — 실제로 그랬다: 맥 쪽에서 piexif 를
+            #   requirements 에서 뺐는데 윈도우 bluesky_daemon.py 는 계속 import 하고 있었고,
+            #   여기서도 앱의 자가진단에서도 안 걸려서 '새로 깔면 안 되는' 배포본이 나갈 뻔했다.
+            & $pyExe -c "import ssl, sqlite3, json, twikit, httpx, atproto, openpyxl, PIL, bs4, lxml, websockets, m3u8, browser_cookie3, x_client_transaction; print('python_env OK')"
+            if ($LASTEXITCODE -ne 0) { throw "python_env 가 불완전합니다(앱이 요구하는 모듈 import 실패) — Twitter/Bluesky 가 동작하지 않는 설치본이므로 중단" }
           } else {
             throw "python_env 가 배포본에 없습니다 — Twitter/Bluesky 수집이 불가능한 설치본이므로 중단"
           }
