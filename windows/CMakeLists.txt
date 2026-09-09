@@ -15,6 +15,43 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
+# ★ 헤더 의존성 추적이 죽어 있는 기계를 시끄럽게 만든다.
+#
+#   실측 (2026-09-09, 이 저장소를 개발하는 윈도우 기계):
+#     ninja + MSVC 는 /showIncludes 출력을 파싱해 헤더 의존성을 기록한다.
+#     그 출력의 머리말은 컴파일러 UI 언어를 따른다 — 한국어판이면
+#     "참고: 포함 파일:" 이다. 그런데 시스템 ANSI 코드페이지가 그 글자를
+#     담지 못하면(이 기계는 1252) cl 이 스스로 "??: ?? ??: " 로 뭉개서
+#     내보낸다. CMake 는 그 뭉개진 문자열을 그대로 받아 적고, 결과적으로
+#     ninja 는 include 줄을 하나도 알아보지 못한다.
+#       ninja -t deps <obj>  →  #deps 0
+#
+#   증상이 고약하다. 헤더만 고치고 빌드하면 "no work to do" 로 끝나고,
+#   배포본은 옛 코드 그대로다. 고친 줄 알고 앱을 켜서 옛 동작을 보고,
+#   원인을 엉뚱한 데서 찾게 된다. 이 저장소는 SelfRepair.h 하나에만
+#   헤더로 76KB 가 들어 있어서 특히 크게 물린다 — 실제로 물렸다.
+#
+#   CI(영문 러너)는 머리말이 "Note: including file: " 라 멀쩡하다.
+#   그래서 이 문제는 사람 기계에서만, 조용히 난다.
+#
+#   고칠 방법이 마땅치 않다(영문 언어팩을 깔거나 시스템 로캘을 바꿔야 한다).
+#   그러면 최소한 조용히 틀리지는 않게 한다.
+if(CMAKE_GENERATOR MATCHES "Ninja" AND MSVC
+   AND CMAKE_CXX_CL_SHOWINCLUDES_PREFIX MATCHES "^[?: ]*$")
+    message(WARNING
+        "이 기계에서는 헤더를 고쳐도 다시 컴파일되지 않습니다.
+"
+        "  /showIncludes 머리말이 '${CMAKE_CXX_CL_SHOWINCLUDES_PREFIX}' 로 뭉개져 있습니다.
+"
+        "  (컴파일러가 한국어판인데 시스템 ANSI 코드페이지가 한글을 못 담아서 그렇습니다)
+"
+        "  헤더(.h)를 고쳤다면 그 헤더를 쓰는 .cpp 를 건드려 강제로 다시 컴파일하거나,
+"
+        "  build 디렉터리를 지우고 새로 빌드하십시오. 안 그러면 옛 코드가 그대로 돕니다.
+"
+        "  근본 해결: MSVC 영문 언어팩 설치 또는 시스템 로캘을 한국어로.")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
