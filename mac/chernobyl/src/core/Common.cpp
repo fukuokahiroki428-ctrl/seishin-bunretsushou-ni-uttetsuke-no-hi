@@ -1066,7 +1066,7 @@ QStringList bundledRequirements(bool stripPins)
         }
     }
     qWarning() << "[Common] requirements.txt 를 찾지 못했습니다 — 최소 목록으로 진행";
-    return {"twikit", "httpx", "atproto", "openpyxl", "Pillow", "piexif",
+    return {"twikit", "httpx", "atproto", "openpyxl", "Pillow", 
             "beautifulsoup4", "websockets", "lxml", "m3u8", "yt-dlp",
             "browser_cookie3", "cryptography"};
 }

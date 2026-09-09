@@ -2539,6 +2539,8 @@
                             <input type="text" class="input" id="arc-root" placeholder="산출물 폴더 경로" style="flex:1;min-width:200px;height:34px;font-size:12px;">
                             <button class="btn btn-primary btn-sm" id="arc-index-btn" onclick="archiveIndex()">색인 만들기</button>
                             <button class="btn btn-secondary btn-sm" id="arc-cancel-btn" onclick="archiveCancel()" style="display:none;">중단</button>
+                            <button class="btn btn-secondary btn-sm" id="arc-verify-btn" onclick="archiveVerify(false)" title="예전에 남긴 기록과 지금을 견줍니다">보관물 대조</button>
+                            <button class="btn btn-secondary btn-sm" id="arc-hash-btn" onclick="archiveVerify(true)" title="파일별 해시를 남깁니다. 남긴 뒤부터 내용 손상을 잡을 수 있습니다">해시 남기기</button>
                         </div>
                         <div id="arc-progress" style="display:none;margin-top:8px;font-size:11px;color:var(--text-tertiary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;max-height:76px;overflow-y:auto;background:var(--bg-secondary);border-radius:8px;padding:8px 10px;"></div>
                         <p style="font-size:10.5px;color:var(--text-tertiary);margin-top:7px;line-height:1.45;">
@@ -5788,6 +5790,18 @@
             if (canb) canb.style.display = s.busy ? '' : 'none';
             const pg = document.getElementById('arc-progress');
             if (pg && !s.busy && !pg.textContent) pg.style.display = 'none';
+        }
+
+        // 보관물 대조 — 남겨 둔 기록과 지금을 견준다.
+        //   ★ 왜 버튼이 둘인가. '해시 남기기' 는 지금 상태를 정답으로 굳히는 일이고,
+        //     '대조' 는 그 정답과 비교하는 일이다. 하나로 묶으면 대조할 때마다
+        //     정답이 갱신되어, 파일이 썩어도 '늘 정상' 으로 보인다.
+        function archiveVerify(record) {
+            const root = document.getElementById('arc-root');
+            if (!backend || !backend.archiveVerify) {
+                appendLog('이 판에는 대조 기능이 없습니다','error','settings'); return;
+            }
+            backend.archiveVerify(root ? root.value.trim() : '', !!record);
         }
 
         function archiveIndex() {

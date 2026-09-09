@@ -66,17 +66,16 @@ if [ -f "$REQ" ]; then
     "$BUNDLED_PY" -m pip install --quiet --no-cache-dir -r "$REQ" 2>&1 | tail -5
 else
     echo "[bundle_python] ⚠ requirements.txt 없음 — 버전 미고정으로 설치(재현성 없음)"
-    "$BUNDLED_PY" -m pip install --quiet --no-cache-dir twikit httpx atproto openpyxl Pillow piexif browser_cookie3 yt-dlp 2>&1 | tail -5
+    "$BUNDLED_PY" -m pip install --quiet --no-cache-dir twikit httpx atproto openpyxl Pillow browser_cookie3 yt-dlp 2>&1 | tail -5
 fi
 
 # Verify
 echo "[bundle_python] Verifying..."
 "$BUNDLED_PY" -c "
-import twikit, httpx, atproto, openpyxl, PIL, piexif, bs4
+import twikit, httpx, atproto, openpyxl, PIL, bs4
 print(f'twikit {twikit.__version__}')
 print(f'httpx {httpx.__version__}')
 print(f'Pillow {PIL.__version__}')
-print(f'piexif {piexif.VERSION}')
 print(f'openpyxl {openpyxl.__version__}')
 print(f'bs4 {bs4.__version__}')
 print('atproto OK')
