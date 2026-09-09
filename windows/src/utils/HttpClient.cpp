@@ -66,6 +66,12 @@ HttpClient::~HttpClient()
         m_nam->moveToThread(mainThread);
         QMetaObject::invokeMethod(m_nam, &QObject::deleteLater);
     } else {
+        // ★ 메인에서 지울 때도, 만든 스레드가 이미 사라진 NAM 이 올 수 있다.
+        //   그대로 delete 하면 QObject 소멸자가 '다른 스레드의 타이머' 를 두고
+        //   경고를 낸다. 스레드 없는 객체는 현재 스레드로 데려올 수 있으므로
+        //   메인으로 먼저 옮기고 지운다.
+        if (!m_nam->thread())
+            m_nam->moveToThread(mainThread);
         delete m_nam;
     }
     m_nam = nullptr;

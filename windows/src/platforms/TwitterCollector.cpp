@@ -40,7 +40,12 @@ QString TwitterCollector::apiUrl(const QString &key, const QString &builtin)
 TwitterCollector::TwitterCollector(MiyoBackend *backend, QObject *parent)
     : QObject(parent)
     , m_backend(backend)
-    , m_http(new HttpClient(this))
+    // ★ 부모(this)를 주지 않는다. collector 는 메인 스레드 소속인데 m_http 는
+    //   collect()/checkNewPosts() 가 도는 워커 스레드에서 다시 만들어진다.
+    //   그때 부모를 주면 Qt 가 "다른 스레드의 부모에게 자식을 만들 수 없다" 며
+    //   거절하고, 부모가 안 붙은 채로 남아 정리도 안 된다(실측으로 이 경고를 봤다).
+    //   수명은 adoptHttpToCurrentThread() 와 소멸자가 직접 책임진다.
+    , m_http(new HttpClient())
 {
     m_http->setTimeout(30000);
 }
@@ -63,7 +68,7 @@ TwitterCollector::TwitterCollector(MiyoBackend *backend, QObject *parent)
 void TwitterCollector::adoptHttpToCurrentThread()
 {
     delete m_http;                       // 옛것 정리(소멸자가 스레드 없는 NAM 도 처리한다)
-    m_http = new HttpClient(this);
+    m_http = new HttpClient();           // 부모 없음 — 생성자의 설명 참고
     m_http->setTimeout(30000);
 }
 
@@ -72,6 +77,9 @@ TwitterCollector::~TwitterCollector()
     // multi-target: MiyoBackend가 매 collect()마다 collector를 새로 만들므로
     // 이전 collector가 destroy될 때 daemon이 leak되지 않도록 명시적으로 정리.
     stopDaemon();
+    // ★ m_http 는 부모가 없다(위 생성자 설명) — 여기서 직접 지운다.
+    delete m_http;
+    m_http = nullptr;
 }
 
 void TwitterCollector::setupClient(const QString &authToken, const QString &ct0)

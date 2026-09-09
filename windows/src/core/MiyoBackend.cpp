@@ -7677,9 +7677,31 @@ void MiyoBackend::runTwitterCollection(const QJsonObject &config)
     }
 
     // Sequential 모드: 기존 멤버 collector 사용 (새 트윗 확인용으로 유지)
-    delete m_twitterCollector;
-    m_twitterCollector = new TwitterCollector(this);
-    m_twitterCollector->setProxy(proxyUrlForRun);
+    // ★ 멤버 collector 는 '메인 스레드에서' 만들고 지운다.
+    //
+    //   이 함수는 수집 워커 스레드에서 돈다. 여기서 new 하면 객체가 그 워커
+    //   소속이 되고, 워커가 끝나면 thread() 가 0 이 된다. 그때부터 그 객체에
+    //   대한 deleteLater 도, 큐 연결도, 타이머도 조용히 안 먹는다.
+    //   실측으로 그것 때문에 QNetworkAccessManager 가 수집 한 번에 하나씩
+    //   샜고(e0f1b3d), '새 트윗 확인' 은 죽은 스레드의 NAM 을 쓰고 있었다(dca77ca).
+    //   앞의 둘은 증상을 막은 것이고, 여기가 그 자리다.
+    //
+    //   MiyoBackend 는 메인 스레드 객체다. 그 멤버도 메인 소속이어야 한다.
+    //   지우는 것도 메인에서 하므로 ~HttpClient 가 스레드를 옮길 일도 없어진다.
+    //
+    //   ※ collect() 자체는 여전히 이 워커에서 돈다 — 그래서 collector 안의
+    //     HttpClient 는 진입할 때마다 '지금 스레드' 것으로 다시 만든다
+    //     (TwitterCollector::adoptHttpToCurrentThread). 둘이 같이 있어야 맞다.
+    //   ※ 이미 메인이면 BlockingQueued 로 부르면 그대로 멈춘다 — 나눠서 부른다.
+    {
+        auto makeCollector = [this, proxyUrlForRun]() {
+            delete m_twitterCollector;
+            m_twitterCollector = new TwitterCollector(this);
+            m_twitterCollector->setProxy(proxyUrlForRun);
+        };
+        if (QThread::currentThread() == thread()) makeCollector();
+        else QMetaObject::invokeMethod(this, makeCollector, Qt::BlockingQueuedConnection);
+    }
     m_lastConfig["twitter"] = enrichedConfig;
     m_twitterCollector->collect(enrichedConfig, m_isRunning["twitter"]);
 }
@@ -7735,9 +7757,16 @@ void MiyoBackend::runBlueskyCollection(const QJsonObject &config)
         localCollector.collect(enrichedConfig, m_isRunning[parallelKey]);
         return;
     }
-    delete m_blueskyCollector;
-    m_blueskyCollector = new BlueskyCollector(this);
-    m_blueskyCollector->setProxy(proxyUrlForRun);
+    // ★ 트위터 쪽과 같은 이유 — 위 runTwitterCollection 의 설명 참고.
+    {
+        auto makeCollector = [this, proxyUrlForRun]() {
+            delete m_blueskyCollector;
+            m_blueskyCollector = new BlueskyCollector(this);
+            m_blueskyCollector->setProxy(proxyUrlForRun);
+        };
+        if (QThread::currentThread() == thread()) makeCollector();
+        else QMetaObject::invokeMethod(this, makeCollector, Qt::BlockingQueuedConnection);
+    }
     m_blueskyCollector->collect(enrichedConfig, m_isRunning["bluesky"]);
 }
 
