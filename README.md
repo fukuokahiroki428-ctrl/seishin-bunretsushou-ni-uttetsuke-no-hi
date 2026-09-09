@@ -1,5 +1,7 @@
 # 精神分裂症を患うにはうってつけの日
 
+[![Windows Build](https://github.com/fukuokahiroki428-ctrl/seishin-bunretsushou-ni-uttetsuke-no-hi/actions/workflows/build.yml/badge.svg)](https://github.com/fukuokahiroki428-ctrl/seishin-bunretsushou-ni-uttetsuke-no-hi/actions/workflows/build.yml)
+
 > **ハンイシキ** (macOS · 판 이름 上野) · **Predormition** (Windows)
 > 소셜 미디어 다운로더 · 사이트 통째 크롤러 통합 앱
 > (구 별도 앱 "팬을 잘 쓰고 싶다 / Pen"은 Predormition 에 **통합**되었습니다 — PenBackend)
