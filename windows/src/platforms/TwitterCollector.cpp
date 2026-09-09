@@ -45,6 +45,28 @@ TwitterCollector::TwitterCollector(MiyoBackend *backend, QObject *parent)
     m_http->setTimeout(30000);
 }
 
+// ★ QNetworkAccessManager 는 자기를 만든 스레드에서만 써야 한다(Qt 규칙).
+//
+//   이 객체는 수집 워커 스레드에서 new 된다
+//   (MiyoBackend::runTwitterCollection — 'Sequential 모드' 쪽).
+//   그런데 멤버로 남아서 그 워커가 끝난 뒤에도 살아 있고, '새 트윗 확인' 은
+//   또 다른 워커 스레드에서 같은 객체의 checkNewPosts() 를 부른다.
+//   그때 생성자에서 만들어 둔 HttpClient 를 그대로 쓰면, 그 안의 NAM 은
+//   이미 사라진 스레드에 묶여 있다(실측: nam->thread() == 0).
+//   소켓 알림이 죽은 이벤트 디스패처에 걸려 있어 응답이 영영 안 오고,
+//   30초 타임아웃으로만 드러난다 — '새 트윗 확인이 느리다' 로 보인다.
+//
+//   그래서 진입할 때마다 지금 도는 스레드 것으로 새로 만든다.
+//   (근본은 워커에서 멤버 collector 를 new 하는 것이지만, 그쪽은 병렬/순차
+//    분기와 newestTweetId 상태가 얽혀 있어 건드리지 않았다. 이 한 줄로
+//    '엉뚱한 스레드의 NAM 을 쓴다' 는 실제 오작동은 사라진다.)
+void TwitterCollector::adoptHttpToCurrentThread()
+{
+    delete m_http;                       // 옛것 정리(소멸자가 스레드 없는 NAM 도 처리한다)
+    m_http = new HttpClient(this);
+    m_http->setTimeout(30000);
+}
+
 TwitterCollector::~TwitterCollector()
 {
     // multi-target: MiyoBackend가 매 collect()마다 collector를 새로 만들므로
@@ -2283,6 +2305,8 @@ void TwitterCollector::collectThreadsAuto(const QJsonObject &config, const QStri
 
 void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
 {
+    adoptHttpToCurrentThread();
+
     // 중지 시 진행 중인 미디어 다운로드를 즉시 끊기 위해 HttpClient에 '진행 플래그' 연결
     if (m_http) m_http->setRunFlag(&isRunning);
 
@@ -5111,6 +5135,10 @@ void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
 
 void TwitterCollector::checkNewPosts(const QJsonObject &config, bool &isRunning)
 {
+    // ★ 여기가 문제의 자리다 — 이 함수는 collect() 를 돌린 워커와 '다른' 워커에서 온다.
+    adoptHttpToCurrentThread();
+    if (m_http) m_http->setRunFlag(&isRunning);
+
     if (m_newestTweetId.isEmpty()) {
         m_backend->log("아직 수집된 트윗이 없습니다", "warning", "twitter");
         return;

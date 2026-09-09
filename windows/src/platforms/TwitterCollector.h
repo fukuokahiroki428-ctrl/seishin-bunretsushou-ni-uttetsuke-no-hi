@@ -100,6 +100,9 @@ private:
     void captureTweet(const QJsonObject &tweet, const QString &capturesDir, const QJsonObject &config);
 
     MiyoBackend *m_backend;
+    // ★ 이 스레드에서 쓸 HttpClient 를 새로 만든다 — 아래 정의의 설명 참고.
+    void adoptHttpToCurrentThread();
+
     HttpClient *m_http;
 
     // Adaptive delay — auto-adjusts based on rate limit responses
