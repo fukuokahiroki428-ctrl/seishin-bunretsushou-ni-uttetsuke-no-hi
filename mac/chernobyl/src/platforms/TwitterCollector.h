@@ -34,6 +34,10 @@ private:
     static const QString GRAPHQL_BASE;
     // 외부 서비스 상수를 런타임에 교체(api_overrides.json) — X 가 query ID 를 회전시켜도 재빌드 불필요
     static QString apiUrl(const QString &key, const QString &builtin);
+    // ★ 작성자 이름은 반드시 이 둘로만 읽는다. 직접 ["legacy"]["screen_name"] 을 보지 말 것.
+    //   X 가 2025년에 user 객체를 개편해 그 자리를 비웠다 — 아래 .cpp 의 설명 참고.
+    static QString screenNameOf(const QJsonObject &userResult);
+    static QString displayNameOf(const QJsonObject &userResult);
     static const QString SEARCH_TIMELINE_URL;
     static const QString USER_BY_SCREEN_NAME_URL;
     static const QString USER_TWEETS_URL;
