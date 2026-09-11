@@ -9,6 +9,7 @@
 #include <QPair>
 #include <QProcess>
 #include <QMutex>
+#include <atomic>
 
 class MiyoBackend;
 class HttpClient;
@@ -28,7 +29,11 @@ public:
     // 외부(MiyoBackend)에서 중지 시 프로세스를 즉시 죽이기 위해 노출
     // ★ QProcess 를 건드리지 않는다 — 다른 스레드 것일 수 있다.
     //   pid 는 start 직후 여기에 베껴 두고, 이후로는 이 값만 쓴다.
-    qint64 daemonPid() const { return m_daemonPid; }
+    qint64 daemonPid() const { return m_daemonPid.load(); }
+    // ★ 죽인 뒤에는 반드시 지운다. 안 지우면 두 번째 중지가 '이미 죽은 pid' 에
+    //   taskkill /F /T 를 다시 쏜다. 그 사이 OS 가 그 번호를 재사용했다면
+    //   남의 프로세스 트리를 통째로 죽인다.
+    void forgetDaemonPid() { m_daemonPid.store(0); }
     QString newestTweetId() const { return m_newestTweetId; }
 
 private:
@@ -139,7 +144,8 @@ private:
 
     // Persistent daemon process
     QProcess *m_daemon = nullptr;
-    qint64 m_daemonPid = 0;   // stopDaemon 이 객체 없이도 끊을 수 있게
+    // 워커가 쓰고 메인이 읽고 지운다 — atomic 이어야 한다.
+    std::atomic<qint64> m_daemonPid{0};   // stopDaemon 이 객체 없이도 끊을 수 있게
     // ★ m_daemon 을 만들고 없애는 것은 여러 스레드가 동시에 한다 — 반드시 이걸 잠그고.
     QMutex m_daemonMutex;
     bool m_daemonReady = false;

@@ -408,6 +408,10 @@ public:
     int m_naikakukaiIntervalMin = 30;
     int m_naikakukaiCursor = 0;
     std::atomic<bool> m_naikakukaiRunning{false};
+    // 内閣会가 띄운 수집의 플랫폼. 중지 버튼이 '그것만' 멈추게 하려고 둔다.
+    //   사용자가 직접 시작한 수집까지 멈추면 안 되므로 구별이 필요하다.
+    //   m_runningMutex 로 보호한다.
+    QString m_naikakukaiActivePlatform;
 
     // NAS 백업 워커 — 큐 + 진행률 + 2-thread 병렬
     // ★ 메모리 큐 X — 사용자 임시 디스크에 append-only 텍스트 큐 파일 사용.
