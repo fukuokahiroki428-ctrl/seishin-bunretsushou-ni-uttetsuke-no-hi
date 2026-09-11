@@ -836,8 +836,10 @@ void MainWindow::applyDarkTitlebar()
 void MainWindow::setChromeTheme(bool dark)
 {
     // ★ HTML 의 --bg 와 같은 값이어야 타이틀바 띠가 본문과 이어져 보인다.
-    //   (라이트 #FFFFFF / 다크 #101114 — index.html 의 darkroom-graft 토큰과 일치)
-    const QString bg = dark ? QStringLiteral("#101114") : QStringLiteral("#FFFFFF");
+    //   (라이트 #FFFFFF / 다크 #16181C — index.html 의 darkroom-graft 토큰과 일치)
+    //   예전 값(라이트 창 배경 #EDE9E1 베이지, 다크 #101114·#0F1115)은 토큰이 바뀐 뒤
+    //   따라오지 않아, 창을 키우거나 처음 뜰 때 위쪽에 다른 색 띠가 잠깐씩 비쳤다.
+    const QString bg = dark ? QStringLiteral("#16181C") : QStringLiteral("#FFFFFF");
     setStyleSheet(QStringLiteral("QMainWindow { background-color: %1; }").arg(bg));
 #ifdef Q_OS_MACOS
     id nsView = reinterpret_cast<id>(winId());
@@ -852,9 +854,9 @@ void MainWindow::setChromeTheme(bool dark)
         reinterpret_cast<id>(objc_getClass("NSAppearance")), sel_registerName("appearanceNamed:"), nm);
     reinterpret_cast<void (*)(id, SEL, id)>(objc_msgSend)(win, sel_registerName("setAppearance:"), appr);
     // 창 배경색 = 앱 상단색 → 투명 타이틀바 영역이 앱과 같은 색
-    const double r = (dark ? 0x0F : 0xED) / 255.0;
-    const double g = (dark ? 0x11 : 0xE9) / 255.0;
-    const double b = (dark ? 0x15 : 0xE1) / 255.0;
+    const double r = (dark ? 0x16 : 0xFF) / 255.0;
+    const double g = (dark ? 0x18 : 0xFF) / 255.0;
+    const double b = (dark ? 0x1C : 0xFF) / 255.0;
     id color = reinterpret_cast<id (*)(id, SEL, double, double, double, double)>(objc_msgSend)(
         reinterpret_cast<id>(objc_getClass("NSColor")),
         sel_registerName("colorWithSRGBRed:green:blue:alpha:"), r, g, b, 1.0);

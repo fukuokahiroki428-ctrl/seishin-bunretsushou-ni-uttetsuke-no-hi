@@ -137,7 +137,8 @@
         .nav-item {
             display: flex; align-items: center; gap: 6px;
             padding: 7px 8px; border-radius: 6px; cursor: pointer;
-            font-size: 10px; font-weight: 400; color: var(--text-secondary);
+            /* 10px 은 사이드바 폭이 100px 이던 시절 값 — 지금 폭(148px)에선 12.5px 이 들어간다 */
+            font-size: 12.5px; font-weight: 400; color: var(--text-secondary);
             transition: background var(--transition), color var(--transition), transform var(--transition);
             margin-bottom: 1px;
             overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
@@ -267,7 +268,7 @@
         .batch-target-input:hover { background: var(--bg-secondary); }
         .batch-target-input:focus {
             background: var(--bg); border-color: var(--accent);
-            box-shadow: 0 0 0 2px rgba(0,122,255,0.15);
+            box-shadow: 0 0 0 2px var(--accent-bg);
             font-weight: 400;
         }
         /* 별명(별칭) — 아이디를 알아보기 쉽게. 아이디칸보다 작고 부차적으로. */
@@ -427,7 +428,7 @@
             transition: border-color var(--transition), box-shadow var(--transition);
         }
         .input::placeholder { color: var(--text-tertiary); }
-        .input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0,122,255,0.12); }
+        .input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
         textarea.input { height: auto; min-height: 72px; padding: 8px 10px; resize: vertical; line-height: 1.5; }
         select.input {
             appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 28px;
@@ -617,6 +618,13 @@
             }
             /* 대상 행 폭 캡 — 와이드 화면에서도 input이 너무 길게 늘어나지 않게 */
             body .batch-target-item { max-width: 700px; }
+            /* ★ 현황 대시보드엔 로그가 없다. 위 규칙은 '마지막 섹션 = 로그' 라고 가정하므로
+                 채널 카드 묶음(마지막 섹션)이 오른쪽 좁은 로그 칸으로 밀려 한 줄에 한 장씩
+                 세로로 쌓였다. 이 탭만 한 칸으로 둔다. */
+            body #tab-dashboard.tab-content.active { display: block !important; }
+            body #tab-dashboard.tab-content.active > .section:last-child {
+                position: static; max-height: none; display: block;
+            }
         }
 
         /* ── Options ── */
@@ -629,10 +637,12 @@
 
         /* ── Badge ── */
         .badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
-        .badge-ready { background: rgba(52,199,89,0.1); color: var(--green); }
-        .badge-active { background: rgba(0,122,255,0.1); color: var(--accent); }
-        .badge-error { background: rgba(255,59,48,0.1); color: var(--red); }
-        .badge-warning { background: rgba(255,149,0,0.12); color: #ff9500; }
+        /* 상태 칩 — 색은 토큰에서(두 테마 대비는 graft 층에서 맞춰 둠).
+           예전엔 iOS 원색(#007AFF·#FF9500 계열)이 섞여 강조색과 따로 놀았다. */
+        .badge-ready { background: var(--success-bg); color: var(--success); }
+        .badge-active { background: var(--accent-bg); color: var(--accent); }
+        .badge-error { background: var(--danger-bg); color: var(--danger); }
+        .badge-warning { background: color-mix(in srgb, var(--orange) 14%, transparent); color: var(--orange); }
 
         /* ── Progress ── */
         .progress-bar {
@@ -679,6 +689,17 @@
             overflow: hidden; margin-bottom: 12px; max-width: 120px; max-height: 160px;
         }
         .trad-cover-box img { display: block; max-width: 120px; max-height: 160px; object-fit: contain; }
+        /* ★ 커버를 고르기 전엔 src 가 없어 깨진 그림 표시와 alt 글자('커버')가 떴다.
+             고르기 전에는 그림을 감추고 빈 자리를 점선 틀로 보여 준다. */
+        .trad-cover-box img:not([src]), .trad-cover-box img[src=""] { display: none; }
+        .trad-cover-box:has(img:not([src])), .trad-cover-box:has(img[src=""]) {
+            width: 72px; height: 96px; margin-bottom: 0;
+            display: flex; align-items: center; justify-content: center;
+            border-style: dashed; border-color: var(--border); background: var(--bg-secondary);
+        }
+        .trad-cover-box:has(img:not([src]))::after, .trad-cover-box:has(img[src=""])::after {
+            content: '커버 없음'; font-size: 11px; color: var(--text-tertiary);
+        }
         .trad-dropzone {
             border: 2px dashed var(--border); border-radius: var(--radius-lg);
             padding: 24px 16px; text-align: center; cursor: pointer;
@@ -687,7 +708,7 @@
             align-items: center; justify-content: center; gap: 6px;
         }
         .trad-dropzone:hover { border-color: var(--accent); background: var(--accent-bg); }
-        .trad-dropzone.dragover { border-color: var(--accent); background: rgba(0,122,255,0.12); border-style: solid; }
+        .trad-dropzone.dragover { border-color: var(--accent); background: var(--accent-bg); border-style: solid; }
         .trad-dropzone-icon { font-size: 28px; opacity: 0.5; }
         .trad-dropzone-text { font-size: 13px; color: var(--text-secondary); font-weight: 500; }
         .trad-dropzone-hint { font-size: 11px; color: var(--text-tertiary); }
@@ -939,23 +960,41 @@
 </head>
 <body>
     <!-- ★ 캡쳐 옵션 modal — 진짜 페이지 캡쳐 버튼 클릭 시 표시 -->
-    <div id="captureOptModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
-        <div style="background:#1a1a1d;color:#e7e7ea;padding:24px 28px;border-radius:12px;min-width:380px;max-width:480px;border:1px solid #333;box-shadow:0 12px 40px rgba(0,0,0,0.5);">
-            <h3 style="margin:0 0 6px;font-size:16px;color:var(--accent);">진짜 페이지 캡쳐 설정</h3>
-            <div id="captureOptPlatform" style="font-size:13px;color:var(--text-tertiary);margin-bottom:18px;">—</div>
-            <label class="cap-opt"><input type="radio" name="captureMode" value="off"> <span><strong>캡쳐 안 함</strong><br><small style="color:var(--text-tertiary)">미디어만 받음. 페이지 HTML 저장 X. 가장 빠름.</small></span></label>
-            <label class="cap-opt"><input type="radio" name="captureMode" value="media"> <span><strong>미디어 있는 글만 캡쳐</strong><br><small style="color:var(--text-tertiary)">이미지/영상 첨부된 포스트만 HTML 저장. 텍스트만 RT/리플 skip.</small></span></label>
-            <label class="cap-opt"><input type="radio" name="captureMode" value="all" checked> <span><strong>전체 글 캡쳐 (텍스트 포함)</strong><br><small style="color:var(--text-tertiary)">미디어 유무 무관 모든 포스트 HTML 저장. 가장 완전. (현재 기본)</small></span></label>
-            <div style="display:flex;gap:8px;margin-top:18px;justify-content:flex-end;">
+    <!-- ★ 예전엔 이 창만 검은 카드·보라 테두리로 박혀 있어 밝은 테마에서 혼자 튀었다.
+         JS 는 style.display 만 만지므로(flex/none) 인라인 display:none 은 남기고,
+         나머지 모양은 테마 토큰을 쓰는 .hx-modal 로 옮겼다. -->
+    <div id="captureOptModal" class="hx-modal" style="display:none;">
+        <div class="hx-modal-card" role="dialog" aria-modal="true" aria-labelledby="captureOptTitle">
+            <h3 class="hx-modal-title" id="captureOptTitle">진짜 페이지 캡쳐 설정</h3>
+            <div id="captureOptPlatform" class="hx-modal-sub">—</div>
+            <label class="cap-opt"><input type="radio" name="captureMode" value="off"> <span><strong>캡쳐 안 함</strong><small>미디어만 받음. 페이지 HTML 저장 X. 가장 빠름.</small></span></label>
+            <label class="cap-opt"><input type="radio" name="captureMode" value="media"> <span><strong>미디어 있는 글만 캡쳐</strong><small>이미지/영상 첨부된 포스트만 HTML 저장. 텍스트만 RT/리플 skip.</small></span></label>
+            <label class="cap-opt"><input type="radio" name="captureMode" value="all" checked> <span><strong>전체 글 캡쳐 (텍스트 포함)</strong><small>미디어 유무 무관 모든 포스트 HTML 저장. 가장 완전. (현재 기본)</small></span></label>
+            <div class="hx-modal-actions">
                 <button class="btn btn-secondary btn-sm" onclick="closeCaptureModal(false)">취소</button>
                 <button class="btn btn-primary btn-sm" onclick="closeCaptureModal(true)">저장</button>
             </div>
         </div>
     </div>
     <style>
-    .cap-opt{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;margin-bottom:6px;background:#222;border:1px solid #2a2a30;border-radius:8px;cursor:pointer;}
-    .cap-opt:hover{background:#2a2a30;border-color:#7c5cff;}
-    .cap-opt input{margin-top:4px;}
+    /* 공용 대화상자 — 캡쳐 설정·이어서 방향이 같은 모양을 쓴다. 색은 전부 토큰. */
+    .hx-modal{ position:fixed; inset:0; z-index:9999; padding:16px;
+        background:rgba(12,14,18,.42); backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px);
+        align-items:center; justify-content:center; }
+    .hx-modal-card{ width:min(460px,100%); max-height:calc(100vh - 32px); overflow-y:auto;
+        background:var(--card); color:var(--text); border:1px solid var(--border);
+        border-radius:12px; padding:20px 22px 16px; box-shadow:var(--shadow-lg); }
+    .hx-modal-title{ margin:0 0 4px; font-size:15px; font-weight:700; color:var(--text); letter-spacing:-.01em; }
+    .hx-modal-sub{ font-size:12px; color:var(--text-tertiary); margin-bottom:14px; line-height:1.5; }
+    .hx-modal-actions{ display:flex; gap:8px; margin-top:14px; justify-content:flex-end; }
+    .cap-opt{ display:flex; gap:10px; align-items:flex-start; padding:10px 12px; margin-bottom:6px;
+        background:var(--bg); border:1px solid var(--border-light); border-radius:8px; cursor:pointer;
+        transition:border-color .12s, background .12s; }
+    .cap-opt:hover{ background:var(--bg-secondary); border-color:var(--border); }
+    .cap-opt:has(input:checked){ background:var(--accent-bg); border-color:var(--accent); }
+    .cap-opt input{ margin-top:3px; flex:none; }
+    .cap-opt strong{ display:block; font-size:13px; font-weight:600; color:var(--text); }
+    .cap-opt small{ display:block; margin-top:2px; font-size:11.5px; line-height:1.45; color:var(--text-tertiary); }
     </style>
 
     <div class="app">
@@ -1020,7 +1059,7 @@
                 -->
             </div>
             <div class="sidebar-footer">
-                <div class="nav-item" onclick="switchTab('settings')">설정</div>
+                <div class="nav-item" onclick="switchTab('settings')"><div class="nav-icon settings" aria-hidden="true"></div>설정</div>
             </div>
         </div>
 
@@ -3880,7 +3919,7 @@
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             const tabEl = document.getElementById('tab-' + tab);
             if (tabEl) tabEl.classList.add('active');
-            const names = {dashboard:'현황 대시보드',twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',niconico:'ニコニコ',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',naikakukai:'内閣会',crawl:'経済産業省',settings:'설정'};
+            const names = {dashboard:'현황 대시보드',twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',niconico:'ニコニコ',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',naikakukai:'内閣会',crawl:'経済産業省',settings:'설정',proxy:'프록시 (VPN)'};
             document.getElementById('toolbar-title').textContent = names[tab] || tab;
             // Load system info when switching to settings
             if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); if (backend && backend.getLlmStatus) backend.getLlmStatus(); if (window.loadScriptState) loadScriptState(); if (window.archiveRefresh) archiveRefresh(); if (backend && backend.getAiConfig) backend.getAiConfig(); if (backend && backend.getApiOverrides) backend.getApiOverrides(); if (backend && backend.getAppInfo) backend.getAppInfo(); if (backend && backend.getProxyConfig) backend.getProxyConfig(); }
@@ -4108,9 +4147,9 @@
                 const on = !!(a.proxyHost && a.proxyPort);
                 d.innerHTML =
                   '<span class="account-name">' + (a.name||a.handle||'Account') + '</span>'
-                + '<span class="account-proxy-tag" title="' + (on ? (a.proxyHost+':'+a.proxyPort) : '전역 설정을 따릅니다')
+                + '<span class="account-proxy-tag' + (on ? ' on' : '') + '" title="' + (on ? (a.proxyHost+':'+a.proxyPort) : '전역 설정을 따릅니다')
                 + '" onclick="toggleAccountProxy(\''+platform+'\','+i+')">'
-                + (on ? '🔒 ' + String(a.proxyHost).slice(0,18) : '프록시 없음') + '</span>'
+                + (on ? String(a.proxyHost).slice(0,18) : '프록시 없음') + '</span>'
                 + '<span class="account-delete" onclick="removeAccount(\''+platform+'\','+i+')">×</span>';
                 c.appendChild(d);
                 const ed = document.createElement('div');
@@ -4130,8 +4169,8 @@
                 + '<div class="field"><label class="field-label">비밀번호</label>'
                 +   '<input type="password" class="input" id="ap-w-'+platform+'-'+i+'" value="'+(a.proxyPass||'')+'"></div>'
                 + '</div>'
-                + '<button class="btn btn-primary" onclick="saveAccountProxy(\''+platform+'\','+i+')">이 계정에 적용</button> '
-                + '<button class="btn btn-secondary" onclick="clearAccountProxy(\''+platform+'\','+i+')">지우고 전역 쓰기</button>';
+                + '<button class="btn btn-primary btn-sm" onclick="saveAccountProxy(\''+platform+'\','+i+')">이 계정에 적용</button> '
+                + '<button class="btn btn-secondary btn-sm" onclick="clearAccountProxy(\''+platform+'\','+i+')">지우고 전역 쓰기</button>';
                 c.appendChild(ed);
             });
         }
@@ -4534,7 +4573,7 @@
                 if (isNas || isExt) {
                     const icon = isNas ? 'NAS' : '외장';
                     info.innerHTML = `<strong>${icon} 모드 활성 (전체 일괄)</strong> — 모든 플랫폼이 <code>${root}/&lt;Platform&gt;</code>. 각 탭에서 따로 변경하면 그 플랫폼만 다른 경로.`;
-                    info.style.color = '#7c5cff';
+                    info.style.color = 'var(--accent)';
                 } else {
                     info.innerHTML = '둘 다 OFF → 각 플랫폼 탭에서 따로 NAS/외장 선택. 또는 입력란에 직접 경로.';
                     info.style.color = '';
@@ -6998,40 +7037,43 @@
 
     <!-- ═══ Twitter 이어서 방향 선택 모달 ═══ -->
     <style>
-    /* 모달은 다크 카드 + 밝은 텍스트로 명시 (테마 변수 의존 X — 라이트/다크 둘 다 동작) */
+    /* ★ 예전엔 '테마와 무관하게 다크 카드' 로 박아 두었는데, 밝은 테마에선 이 창만
+         검게 떠서 다른 앱 창처럼 보였다. 캡쳐 설정 창(.hx-modal)과 같은 모양·같은
+         토큰을 쓴다 — 두 테마 모두 대비는 토큰 쪽에서 이미 맞춰 두었다. */
     #resumeModeModal {
-        position:fixed; inset:0; z-index:10000; display:none;
+        position:fixed; inset:0; z-index:10000; display:none; padding:16px;
         align-items:center; justify-content:center;
-        background:rgba(0,0,0,.55);
+        background:rgba(12,14,18,.42); backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px);
     }
     #resumeModeModal.show { display:flex; }
     #resumeModeModal .modal-card {
-        background:#1f1f23; border:1px solid #3a3a42;
-        border-radius:10px; padding:18px 20px;
-        min-width:340px; max-width:420px;
-        box-shadow:0 10px 30px rgba(0,0,0,.6);
-        color:#e7e7ea;
+        width:min(440px,100%);
+        background:var(--card); border:1px solid var(--border);
+        border-radius:12px; padding:20px 22px 16px;
+        box-shadow:var(--shadow-lg);
+        color:var(--text);
     }
     #resumeModeModal .modal-title {
-        font-size:14px; font-weight:700; color:#ffffff; margin-bottom:6px;
+        font-size:15px; font-weight:700; color:var(--text); margin-bottom:4px; letter-spacing:-.01em;
     }
     #resumeModeModal .modal-desc {
-        font-size:11.5px; color:#b8b8bf; line-height:1.5; margin-bottom:14px;
+        font-size:12px; color:var(--text-tertiary); line-height:1.5; margin-bottom:14px;
     }
     #resumeModeModal label.opt {
-        display:flex; align-items:flex-start; gap:8px; cursor:pointer;
-        padding:8px 10px; border-radius:6px; margin-bottom:4px;
-        border:1px solid transparent; transition:all .15s ease;
-        color:#e7e7ea;
+        display:flex; align-items:flex-start; gap:10px; cursor:pointer;
+        padding:10px 12px; border-radius:8px; margin-bottom:6px;
+        background:var(--bg); border:1px solid var(--border-light);
+        transition:border-color .12s, background .12s;
+        color:var(--text);
     }
-    #resumeModeModal label.opt:hover { background:#2a2a30; }
-    #resumeModeModal label.opt.selected { border-color:#7c5cff; background:rgba(124,92,255,.15); }
-    #resumeModeModal .opt-title { font-size:12.5px; font-weight:600; color:#ffffff; }
-    #resumeModeModal .opt-desc { font-size:11px; color:#a8a8b0; margin-top:2px; line-height:1.4; }
+    #resumeModeModal label.opt:hover { background:var(--bg-secondary); border-color:var(--border); }
+    #resumeModeModal label.opt.selected { border-color:var(--accent); background:var(--accent-bg); }
+    #resumeModeModal .opt-title { font-size:13px; font-weight:600; color:var(--text); }
+    #resumeModeModal .opt-desc { font-size:11.5px; color:var(--text-tertiary); margin-top:2px; line-height:1.45; }
     #resumeModeModal .modal-buttons {
         display:flex; gap:8px; margin-top:14px; justify-content:flex-end;
     }
-    #resumeModeModal input[type="radio"] { accent-color:#7c5cff; margin-top:2px; }
+    #resumeModeModal input[type="radio"] { margin-top:3px; flex:none; }
     </style>
     <div id="resumeModeModal">
         <div class="modal-card">
@@ -7121,25 +7163,29 @@
         max-width:340px;
     }
     #loginPauseFloat.show { display:flex; }
+    /* ★ 갈색 그라데이션 + 초록 단추로 박혀 있어 밝은 테마에서 혼자 다른 앱처럼 보였다.
+         카드는 화면 면(토큰)을 따르고, '기다리는 중' 은 왼쪽 주황 띠와 점멸 점으로만 알린다.
+         .icon 칸은 JS 가 비워서 넣으므로 점으로 쓴다. */
     .login-pause-card {
-        background:linear-gradient(135deg,#3d2a0a,#4a3210);
-        border:1px solid #6b4615; border-radius:10px;
-        padding:12px 14px; box-shadow:0 4px 16px rgba(0,0,0,.4);
-        animation:loginPulse 1.6s ease-in-out infinite;
+        background:var(--card); color:var(--text);
+        border:1px solid var(--border); border-left:3px solid var(--orange); border-radius:10px;
+        padding:12px 12px 12px 14px; box-shadow:var(--shadow-lg);
         display:flex; align-items:center; gap:10px;
     }
-    .login-pause-card .icon { font-size:20px; flex-shrink:0; }
+    .login-pause-card .icon { width:8px; height:8px; border-radius:50%; flex:none;
+        background:var(--orange); animation:loginPulse 1.6s ease-in-out infinite; }
     .login-pause-card .body { flex:1; min-width:0; }
-    .login-pause-card .title { font-weight:600; color:#ffb84d; font-size:12px; margin-bottom:2px; }
-    .login-pause-card .desc { font-size:10.5px; color:var(--text-tertiary); line-height:1.4; }
+    .login-pause-card .title { font-weight:700; color:var(--text); font-size:12.5px; margin-bottom:2px; }
+    .login-pause-card .desc { font-size:11.5px; color:var(--text-secondary); line-height:1.45; }
     .login-pause-card button {
-        background:#1f3a2c; color:#3ddc84; border:1px solid #264a36;
-        border-radius:5px; padding:5px 10px; font-size:11px; font-weight:600; cursor:pointer;
+        background:var(--accent); color:var(--accent-ink); border:1px solid var(--accent);
+        border-radius:6px; padding:6px 12px; font-size:12px; font-weight:600; cursor:pointer;
+        font-family:inherit; flex:none;
     }
-    .login-pause-card button:hover { background:#264a36; }
+    .login-pause-card button:hover { background:var(--accent-hover); border-color:var(--accent-hover); }
     @keyframes loginPulse {
-        0%,100% { box-shadow:0 4px 16px rgba(0,0,0,.4); }
-        50% { box-shadow:0 4px 16px rgba(255,184,77,.4); }
+        0%,100% { opacity:1; }
+        50% { opacity:.35; }
     }
     </style>
     <div id="loginPauseFloat"></div>
@@ -7185,7 +7231,13 @@
     <style id="darkroom-v2">
     /* ═══ Darkroom 디자인 시스템 v2 — 다크 토큰 + 컴포넌트 레이어 (윈도우와 통일) ═══ */
     :root{ --card:#FFFFFF; --accent-soft:rgba(109,90,230,.10);
-           --shadow:0 1px 2px rgba(24,24,32,.05); --shadow-lg:0 10px 30px rgba(24,24,32,.10); }
+           --shadow:0 1px 2px rgba(24,24,32,.05); --shadow-lg:0 10px 30px rgba(24,24,32,.10);
+           /* ★ 옛 이름으로 쓰이는데 어디에도 정의가 없던 토큰들 — 그래서 목록 접기 단추는
+                배경이 비어(투명) 본문 위에 글자만 떠 있었고, 계정별 프록시 칸도 테두리만
+                남았다. 지금 토큰으로 이어 둔다(값은 테마를 따라 바뀐다). */
+           --bg-card:var(--card); --bg-hover:var(--bg-secondary); --bg-primary:var(--bg);
+           --text-primary:var(--text); --border-color:var(--border); --warning:var(--orange);
+           --accent-txt:var(--accent); }
     html[data-theme="dark"]{
         --bg:#0E0E11; --bg-secondary:#16161A; --bg-tertiary:#202027;
         --text:#ECECF1; --text-secondary:#9C9CA8; --text-tertiary:#63636E;
@@ -7217,7 +7269,9 @@
     .nav-item.active::before{ content:""; position:absolute; left:-2px; top:6px; bottom:6px; width:3px; border-radius:2px; background:var(--accent); }
     /* 로그 — 항상 어두운 터미널 + 고정 팔레트 (라이트 테마에서도 가독) */
     .log-box{ background:#0B0E14 !important; color:#CBD5E1 !important; border-color:var(--border) !important; border-radius:12px !important; }
-    html[data-theme="dark"] .log-box{ background:#070A0F !important; }
+    /* (어두운 테마의 #070A0F 고정은 걷어냈다 — 이 선택자가 더 구체적이라 아래 정제 층의
+         '화면 면을 따르는 기록판' 을 어두운 테마에서만 이기고 있었다. 밝은 테마는 회색 판,
+         어두운 테마는 새까만 판으로 서로 다른 앱처럼 보였다.) */
     /* 시각은 보조 정보라 어둡게 두되, #5B6678 은 3.33:1 로 거의 안 읽혔다.
        #75839A 는 5.03:1 로 AA 를 넘기면서 본문(#CBD5E1)과 밝기 차 2.9배를 유지해
        '메시지가 주, 시각이 보조' 라는 위계는 그대로다. */
@@ -7338,27 +7392,33 @@
     /* ═══ 콘솔 스테이지 2: 상단 상태바 (계기판) + 전역 활성 게이지 ═══ */
     .toolbar-title{ letter-spacing:-.2px !important; }
     .toolbar-stats{ gap:15px !important; }
-    .toolbar-stat{ font-family:ui-monospace,'SF Mono',Menlo,monospace !important; font-size:10.5px !important;
-      letter-spacing:.3px !important; text-transform:uppercase !important; color:var(--text-tertiary) !important; gap:6px !important; }
+    /* 이름표(활성·포스트·미디어)는 한글이라 본문 글꼴로 — 숫자만 등폭으로 둔다. */
+    .toolbar-stat{ font-family:inherit !important; font-size:11.5px !important;
+      letter-spacing:0 !important; text-transform:none !important; color:var(--text-tertiary) !important; gap:6px !important; }
     .toolbar-stat-value{ font-family:ui-monospace,'SF Mono',Menlo,monospace !important; font-size:14px !important;
       font-weight:600 !important; font-variant-numeric:tabular-nums !important; color:var(--text) !important; letter-spacing:0 !important; }
     .tb-global .tb-led{ width:6px !important; height:6px !important; border-radius:50% !important; display:inline-block !important;
       background:var(--text-tertiary) !important; opacity:.4 !important; }
     .tb-global[data-on="1"] .tb-led{ background:var(--green) !important; opacity:1 !important; animation:navled 1.6s ease-in-out infinite !important; }
     .tb-global[data-on="1"] .toolbar-stat-value{ color:var(--green) !important; }
-    .toolbar #stat-status.badge{ font-family:ui-monospace,Menlo,monospace !important; font-size:9.5px !important; letter-spacing:.5px !important;
-      text-transform:uppercase !important; padding:3px 10px !important; border-radius:999px !important; }
+    .toolbar #stat-status.badge{ font-family:inherit !important; font-size:11px !important; font-weight:600 !important; letter-spacing:0 !important;
+      text-transform:none !important; padding:3px 10px !important; border-radius:999px !important; }
     /* ═══ 콘솔 스테이지 3: 섹션 이브로우 + 라이브 로그 터미널 모니터 ═══ */
-    .section-label{ font-family:ui-monospace,'SF Mono',Menlo,monospace !important; font-size:10px !important;
-      letter-spacing:1.4px !important; text-transform:uppercase !important; color:var(--text-secondary) !important;
-      display:flex !important; align-items:center !important; gap:7px !important; }
-    .section-label::before{ content:'' !important; width:5px !important; height:5px !important; border-radius:1px !important;
+    /* ★ 섹션 제목 — 등폭 글꼴·대문자·자간 1.4px 는 영문 라벨용이었다. 한글에 걸리니
+         "대 상 ( 여 러 유 저 …" 처럼 글자마다 떨어져 읽기 어려웠다. 본문 글꼴로 되돌리고
+         자간을 없앤다. 강조색 네모 점은 위계 표시로 남긴다. */
+    .section-label{ font-family:inherit !important; font-size:12px !important; font-weight:700 !important;
+      letter-spacing:0 !important; text-transform:none !important; color:var(--text) !important;
+      display:flex !important; align-items:center !important; gap:8px !important; }
+    .section-label::before{ content:'' !important; width:6px !important; height:6px !important; border-radius:2px !important;
       background:var(--accent) !important; display:inline-block !important; flex:none !important; }
-    .log-box{ position:relative !important; padding-top:0 !important; }
-    .log-box::before{ content:'라이브 로그' !important; position:sticky !important; top:0 !important; z-index:3 !important; display:block !important;
-      margin:0 -10px 8px !important; padding:7px 12px !important; font-family:ui-monospace,Menlo,monospace !important;
-      font-size:9px !important; letter-spacing:2px !important; text-transform:uppercase !important;
-      color:#78859A !important; background:#080A0E !important; border-bottom:1px solid rgba(255,255,255,.06) !important; }
+    /* ★ '라이브 로그' 머리띠는 바로 위 섹션 제목 '로그' 와 같은 말을 한 번 더 했다.
+         대신 비어 있을 때만 무엇이 나올 자리인지 알려 준다(JS 는 innerHTML='' 로 비운다). */
+    .log-box{ position:relative !important; }
+    /* 기록판은 등폭 글꼴·break-all(긴 URL 용)이라 안내문엔 맞지 않는다 — 본문 글꼴, 낱말 단위 줄바꿈 */
+    .log-box:empty::before{ content:'아직 기록이 없습니다. 수집을 시작하면 진행 상황이 여기에 나옵니다.';
+      display:block; color:var(--text-tertiary); font-size:12px; line-height:1.6; word-break:keep-all;
+      font-family:'NanumGothic', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif; }
     /* ═══ 콘솔 스테이지 4: 현황 대시보드 홈 ═══ */
     .dash-nav .nav-icon{ font-size:13px !important; }
     .dash-kpis{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:18px; }
@@ -7541,6 +7601,32 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
 .nav-badge             { background: var(--bg-tertiary); color: var(--text-secondary); font-weight: 600; }
 .nav-item.active .nav-badge { background: var(--accent); color: #fff; }
 
+/* 설정 — 위 목록과 같은 줄 높이·같은 배지 자리. 예전엔 배지 없이 10px 회색 글자만 있어
+   목록에서 떨어져 나온 각주처럼 보였다. 배지 안은 글자 대신 톱니를 그린다 —
+   switchTab() 이 textContent === '설정' 으로 활성 표시를 판단하므로 글자를 더하면 안 된다. */
+.sidebar-footer { padding: 8px; }
+.sidebar-footer .nav-item {
+    gap: 9px; padding: 7px 9px; border-radius: 9px; margin: 0;
+    font-size: 12.5px; color: var(--text-secondary);
+}
+.sidebar-footer .nav-item:hover { color: var(--text); }
+.sidebar-footer .nav-icon.settings {
+    width: 24px; height: 24px; border-radius: 7px; position: relative; box-sizing: border-box;
+    border: 1px solid var(--border-light);
+}
+.sidebar-footer .nav-icon.settings::after {
+    content: ''; position: absolute; inset: 0; margin: auto; width: 13px; height: 13px;
+    background: var(--text-secondary);
+    -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='3'/><path d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'/></svg>") center / contain no-repeat;
+            mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='3'/><path d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'/></svg>") center / contain no-repeat;
+}
+/* 활성일 때 위 목록과 똑같이 — 배지는 비우고 테두리·톱니만 강조색 */
+.sidebar-footer .nav-item.active .nav-icon.settings {
+    background: transparent !important;
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.sidebar-footer .nav-item.active .nav-icon.settings::after { background: var(--accent); }
+
 /* ── 기록 화면 ─────────────────────────────────────────────────────────────
    검은 패널이 밝은 화면에서 혼자 튀었다. 화면 색을 따라가되 등폭 글꼴로
    구분한다. 어두운 테마에서는 자연히 어두워진다. */
@@ -7556,12 +7642,10 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
     font-size: 11.5px;
     line-height: 1.6;
-}
-/* 위에 붙어 있는 '라이브 로그' 머리띠도 같은 면으로 */
-.log-box::before {
-    color: var(--text-tertiary) !important;
-    background: var(--bg-tertiary) !important;
-    border-bottom: 1px solid var(--border-light) !important;
+    /* break-all 은 긴 URL 때문이었는데, 한글 문장도 글자 한가운데서 끊어
+       "다시 시도합니 / 다" 처럼 읽혔다. 낱말은 지키고, 안 들어가는 긴 덩어리(URL)만 아무 데서나 끊는다. */
+    word-break: keep-all !important;
+    overflow-wrap: anywhere;
 }
 /* 밝은 바탕 기준 대비: 시각 4.8:1, 알림 6.2:1, 성공 4.7:1, 실패 5.1:1, 주의 5.3:1 — 전부 AA */
 .log-box .log-time    { color: var(--text-tertiary) !important; }
@@ -7608,6 +7692,43 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
 .account-row .input,
 .account-row select { height: 30px !important; font-size: 12.5px !important; }
 .account-row > .field { margin-bottom: 0 !important; }
+/* 칸은 30px 로 줄였는데 옆 '추가' 단추만 32px 로 남아 줄 끝이 2px 삐져나왔다 */
+.account-row > .btn { height: 30px; }
+
+/* 프록시 창 — 본문이 .content 한 겹에 싸여 있어 '.tab-content > .section' 카드 규칙이
+   닿지 않았다. 그래서 이 화면만 카드 없이 창 폭 끝까지 늘어났다. 같은 모양으로 맞춘다. */
+#tab-proxy > .content { max-width: 700px; }
+#tab-proxy > .content > .section {
+    background: var(--card); border: 1px solid var(--border-light);
+    border-radius: 12px; padding: 18px 20px; box-shadow: var(--shadow);
+}
+
+/* 수집 계기판(활성·포스트·미디어·상태)은 수집 화면에서만 뜻이 있다.
+   설정·프록시 화면에선 늘 0·대기라 자리만 차지했다. */
+.app:has(#tab-settings.active) .toolbar-stats,
+.app:has(#tab-proxy.active) .toolbar-stats { visibility: hidden; }
+
+/* 계정별 프록시 표시 — 켜진 계정은 자물쇠 그림 대신 강조색 칩으로 구분한다
+   (이 앱은 화면에서 그림 이모지를 걷어냈다: 0fdbf2a). */
+.account-proxy-tag.on { color: var(--accent); background: var(--accent-bg); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.account-proxy-edit .btn { margin-top: 6px; }
+
+/* ── 목록 접기 단추 ↔ 신호등 ─────────────────────────────────────────────
+   ★ 이 단추가 창 왼쪽 위(8,8)에 있었는데, 맥은 타이틀바를 투명하게 해 두어
+     (FullSizeContentView) 바로 그 자리에 신호등(닫기·최소화·확대)이 뜬다.
+     단추가 신호등 밑에 깔렸고, 접으면 창 제목('Twitter' 42px)도 신호등과 겹쳤다.
+   · 펴 있을 때: 사이드바 머리 오른쪽 끝 — 신호등과 멀고, 무엇을 접는지도 분명하다.
+   · 접혀 있을 때: 신호등 오른쪽. 신호등은 화면 pt 로 고정(오른끝 ≈ 68pt)인데
+     웹뷰는 창 폭에 따라 0.72~1.60 배로 확대된다(MainWindow::zoomForWidth).
+     가장 작게 볼 때(0.72) 68/0.72 ≈ 94px 이라 96px 에 둔다.
+   세로는 머리 띠(52px)의 가운데 — 옆의 창 제목과 같은 줄이다. */
+.sidebar-toggle { top: 13px; left: calc(var(--sidebar-w) - 36px); }
+.app.nav-collapsed .sidebar-toggle { left: 96px; }
+.app.nav-collapsed .toolbar { padding-left: 134px; }
+@media (max-width: 680px) {
+    /* 이 폭에선 사이드바가 190px 로 넓어진다(위쪽 좁은 창 규칙) */
+    .app:not(.nav-collapsed) .sidebar-toggle { left: 154px; }
+}
 .account-list > * + * { margin-top: 2px; }
 
 </style>
