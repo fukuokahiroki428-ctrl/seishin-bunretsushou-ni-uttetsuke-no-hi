@@ -1,5 +1,9 @@
 #include "Common.h"
 #include <QProcess>
+#ifndef Q_OS_WIN
+#include <csignal>
+#include <sys/types.h>
+#endif
 #include <QProcessEnvironment>
 #include <QTimeZone>
 #include <QLocale>
@@ -1203,6 +1207,18 @@ QStringList bundledRequirements()
     return {"twikit", "httpx", "atproto", "openpyxl", "Pillow",
             "beautifulsoup4", "websockets", "lxml", "m3u8", "yt-dlp",
             "browser_cookie3", "cryptography"};
+}
+
+// pid 로만 끊는다. QProcess 객체는 손대지 않는다 — 남의 스레드 것일 수 있다.
+void killProcessByPid(qint64 pid)
+{
+    if (pid <= 0) return;
+#ifdef Q_OS_WIN
+    // /T 는 자식까지. 파이썬 데몬이 또 무언가를 띄웠을 수 있다.
+    QProcess::execute("taskkill", {"/PID", QString::number(pid), "/F", "/T"});
+#else
+    ::kill(static_cast<pid_t>(pid), SIGKILL);
+#endif
 }
 
 QProcessEnvironment bundledProcessEnv()

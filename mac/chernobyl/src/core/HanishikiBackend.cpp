@@ -3165,6 +3165,15 @@ void HanishikiBackend::naikakukaiTick()
         else if (p == "tumblr") runTumblrCollection(runConfig);
         setPlatformRunning(p, false);
 
+        // 맵에서 자기를 뺀다 — 반드시 메인 스레드에서, 그리고 '아직 나인지' 확인하고.
+        //   그 사이 다른 수집이 같은 키를 넘겨받았을 수 있다(startCollection 과 같은 가드).
+        {
+            QThread *self = QThread::currentThread();
+            QMetaObject::invokeMethod(this, [this, p, self]() {
+                if (m_collectionThreads.value(p) == self) m_collectionThreads.remove(p);
+            }, Qt::QueuedConnection);
+        }
+
         // 새 글 발견 여부 — 시스템 알림
         QString newNewest;
         if (p == "twitter" && m_twitterCollector) {
@@ -3184,6 +3193,12 @@ void HanishikiBackend::naikakukaiTick()
         }, Qt::QueuedConnection);
     });
     connect(thread, &QThread::finished, thread, &QThread::deleteLater);
+    // ★ 内閣会 워커도 m_collectionThreads 에 넣는다.
+    //   startCollection 의 '이미 수집 중' 검사와 '이전 워커 마무리 대기 후 자동 재시작' 은
+    //   이 맵만 본다. 여기 없으면 그 장치가 内閣会의 폴링을 보지 못해서,
+    //   폴링 도중 수집을 시작하면 멤버 collector 를 발밑에서 지워 버린다
+    //   (윈도우에서 실측: Qt6Core 접근 위반 0xc0000005. 맥도 같은 구조다).
+    m_collectionThreads[platform] = thread;
     thread->start();
 }
 
