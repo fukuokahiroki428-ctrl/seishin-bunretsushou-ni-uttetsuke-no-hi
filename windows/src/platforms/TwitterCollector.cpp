@@ -1,6 +1,8 @@
 #include "TwitterCollector.h"
 #include "core/MiyoBackend.h"
 #include "core/Common.h"
+#include <QDirIterator>
+#include <QFileInfo>
 #include "utils/HttpClient.h"
 #include "utils/ExcelWriter.h"
 #include "xlsxdocument.h"
@@ -2323,6 +2325,37 @@ void TwitterCollector::captureTweet(const QJsonObject &tweet, const QString &cap
     meta["favoriteCount"] = legacy["favorite_count"].toInt();
     meta["retweetCount"]  = legacy["retweet_count"].toInt();
     meta["replyCount"]    = legacy["reply_count"].toInt();
+
+    // ★ 이미 내려받아 둔 이 트윗의 미디어를 카드에 붙인다.
+    //   카드 생성기는 예전부터 mediaRelPaths 를 그릴 수 있었는데, 트위터 호출부가
+    //   채우지 않아 캡쳐가 실패하면 카드에 그림이 통째로 빠졌다.
+    //   JSON 을 다시 해석하지 말고 디스크에 실제로 있는 것을 쓴다(받다 만 것은 제외).
+    //   ★ 반드시 재귀로 찾는다. 파일은 media/ 바로 밑이 아니라
+    //     media/<종류>/<작성자>/ 두 층 아래에 있다. 한 층만 훑던 옛 코드는
+    //     디렉터리만 걸리고(QDir::Files 로 걸러짐) 그림을 하나도 못 찾았다.
+    {
+        const QString mediaDir = QFileInfo(capturesDir).absolutePath() + "/media";
+        QJsonArray rel;
+        if (QDir(mediaDir).exists()) {
+            QDirIterator it(mediaDir, QDir::Files, QDirIterator::Subdirectories);
+            QStringList found;
+            while (it.hasNext()) {
+                const QFileInfo fi(it.next());
+                if (!fi.fileName().contains(tweetId)) continue;
+                if (fi.size() <= 0) continue;                       // 받다 만 파일
+                if (fi.fileName().startsWith('.')) continue;
+                found << QDir(mediaDir).relativeFilePath(fi.absoluteFilePath());
+            }
+            found.sort();                                          // 순서를 고정한다
+            for (const QString &r : found) rel.append(QStringLiteral("../media/") + r);
+        }
+        if (!rel.isEmpty()) meta["mediaRelPaths"] = rel;
+        // 카드가 '왜' 합성인지 남긴다 — 카드만 봐서는 원래 글만 있었는지
+        // 캡쳐가 실패했는지 구분이 안 됐다.
+        meta["cardReason"] = config["realCapture"].toBool(true)
+                                 ? QStringLiteral("실제 페이지 캡쳐에 실패해 만든 카드입니다")
+                                 : QStringLiteral("캡쳐를 끄고 수집해 만든 카드입니다");
+    }
     FileHelper::generateTweetArchiveHtml(capturesDir, filename, meta);
 }
 
@@ -3831,6 +3864,24 @@ void TwitterCollector::collect(const QJsonObject &config, bool &isRunning)
         if (!collectedIds.isEmpty()) {
             tweetCount = collectedIds.size();
             m_backend->log(QString("기존 파일: %1개 수집됨 → 이어서 수집").arg(tweetCount), "info", "twitter");
+        }
+    }
+
+    // ★ '마지막으로 본 트윗 ID' 만은 체크박스와 무관하게 읽는다.
+    //   m_newestTweetId 는 이번 판에서 실제로 처리한 트윗에서만 채워진다. 그런데
+    //   이 앱의 보통 쓰임인 '현재 이어서' 는 새 글이 0개인 날이 대부분이라,
+    //   그런 날엔 이 값이 빈 채로 남는다. 그러면 '새 트윗 확인' 이 입구에서
+    //   "아직 수집된 트윗이 없습니다" 로 돌아선다 — 받아 둔 것이 수백 개여도 그렇다.
+    //   (실측 2026-09-11: 757개를 받아 둔 폴더에서 수집 직후에도 여섯 번 연속 그 메시지)
+    //   이 값은 '무엇을 받을지' 를 정하지 않는다. 아래 resume 범위 계산과는 무관하고,
+    //   오직 새 트윗 확인이 어디서부터 볼지에만 쓰인다. 그래서 체크박스와 분리한다.
+    if (m_newestTweetId.isEmpty() && QFile::exists(progressPath)) {
+        QFile nf(progressPath);
+        if (nf.open(QIODevice::ReadOnly)) {
+            const QString savedNewest =
+                QJsonDocument::fromJson(nf.readAll()).object()["newestId"].toString();
+            nf.close();
+            if (!savedNewest.isEmpty()) m_newestTweetId = savedNewest;
         }
     }
 
