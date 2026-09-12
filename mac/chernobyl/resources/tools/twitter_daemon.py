@@ -421,6 +421,10 @@ async def main():
     init_args = _load_init_args("Usage: twitter_daemon.py --stdin-args  (init JSON on first stdin line)")
     auth_token = init_args["auth_token"]
     ct0 = init_args["ct0"]
+    # 자격증명이 실제로 도착했는지 길이로만 알린다 — 값은 절대 찍지 않는다.
+    #   전달 방식이 깨졌을 때 "X 가 막았다" 와 구별하려면 이 한 줄이 필요하다.
+    print(json.dumps({"info": "자격증명 도착: auth_token %d자, ct0 %d자"
+                              % (len(auth_token or ""), len(ct0 or ""))}), flush=True)
 
     # ── 어느 세션 계층을 쓸지 ──────────────────────────────────────────────
     # x_session 은 이 저장소가 직접 들고 있는 얇은 계층이다(tools/x_session.py).
