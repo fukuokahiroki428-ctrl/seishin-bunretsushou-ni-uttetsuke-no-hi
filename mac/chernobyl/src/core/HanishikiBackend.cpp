@@ -3205,8 +3205,8 @@ void HanishikiBackend::executeJsMainThread(const QString &js)
     //   그걸 창 수만큼 실행하면 대화상자가 창 수만큼 뜨고, 다운로드가 겹쳐 돌고,
     //   뒤늦은 창이 다른 창의 최신 입력을 통째로 되돌린다.
     //   되풀이해도 안전한 것만 runJsAll 로 따로 보낸다.
-    if (m_window && m_window->webView())
-        m_window->webView()->page()->runJavaScript(js);
+    // ★ 페이지가 뜨기 전이면 MainWindow 가 담아 둔다 — 직접 runJavaScript 하면 안 된다(main f339088).
+    if (m_window) m_window->runJsOnUi(js);
 }
 
 void HanishikiBackend::executeJsAllWindows(const QString &js)
@@ -3215,9 +3215,12 @@ void HanishikiBackend::executeJsAllWindows(const QString &js)
     //   여기로 보내는 것은 몇 번 실행돼도 결과가 같은 것들뿐이다
     //   (설정 복원·폼 복원·실행 표시·통계·진행률·로그).
     if (!m_window) return;
+    // 본 창은 runJsOnUi 로 — 페이지가 뜨기 전에 온 것도 잃지 않는다.
+    // 기능 창은 사용자가 나중에 여는 창이라 예전처럼 곧장 보낸다.
+    m_window->runJsOnUi(js);
     const auto views = m_window->allWebViews();
     for (QWebEngineView *v : views)
-        if (v && v->page()) v->page()->runJavaScript(js);
+        if (v && v != m_window->webView() && v->page()) v->page()->runJavaScript(js);
 }
 
 void HanishikiBackend::appendLogMainThread(const QString &message, const QString &type, const QString &platform)
@@ -3274,10 +3277,12 @@ void HanishikiBackend::flushLogs()
     m_pendingLogs.clear();
 
     if (!js.isEmpty()) {
-        // 로그도 모든 창에 — executeJsMainThread 와 같은 이유다.
+        // 로그도 모든 창에 — executeJsAllWindows 와 같은 방식이다.
+        //   본 창은 runJsOnUi(페이지가 뜨기 전이면 담아 둔다), 기능 창은 곧장.
+        m_window->runJsOnUi(js);
         const auto views = m_window->allWebViews();
         for (QWebEngineView *v : views) {
-            if (v && v->page()) v->page()->runJavaScript(js);
+            if (v && v != m_window->webView() && v->page()) v->page()->runJavaScript(js);
         }
     }
 }

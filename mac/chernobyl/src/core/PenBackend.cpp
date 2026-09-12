@@ -122,9 +122,8 @@ PenBackend::~PenBackend()
 // ═════════════════════════════════════════════════════════════════════════
 void PenBackend::executeJsMainThread(const QString &js)
 {
-    if (m_window && m_window->webView()) {
-        m_window->webView()->page()->runJavaScript(js);
-    }
+    // ★ HanishikiBackend 와 같은 이유 — 페이지가 뜨기 전이면 MainWindow 가 담아 둔다.
+    if (m_window) m_window->runJsOnUi(js);
 }
 
 void PenBackend::appendLogMainThread(const QString &message, const QString &type, const QString &platform)
@@ -153,7 +152,7 @@ void PenBackend::flushLogs()
         }
     }
     m_pendingLogs.clear();
-    if (!js.isEmpty()) m_window->webView()->page()->runJavaScript(js);
+    if (!js.isEmpty()) m_window->runJsOnUi(js);
 }
 
 void PenBackend::runJs(const QString &js) { emit jsSignal(js); }

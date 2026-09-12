@@ -7,6 +7,7 @@
 #include <QWebChannel>
 #include <QMenu>
 #include <QProcess>
+#include <QStringList>
 
 #ifdef Q_OS_MACOS
 #include <IOKit/pwr_mgt/IOPMLib.h>
@@ -31,6 +32,17 @@ public:
     //   백엔드가 화면에 무언가를 보낼 때 본 창에만 보내면, 기능 창은 명령은
     //   보낼 수 있는데(채널 공유) 로그·진행·결과는 하나도 못 받는 반쪽이 된다.
     QList<QWebEngineView *> allWebViews() const;
+
+    // ★ 메인 UI 페이지에 JS 를 넣는 단 하나의 통로.
+    //   페이지가 아직 안 읽혔으면 담아 두었다가 loadFinished 때 순서대로 흘린다.
+    //
+    //   왜 필요한가 — setUrl() 은 비동기다. index.html 은 한참 뒤에야 읽힌다
+    //   (윈도우 기계 실측 2.6초). 그 사이에 넣은 JS 는 "appendLog is not defined"
+    //   로 조용히 사라진다. 윈도우에서는 内閣会 자동 시작이 여기 물려서, 수집은
+    //   도는데 화면의 '중지' 버튼이 잠긴 채로 남았다.
+    //   맥에는 그 자동 시작이 없지만 시작 직후 로그가 사라지는 것은 똑같다.
+    void runJsOnUi(const QString &js);
+    bool uiReady() const { return m_uiReady; }
     QWebEngineView *browserView() const { return m_browserView; }
     HanishikiBackend *backend() const { return m_backend; }
 
@@ -55,9 +67,14 @@ public:
     void setChromeTheme(bool dark);
 
 private:
+    void flushPendingJs();      // 페이지가 뜬 뒤 담아 둔 JS 를 순서대로 흘린다
     void setupMenu();
     void applyDarkTitlebar();
     void openFolderDialog();
+
+    bool m_uiReady = false;     // index.html 이 다 읽혔나
+    QStringList m_pendingJs;    // 그 전에 들어온 JS
+    int m_droppedJs = 0;        // 한도를 넘어 버린 개수(조용히 버리지 않기 위해)
 
     QWebEngineView *m_webView = nullptr;
     QWebEngineView *m_browserView = nullptr;
