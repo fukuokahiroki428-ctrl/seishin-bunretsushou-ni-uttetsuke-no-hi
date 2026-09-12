@@ -153,4 +153,13 @@ QString pickSavePath(const QString &primary, const QString &secondary, double th
 //   (이벤트 알림이 그 스레드의 디스패처에 묶여 있다). 그럴 때 쓰는 마지막 수단.
 void killProcessByPid(qint64 pid);
 
+// ★ 자격증명을 로그에 남기지 않는다.
+//   값 대신 '있다/없다 + 길이' 만 돌려준다. 사용자는 "뽑혔나" 를 알아야 하고
+//   그건 길이로 충분하다. 값 자체는 로그에 있을 이유가 없다.
+//   실측: 예전에는 세션 쿠키 60자가 predormition_log.txt 에 평문으로 남았다.
+//   이 앱은 1년 넘게 무인으로 돌 것을 전제하므로 로그가 오래 쌓이고,
+//   고장 났을 때 사용자가 그 파일을 남에게 보낸다.
+//   who: 무엇인지 알려 줄 이름 (예: "cookie", "auth_token")
+QString maskSecret(const QString &value, const QString &who = QString());
+
 } // namespace Common

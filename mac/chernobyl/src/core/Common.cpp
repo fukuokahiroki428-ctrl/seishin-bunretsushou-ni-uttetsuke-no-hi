@@ -1102,6 +1102,15 @@ void killProcessByPid(qint64 pid)
 #endif
 }
 
+// 자격증명은 값 대신 모양만 남긴다. 위 헤더의 설명 참고.
+QString maskSecret(const QString &value, const QString &who)
+{
+    const QString name = who.isEmpty() ? QStringLiteral("값") : who;
+    if (value.isEmpty())
+        return QStringLiteral("%1: (없음)").arg(name);
+    return QStringLiteral("%1: 있음 (%2자, 가려짐)").arg(name).arg(value.length());
+}
+
 QProcessEnvironment bundledProcessEnv()
 {
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();

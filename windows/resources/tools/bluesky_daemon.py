@@ -21,7 +21,8 @@ Commands:
   {"action":"quit"}
 """
 
-import sys, json, os, time, asyncio, re, subprocess, shutil
+import sys
+import os, json, os, time, asyncio, re, subprocess, shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,12 +32,43 @@ def log(msg):
 def progress(count, media_count=0, status="수집 중..."):
     print(json.dumps({"progress": {"count": count, "media": media_count, "status": status}}), flush=True)
 
+def _read_init_line():
+    """첫 줄만 원시 fd 에서 읽는다.
+    ★ sys.stdin.readline() 을 쓰면 안 된다. 파이썬 버퍼가 줄 너머까지 미리 읽어
+      버려서, 뒤이은 명령 루프(asyncio 가 fd 0 을 직접 붙인다)가 첫 명령을 잃는다."""
+    buf = b""
+    while True:
+        ch = os.read(0, 1)
+        if not ch or ch == b"\n":
+            break
+        buf += ch
+    return buf.decode("utf-8", "replace")
+
+
+def _load_init_args(usage):
+    """자격증명을 받는다.
+    ★ 예전에는 JSON 을 argv 로 받았다. 윈도우에서 남의 프로세스 명령줄은 아무
+      프로세스나 읽을 수 있어서(WMI Win32_Process, 작업 관리자의 '명령줄' 열)
+      auth_token·ct0·앱 비밀번호가 그대로 노출됐다. 이제 stdin 으로 받는다.
+      argv 경로는 손으로 시험할 때를 위해 남겨 두되, 그 쓰임은 노출된다."""
+    if len(sys.argv) >= 2 and sys.argv[1] == "--stdin-args":
+        line = _read_init_line()
+        if not line.strip():
+            print(json.dumps({"error": "init args not received on stdin"}), flush=True)
+            sys.exit(1)
+        return json.loads(line)
+    if len(sys.argv) >= 2:
+        return json.loads(sys.argv[1])
+    print(json.dumps({"error": usage}), flush=True)
+    sys.exit(1)
+
+
 def main():
     if len(sys.argv) < 2:
         print(json.dumps({"error": "Usage: bluesky_daemon.py '{\"handle\":\"...\",\"password\":\"...\"}'"}), flush=True)
         sys.exit(1)
 
-    init_args = json.loads(sys.argv[1])
+    init_args = _load_init_args("Usage: bluesky_daemon.py --stdin-args  (init JSON on first stdin line)")
 
     # Support multiple accounts: {"accounts":[{"handle":"...","password":"..."},...]}
     # or single account: {"handle":"...","password":"..."}

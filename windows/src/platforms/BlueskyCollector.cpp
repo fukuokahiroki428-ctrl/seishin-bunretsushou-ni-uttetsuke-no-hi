@@ -104,8 +104,12 @@ bool BlueskyCollector::startDaemon(const QString &handle, const QString &passwor
     QStringList pythons = Common::pythonCandidates();
     bool started = false;
     for (const auto &python : pythons) {
-        m_daemon->start(python, {scriptPath, argsJson});
+        // ★ 자격증명(앱 비밀번호·프록시 URL)을 명령줄로 넘기지 않는다 —
+        //   윈도우에서 남의 프로세스 명령줄은 아무 프로세스나 읽을 수 있다.
+        m_daemon->start(python, {scriptPath, QStringLiteral("--stdin-args")});
         if (m_daemon->waitForStarted(5000)) {
+            m_daemon->write(argsJson.toUtf8() + "\n");
+            m_daemon->waitForBytesWritten(3000);
             m_daemonPid = m_daemon->processId();   // 이 스레드에서만 읽는다
             started = true;
             m_backend->log("Daemon: " + python, "info", "bluesky");

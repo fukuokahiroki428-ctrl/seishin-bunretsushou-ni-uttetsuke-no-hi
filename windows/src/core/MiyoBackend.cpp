@@ -15367,8 +15367,8 @@ void MiyoBackend::refreshTwitterTokens()
             }
 
             log("✅ Chrome에서 토큰 추출 성공!", "success", "settings");
-            log(QString("  auth_token: %1...").arg(authToken.left(8)), "info", "settings");
-            log(QString("  ct0: %1...").arg(ct0.left(8)), "info", "settings");
+            log("  " + Common::maskSecret(authToken, "auth_token"), "info", "settings");
+            log("  " + Common::maskSecret(ct0, "ct0"), "info", "settings");
 
             // JS 측에서 계정 업데이트 + 저장
             QString js = QString(
@@ -16019,7 +16019,7 @@ void MiyoBackend::refreshDiscordToken()
                 return;
             }
             log("✅ Discord 토큰 추출 성공!", "success", "settings");
-            log(QString("  token: %1...").arg(token.left(12)), "info", "settings");
+            log("  " + Common::maskSecret(token, "token"), "info", "settings");
 
             QString escapedToken = token;
             escapedToken.replace("'", "\\'");
@@ -16108,7 +16108,7 @@ void MiyoBackend::refreshDomainCookies(const QString &domain, const QString &fie
                 return;
             }
             log(QString("✅ %1 쿠키 추출 성공! (%2개)").arg(label).arg(count), "success", platform);
-            log(QString("  cookie: %1...").arg(cookie.left(60)), "info", platform);
+            log("  " + Common::maskSecret(cookie, "cookie"), "info", platform);
 
             // JS escape: backslash + single quote
             QString escaped = cookie;

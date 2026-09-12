@@ -5,8 +5,22 @@ import json
 import asyncio
 
 
+def _load_init_args():
+    """자격증명을 받는다.
+    ★ 예전에는 JSON 을 argv 로 받았다. 윈도우에서 남의 프로세스 명령줄은 아무
+      프로세스나 읽을 수 있어서(WMI Win32_Process, 작업 관리자의 '명령줄' 열)
+      auth_token·ct0·앱 비밀번호가 그대로 노출됐다. 이제 stdin 으로 받는다.
+      argv 경로는 손으로 시험할 때를 위해 남겨 두되, 그 쓰임은 노출된다."""
+    if len(sys.argv) >= 2 and sys.argv[1] == "--stdin-args":
+        return json.loads(sys.stdin.read())
+    if len(sys.argv) >= 2:
+        return json.loads(sys.argv[1])
+    print(json.dumps({"error": "init args required (--stdin-args)"}))
+    sys.exit(1)
+
+
 async def main():
-    args = json.loads(sys.argv[1])
+    args = _load_init_args()
 
     try:
         from twikit import Client

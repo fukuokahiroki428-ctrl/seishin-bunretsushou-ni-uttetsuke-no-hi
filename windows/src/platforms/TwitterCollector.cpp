@@ -196,8 +196,13 @@ bool TwitterCollector::startDaemon()
 
     bool started = false;
     for (const auto &python : pythons) {
-        m_daemon->start(python, {scriptPath, argsJson});
+        // ★ 자격증명을 명령줄로 넘기지 않는다 — 윈도우에서 남의 프로세스 명령줄은
+        //   아무 프로세스나 읽을 수 있다(WMI Win32_Process, 작업 관리자의 '명령줄' 열).
+        //   데몬은 어차피 stdin 으로 명령을 주고받으므로 첫 줄로 넘긴다.
+        m_daemon->start(python, {scriptPath, QStringLiteral("--stdin-args")});
         if (m_daemon->waitForStarted(5000)) {
+            m_daemon->write(argsJson.toUtf8() + "\n");
+            m_daemon->waitForBytesWritten(3000);
             m_daemonPid = m_daemon->processId();   // 이 스레드에서만 읽는다
             started = true;
             m_backend->log("Daemon: using "+ python, "info", "twitter");
@@ -504,8 +509,11 @@ bool TwitterCollector::initTransactionIds()
     QStringList pythons = Common::pythonCandidates();
     bool started = false;
     for (const auto &python : pythons) {
-        proc.start(python, {scriptPath, argsJson});
+        // 자격증명은 stdin 으로 — 명령줄은 남이 읽는다.
+        proc.start(python, {scriptPath, QStringLiteral("--stdin-args")});
         if (proc.waitForStarted(5000)) {
+            proc.write(argsJson.toUtf8());
+            proc.closeWriteChannel();
             started = true;
             m_backend->log("TID: using "+ python, "info", "twitter");
             break;
@@ -605,8 +613,13 @@ QJsonObject TwitterCollector::callTwikitApi(const QJsonObject &args)
     QStringList pyList = Common::pythonCandidates();
     bool pyStarted = false;
     for (const auto &py : pyList) {
-        proc.start(py, {scriptPath, argsJson});
-        if (proc.waitForStarted(5000)) { pyStarted = true; break; }
+        // 자격증명은 stdin 으로 — 명령줄은 남이 읽는다.
+        proc.start(py, {scriptPath, QStringLiteral("--stdin-args")});
+        if (proc.waitForStarted(5000)) {
+            proc.write(argsJson.toUtf8());
+            proc.closeWriteChannel();
+            pyStarted = true; break;
+        }
     }
     if (!pyStarted) {
         return QJsonObject{{"error", "Python not found"}};
