@@ -4495,6 +4495,11 @@ void HanishikiBackend::startCollection(const QString &configJson)
                 if (!tgt.isEmpty() && QDir(tgtDir).exists())      manifestDir = tgtDir;
                 else if (QDir(platDir).exists())                  manifestDir = platDir;
             }
+            // ★ 맥 Qt 는 이름을 NFD 로 적는다 — 윈도우·리눅스 NAS 와 같은 이름(NFC)으로 맞춘 뒤
+            //   목록을 만든다(목록에도 NFC 로 적힌다). 자세한 이유는 FileHelper.h.
+            if (const int nfc = FileHelper::normalizeNamesToNfc(manifestDir))
+                log(QString("🔤 [%1] 파일 이름 %2개를 NFC 로 맞춤 — 윈도우·NAS 에서도 같은 이름")
+                        .arg(platformName).arg(nfc), "info", platformName);
             writeDownloadManifest(manifestDir, platformName);
         }
         // 워커 스레드 종료 직전 trackKey 등록 해제

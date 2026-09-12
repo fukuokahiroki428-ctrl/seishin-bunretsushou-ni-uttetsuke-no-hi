@@ -27,6 +27,15 @@ QString sanitizeFilename(const QString &name, int maxLength = 200);
 //   그 자리에서 막힌다. 실측: 보충 안에 4묶음.
 QString reuseExistingName(const QString &parentDir, const QString &name);
 
+// ★ rootDir 아래 모든 이름을 디스크에 NFC 로 적는다(맥 전용 — 다른 OS 는 0 을 돌려준다).
+//   맥 Qt 는 파일을 만들 때 이름을 늘 NFD(자모 분리)로 적는다 — 디스크 이미지로 확인했다.
+//   윈도우(NTFS)·리눅스 NAS(ext4·Btrfs)는 NFC 가 표준이라, 그대로 옮기면 한글이 'ㅎㅏㄴ' 처럼
+//   보이고, 윈도우판이 받은 같은 파일(NFC)과 ext4·Btrfs 에서 '다른 이름' 으로 나란히 생긴다.
+//   APFS 는 두 형태를 같은 이름으로 찾으므로 바꿔도 앱의 경로는 그대로 통한다.
+//   ★ 대소문자 구분 APFS 에서는 정규화만 다른 이름으로의 rename 이 '성공' 하고 아무것도 안 바뀐다 —
+//     임시 이름을 한 번 거친다. 안쪽부터 바꾼다. 바꾼 개수를 돌려준다.
+int normalizeNamesToNfc(const QString &rootDir);
+
 // ★ 산출물을 최종 저장 위치로 안전하게 옮긴다.
 //   QFile::rename 만 쓰면 두 경우에 실패한다 — (1) 대상이 다른 디스크(NAS·외장)일 때,
 //   (2) 같은 이름이 이미 있을 때. 실패를 확인하지 않으면 원본까지 지워 파일이 유실된다.
