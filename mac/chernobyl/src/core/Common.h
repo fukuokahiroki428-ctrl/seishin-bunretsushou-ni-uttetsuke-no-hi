@@ -183,4 +183,9 @@ qint64 freeSpace(const QString &path);
 //   thresholdGB: 이 값 이상 free일 때만 primary 사용 (기본 10GB)
 QString pickSavePath(const QString &primary, const QString &secondary, double thresholdGB = 10.0);
 
+// ★ pid 만으로 프로세스를 끊는다 — QProcess 객체를 건드리지 않는다.
+//   다른 스레드가 만든 QProcess 는 그 객체의 함수를 부르는 것 자체가 위험하다
+//   (이벤트 알림이 그 스레드의 디스패처에 묶여 있다). 그럴 때 쓰는 마지막 수단.
+void killProcessByPid(qint64 pid);
+
 } // namespace Common

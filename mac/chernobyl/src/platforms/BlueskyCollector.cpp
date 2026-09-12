@@ -78,7 +78,19 @@ bool BlueskyCollector::startDaemon(const QString &handle, const QString &passwor
     //   데몬은 어차피 stdin 으로 명령을 주고받으므로, 첫 줄로 넘긴다.
     QString argsJson = QString::fromUtf8(QJsonDocument(initArgs).toJson(QJsonDocument::Compact));
 
-    m_daemon = new QProcess(this);
+    // ★ 부모를 주면 안 된다. this(BlueskyCollector)는 메인 스레드에서 만들어졌고,
+    //   이 함수는 수집 워커 스레드에서 돈다. 부모가 있으면 QProcess 가 부모의
+    //   스레드(메인)에 속하게 되는데, start() 는 여기(워커)에서 부른다.
+    //   그러면 Qt 가 이렇게 경고하고, 이어서 앱이 죽는다:
+    //     QWinEventNotifier: Event notifiers cannot be enabled or disabled from another thread
+    //     QObject::moveToThread: Current thread is not the object's thread
+    //     → Qt6Core 접근 위반(0xc0000005)
+    //   TwitterCollector 는 같은 이유로 이미 부모 없이 만들고 있었다. 여기만 안 고쳐져 있었다.
+    //   부모가 없어도 새지 않는다 — stopDaemon() 이 명시적으로 지우고, 소멸자가 그것을 부른다.
+    {
+        QMutexLocker lock(&m_daemonMutex);   // 없애는 쪽과 같은 자물쇠
+        m_daemon = new QProcess();
+    }
     m_daemon->setProcessEnvironment(Common::bundledProcessEnv());
 
     // 번들 Python 우선 → system fallback
@@ -90,6 +102,7 @@ bool BlueskyCollector::startDaemon(const QString &handle, const QString &passwor
             // 첫 줄 = 초기화 인자. 이후 줄은 평소대로 명령 통로.
             m_daemon->write(argsJson.toUtf8() + "\n");
             m_daemon->waitForBytesWritten(3000);
+            m_daemonPid = m_daemon->processId();   // 이 스레드에서만 읽는다
             started = true;
             m_backend->log("Daemon: " + python, "info", "bluesky");
             break;
@@ -167,18 +180,65 @@ bool BlueskyCollector::startDaemon(const QString &handle, const QString &passwor
 void BlueskyCollector::stopDaemon()
 {
     m_daemonReady = false;
-    if (m_daemon) {
-        if (m_daemon->state() == QProcess::Running) {
-            m_daemon->write("{\"action\":\"quit\"}\n");
-            m_daemon->waitForFinished(3000);
-            if (m_daemon->state() == QProcess::Running) {
-                m_daemon->kill();
-                m_daemon->waitForFinished(2000);
-            }
-        }
-        delete m_daemon;
+
+    // ★ 이 함수에는 두 스레드가 동시에 들어온다.
+    //   실측 로그(2026-09-11 23:19:14.158 과 .187)에서 같은 pid 로 0.03초 안에 두 번
+    //   진입했다 — 하나는 수집 워커가 끝나면서, 하나는 메인 스레드가 collector 를
+    //   지우면서 불렀다. 둘 다 같은 포인터를 들고 정리로 달려가면 이중 해제가 된다.
+    //   실측: Qt6Core.dll 접근 위반 0xc0000005.
+    //   그래서 잠그고 포인터를 '가져가면서' 비운다 — 두 번째로 들어온 쪽은 빈손이 된다.
+    QProcess *daemon = nullptr;
+    qint64 pid = 0;
+    {
+        QMutexLocker lock(&m_daemonMutex);
+        daemon = m_daemon;
+        pid = m_daemonPid;
         m_daemon = nullptr;
+        m_daemonPid = 0;
     }
+    if (!daemon) return;
+
+    // ★ QProcess 는 '만든 스레드' 에서만 만져야 한다.
+    //   이 데몬은 수집 워커 스레드에서 new/start 된다. 그런데 stopDaemon() 은 다른
+    //   스레드에서도 불린다 — 다음 수집의 워커, 소멸자, 메인 스레드의 중지 버튼.
+    //   그대로 write/waitForFinished/kill/delete 를 하면 Qt 가 이렇게 경고하고 죽는다:
+    //     QWinEventNotifier: Event notifiers cannot be enabled or disabled from another thread
+    //   실측: 内閣会 폴링 도중 중지 → 수집 시작 이면 매번 재현됐다(0xc000000d).
+    //   HttpClient 의 QNetworkAccessManager 와 같은 종류의 문제다.
+    QThread *const owner = daemon->thread();
+    QThread *const here = QThread::currentThread();
+    qDebug() << "[Bluesky] stopDaemon 진입 — 만든 스레드:" << (owner ? owner->objectName() : QString("(사라짐)"))
+             << "지금 스레드:" << here->objectName() << "pid:" << pid
+             << "만든 스레드가 도는 중:" << (owner ? owner->isRunning() : false);
+
+    if (owner && owner != here) {
+        // 만든 스레드가 아직 살아 있다 — 객체는 건드리지 않는다.
+        //   프로세스는 pid 로 끊고(그래야 상대가 붙들고 있던 대기가 풀린다),
+        //   객체 정리는 제 스레드에 맡긴다.
+        Common::killProcessByPid(pid);
+        qDebug() << "[Bluesky] stopDaemon: pid 로 끊음 — 이제 제 스레드에 정리를 맡긴다";
+        QMetaObject::invokeMethod(daemon, &QObject::deleteLater);
+        qDebug() << "[Bluesky] stopDaemon: deleteLater 예약 완료";
+        return;
+    }
+
+    // 만든 스레드가 이미 사라졌다면 thread() 가 0 이다. 그때는 지금 스레드로 데려올 수
+    // 있다 — Qt 가 명시적으로 허용하는 유일한 경우(스레드 없는 객체 → 현재 스레드).
+    if (!owner) {
+        qDebug() << "[Bluesky] stopDaemon: 만든 스레드가 사라져 지금 스레드로 데려온다";
+        daemon->moveToThread(here);
+    }
+
+    if (daemon->state() == QProcess::Running) {
+        daemon->write("{\"action\":\"quit\"}\n");
+        daemon->waitForFinished(3000);
+        if (daemon->state() == QProcess::Running) {
+            daemon->kill();
+            daemon->waitForFinished(2000);
+        }
+    }
+    delete daemon;
+    qDebug() << "[Bluesky] stopDaemon: 같은 스레드에서 정리 완료";
 }
 
 void BlueskyCollector::processOutputLines(const QByteArray &data)
