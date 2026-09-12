@@ -41,6 +41,63 @@ QString TwitterCollector::apiUrl(const QString &key, const QString &builtin)
     return Common::apiOverride("twitter." + key, builtin);
 }
 
+// ── 작성자 이름 (screen_name / name) ─────────────────────────────────────────
+// X 는 2025년에 user 객체를 개편했다. 예전에는 전부 legacy 안에 있었다:
+//     result = { rest_id, legacy: { screen_name, name, ... } }
+// 지금은 core 로 옮겨 갔다:
+//     result = { rest_id, avatar, core: { screen_name, name, ... }, legacy: { 통계만 } }
+//
+// ★ 이걸 놓치면 티가 안 난다. 없는 키를 읽으면 예외가 아니라 빈 문자열이 나오고,
+//   빈 문자열은 아무 데도 신고되지 않은 채 그대로 결과물이 된다.
+//   이 기계에 쌓인 18567개 파일에서 실측한 피해:
+//     · media 폴더 34개 전부에 작성자 하위폴더가 없다 (authorUsername 이 빈 값이라 안 만들어졌다)
+//     · 사진 표본 300장 중 EXIF Artist·Copyright 가 있는 것 0장
+//       (Common::addExifMetadata 는 값이 비면 그 태그를 아예 안 쓴다)
+//     · 엑셀의 tweet_url 이 "https://x.com//status/2073974981504237891" — 슬래시가 겹쳤다
+//     · 캡쳐 HTML 에 "author:i" (i 는 이름을 못 찾았을 때의 대체값)
+//
+// 그래서 읽는 자리를 여기 하나로 모은다. X 가 또 옮기면 이 함수만 고치면 된다.
+// 순서: 옛 자리 → 새 자리 → 최상위 → 한 겹 더 들어간 판.
+QString TwitterCollector::screenNameOf(const QJsonObject &userResult)
+{
+    QString sn = userResult["legacy"].toObject()["screen_name"].toString();
+    if (!sn.isEmpty()) return sn;
+    sn = userResult["core"].toObject()["screen_name"].toString();
+    if (!sn.isEmpty()) return sn;
+    sn = userResult["screen_name"].toString();
+    if (!sn.isEmpty()) return sn;
+    // 응답에 따라 user_results 가 한 겹 더 감싸여 오는 경우가 있다.
+    const QJsonObject inner = userResult["core"].toObject()["user_results"]
+                                  .toObject()["result"].toObject();
+    if (!inner.isEmpty()) {
+        sn = inner["legacy"].toObject()["screen_name"].toString();
+        if (!sn.isEmpty()) return sn;
+        sn = inner["core"].toObject()["screen_name"].toString();
+        if (!sn.isEmpty()) return sn;
+    }
+    return QString();
+}
+
+// 표시 이름(@아이디가 아닌 사람 이름). 옮겨 간 자리가 screen_name 과 같다.
+QString TwitterCollector::displayNameOf(const QJsonObject &userResult)
+{
+    QString n = userResult["legacy"].toObject()["name"].toString();
+    if (!n.isEmpty()) return n;
+    n = userResult["core"].toObject()["name"].toString();
+    if (!n.isEmpty()) return n;
+    n = userResult["name"].toString();
+    if (!n.isEmpty()) return n;
+    const QJsonObject inner = userResult["core"].toObject()["user_results"]
+                                  .toObject()["result"].toObject();
+    if (!inner.isEmpty()) {
+        n = inner["legacy"].toObject()["name"].toString();
+        if (!n.isEmpty()) return n;
+        n = inner["core"].toObject()["name"].toString();
+        if (!n.isEmpty()) return n;
+    }
+    return QString();
+}
+
 TwitterCollector::TwitterCollector(HanishikiBackend *backend, QObject *parent)
     : QObject(parent)
     , m_backend(backend)
@@ -1281,8 +1338,7 @@ int TwitterCollector::downloadTweetMedia(const QJsonObject &tweet, const QString
 
         // Author username subfolder
         QJsonObject userResult = tw["core"].toObject()["user_results"].toObject()["result"].toObject();
-        QString authorUsername = userResult["legacy"].toObject()["screen_name"].toString();
-        if (authorUsername.isEmpty()) authorUsername = userResult["screen_name"].toString();
+        QString authorUsername = screenNameOf(userResult);
         QString authorMediaDir = mediaDir;
         if (!authorUsername.isEmpty()) {
             authorMediaDir = mediaDir + "/"+ authorUsername;
@@ -1351,7 +1407,16 @@ int TwitterCollector::downloadTweetMedia(const QJsonObject &tweet, const QString
             tweetText.replace(QRegularExpression("\\s+"), "");
             tweetText = tweetText.trimmed();
             if (tweetText.startsWith('.')) tweetText = tweetText.mid(1).trimmed();
-            if (tweetText.length() > 100) tweetText = tweetText.left(100).trimmed();
+            // ★ 글자 중간에서 자르지 않는다. 이모지는 UTF-16 두 칸(서로게이트 쌍)이라
+            //   left(100) 이 그 사이를 지나면 짝 잃은 반쪽이 남는다. 그 반쪽은 UTF-8 로
+            //   인코딩할 수 없다 — 윈도우(NTFS, UTF-16)는 그대로 저장하지만 맥(APFS, UTF-8)은
+            //   못 써서 대체문자로 바뀐다. 같은 트윗인데 두 판의 파일명이 달라진다.
+            //   (실측: 이 기계 보관함 18567개 중 8개가 그 상태였다)
+            if (tweetText.length() > 100) {
+                tweetText = tweetText.left(100);
+                if (!tweetText.isEmpty() && tweetText.back().isHighSurrogate()) tweetText.chop(1);
+                tweetText = tweetText.trimmed();
+            }
 
             // Set file time to tweet date (always, even if already downloaded)
             QString createdAt = twLegacy["created_at"].toString();
@@ -1373,16 +1438,32 @@ QDateTime twDt = QDateTime::fromString(createdAt, "ddd MMM dd HH:mm:ss +0000 yyy
 
             // 파일명 형식: {prefix}{text}-{tweetId} ({mediaKey}).ext
             QString mediaKeySuffix = mediaKey.isEmpty() ? "": QString("(%1)").arg(mediaKey);
-            QString filename;
             bool multiMedia = (media.size() > 1);
-            if (tweetText.isEmpty()) {
-                filename = QString("%1%2-%3%4%5").arg(orderPrefix).arg(tweetId).arg(i).arg(mediaKeySuffix, ext);
-            } else if (multiMedia || i > 0) {
-                // 복수 미디어: {prefix}{text}-{id}-{idx} ({mediaKey}).ext
-                filename = QString("%1%2-%3-%4%5%6").arg(orderPrefix, tweetText, tweetId).arg(i).arg(mediaKeySuffix, ext);
-            } else {
-                // 단일 미디어: {prefix}{text}-{id} ({mediaKey}).ext
-                filename = QString("%1%2-%3%4%5").arg(orderPrefix, tweetText, tweetId, mediaKeySuffix, ext);
+            auto composeName = [&](const QString &text) -> QString {
+                if (text.isEmpty())
+                    return QString("%1%2-%3%4%5").arg(orderPrefix).arg(tweetId).arg(i).arg(mediaKeySuffix, ext);
+                if (multiMedia || i > 0)  // 복수 미디어: {prefix}{text}-{id}-{idx}({mediaKey}).ext
+                    return QString("%1%2-%3-%4%5%6").arg(orderPrefix, text, tweetId).arg(i).arg(mediaKeySuffix, ext);
+                return QString("%1%2-%3%4%5").arg(orderPrefix, text, tweetId, mediaKeySuffix, ext);  // 단일 미디어
+            };
+            QString filename = composeName(tweetText);
+
+            // ★ 파일명 한 칸의 한계는 '글자 수' 가 아니라 'UTF-8 255바이트' 다 —
+            //   맥(APFS)·리눅스(ext4)·삼바 공유가 전부 그렇다. 윈도우(NTFS)만 UTF-16
+            //   255칸이라 일본어·한글이 두 배 넉넉하다. 그래서 위의 100'자' 제한만으로는
+            //   일본어 100자 = 300바이트가 되어, 같은 트윗을 받아도 윈도우에만 파일이
+            //   생기고 맥·NAS 에서는 생성 자체가 실패한다.
+            //   (실측: 이 기계 보관함 18567개 중 340개가 255바이트 초과. 최대 356)
+            //   줄이는 것은 앞의 본문뿐이다. 뒤쪽(트윗 ID·미디어 키·확장자)은 파일을
+            //   식별하는 부분이라 절대 건드리지 않는다.
+            {
+                constexpr int kMaxNameBytes = 255;
+                QString shortText = tweetText;
+                while (filename.toUtf8().size() > kMaxNameBytes && !shortText.isEmpty()) {
+                    shortText.chop(1);
+                    if (!shortText.isEmpty() && shortText.back().isHighSurrogate()) shortText.chop(1);
+                    filename = composeName(shortText.trimmed());
+                }
             }
             QString filepath = authorMediaDir + "/"+ filename;
 
@@ -1412,8 +1493,7 @@ QDateTime twDt = QDateTime::fromString(createdAt, "ddd MMM dd HH:mm:ss +0000 yyy
 
                 // Add Finder comment with tweet URL
                 QJsonObject userResult = tw["core"].toObject()["user_results"].toObject()["result"].toObject();
-                QString screenName = userResult["legacy"].toObject()["screen_name"].toString();
-                if (screenName.isEmpty()) screenName = userResult["screen_name"].toString();
+                QString screenName = screenNameOf(userResult);
                 if (screenName.isEmpty()) screenName = userResult["rest_id"].toString();
                 QString tweetUrl = QString("https://x.com/%1/status/%2").arg(
                     screenName.isEmpty() ? "i": screenName, tweetId);
@@ -1601,8 +1681,8 @@ void TwitterCollector::downloadUserProfileMedia(const QJsonObject &tweet, const 
 void TwitterCollector::addExifMetadata(const QString &imagePath, const QJsonObject &tweet)
 {
     QJsonObject legacy = tweet["legacy"].toObject();
-    QJsonObject core = tweet["core"].toObject()["user_results"].toObject()["result"].toObject()["legacy"].toObject();
-    QString screenName = core["screen_name"].toString();
+    QString screenName = screenNameOf(tweet["core"].toObject()["user_results"]
+                                          .toObject()["result"].toObject());
     QString text = legacy["full_text"].toString().left(200);
     QString tweetId = legacy["id_str"].toString();
     if (tweetId.isEmpty()) tweetId = tweet["rest_id"].toString();
@@ -2114,8 +2194,7 @@ void TwitterCollector::captureTweet(const QJsonObject &tweet, const QString &cap
     if (tweetId.isEmpty()) return;
 
     QJsonObject userR = tweet["core"].toObject()["user_results"].toObject()["result"].toObject();
-    QString screenName = userR["legacy"].toObject()["screen_name"].toString();
-    if (screenName.isEmpty()) screenName = userR["screen_name"].toString();
+    QString screenName = screenNameOf(userR);
     if (screenName.isEmpty()) screenName = "i";
 
     QString tweetUrl = QString("https://x.com/%1/status/%2").arg(screenName, tweetId);
@@ -2182,7 +2261,7 @@ void TwitterCollector::captureTweet(const QJsonObject &tweet, const QString &cap
     // 합성 아카이브 카드 (realCapture 미사용 또는 CDP 실패)
     bool isRetweet = tweet.contains("retweeted_status_result");
     bool isReply = !legacy["in_reply_to_screen_name"].toString().isEmpty();
-    QString authorName = userR["legacy"].toObject()["name"].toString();
+    QString authorName = displayNameOf(userR);
     if (authorName.isEmpty()) authorName = screenName;
 
     QJsonObject meta;
@@ -2864,7 +2943,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             QJsonObject uo;
             while (allUsers.readNext(uo)) {
                 QJsonObject leg = uo["legacy"].toObject();
-                QString handle = leg["screen_name"].toString();
+                QString handle = screenNameOf(uo);
                 writer.writeRow(row++, {
                     uo["rest_id"].toString(),
                     handle,
@@ -3053,8 +3132,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                     m_backend->log(QString("트윗 %1개, 미디어 %2개 다운로드").arg(tweetCount).arg(mediaCount), "info", "twitter");
                 }
 
-                QJsonObject core = tweet["core"].toObject()["user_results"].toObject()["result"].toObject()["legacy"].toObject();
-                QString screenName = core["screen_name"].toString();
+                QString screenName = screenNameOf(tweet["core"].toObject()["user_results"]
+                                                      .toObject()["result"].toObject());
 
                 QJsonObject data;
                 data["id"] = tweetId;
@@ -3170,8 +3249,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 }
 
                 // Get tweet author info
-                QJsonObject core = tweet["core"].toObject()["user_results"].toObject()["result"].toObject()["legacy"].toObject();
-                QString screenName = core["screen_name"].toString();
+                QString screenName = screenNameOf(tweet["core"].toObject()["user_results"]
+                                                      .toObject()["result"].toObject());
 
                 QJsonObject data;
                 data["id"] = tweetId;
@@ -3306,8 +3385,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 tweetCount++;
 
                 QJsonObject rtLegacy = rtResult["legacy"].toObject();
-                QJsonObject rtCore = rtResult["core"].toObject()["user_results"].toObject()["result"].toObject()["legacy"].toObject();
-                QString rtScreenName = rtCore["screen_name"].toString();
+                QString rtScreenName = screenNameOf(rtResult["core"].toObject()["user_results"]
+                                                        .toObject()["result"].toObject());
                 QString rtText = rtLegacy["full_text"].toString();
                 QString rtId = rtLegacy["id_str"].toString();
                 if (rtId.isEmpty()) rtId = rtResult["rest_id"].toString();
@@ -3347,8 +3426,9 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
                 // Author info (원글 작성자)
                 QJsonObject rtUserResult = rtResult["core"].toObject()["user_results"].toObject()["result"].toObject();
+                // 팔로워 수 등 통계는 아직 legacy 에 남아 있다 — 이름만 옮겨 갔다.
                 QJsonObject rtUserLeg = rtUserResult["legacy"].toObject();
-                data["author_name"] = rtUserLeg["name"].toString();
+                data["author_name"] = displayNameOf(rtUserResult);
                 data["author_username"] = rtScreenName;
 
                 data["bookmark_count"] = 0;
@@ -3524,9 +3604,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
                     // Author info
                     QJsonObject authorResult = tweet["core"].toObject()["user_results"].toObject()["result"].toObject();
-                    QJsonObject authorLeg = authorResult["legacy"].toObject();
-                    QString authorName = authorLeg["name"].toString();
-                    QString authorUsername = authorLeg["screen_name"].toString();
+                    QString authorName = displayNameOf(authorResult);
+                    QString authorUsername = screenNameOf(authorResult);
                     QString replyText = legacy["full_text"].toString();
                     QString replyUrl = QString("https://x.com/%1/status/%2").arg(authorUsername, replyId);
                     QString parentUrl = QString("https://x.com/%1/status/%2").arg(target, focalId);
@@ -3920,14 +3999,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
             // Helper: extract screen_name from user result object (handles missing legacy.screen_name)
             auto getScreenName = [](const QJsonObject &userResult) -> QString {
-                // Try 1: legacy.screen_name (standard)
-                QString sn = userResult["legacy"].toObject()["screen_name"].toString();
-                if (!sn.isEmpty()) return sn;
-                // Try 2: top-level screen_name
-                sn = userResult["screen_name"].toString();
-                if (!sn.isEmpty()) return sn;
-                // Try 3: from rest_id
-                return userResult["rest_id"].toString();
+                const QString sn = screenNameOf(userResult);
+                return sn.isEmpty() ? userResult["rest_id"].toString() : sn;
             };
 
             // Get tweet author info
@@ -4073,12 +4146,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             // Author info — 여러 경로에서 시도 (GraphQL 구조 변동 대응)
             {
                 QJsonObject userResult = tweet["core"].toObject()["user_results"].toObject()["result"].toObject();
-                QJsonObject userLeg = userResult["legacy"].toObject();
-                QString aName = userLeg["name"].toString();
-                QString aUsername = userLeg["screen_name"].toString();
-                // fallback: userResult 직접
-                if (aName.isEmpty()) aName = userResult["name"].toString();
-                if (aUsername.isEmpty()) aUsername = userResult["screen_name"].toString();
+                QString aName = displayNameOf(userResult);
+                QString aUsername = screenNameOf(userResult);
                 // fallback: authorResult (이미 위에서 추출)
                 if (aUsername.isEmpty()) aUsername = authorName;
                 data["author_name"] = aName;
