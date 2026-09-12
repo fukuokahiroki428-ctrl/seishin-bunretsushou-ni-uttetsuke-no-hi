@@ -29,8 +29,28 @@ HttpClient::~HttpClient()
     // macOS CFSocket 콜백이 메인 스레드 RunLoop에 등록되어 있으므로,
     // 워커 스레드에서 직접 삭제하면 dangling callback → SIGBUS 크래시 발생.
     // NAM을 메인 스레드로 이동시켜서 안전하게 정리.
-    if (QThread::currentThread() != QCoreApplication::instance()->thread()) {
-        m_nam->moveToThread(QCoreApplication::instance()->thread());
+    QThread *const mainThread = QCoreApplication::instance()->thread();
+    if (QThread::currentThread() != mainThread) {
+        // ★ 만든 스레드가 이미 사라진 NAM 이 온다.
+        //
+        //   HanishikiBackend::runTwitterCollection 은 수집 워커 스레드에서
+        //     delete m_twitterCollector; m_twitterCollector = new TwitterCollector(this);
+        //   를 한다. 그러면 TwitterCollector 의 HttpClient 와 그 안의 NAM 이 그 워커
+        //   스레드 소속으로 태어난다. 워커가 끝나면 스레드는 사라지는데 객체는
+        //   멤버라 살아남는다 — 그때부터 nam->thread() 가 0 이다.
+        //   다음 수집 때 '다른' 워커가 이 소멸자를 부르면, Qt 는 "스레드 없는 객체는
+        //   현재 스레드로만 옮길 수 있다" 며 moveToThread 를 거절한다.
+        //     QObject::moveToThread: Current thread (...) is not the object's thread (0x0).
+        //   거절당하면 바로 아래 deleteLater 가 죽은 스레드의 큐로 들어가 영영 처리되지
+        //   않는다. NAM 이 수집 한 번에 하나씩 샌다 — 윈도우 기계에서 실측했다.
+        //   内閣会 30분 폴링마다 하나씩, 로그에 같은 경고가 248번 쌓여 있었다.
+        //   (SIGBUS 를 막는 위 규칙 자체는 그대로다 — 워커에서 직접 delete 하지 않는다)
+        //
+        //   그래서 두 걸음으로 옮긴다. 스레드가 없으면 먼저 현재 스레드로 데려오고
+        //   (Qt 가 허용하는 유일한 경우다), 그 다음 메인으로 보낸다.
+        if (!m_nam->thread())
+            m_nam->moveToThread(QThread::currentThread());
+        m_nam->moveToThread(mainThread);
         QMetaObject::invokeMethod(m_nam, &QObject::deleteLater);
     } else {
         delete m_nam;
