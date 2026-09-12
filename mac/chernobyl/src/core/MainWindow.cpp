@@ -381,7 +381,10 @@ QMenu *MainWindow::createDockMenu()
     connect(stopAction, &QAction::triggered, this, [this]() {
         if (m_backend) {
             // 모든 실행 중인 플랫폼 중지
-            for (const auto &p : {"twitter", "bluesky", "youtube", "discord", "instagram", "crawl"}) {
+            // ★ tumblr 가 빠져 있었다 — 内閣会는 tumblr 도 돌리는데 이 경로로는
+            //   영영 안 멈췄다. 목록에 없는 플랫폼은 중지 버튼이 없는 것과 같다.
+            for (const auto &p : {"twitter", "bluesky", "tumblr", "youtube",
+                                  "discord", "instagram", "crawl"}) {
                 m_backend->stopCollection(p);
             }
         }

@@ -588,8 +588,29 @@ void HanishikiBackend::startNaikakukai(const QString &configJson)
 
 void HanishikiBackend::stopNaikakukai()
 {
+    // 타이머를 먼저 멈춘다 — 아래에서 진행 중인 판을 정리하는 사이에
+    // 다음 tick 이 또 폴링을 띄우면 끝이 없다.
     m_naikakukaiRunning = false;
     if (m_naikakukaiTimer) m_naikakukaiTimer->stop();
+
+    // ★ 깃발만 내리면 '지금 돌고 있는 폴링' 은 그대로 계속 돈다.
+    //   그래서 중지를 눌러도 그 판이 끝날 때까지(길면 몇 분) 아무 일도
+    //   일어나지 않는다 — 중지가 중지가 아니다.
+    //   内閣会가 띄운 것만 골라서 멈춘다. 사용자가 직접 시작한 수집은
+    //   건드리지 않는다(그래서 플랫폼을 따로 기억해 둔다).
+    //   ※ 자물쇠를 놓고 부른다. m_runningMutex 는 비재귀이고
+    //     stopCollection 이 그 안에서 다시 잠근다 — 쥔 채로 부르면 교착이다.
+    QString active;
+    {
+        QMutexLocker lock(&m_runningMutex);
+        active = m_naikakukaiActivePlatform;
+    }
+    if (!active.isEmpty() && platformRunning(active)) {
+        log(QString("内閣会: 진행 중이던 %1 폴링도 함께 멈춥니다").arg(active),
+            "warning", "naikakukai");
+        stopCollection(active);
+    }
+
     log("内閣会 중지됨", "warning", "naikakukai");
     runJs("setNaikakukaiRunning(false)");
     // 터미널 종료
@@ -3153,8 +3174,18 @@ void HanishikiBackend::naikakukaiTick()
 
     // 백그라운드 스레드에서 실행
     setPlatformRunning(platform, true);
+    {   // 어느 플랫폼을 内閣会가 띄웠는지 기억한다 — 중지 버튼이 이것만 멈추게.
+        QMutexLocker lock(&m_runningMutex);
+        m_naikakukaiActivePlatform = platform;
+    }
     QThread *thread = QThread::create([this, runConfig, platform, target]() {
         const QString p = platform;
+        // ★ 이 워커의 trackKey 를 등록한다.
+        //   안 하면 trackKey 가 빈 문자열이 되고, 그러면 페이지 캡쳐가
+        //   스레드별 Chrome 이 아니라 싱글톤을 쓴다. 그런데 stopCollection 의
+        //   Chrome 정리 블록은 스레드별 맵만 훑으므로, 그 Chrome 은 중지
+        //   신호를 영영 못 받는다 — 중지를 눌러도 캡쳐가 계속 돈다.
+        setThreadTrackKey(p);
         // 실행 전 트윗 카운트 비교 위해 m_lastConfig의 newestId 저장
         QString prevNewest;
         if (p == "twitter" && m_twitterCollector) {
@@ -3165,6 +3196,11 @@ void HanishikiBackend::naikakukaiTick()
         else if (p == "bluesky") runBlueskyCollection(runConfig);
         else if (p == "tumblr") runTumblrCollection(runConfig);
         setPlatformRunning(p, false);
+        clearThreadTrackKey();
+        {
+            QMutexLocker lock(&m_runningMutex);
+            if (m_naikakukaiActivePlatform == p) m_naikakukaiActivePlatform.clear();
+        }
 
         // 맵에서 자기를 뺀다 — 반드시 메인 스레드에서, 그리고 '아직 나인지' 확인하고.
         //   그 사이 다른 수집이 같은 키를 넘겨받았을 수 있다(startCollection 과 같은 가드).
@@ -4590,11 +4626,16 @@ void HanishikiBackend::stopCollection(const QString &platformName)
     // Twitter: twikit 데몬 즉시 종료 — 다음 sendDaemonCommand()가 실패하며 루프 탈출
     if (platformName == "twitter" && m_twitterCollector) {
         killPid(m_twitterCollector->daemonPid());
+        // ★ 죽였으면 번호를 잊는다. 안 잊으면 다음 중지가 '이미 죽은 pid' 에
+        //   또 taskkill /F /T 를 쏜다. 그 사이 OS 가 그 번호를 다른 프로세스에
+        //   내줬다면 남의 프로세스 트리를 통째로 죽인다.
+        m_twitterCollector->forgetDaemonPid();
     }
 
     // Bluesky: 데몬 프로세스 즉시 종료
     if (platformName == "bluesky" && m_blueskyCollector) {
         killPid(m_blueskyCollector->daemonPid());
+        m_blueskyCollector->forgetDaemonPid();
     }
 
     // ★ stop 시 capture Chrome의 process만 종료 (객체 자체는 destroy 안 함)
