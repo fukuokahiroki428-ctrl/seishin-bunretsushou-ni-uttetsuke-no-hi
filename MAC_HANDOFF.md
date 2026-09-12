@@ -83,6 +83,19 @@
 > - **공증(notarize) 안 됨** — Developer ID 인증서와 애플 계정 암호가 필요해 자동화하지 못했습니다
 > - **macOS 26.0 이상 전용** — Homebrew 로 받은 Qt·ICU 등 dylib 63개가 그 macOS 에서 만들어졌기 때문입니다. 낮추려면 의존성을 낮은 대상으로 다시 빌드해야 합니다
 >
+> ### ★ 맥 작업은 `ueno` 에서만 합니다 (2026-09-12, 사용자 결정)
+>
+> `main` 의 `mac/chernobyl` 트리는 **더 이상 쓰지 않습니다.** 그쪽에 들어간 맥 수정
+> (9/8~9/11 의 `f339088`·`e0f1b3d`·`f2e69a7`·`542da17`·`de6e7c4`)은 맥 앱에 실리지 않습니다.
+> 맥에 필요한 수정이 있으면 `ueno` 로 보내 주십시오.
+>
+> ### 맥에서 최근 한 것 (`ueno`)
+>
+> | 커밋 | 무엇 | 윈도우 영향 |
+> |---|---|---|
+> | `4e07d22` | GUI 다듬기 — `mac/chernobyl/resources/html/index.html`·`MainWindow.cpp` 만. 한글 섹션 제목·테마별 색·목록 접기 단추 자리·대시보드 배치·로그 줄바꿈 | **없음.** `windows/` 는 건드리지 않았습니다 |
+> | 이 문서를 고친 커밋 | 옛 경로·이름 정리 — `README.md`·`scripts/README_archive.md`·`mac/chernobyl/packaging/README.md` | README 첫머리의 Pen 설명을 두 앱으로 나눠 적었습니다(윈도우 = `PenBackend`, 맥 = `HanishikiBackend`) |
+>
 > ---
 
 

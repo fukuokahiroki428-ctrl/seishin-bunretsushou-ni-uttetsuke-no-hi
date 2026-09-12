@@ -10,7 +10,16 @@ python3 archive_index.py /저장/경로
 ```
 - 증분이라 여러 번 돌려도 안전하다(경로+크기+수정시각이 같으면 건너뜀).
 - Ctrl+C 로 끊고 다시 돌리면 이어서 한다.
-- 색인 위치: `~/Library/Application Support/Miyo/Predormition/archive_index.db`
+- 색인 위치 — **앱이 보는 자리**:
+  - macOS(ハンイシキ): `~/Library/Application Support/Hanishiki/archive_index.db`
+  - Windows(Predormition): 앱 설정 폴더(`%APPDATA%` 아래) 안의 `archive_index.db`
+- ★ 스크립트의 기본값은 `<Application Support>/Predormition/archive_index.db` 라 **맥 앱이 보는 자리와 다르다.**
+  앱 안(설정 → 산출물 보관함)에서 돌리면 앱이 `--db` 로 맞는 자리를 넘겨 주므로 문제없다.
+  터미널에서 손으로 돌릴 때는 자리를 직접 준다:
+  ```bash
+  python3 archive_index.py /저장/경로 --db ~/Library/Application\ Support/Hanishiki/archive_index.db
+  python3 archive_ask.py "질문" --db ~/Library/Application\ Support/Hanishiki/archive_index.db
+  ```
 
 **2) 질문하기** — 앱에서 로컬 AI 를 켠 뒤.
 ```bash

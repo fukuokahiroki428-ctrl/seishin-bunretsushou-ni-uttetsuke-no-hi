@@ -2,7 +2,7 @@
 
 > **ハンイシキ** (macOS · 판 이름 上野) · **Predormition** (Windows)
 > 소셜 미디어 다운로더 · 사이트 통째 크롤러 통합 앱
-> (구 별도 앱 "팬을 잘 쓰고 싶다 / Pen"은 Predormition 에 **통합**되었습니다 — PenBackend)
+> (구 별도 앱 "팬을 잘 쓰고 싶다 / Pen"의 사이트 미러 기능은 두 앱 안으로 들어왔습니다 — Windows 는 `PenBackend`, macOS 는 `HanishikiBackend`)
 
 ---
 
@@ -15,8 +15,9 @@
 | **Predormition** | Windows | Twitter/Bluesky/Instagram/Pixiv/Fanbox/Tumblr/Discord/YouTube 등 다운로더 |
 | **ハンイシキ** | macOS | 독자 노선. 13개 플랫폼 + rclone NAS 백업 + CDP 캡쳐 + 로컬 AI |
 
-> 구 **팬을 잘 쓰고 싶다 (Pen)** 독립 앱은 폐기되고 기능(사이트 통째 미러)이
-> Predormition 내부(`PenBackend`)로 통합되었습니다.
+> 구 **팬을 잘 쓰고 싶다 (Pen)** 독립 앱은 폐기되고 기능(사이트 통째 미러)이 앱 안으로 들어왔습니다.
+> Windows 는 `PenBackend` 가 맡습니다. macOS 는 `HanishikiBackend` 가 직접 돌립니다 —
+> 맥 트리에도 `PenBackend` 클래스가 남아 있지만 화면과 이어져 있지 않습니다(`fe80838`).
 
 > **다운로드(설치파일/DMG)는 [Releases](../../releases) 에 있습니다.** 소스 코드는 이 저장소에 있습니다.
 
@@ -31,7 +32,7 @@
 | `Predormition_Setup.exe` | Windows 10/11 (x64) | ~261 MB | 더블클릭 → 설치 (관리자 권한 불필요, %LOCALAPPDATA% 에 설치) |
 | `Hanishiki-<버전>.dmg` | macOS 26.0+ (Apple Silicon) | ~700 MB | 마운트 → Applications 로 드래그 → `첫실행_준비.command` |
 
-> 📌 구 릴리스의 `Pen.dmg` 는 폐기된 독립 앱입니다 — 해당 기능은 이제 Chernobyl 안에 있습니다.
+> 📌 구 릴리스의 `Pen.dmg` 는 폐기된 독립 앱입니다 — 해당 기능은 이제 Predormition·ハンイシキ 안에 있습니다.
 
 > ⚠️ **서명 안내**: 두 macOS DMG 와 Windows 설치파일은 정식 배포 서명(Apple Developer ID / Microsoft 인증서)이 아닙니다.
 > - **macOS**: 첫 실행 시 우클릭 → "열기", 또는 `시스템 설정 → 개인정보 보호 및 보안 → 확인 없이 열기`
@@ -88,14 +89,16 @@
 
 ## 📋 주요 기능
 
-### Chernobyl
+### 다운로더 (Predormition · ハンイシキ 공통)
 - 플랫폼별 다운로더: Twitter/X, Bluesky, Instagram, Pixiv, Fanbox, Tumblr, Discord, YouTube, 그 외
 - 체크박스 선택 항목 전체 로그 기록 + 무결성 매니페스트 생성
 - NAS 백업(rclone 멀티스레드) + 진행률 터미널
 - 캡쳐 시 계정 쿠키 자동 주입(로그인 상태 캡쳐)
 - 설정 내보내기/불러오기
 
-### 사이트 통째 미러 (구 Pen — Chernobyl 에 통합)
+### 사이트 통째 미러 (구 Pen)
+> macOS 에서는 이 화면(経済産業省 탭)이 왼쪽 목록에서 숨겨져 있습니다. 코드(`#tab-crawl`·`SiteCrawler`)는 그대로 살아 있습니다.
+
 - 인터랙티브 CDP 크롤러 — 사용자가 직접 로그인/캡챠 풀면서 캡쳐
 - **사이트 통째 미러**: 깊이/페이지 수 지정, 같은 도메인 제한
   - *SingleFile inline*: 한 페이지 = 한 HTML(자산 base64 내장)
@@ -143,7 +146,12 @@
 |---|---|---|
 | 화면 표시 (Finder·Dock·메뉴·창 제목) | `ハンイシキ` | — (보이는 것뿐) |
 | 실행 파일 (`CFBundleExecutable`) | `Hanishiki` | `kill_app.sh` 가 프로세스를 못 찾는다 |
-| **사용자 데이터 폴더** | `~/Library/Application Support/Miyo/Hanishiki` | **설정·수집물이 갈라진다. 실제로 잃은 적이 있다** |
+| **사용자 데이터 폴더** | `~/Library/Application Support/Hanishiki` | **설정·수집물이 갈라진다. 실제로 잃은 적이 있다** |
+
+데이터 폴더에는 조직 이름(`Miyo`)을 두지 않습니다(`main.cpp` 의 `setOrganizationName(QString())`).
+예전 자리 `…/Miyo/<앱>` 에 있던 것은 첫 실행 때 이 폴더로 옮겨집니다.
+앱이 어디에 있든(설치본·빌드 산출물) 이 한 폴더를 씁니다. 둘을 동시에 띄우면 한 설정 파일을 함께 쓰게 되니,
+**시험 빌드는 쓰던 앱을 끄고 띄우십시오.**
 
 `.app` 폴더 이름은 `build.sh` 가 codesign 직전에 표시 이름(`ハンイシキ.app`)으로 바꿉니다.
 Finder 는 `CFBundleDisplayName` 이 아니라 **파일명**을 보여주기 때문입니다
@@ -231,8 +239,8 @@ cp -Rp "/tmp/cft/chrome-mac-arm64/Google Chrome for Testing.app" \
 **앱 밖에 남는 것** (사용자 데이터라 앱을 지워도 남아야 합니다):
 
 ```
-~/Library/Application Support/Miyo/Hanishiki/
-├── miyo_config.json        설정·계정·토큰
+~/Library/Application Support/Hanishiki/
+├── hanishiki_config.json   설정·계정·토큰 (옛 miyo_config.json 은 첫 실행 때 이 이름으로 바뀐다)
 ├── archive_index.db        산출물 색인 (수백 MB)
 ├── api_overrides.json      외부 API 상수 덮어쓰기
 ├── llm/                    AI 엔진·모델 (~9GB — 번들에 넣으면 DMG 가 10GB)
