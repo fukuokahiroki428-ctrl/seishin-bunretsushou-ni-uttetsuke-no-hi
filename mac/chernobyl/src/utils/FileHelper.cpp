@@ -11,6 +11,8 @@
 #include <QUrl>
 #include <QCryptographicHash>
 #include <QJsonArray>
+#include <QHash>
+#include <QMutex>
 
 #ifdef Q_OS_WIN
 #include <sys/types.h>
@@ -69,6 +71,46 @@ bool unixFilenames() { return g_unixFilenames; }
 
 // 파일명 정리 — 리눅스 NAS(ext4/btrfs/Samba)에 그대로 올려도 깨지지 않게 만든다.
 //   원칙: 유닉스에서 실제로 쓸 수 있는 문자는 100% 살린다. 못 쓰는 것만 바꾼다.
+QString reuseExistingName(const QString &parentDir, const QString &name)
+{
+    if (name.isEmpty() || parentDir.isEmpty()) return name;
+    const QString parent = QDir::cleanPath(parentDir);
+
+    // 정확히 같은 이름이 이미 있으면 그대로 — 대부분 여기서 끝난다.
+    if (QFileInfo::exists(parent + QLatin1Char('/') + name)) return name;
+
+    // 대소문자·정규화를 접은 열쇠. NFC 로 모은 뒤 case fold.
+    const auto fold = [](const QString &s) {
+        return s.normalized(QString::NormalizationForm_C).toCaseFolded();
+    };
+
+    // ★ 부모 폴더 목록은 한 번만 읽어 둔다. profiles/followers 하나에 1만 개 가까이 들어
+    //   있어서, 프로필마다 목록을 다시 읽으면 외장 디스크에서 수집이 눈에 띄게 느려진다.
+    //   병렬 트랙이 동시에 부르므로 잠근다. 1년 켜 두는 앱이라 캐시가 끝없이 자라지 않게
+    //   부모 폴더 수에 상한을 둔다(넘치면 비우고 다시 읽는다 — 틀려지지 않고 느려질 뿐).
+    static QMutex mtx;
+    static QHash<QString, QHash<QString, QString>> cache;   // 부모 → (접은 이름 → 실제 이름)
+    QMutexLocker lock(&mtx);
+    if (cache.size() > 64) cache.clear();
+    auto it = cache.find(parent);
+    if (it == cache.end()) {
+        QHash<QString, QString> m;
+        // 이름순으로 읽어 결과를 고정한다 — 이미 둘로 갈린 곳에선 늘 같은 쪽을 고른다.
+        const QStringList entries = QDir(parent).entryList(
+            QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::Name);
+        for (const QString &e : entries) {
+            const QString k = fold(e);
+            if (!m.contains(k)) m.insert(k, e);
+        }
+        it = cache.insert(parent, m);
+    }
+    const QString key = fold(name);
+    const auto found = it->constFind(key);
+    if (found != it->constEnd()) return found.value();
+    it->insert(key, name);   // 곧 만들어질 이름. 같은 판에서 뒤에 오는 변형도 이것을 쓴다.
+    return name;
+}
+
 QString sanitizeFilename(const QString &name, int maxLength)
 {
     // 1) 유니코드 NFC 정규화.

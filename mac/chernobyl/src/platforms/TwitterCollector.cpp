@@ -1393,7 +1393,8 @@ int TwitterCollector::downloadTweetMedia(const QJsonObject &tweet, const QString
         QString authorUsername = screenNameOf(userResult);
         QString authorMediaDir = mediaDir;
         if (!authorUsername.isEmpty()) {
-            authorMediaDir = mediaDir + "/"+ authorUsername;
+            // 아이디도 대소문자를 바꿀 수 있다 — 작성자 폴더가 둘로 갈리지 않게
+            authorMediaDir = mediaDir + "/"+ FileHelper::reuseExistingName(mediaDir, authorUsername);
             QDir().mkpath(authorMediaDir);
         }
 
@@ -1678,6 +1679,8 @@ void TwitterCollector::downloadUserProfileMedia(const QJsonObject &tweet, const 
         // 유저별 서브폴더: profiles/tweets/@handle/ or profiles/tweets/이름(@handle)/
         QString userDirName = filePrefix;
         userDirName.remove(QRegularExpression("[/\\\\:*?\"<>|]"));
+        // 표시이름 대소문자만 바뀐 계정이 폴더를 하나 더 만들지 않게 — FileHelper.h 설명
+        userDirName = FileHelper::reuseExistingName(categoryDir, userDirName);
         QString userProfileDir = categoryDir + "/"+ userDirName;
         QDir().mkpath(userProfileDir);
 
@@ -2677,6 +2680,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             QString tFilePrefix = !tDisplayName.isEmpty() ? QString("%1(@%2)").arg(tDisplayName, target) : target;
             QString tDirName = tFilePrefix;
             tDirName.remove(QRegularExpression("[/\\\\:*?\"<>|]"));
+            tDirName = FileHelper::reuseExistingName(userDir + "/profiles/target", tDirName);
             QString targetProfileDir = userDir + "/profiles/target/"+ tDirName;
             QDir().mkpath(targetProfileDir);
 
@@ -2939,6 +2943,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 // 유저별 서브폴더: profiles/{type}/{이름(@handle)}/
                 QString userDirName = filePrefix;
                 userDirName.remove(QRegularExpression("[/\\\\:*?\"<>|]"));
+                // 표시이름 대소문자만 바뀐 계정이 폴더를 하나 더 만들지 않게(실측 4묶음이 여기서 났다)
+                userDirName = FileHelper::reuseExistingName(profileDir + "/"+ type, userDirName);
                 QString userProfileDir = profileDir + "/"+ type + "/"+ userDirName;
                 QDir().mkpath(userProfileDir);
 
@@ -3974,6 +3980,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         QString tPrefix = !tDispName.isEmpty() ? QString("%1(@%2)").arg(tDispName, target) : target;
         QString tDirN = tPrefix;
         tDirN.remove(QRegularExpression("[/\\\\:*?\"<>|]"));
+        tDirN = FileHelper::reuseExistingName(userDir + "/profiles/target", tDirN);
         QString profileDateDir = userDir + "/profiles/target/"+ tDirN;
         QDir().mkpath(profileDateDir);
 
