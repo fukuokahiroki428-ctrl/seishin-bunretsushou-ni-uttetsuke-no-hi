@@ -17,6 +17,16 @@ void setFinderComment(const QString &filePath, const QString &comment);
 // Sanitize filename
 QString sanitizeFilename(const QString &name, int maxLength = 200);
 
+// ★ 대소문자(·유니코드 정규화)만 다른 이름을 새로 만들지 않는다.
+//   parentDir 안에 name 과 '대소문자만 다른' 항목이 이미 있으면 그 기존 이름을 돌려준다.
+//   없으면 name 그대로(그리고 같은 판에서 뒤에 오는 변형도 이 이름을 쓰게 기억해 둔다).
+//
+//   왜 — 프로필 폴더를 '표시이름(@아이디)' 로 짓는데, 같은 계정이 표시이름의 대소문자만
+//   바꾸면(Foopa → foopa) 폴더가 둘로 갈렸다. 이 보관 디스크는 대소문자를 구분하는 APFS 라
+//   둘 다 만들어지지만, 보관함을 통째로 NAS·일반 맥 디스크(대소문자 무시)로 옮기면 바로
+//   그 자리에서 막힌다. 실측: 보충 안에 4묶음.
+QString reuseExistingName(const QString &parentDir, const QString &name);
+
 // ★ 산출물을 최종 저장 위치로 안전하게 옮긴다.
 //   QFile::rename 만 쓰면 두 경우에 실패한다 — (1) 대상이 다른 디스크(NAS·외장)일 때,
 //   (2) 같은 이름이 이미 있을 때. 실패를 확인하지 않으면 원본까지 지워 파일이 유실된다.
