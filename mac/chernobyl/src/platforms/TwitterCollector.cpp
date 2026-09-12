@@ -112,6 +112,14 @@ TwitterCollector::~TwitterCollector()
     // multi-target: HanishikiBackend가 매 collect()마다 collector를 새로 만들므로
     // 이전 collector가 destroy될 때 daemon이 leak되지 않도록 명시적으로 정리.
     stopDaemon();
+    // ★ 프로필 버퍼도 여기서 지운다. 지우는 자리가 '다음 수집 시작' 하나뿐이었는데,
+    //   MiyoBackend 는 수집할 때마다 collector 를 새로 만든다 — 그래서 수집이 끝날
+    //   때마다 버퍼가 하나씩 새고, 임시 파일이 디스크에 남고, 파일 핸들도 남았다.
+    //   (실측: 사용자 보관함에 tw_profiles_*.jsonl 48개. 앱이 떠 있는 동안에는
+    //    "다른 프로세스가 사용 중" 이라 지워지지도 않았다)
+    //   DiskJsonBuffer 소멸자가 닫고 지운다 — 불러 주기만 하면 된다.
+    delete m_profileBuffer;
+    m_profileBuffer = nullptr;
 }
 
 void TwitterCollector::setupClient(const QString &authToken, const QString &ct0)
@@ -2572,6 +2580,25 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         QString profTempDir = userDir + "/.tmp_profiles";
         QDir().mkpath(profTempDir);
         if (m_profileBuffer) { delete m_profileBuffer; m_profileBuffer = nullptr; }
+
+        // ★ 앞선 판이 남긴 고아 임시 파일을 치운다.
+        //   소멸자가 지우게 고쳤지만, 전원이 나가거나 앱이 강제 종료되면 소멸자가
+        //   돌지 않는다. 1년을 무인으로 돌 앱에서는 그쪽이 오히려 흔하다.
+        //   한 시간 넘게 손대지 않은 것만 지운다 — 지금 다른 수집이 쓰고 있는
+        //   파일을 건드리지 않기 위해서다(같은 대상을 병렬로 돌리는 경우).
+        {
+            const QDir ptd(profTempDir);
+            const QDateTime cutoff = QDateTime::currentDateTime().addSecs(-3600);
+            int swept = 0;
+            for (const QFileInfo &fi : ptd.entryInfoList({"tw_profiles_*.jsonl"}, QDir::Files)) {
+                if (fi.lastModified() > cutoff) continue;
+                if (QFile::remove(fi.absoluteFilePath())) ++swept;
+            }
+            if (swept > 0)
+                m_backend->log(QString("이전에 남은 임시 파일 %1개를 치웠습니다").arg(swept),
+                               "info", "twitter");
+        }
+
         m_profileBuffer = new DiskJsonBuffer(profTempDir, "tw_profiles");
     }
 
