@@ -17,7 +17,7 @@ public:
     explicit BlueskyCollector(MiyoBackend *backend, QObject *parent = nullptr);
     ~BlueskyCollector() override;
 
-    void collect(const QJsonObject &config, bool &isRunning);
+    void collect(const QJsonObject &config, const std::atomic<bool> &isRunning);
     void stopDaemon();
     // ★ QProcess 를 건드리지 않는다 — 다른 스레드 것일 수 있다.
     //   pid 는 start 직후 여기에 베껴 두고, 이후로는 이 값만 쓴다.
@@ -34,7 +34,7 @@ private:
     private:
     bool startDaemon(const QString &handle, const QString &password, QJsonObject customInitArgs = QJsonObject());
     bool startDaemonMulti(const QJsonArray &accounts);
-    QJsonObject sendCommand(const QJsonObject &cmd, bool &isRunning, int timeoutMs = 600000);
+    QJsonObject sendCommand(const QJsonObject &cmd, const std::atomic<bool> &isRunning, int timeoutMs = 600000);
     void processOutputLines(const QByteArray &data);
     // ★ 다운로드 끝나면 user 폴더 root 에 gallery.html 자동 생성 — 모든 미디어 grid 로 한눈에
     void generateMediaGallery(const QString &userDir, const QString &handle);

@@ -262,7 +262,7 @@ void BlueskyCollector::processOutputLines(const QByteArray &data)
     }
 }
 
-QJsonObject BlueskyCollector::sendCommand(const QJsonObject &cmd, bool &isRunning, int timeoutMs)
+QJsonObject BlueskyCollector::sendCommand(const QJsonObject &cmd, const std::atomic<bool> &isRunning, int timeoutMs)
 {
     if (!m_daemon || !m_daemonReady) return {{"error", "Daemon not available"}};
 
@@ -342,7 +342,7 @@ QJsonObject BlueskyCollector::sendCommand(const QJsonObject &cmd, bool &isRunnin
 
 // ── Main collect ──
 
-void BlueskyCollector::collect(const QJsonObject &config, bool &isRunning)
+void BlueskyCollector::collect(const QJsonObject &config, const std::atomic<bool> &isRunning)
 {
     // Read first account from accounts array
     QJsonArray accounts = config["accounts"].toArray();

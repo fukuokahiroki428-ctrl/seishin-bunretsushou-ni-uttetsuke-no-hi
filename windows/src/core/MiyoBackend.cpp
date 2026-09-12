@@ -635,12 +635,8 @@ void MiyoBackend::killChildProcesses()
     // TwitterCollector / BlueskyCollector / SiteCrawler 내부 QProcess 는
     // 각 collector 소멸자가 정리. 여기선 고아 상태(크래시 잔여)만 처리.
     // 현재 실행 중인 수집이 있으면 먼저 중지 플래그 세움.
-    {
-        QMutexLocker lock(&m_runningMutex);
-        for (auto it = m_isRunning.begin(); it != m_isRunning.end(); ++it) {
-            it.value() = false;
-        }
-    }
+    // 도우미가 안에서 잠그므로 여기서 잠그면 안 된다(비재귀 뮤텍스 → 교착).
+    for (const QString &k : runFlagKeys()) setPlatformRunning(k, false);
 
     // 살아있는 collector 인스턴스 있으면 자기 데몬 kill
     if (m_blueskyCollector) {
@@ -3364,7 +3360,7 @@ void MiyoBackend::naikakukaiTick()
     QString target = watch["target"].toString();
 
     // 이미 해당 플랫폼이 다른 작업 중이면 이번 tick은 건너뜀
-    if (m_isRunning.value(platform, false)) {
+    if (platformRunning(platform)) {
         log(QString("内閣会: %1 은(는) 현재 수집 중 — 다음 tick으로 연기")
             .arg(platform), "info", "naikakukai");
         return;
@@ -3485,10 +3481,8 @@ void MiyoBackend::naikakukaiTick()
 
 bool MiyoBackend::isAnyRunning() const
 {
-    QMutexLocker lock(&m_runningMutex);
-    for (auto it = m_isRunning.constBegin(); it != m_isRunning.constEnd(); ++it) {
-        if (it.value()) return true;
-    }
+    for (const QString &k : runFlagKeys())
+        if (platformRunning(k)) return true;
     return false;
 }
 
@@ -4580,11 +4574,8 @@ void MiyoBackend::startCollection(const QString &configJson)
     }
 
     // 플랫폼별 독립 스레드 생성 — 병렬: 같은 platform에 여러 thread 가능
-    {
-        QMutexLocker lock(&m_runningMutex);
-        m_isRunning[trackKey] = true;       // 병렬 키별 isRunning
-        m_isRunning[platformName] = true;   // platform 단위도 true (collector 코드 호환)
-    }
+    setPlatformRunning(trackKey, true);       // 병렬 키별 플래그
+    setPlatformRunning(platformName, true);   // platform 단위도 true (collector 코드 호환)
     runJs(QString("setRunning('%1', true)").arg(platformName));
     m_stopRequested[trackKey] = false;
     m_stopRequested[platformName] = false;
@@ -4648,18 +4639,11 @@ void MiyoBackend::startCollection(const QString &configJson)
             //   (재시작 레이스) 새 수집의 플래그/터미널/맵을 건드리지 않는다.
             if (m_collectionThreads.value(trackKey) != workerSelf) return;
             {
-                QMutexLocker lock(&m_runningMutex);
-                m_isRunning[trackKey] = false;
-                // 같은 platform에 다른 trackKey가 아직 running이면 platform 단위 isRunning 유지
-                bool anyRunning = false;
-                for (auto it = m_isRunning.constBegin(); it != m_isRunning.constEnd(); ++it) {
-                    const QString k = it.key();
-                    if (k == platformName) continue;  // 자기자신 제외
-                    if ((k == platformName || k.startsWith(platformName + "#")) && it.value()) {
-                        anyRunning = true; break;
-                    }
-                }
-                if (!anyRunning) m_isRunning[platformName] = false;
+                setPlatformRunning(trackKey, false);
+                // 같은 platform에 다른 trackKey가 아직 돌고 있으면 platform 단위는 유지
+                //   (맥과 같은 도우미를 쓴다 — 같은 판단을 두 군데서 따로 쓰지 않는다)
+                if (!anyRunningFor(platformName, platformName))
+                    setPlatformRunning(platformName, false);
             }
             const bool wasStopped = m_stopRequested.value(trackKey, false)
                                  || m_stopRequested.value(platformName, false);
@@ -4675,7 +4659,7 @@ void MiyoBackend::startCollection(const QString &configJson)
                 llmDiagnoseIfBroken(platformName, trackKey);
             }
             // 병렬: platform 단위 setRunning(false)는 모든 trackKey가 끝났을 때만
-            bool platformIdle = !m_isRunning.value(platformName, false);
+            bool platformIdle = !platformRunning(platformName);
             if (platformIdle) {
                 runJs(QString("setRunning('%1', false)").arg(platformName));
             }
@@ -4699,14 +4683,7 @@ void MiyoBackend::stopCollection(const QString &platformName)
 {
     // 1) 플래그 즉시 내림 (모든 폴링 지점에서 다음 체크 시 종료)
     //    병렬 모드에서는 platform#0, platform#1, ... 도 함께 false로 내려야 함
-    {
-        QMutexLocker lock(&m_runningMutex);
-        m_isRunning[platformName] = false;
-        const QString prefix = platformName + "#";
-        for (auto it = m_isRunning.begin(); it != m_isRunning.end(); ++it) {
-            if (it.key().startsWith(prefix)) it.value() = false;
-        }
-    }
+    stopAllFor(platformName);   // platform 과 platform#0,#1… 을 한꺼번에 내린다
     m_stopRequested[platformName] = true;
     {
         const QString prefix = platformName + "#";
@@ -4722,11 +4699,8 @@ void MiyoBackend::stopCollection(const QString &platformName)
     {
         QStringList platKeys;
         platKeys << platformName;
-        QMutexLocker lock(&m_runningMutex);
-        for (auto it = m_isRunning.constBegin(); it != m_isRunning.constEnd(); ++it) {
-            if (it.key().startsWith(platformName + "#")) platKeys << it.key();
-        }
-        lock.unlock();
+        for (const QString &k : runFlagKeys())
+            if (k.startsWith(platformName + "#")) platKeys << k;
         for (const QString &pk : platKeys) {
             if (m_terminalLogPaths.contains(pk)) {
                 QString logPath = m_terminalLogPaths[pk];
@@ -5494,7 +5468,7 @@ void MiyoBackend::checkNewPosts(const QString &platformName)
             return;
         }
         // 이미 실행 중이면 무시 (동시 접근 방지)
-        if (m_isRunning.value("twitter", false)) {
+        if (platformRunning("twitter")) {
             log("이미 실행 중입니다", "warning", "twitter");
             return;
         }
@@ -5503,11 +5477,11 @@ void MiyoBackend::checkNewPosts(const QString &platformName)
             log("설정 정보 없음", "warning", "twitter");
             return;
         }
-        m_isRunning["twitter"] = true;
+        setPlatformRunning("twitter", true);
         QThread *thread = QThread::create([this, config]() {
-            // m_isRunning["twitter"]를 직접 참조 (QMap value ref는 재할당 안 하면 안정)
-            m_twitterCollector->checkNewPosts(config, m_isRunning["twitter"]);
-            m_isRunning["twitter"] = false;
+            // *runFlag("twitter")를 직접 참조 (QMap value ref는 재할당 안 하면 안정)
+            m_twitterCollector->checkNewPosts(config, *runFlag("twitter"));
+            setPlatformRunning("twitter", false);
             QMetaObject::invokeMethod(this, [this]() {
                 updateStats(0, 0, "완료", "twitter");
             }, Qt::QueuedConnection);
@@ -5525,7 +5499,7 @@ void MiyoBackend::startYoutube(const QString &configJson)
     if (doc.isNull()) return;
 
     QJsonObject config = doc.object();
-    m_isRunning["youtube"] = true;
+    setPlatformRunning("youtube", true);
 
     if (m_window) m_window->holdAwake();
 
@@ -5540,7 +5514,7 @@ void MiyoBackend::startYoutube(const QString &configJson)
         runYoutubeDownload(config);
         // 완료 처리 — 메인 스레드에서 실행 (QProcess/QSocketNotifier는 cross-thread 접근 불가)
         QMetaObject::invokeMethod(this, [this]() {
-            m_isRunning["youtube"] = false;
+            setPlatformRunning("youtube", false);
             if (!isAnyRunning() && m_window) m_window->releaseAwake();
         });
     });
@@ -5550,7 +5524,7 @@ void MiyoBackend::startYoutube(const QString &configJson)
 
 void MiyoBackend::stopYoutube()
 {
-    m_isRunning["youtube"] = false;
+    setPlatformRunning("youtube", false);
     // Signal terminal script to stop — 마지막 config의 path에서 찾기
     QString ytPath = m_lastConfig.value("youtube")["path"].toString();
     if (ytPath.startsWith(QLatin1Char('~'))) ytPath.replace(0, 1, QDir::homePath());
@@ -5607,13 +5581,13 @@ void MiyoBackend::startNiconico(const QString &configJson)
     QJsonObject config = doc.object();
     config["platform"] = "niconico";        // runYoutubeDownload 가 <path>/niconico 저장 + 로그/게이지 키 분리
     m_lastConfig["niconico"] = config;
-    m_isRunning["niconico"] = true;
+    setPlatformRunning("niconico", true);
     if (m_window) m_window->holdAwake();
 
     QThread *thread = QThread::create([this, config]() {
         runYoutubeDownload(config);
         QMetaObject::invokeMethod(this, [this]() {
-            m_isRunning["niconico"] = false;
+            setPlatformRunning("niconico", false);
             if (!isAnyRunning() && m_window) m_window->releaseAwake();
         });
     });
@@ -5623,7 +5597,7 @@ void MiyoBackend::startNiconico(const QString &configJson)
 
 void MiyoBackend::stopNiconico()
 {
-    m_isRunning["niconico"] = false;   // 모니터 루프 즉시 탈출
+    setPlatformRunning("niconico", false);   // 모니터 루프 즉시 탈출
     // 터미널/yt-dlp 에 stop 신호 + DONE — runYoutubeDownload 의 niconico tempDir(abiwa_niconico)과 일치.
     QString tempDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_niconico";
     QFile stopFile(tempDir + "/miyo_yt_status.txt.stop");
@@ -6706,7 +6680,7 @@ void MiyoBackend::injectCdpCookies(const QList<QNetworkCookie> &cookies)
 void MiyoBackend::runWebCrawlCollection(const QJsonObject &config)
 {
     // ★ 워커 스레드 차단용 세마포어. 다중대상 시나리오에서 1번째 세션이 다 끝나기
-    //    전에 워커 스레드가 리턴 → m_isRunning[platform]=false → 메인 스레드의 스크롤
+    //    전에 워커 스레드가 리턴 → *runFlag(platform)=false → 메인 스레드의 스크롤
     //    타이머가 첫 tick에서 빠져나감 → 아무것도 다운로드 안 됨.
     //    체인 끝(에러/정상완료/스크롤 종료)에서 release()를 부른다.
     auto crawlDone = std::make_shared<QSemaphore>(0);
@@ -6800,7 +6774,7 @@ void MiyoBackend::runWebCrawlCollection(const QJsonObject &config)
             if (maxScrolls <= 0) maxScrolls = 200;
 
             connect(timer, &QTimer::timeout, this, [=]() mutable {
-                if (!m_isRunning.value(platform, false)) {
+                if (!platformRunning(platform)) {
                     timer->stop(); timer->deleteLater();
                     delete state; delete tweetUrls; delete collectedReplies; delete mediaUrls; delete processedUrls;
                     return;
@@ -6902,10 +6876,10 @@ void MiyoBackend::runWebCrawlCollection(const QJsonObject &config)
                                     QString commentMediaDir = userDir + "/media/comments";
                                     QDir().mkpath(commentMediaDir);
                                     HttpClient http;
-                                    http.setRunFlag(&m_isRunning[platform]);  // 중지 시 즉시 abort
+                                    http.setRunFlag(runFlag(platform).get());  // 중지 시 즉시 abort
                                     int dl = 0;
                                     for (const QString &url : *mediaUrls) {
-                                        if (!m_isRunning.value(platform, false)) break;
+                                        if (!platformRunning(platform)) break;
                                         QString fn = QUrl(url).fileName();
                                         if (fn.isEmpty() || fn.length() > 100) fn = QString("media_%1").arg(dl + 1);
                                         if (!fn.contains('.')) fn += ".jpg";
@@ -7104,7 +7078,7 @@ void MiyoBackend::runWebCrawlCollection(const QJsonObject &config)
         auto *mediaUrls = new QSet<QString>();
 
         connect(scrollTimer, &QTimer::timeout, this, [=]() mutable {
-            if (!m_isRunning.value(platform, false) || scrollCount >= maxScrolls) {
+            if (!platformRunning(platform) || scrollCount >= maxScrolls) {
                 scrollTimer->stop();
                 scrollTimer->deleteLater();
 
@@ -7142,9 +7116,9 @@ void MiyoBackend::runWebCrawlCollection(const QJsonObject &config)
                 if (!mediaUrls->isEmpty()) {
                     int downloaded = 0;
                     HttpClient http;
-                    http.setRunFlag(&m_isRunning[platform]);  // 중지 시 즉시 abort
+                    http.setRunFlag(runFlag(platform).get());  // 중지 시 즉시 abort
                     for (const QString &url : *mediaUrls) {
-                        if (!m_isRunning.value(platform, false)) break;
+                        if (!platformRunning(platform)) break;
                         QString filename = QUrl(url).fileName();
                         if (filename.isEmpty() || filename.length() > 100)
                             filename = QString("media_%1").arg(downloaded + 1);
@@ -7290,8 +7264,8 @@ void MiyoBackend::runWebCrawlCollection(const QJsonObject &config)
     }, Qt::QueuedConnection);
 
     // ★ 워커 스레드 차단 — 메인 스레드의 비동기 체인이 crawlDone->release()를 부를 때까지.
-    //    이게 없으면 워커가 즉시 리턴 → m_isRunning=false → 메인 스레드의 scrollTimer 첫 tick에
-    //    "!m_isRunning" 분기로 빠져 아무 작업도 안 됨 (다중대상 1개도 다운 안 되던 원인).
+    //    이게 없으면 워커가 즉시 리턴 → 중지 플래그=false → 메인 스레드의 scrollTimer 첫 tick에
+    //    "!중지 플래그" 분기로 빠져 아무 작업도 안 됨 (다중대상 1개도 다운 안 되던 원인).
     //    안전망: 30분 후 강제 풀림 (페이지가 영구히 멎으면 멀티타겟 큐가 막히는 것 방지)
     if (!crawlDone->tryAcquire(1, 30 * 60 * 1000)) {
         log("웹 크롤 30분 타임아웃 — 워커 스레드 강제 풀림", "warning", platform);
@@ -7461,7 +7435,7 @@ void MiyoBackend::runRealChromeCollection(const QJsonObject &config)
                     *scrollLoop = [this, done, scrollLoop, scrollCounter, prevHeight,
                                     platformCopy, targetCopy, userDirCopy, capturesDirCopy,
                                     mediaDirCopy, targetUrlCopy, maxScrolls]() {
-                        if (!m_isRunning.value(platformCopy, false) || *scrollCounter >= maxScrolls) {
+                        if (!platformRunning(platformCopy) || *scrollCounter >= maxScrolls) {
                             // 스크롤 종료 → HTML 캡쳐 + 미디어 추출
                             log(QString("스크롤 완료 (%1회)").arg(*scrollCounter), "success", platformCopy);
                             m_realChrome->getRenderedHtml([this, done, platformCopy, targetCopy, capturesDirCopy,
@@ -7504,10 +7478,10 @@ void MiyoBackend::runRealChromeCollection(const QJsonObject &config)
                                         return;
                                     }
                                     HttpClient http;
-                                    http.setRunFlag(&m_isRunning[platformCopy]);
+                                    http.setRunFlag(runFlag(platformCopy).get());
                                     int dl = 0;
                                     for (int i = 0; i < urls.size(); ++i) {
-                                        if (!m_isRunning.value(platformCopy, false)) break;
+                                        if (!platformRunning(platformCopy)) break;
                                         QString url = urls[i].toString();
                                         if (url.isEmpty()) continue;
                                         QString fn = QUrl(url).fileName();
@@ -7584,7 +7558,8 @@ void MiyoBackend::runRealChromeCollection(const QJsonObject &config)
 //   트위터 탭의 로그/중지 버튼/실행상태와 일관되게 platform="twitter" 로 동작.
 // ═══════════════════════════════════════════════════════════════════════════
 // 단일 스페이스 URL → yt-dlp 다운로드. 스페이스 자동탐지(전체 수집)에서도 재사용.
-bool MiyoBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir, const bool *running)
+bool MiyoBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir,
+                                   const std::atomic<bool> *running)
 {
     const QString url = urlIn.trimmed();
     if (url.isEmpty()) return false;
@@ -7726,9 +7701,9 @@ void MiyoBackend::runTwitterCollection(const QJsonObject &config)
     if (!parallelKey.isEmpty()) {
         TwitterCollector localCollector(this);
         localCollector.setProxy(proxyUrlForRun);
-        // m_isRunning[parallelKey]를 참조 — startCollection에서 true로 세팅됨
-        if (!m_isRunning.contains(parallelKey)) m_isRunning[parallelKey] = true;
-        localCollector.collect(enrichedConfig, m_isRunning[parallelKey]);
+        // *runFlag(parallelKey)를 참조 — startCollection에서 true로 세팅됨
+        if (!platformKnown(parallelKey)) setPlatformRunning(parallelKey, true);
+        localCollector.collect(enrichedConfig, *runFlag(parallelKey));
         return;
     }
 
@@ -7759,7 +7734,7 @@ void MiyoBackend::runTwitterCollection(const QJsonObject &config)
         else QMetaObject::invokeMethod(this, makeCollector, Qt::BlockingQueuedConnection);
     }
     m_lastConfig["twitter"] = enrichedConfig;
-    m_twitterCollector->collect(enrichedConfig, m_isRunning["twitter"]);
+    m_twitterCollector->collect(enrichedConfig, *runFlag("twitter"));
 }
 
 void MiyoBackend::runBlueskyCollection(const QJsonObject &config)
@@ -7809,8 +7784,8 @@ void MiyoBackend::runBlueskyCollection(const QJsonObject &config)
     if (!parallelKey.isEmpty()) {
         BlueskyCollector localCollector(this);
         localCollector.setProxy(proxyUrlForRun);
-        if (!m_isRunning.contains(parallelKey)) m_isRunning[parallelKey] = true;
-        localCollector.collect(enrichedConfig, m_isRunning[parallelKey]);
+        if (!platformKnown(parallelKey)) setPlatformRunning(parallelKey, true);
+        localCollector.collect(enrichedConfig, *runFlag(parallelKey));
         return;
     }
     // ★ 트위터 쪽과 같은 이유 — 위 runTwitterCollection 의 설명 참고.
@@ -7823,7 +7798,7 @@ void MiyoBackend::runBlueskyCollection(const QJsonObject &config)
         if (QThread::currentThread() == thread()) makeCollector();
         else QMetaObject::invokeMethod(this, makeCollector, Qt::BlockingQueuedConnection);
     }
-    m_blueskyCollector->collect(enrichedConfig, m_isRunning["bluesky"]);
+    m_blueskyCollector->collect(enrichedConfig, *runFlag("bluesky"));
 }
 
 void MiyoBackend::runDiscordCollection(const QJsonObject &config)
@@ -7869,14 +7844,14 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
         .arg(maxCount > 0 ? QString::number(maxCount) : "무제한"), "info", "discord");
 
     HttpClient http;
-    http.setRunFlag(&m_isRunning["discord"]);  // 중지 요청 시 진행 중 HTTP 즉시 abort
+    http.setRunFlag(runFlag("discord").get());  // 중지 요청 시 진행 중 HTTP 즉시 abort
 
     // ── ALL: 전체 수집 (메시지 + 고정 메시지) ──
     if (discordType == "all") {
         log("═══ 전체 수집 모드 ═══", "success", "discord");
         QStringList subTypes = {"messages", "pins"};
         for (int i = 0; i < subTypes.size(); ++i) {
-            if (!m_isRunning.value("discord", false)) break;
+            if (!platformRunning("discord")) break;
             log(QString("▶ [%1/%2] %3 수집...").arg(i+1).arg(subTypes.size()).arg(subTypes[i]), "info", "discord");
             QJsonObject subConfig = config;
             subConfig["type"] = subTypes[i];
@@ -7957,7 +7932,7 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
 
         int totalMsgs = 0, totalMedia = 0;
         for (int ci = 0; ci < textChannelList.size(); ++ci) {
-            if (!m_isRunning.value("discord", false)) break;
+            if (!platformRunning("discord")) break;
             const QJsonObject &ch = textChannelList[ci];
             QString chId = ch["id"].toString();
             QString chName = ch["name"].toString(chId);
@@ -8086,7 +8061,7 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
             QJsonObject rateLimitBody = QJsonDocument::fromJson(resp.data).object();
             int retryAfter = qMax(static_cast<int>(rateLimitBody["retry_after"].toDouble(30.0)), 5);
             log(QString("Rate limited, waiting %1s...").arg(retryAfter), "warning", "discord");
-            for (int r = retryAfter; r > 0 && m_isRunning.value("discord", false); --r) {
+            for (int r = retryAfter; r > 0 && platformRunning("discord"); --r) {
                 updateStats(0, 0, QString("대기 %1s").arg(r), "discord");
                 QThread::sleep(1);
             }
@@ -8099,7 +8074,7 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
         } else {
             QJsonArray pins = QJsonDocument::fromJson(resp.data).array();
             for (const auto &val : pins) {
-                if (!m_isRunning.value("discord", false)) break;
+                if (!platformRunning("discord")) break;
                 QJsonObject msg = val.toObject();
                 allMessages.append(msg);
 
@@ -8168,7 +8143,7 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
     } else {
         // ── Regular Messages ──
         QString before;
-        while (m_isRunning.value("discord", false)) {
+        while (platformRunning("discord")) {
             QString url = QString("https://discord.com/api/v10/channels/%1/messages?limit=100").arg(channelId);
             if (!before.isEmpty()) url += "&before=" + before;
 
@@ -8186,7 +8161,7 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
                 int retryAfter = qMax(static_cast<int>(rateLimitBody["retry_after"].toDouble(30.0)), 5);
                 log(QString("⚠️ Rate Limit (%1回) - %2秒 대기 (適応ﾃﾞｨﾚｲ: %3秒)")
                     .arg(dcRateLimitHits).arg(retryAfter).arg(dcDelay, 0, 'f', 1), "warning", "discord");
-                for (int r = retryAfter; r > 0 && m_isRunning.value("discord", false); --r) {
+                for (int r = retryAfter; r > 0 && platformRunning("discord"); --r) {
                     updateStats(allMessages.count(), mediaCount, QString("대기 %1s").arg(r), "discord");
                     QThread::sleep(1);
                 }
@@ -8527,14 +8502,14 @@ void MiyoBackend::runDiscordCollection(const QJsonObject &config)
     }
 
     // ── Download user profiles (avatars + banners) — 유저별 → 날짜별 정리 ──
-    if (downloadProfiles && !uniqueUsers.isEmpty() && m_isRunning.value("discord", false)) {
+    if (downloadProfiles && !uniqueUsers.isEmpty() && platformRunning("discord")) {
         log(QString("사용자 프로필 다운로드... (%1명)").arg(uniqueUsers.size()), "info", "discord");
         QString profilesBaseDir = channelDir + "/profiles";
         QString dateStr = QDate::currentDate().toString("yyyy-MM-dd");
 
         int profileDone = 0;
         int profileNew = 0, profileUpdated = 0, profileSkipped = 0;
-        for (auto it = uniqueUsers.begin(); it != uniqueUsers.end() && m_isRunning.value("discord", false); ++it) {
+        for (auto it = uniqueUsers.begin(); it != uniqueUsers.end() && platformRunning("discord"); ++it) {
             QString dcUserId = it.key();
             QJsonObject author = it.value();
             QString username = author["username"].toString();
@@ -8711,7 +8686,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     log("Connecting to Instagram...", "info", "instagram");
 
     HttpClient http;
-    http.setRunFlag(&m_isRunning["instagram"]);  // 중지 시 즉시 abort
+    http.setRunFlag(runFlag("instagram").get());  // 중지 시 즉시 abort
     QMap<QString, QString> baseHeaders;
     baseHeaders["User-Agent"] = Common::browserUserAgent();
     baseHeaders["Cookie"] = "sessionid=" + sessionId;
@@ -8904,7 +8879,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     bool hasMore = true;
 
     // Use API v1 feed endpoint (more reliable than GraphQL query_hash)
-    while (hasMore && m_isRunning.value("instagram", false)) {
+    while (hasMore && platformRunning("instagram")) {
         QString feedUrl = QString("https://www.instagram.com/api/v1/feed/user/%1/?count=12").arg(userId);
         if (!nextMaxId.isEmpty()) feedUrl += "&max_id=" + nextMaxId;
 
@@ -8917,7 +8892,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
                 int waitSecs = qMin(60 + (igRateLimitHits - 1) * 30, 180);
                 log(QString("⚠️ Rate Limit (%1回) - %2秒 대기 (適応ﾃﾞｨﾚｲ: %3秒)")
                     .arg(igRateLimitHits).arg(waitSecs).arg(igDelay, 0, 'f', 1), "warning", "instagram");
-                for (int r = waitSecs; r > 0 && m_isRunning.value("instagram", false); --r) {
+                for (int r = waitSecs; r > 0 && platformRunning("instagram"); --r) {
                     updateStats(allMedia.count(), mediaDownloaded, QString("대기 %1s").arg(r), "instagram");
                     QThread::sleep(1);
                 }
@@ -8969,7 +8944,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
         if (items.isEmpty()) break;
 
         for (const auto &itemVal : items) {
-            if (!m_isRunning.value("instagram", false)) break;
+            if (!platformRunning("instagram")) break;
             QJsonObject node = itemVal.toObject();
 
             int mediaType = node["media_type"].toInt();
@@ -9277,13 +9252,13 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     }
 
     // ── Reels 수집 ──
-    if (effectiveConfig["reels"].toBool(false) && m_isRunning.value("instagram", false)) {
+    if (effectiveConfig["reels"].toBool(false) && platformRunning("instagram")) {
         log("릴스 수집 중...", "info", "instagram");
         QString reelsUrl = QString("https://www.instagram.com/api/v1/clips/user/?target_user_id=%1&page_size=12").arg(userId);
         int reelsCount = 0;
         QString reelsMaxId;
 
-        while (m_isRunning.value("instagram", false)) {
+        while (platformRunning("instagram")) {
             QString reqUrl = reelsUrl;
             if (!reelsMaxId.isEmpty()) reqUrl += "&max_id=" + reelsMaxId;
 
@@ -9340,7 +9315,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     }
 
     // ── Stories 수집 ──
-    if (effectiveConfig["stories"].toBool(false) && m_isRunning.value("instagram", false)) {
+    if (effectiveConfig["stories"].toBool(false) && platformRunning("instagram")) {
         log("스토리 수집 중...", "info", "instagram");
         QString storiesUrl = QString("https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=%1").arg(userId);
         HttpResponse storiesResp = http.get(storiesUrl, baseHeaders);
@@ -9393,7 +9368,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     }
 
     // ── Highlights 수집 ──
-    if (effectiveConfig["highlights"].toBool(false) && m_isRunning.value("instagram", false)) {
+    if (effectiveConfig["highlights"].toBool(false) && platformRunning("instagram")) {
         log("하이라이트 수집 중...", "info", "instagram");
 
         // Step 1: Get highlight tray (list of highlight reels)
@@ -9405,7 +9380,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
             QJsonArray tray = hlResp.json()["tray"].toArray();
             log(QString("하이라이트: %1개 발견").arg(tray.size()), "info", "instagram");
 
-            for (int hi = 0; hi < tray.size() && m_isRunning.value("instagram", false); ++hi) {
+            for (int hi = 0; hi < tray.size() && platformRunning("instagram"); ++hi) {
                 QJsonObject highlight = tray[hi].toObject();
                 QString highlightId = highlight["id"].toString();
                 QString highlightTitle = highlight["title"].toString();
@@ -9431,7 +9406,7 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
 
                     QJsonArray hlItems = reelsMedia["items"].toArray();
                     for (const auto &hlItem : hlItems) {
-                        if (!m_isRunning.value("instagram", false)) break;
+                        if (!platformRunning("instagram")) break;
                         QJsonObject story = hlItem.toObject();
                         QString storyUrl;
                         QString ext;
@@ -10018,7 +9993,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 #endif
 
     // Monitor progress from status file
-    while (m_isRunning.value(platform, false)) {
+    while (platformRunning(platform)) {
         QThread::sleep(1);
 
         QFile sf(statusFile);
@@ -10049,7 +10024,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                 const QString capturesDir = FileHelper::typeFolder(ytBaseDir, "captures");
                 int capOk = 0, capFail = 0;
                 for (const QString &u : urls) {
-                    if (!m_isRunning.value(platform, false)) break;   // 사용자가 중지를 눌렀다
+                    if (!platformRunning(platform)) break;   // 사용자가 중지를 눌렀다
                     // 파일 이름은 영상 ID 로 — 제목은 나중에 바뀌지만 ID 는 안 바뀐다.
                     QString vid;
                     {
@@ -10288,7 +10263,7 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
         log("═══ 전체 수집 모드 ═══", "success", "pixiv");
         QStringList subTypes = {"user", "bookmarks"};
         for (int i = 0; i < subTypes.size(); ++i) {
-            if (!m_isRunning.value("pixiv", false)) break;
+            if (!platformRunning("pixiv")) break;
             log(QString("▶ [%1/%2] %3 수집...").arg(i+1).arg(subTypes.size()).arg(subTypes[i]), "info", "pixiv");
             QJsonObject subConfig = config;
             subConfig["type"] = subTypes[i];
@@ -10303,7 +10278,7 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
     HttpClient http;
     http.setTimeout(30000);
     http.setDownloadTimeout(120000);
-    http.setRunFlag(&m_isRunning["pixiv"]);  // 중지 시 즉시 abort
+    http.setRunFlag(runFlag("pixiv").get());  // 중지 시 즉시 abort
 
     QMap<QString, QString> apiHeaders;
     apiHeaders["User-Agent"] = Common::browserUserAgent();
@@ -10469,7 +10444,7 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
 
     // Download a single illustration (single, manga, ugoira)
     auto downloadIllust = [&](const QString &iid) -> bool {
-        if (!m_isRunning.value("pixiv", false)) return false;
+        if (!platformRunning("pixiv")) return false;
 
         // Get illust metadata
         QString metaUrl = QString("https://www.pixiv.net/ajax/illust/%1").arg(iid);
@@ -10732,7 +10707,7 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
             int total = pages.size();
 
             for (int i = 0; i < total; i++) {
-                if (!m_isRunning.value("pixiv", false)) return false;
+                if (!platformRunning("pixiv")) return false;
 
                 QJsonObject page = pages[i].toObject();
                 QJsonObject urls = page["urls"].toObject();
@@ -10809,7 +10784,7 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
 
     // ── 소설 다운로드 람다 (표지 + 개별 폴더 + 삽입 이미지) ──
     auto downloadNovel = [&](const QString &nid) -> bool {
-        if (!m_isRunning.value("pixiv", false)) return false;
+        if (!platformRunning("pixiv")) return false;
 
         QString novelUrl = QString("https://www.pixiv.net/ajax/novel/%1").arg(nid);
         HttpResponse nResp = http.get(novelUrl, apiHeaders);
@@ -11144,7 +11119,7 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
             int limit = 48;
             bool hasMore = !novelsOnly;
 
-            while (hasMore && m_isRunning.value("pixiv", false)) {
+            while (hasMore && platformRunning("pixiv")) {
                 QString bmUrl = QString("https://www.pixiv.net/ajax/user/%1/illusts/bookmarks?tag=&offset=%2&limit=%3&rest=show")
                     .arg(userId).arg(offset).arg(limit);
                 HttpResponse bmResp = http.get(bmUrl, apiHeaders);
@@ -11174,14 +11149,14 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
             }
 
             // ── 북마크 소설도 수집 ──
-            if (m_isRunning.value("pixiv", false)) {
+            if (platformRunning("pixiv")) {
                 log("북마크 소설 가져오는 중...", "info", "pixiv");
                 int nOffset = 0;
                 int nLimit = 48;
                 bool nHasMore = true;
                 QList<QString> bmNovelIds;
 
-                while (nHasMore && m_isRunning.value("pixiv", false)) {
+                while (nHasMore && platformRunning("pixiv")) {
                     QString bnUrl = QString("https://www.pixiv.net/ajax/user/%1/novels/bookmarks?tag=&offset=%2&limit=%3&rest=show")
                         .arg(userId).arg(nOffset).arg(nLimit);
                     HttpResponse bnResp = http.get(bnUrl, apiHeaders);
@@ -11214,7 +11189,7 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
                 if (!bmNovelIds.isEmpty()) {
                     log(QString("북마크 소설 %1개 다운로드 시작...").arg(bmNovelIds.size()), "info", "pixiv");
                     for (int ni = 0; ni < bmNovelIds.size(); ni++) {
-                        if (!m_isRunning.value("pixiv", false)) break;
+                        if (!platformRunning("pixiv")) break;
                         if (downloadNovel(bmNovelIds[ni])) totalDownloaded++;
                         updateStats(totalDownloaded, illustIds.size() + ni + 1,
                             QString("북마크 소설 %1/%2").arg(ni + 1).arg(bmNovelIds.size()), "pixiv");
@@ -11267,7 +11242,7 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
             if (!novelIds.isEmpty()) {
                 log(QString("소설 %1개 다운로드 시작...").arg(novelIds.size()), "info", "pixiv");
                 for (int ni = 0; ni < novelIds.size(); ni++) {
-                    if (!m_isRunning.value("pixiv", false)) break;
+                    if (!platformRunning("pixiv")) break;
                     if (downloadNovel(novelIds[ni])) totalDownloaded++;
                     updateStats(totalDownloaded, illustIds.size() + ni + 1,
                         QString("소설 %1/%2").arg(ni + 1).arg(novelIds.size()), "pixiv");
@@ -11286,7 +11261,7 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
             }
 
             for (int i = 0; i < illustIds.size(); i++) {
-                if (!m_isRunning.value("pixiv", false)) {
+                if (!platformRunning("pixiv")) {
                     log("사용자에 의해 중지됨.", "warning", "pixiv");
                     break;
                 }
@@ -15790,7 +15765,7 @@ void MiyoBackend::runFanboxCollection(const QJsonObject &config)
     DiskJsonBuffer allPosts(bufTmp, "fanbox");
 
     HttpClient http;
-    http.setRunFlag(&m_isRunning["fanbox"]);
+    http.setRunFlag(runFlag("fanbox").get());
     QMap<QString, QString> headers;
     headers["User-Agent"] = Common::browserUserAgent();
     headers["Cookie"] = cookie;
@@ -15804,7 +15779,7 @@ void MiyoBackend::runFanboxCollection(const QJsonObject &config)
     int mediaCount = 0;
     int page = 0;
 
-    while (!nextUrl.isEmpty() && m_isRunning.value("fanbox", false)) {
+    while (!nextUrl.isEmpty() && platformRunning("fanbox")) {
         HttpResponse resp = http.get(nextUrl, headers);
         if (!resp.isOk()) {
             if (resp.statusCode == 401 || resp.statusCode == 403) {
@@ -15821,7 +15796,7 @@ void MiyoBackend::runFanboxCollection(const QJsonObject &config)
         log(QString("페이지 %1 — 포스트 %2개").arg(page).arg(items.size()), "info", "fanbox");
 
         for (const auto &v : items) {
-            if (!m_isRunning.value("fanbox", false)) break;
+            if (!platformRunning("fanbox")) break;
             QJsonObject post = v.toObject();
             QString postId = post["id"].toString();
             QString title = post["title"].toString();
@@ -16298,7 +16273,7 @@ void MiyoBackend::runTumblrCollection(const QJsonObject &config)
     HttpClient http;
     http.setTimeout(30000);
     http.setDownloadTimeout(120000);
-    http.setRunFlag(&m_isRunning["tumblr"]);  // 중지 시 즉시 abort
+    http.setRunFlag(runFlag("tumblr").get());  // 중지 시 즉시 abort
 
     // ★ 프록시(VPN) — 트위터·블루스카이와 같은 방식. 계정(=API 키)에 붙은 출구로 나간다.
     {
@@ -16666,7 +16641,7 @@ void MiyoBackend::runSpinSpinCollection(const QJsonObject &config)
 
     HttpClient http;
     http.setTimeout(30000);
-    http.setRunFlag(&m_isRunning["spinspin"]);  // 중지 시 즉시 abort
+    http.setRunFlag(runFlag("spinspin").get());  // 중지 시 즉시 abort
 
     const QString API_BASE = "https://web-api.spin-spin.com";
 
@@ -16755,7 +16730,7 @@ void MiyoBackend::runSpinSpinCollection(const QJsonObject &config)
     QJsonArray allLetters;
     int page = 0;
     const int MAX_PAGES = 500;
-    while (m_isRunning.value("spinspin", false) && page < MAX_PAGES) {
+    while (platformRunning("spinspin") && page < MAX_PAGES) {
         QString listUrl = QString("%1/api/requestbox/getRepliedLetters?boxId=%2&page=%3")
                               .arg(API_BASE, boxId).arg(page);
         HttpResponse listResp = http.get(listUrl, headers);
@@ -16771,7 +16746,7 @@ void MiyoBackend::runSpinSpinCollection(const QJsonObject &config)
                     continue;
                 }
                 log("Rate Limit — 30초 대기...", "warning", "spinspin");
-                for (int w = 30; w > 0 && m_isRunning.value("spinspin", false); --w) {
+                for (int w = 30; w > 0 && platformRunning("spinspin"); --w) {
                     updateStats(allLetters.size(), mediaCount, QString("대기 %1s").arg(w), "spinspin");
                     QThread::sleep(1);
                 }
@@ -16817,7 +16792,7 @@ void MiyoBackend::runSpinSpinCollection(const QJsonObject &config)
 
     int letterIdx = 0;
     for (const auto &lv : allLetters) {
-        if (!m_isRunning.value("spinspin", false)) break;
+        if (!platformRunning("spinspin")) break;
         letterIdx++;
 
         QJsonObject letter = lv.toObject();
@@ -17413,7 +17388,7 @@ void MiyoBackend::runAskedCollection(const QJsonObject &config)
 
     HttpClient http;
     http.setTimeout(30000);
-    http.setRunFlag(&m_isRunning["asked"]);  // 중지 시 즉시 abort
+    http.setRunFlag(runFlag("asked").get());  // 중지 시 즉시 abort
 
     QMap<QString, QString> headers;
     headers["User-Agent"] = Common::browserUserAgent();
@@ -17978,7 +17953,7 @@ void MiyoBackend::runCrawlCollection(const QJsonObject &config)
         QThread *thread = QThread::create([this, urlList, capturesDir, loginCheckJs, crawlCookies, config]() {
             int saved = 0;
             for (int i = 0; i < urlList.size(); ++i) {
-                if (!m_isRunning.value("crawl", true)) break;
+                if (!platformRunning("crawl", true)) break;
                 QString url = urlList[i];
                 QString filename = QString("page_%1_%2").arg(i+1, 3, 10, QChar('0'))
                                        .arg(QCryptographicHash::hash(url.toUtf8(), QCryptographicHash::Md5).toHex().left(8));
