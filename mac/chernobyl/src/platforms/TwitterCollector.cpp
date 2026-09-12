@@ -2557,19 +2557,28 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         // ★ 앞선 판이 남긴 고아 임시 파일을 치운다.
         //   소멸자가 지우게 고쳤지만, 전원이 나가거나 앱이 강제 종료되면 소멸자가
         //   돌지 않는다. 1년을 무인으로 돌 앱에서는 그쪽이 오히려 흔하다.
-        //   한 시간 넘게 손대지 않은 것만 지운다 — 지금 다른 수집이 쓰고 있는
-        //   파일을 건드리지 않기 위해서다(같은 대상을 병렬로 돌리는 경우).
+        //
+        //   ★★ 지우는 것은 '빈 파일' 뿐이다. 내용이 한 줄이라도 있으면 손대지 않는다.
+        //     보통은 그 내용이 프로필 엑셀에도 들어가 있어 사본에 불과하다
+        //     (실측: 남아 있던 22개가 전부 엑셀에도 있었다). 하지만 엑셀을 쓰기 전에
+        //     끊긴 판이라면 그 파일에만 있는 자료가 된다. 그 경우를 파일 하나 크기로
+        //     구별할 수 없으므로, 구별이 안 되면 지우지 않는다.
+        //     빈 파일은 어느 경우에도 잃을 것이 없다.
+        //
+        //   한 시간 넘게 손대지 않은 것만 본다 — 지금 다른 수집이 막 만든 파일도
+        //   아직 비어 있을 수 있어서다(같은 대상을 병렬로 돌리는 경우).
         {
             const QDir ptd(profTempDir);
             const QDateTime cutoff = QDateTime::currentDateTime().addSecs(-3600);
-            int swept = 0;
+            int swept = 0, kept = 0;
             for (const QFileInfo &fi : ptd.entryInfoList({"tw_profiles_*.jsonl"}, QDir::Files)) {
                 if (fi.lastModified() > cutoff) continue;
+                if (fi.size() > 0) { ++kept; continue; }        // 내용이 있으면 그대로 둔다
                 if (QFile::remove(fi.absoluteFilePath())) ++swept;
             }
-            if (swept > 0)
-                m_backend->log(QString("이전에 남은 임시 파일 %1개를 치웠습니다").arg(swept),
-                               "info", "twitter");
+            if (swept > 0 || kept > 0)
+                m_backend->log(QString("이전에 남은 임시 파일 — 빈 것 %1개 치움, 내용 있는 것 %2개 그대로 둠")
+                                   .arg(swept).arg(kept), "info", "twitter");
         }
 
         m_profileBuffer = new DiskJsonBuffer(profTempDir, "tw_profiles");
