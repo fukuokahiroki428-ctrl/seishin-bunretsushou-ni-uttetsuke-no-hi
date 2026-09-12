@@ -20,6 +20,7 @@
 
 class QPlainTextEdit;
 class QLabel;
+class QPushButton;
 
 class TerminalWindow : public QWidget
 {
@@ -31,8 +32,17 @@ public:
     void appendLine(const QString &line);
     void markDone();
 
+signals:
+    // ★ 이 창에서 '중지' 를 눌렀다. 맥의 STOP sentinel 워치독과 같은 목적이다 —
+    //   수집을 보고 있는 자리에서 바로 멈출 수 있어야 한다.
+    //   ※ 창을 '닫는' 것은 중지가 아니다. 맥에서 터미널을 닫는 것은 파이프라인을
+    //     끊는 것이지만, 여기서 닫기는 로그를 접는 가벼운 동작이다. 로그만 치우려던
+    //     사용자가 수집을 잃으면 안 된다.
+    void stopRequested(const QString &trackKey);
+
 private:
     QString         m_trackKey;
     QPlainTextEdit *m_view  = nullptr;
     QLabel         *m_state = nullptr;
+    QPushButton    *m_stop  = nullptr;
 };

@@ -4,6 +4,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPushButton>
 #include <QFont>
 #include <QFontDatabase>
 #include <QScrollBar>
@@ -36,6 +37,26 @@ TerminalWindow::TerminalWindow(const QString &trackKey, const QString &savePath,
     m_state->setStyleSheet("color:#8B7CF7;font-size:11px;font-weight:600;");
     hl->addWidget(title, 1);
     hl->addWidget(m_state, 0);
+
+    // ── 중지 버튼 ──
+    //   맥에는 터미널 창을 닫으면 수집이 멈추는 워치독이 있다. 윈도우는 외부 터미널을
+    //   쓰지 않으므로(이 파일 머리 주석 참고) 그 장치를 옮길 수 없다. 목적만 옮긴다 —
+    //   보고 있는 자리에서 바로 멈출 수 있게. 닫기는 그냥 접는 것으로 둔다.
+    m_stop = new QPushButton("⏹ 중지", head);
+    m_stop->setCursor(Qt::PointingHandCursor);
+    m_stop->setStyleSheet(
+        "QPushButton{background:#2a2e37;color:#e6e8ee;border:1px solid #3a3f4a;"
+        "border-radius:4px;padding:2px 10px;font-size:11px;}"
+        "QPushButton:hover{background:#3a3f4a;}"
+        "QPushButton:disabled{color:#666;border-color:#2a2e37;}");
+    connect(m_stop, &QPushButton::clicked, this, [this]() {
+        m_stop->setEnabled(false);
+        m_state->setText("중지 요청됨");
+        m_state->setStyleSheet("color:#d29922;font-size:11px;font-weight:600;");
+        emit stopRequested(m_trackKey);
+    });
+    hl->addSpacing(8);
+    hl->addWidget(m_stop, 0);
     lay->addWidget(head, 0);
 
     // ── 본문 ──
@@ -80,6 +101,7 @@ void TerminalWindow::appendLine(const QString &line)
 
 void TerminalWindow::markDone()
 {
+    if (m_stop) m_stop->setEnabled(false);   // 끝났으면 누를 것이 없다
     m_state->setText("완료");
     m_state->setStyleSheet("color:#3fb950;font-size:11px;font-weight:600;");
     setWindowTitle(windowTitle() + "  ✔");

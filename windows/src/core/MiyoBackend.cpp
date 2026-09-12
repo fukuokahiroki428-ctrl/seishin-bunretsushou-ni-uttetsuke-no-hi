@@ -3636,7 +3636,18 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
     // 창은 메인 스레드에서만 만든다 — 수집은 워커 스레드에서 불러온다.
     QMetaObject::invokeMethod(this, [this, platform, savePath]() {
         TerminalWindow *&w = m_terminalWindows[platform];
-        if (!w) w = new TerminalWindow(platform, savePath);
+        if (!w) {
+            w = new TerminalWindow(platform, savePath);
+            // 창에서 중지를 누르면 그 트랙만 멈춘다 — 맥의 STOP sentinel 과 같은 목적.
+            connect(w, &TerminalWindow::stopRequested, this, [this](const QString &key) {
+                log(QString("🛑 모니터 창에서 중지 → [%1]").arg(key), "warning", key);
+                // ★ 内閣会 창은 수집 트랙이 아니라 감시 자체다. stopCollection("naikakukai")
+                //   는 있지도 않은 플랫폼의 깃발만 내리고 아무것도 멈추지 않는다.
+                //   감시를 멈춰야 진행 중인 폴링까지 함께 멈춘다.
+                if (key == "naikakukai") stopNaikakukai();
+                else                     stopCollection(key);
+            }, Qt::QueuedConnection);
+        }
         w->show();
         w->raise();
     }, Qt::QueuedConnection);
