@@ -786,7 +786,8 @@ async def main():
                     ct0 = new_ct0
                     client.set_cookies({"auth_token": auth_token, "ct0": ct0})
                     deduplicate_cookies(client)
-                    print(json.dumps({"info": f"Cookies refreshed! Retrying... (token={auth_token[:10]}...)"}), flush=True)
+                    # 토큰 앞자리도 찍지 않는다 — 이 줄은 앱 로그로 그대로 흘러간다.
+                    print(json.dumps({"info": "Cookies refreshed! Retrying..."}), flush=True)
                     # Retry the command with fresh cookies
                     result = await handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatten_params)
                 else:

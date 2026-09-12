@@ -989,8 +989,15 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
     // 1) rclone obscure 로 비번 obfuscate
     QString obscuredPass;
     {
+        // ★ 비밀번호를 명령줄로 넘기지 않는다 — 같은 기계의 아무 프로세스나 읽는다
+        //   (윈도우 WMI Win32_Process, 유닉스 ps). rclone 은 "-" 를 주면 STDIN 첫 줄을
+        //   비밀번호로 쓴다.
         QProcess obs;
-        obs.start(rclonePath, {"obscure", pass});
+        obs.start(rclonePath, {"obscure", "-"});
+        if (obs.waitForStarted(5000)) {
+            obs.write(pass.toUtf8() + "\n");
+            obs.closeWriteChannel();
+        }
         obs.waitForFinished(5000);
         obscuredPass = QString::fromUtf8(obs.readAllStandardOutput()).trimmed();
     }
@@ -1178,7 +1185,12 @@ void HanishikiBackend::startRemoteBackup(const QString &configJson)
             runJs("if(window.setRemoteBackupBusy)setRemoteBackupBusy(false)");
             return;
         }
-        QProcess obs; obs.start(rclonePath, {"obscure", pass}); obs.waitForFinished(5000);
+        // ★ 비밀번호를 명령줄로 넘기지 않는다 — 같은 기계의 아무 프로세스나 읽는다
+        //   (윈도우 WMI Win32_Process, 유닉스 ps). rclone 은 "-" 를 주면 STDIN 첫 줄을
+        //   비밀번호로 쓴다.
+        QProcess obs; obs.start(rclonePath, {"obscure", "-"});
+        if (obs.waitForStarted(5000)) { obs.write(pass.toUtf8() + "\n"); obs.closeWriteChannel(); }
+        obs.waitForFinished(5000);
         obscuredPass = QString::fromUtf8(obs.readAllStandardOutput()).trimmed();
         if (obscuredPass.isEmpty()) {
             log("❌ rclone obscure 실패", "error", "settings");
@@ -4934,7 +4946,10 @@ void HanishikiBackend::testSftpConnection(const QString &url, const QString &use
     QThread *t = QThread::create([this, rclone, u, user, pass]() {
         QString obscured;
         if (!pass.isEmpty()) {
-            QProcess obs; obs.start(rclone, {"obscure", pass}); obs.waitForFinished(5000);
+            // ★ 비밀번호를 명령줄로 넘기지 않는다 — 아무 프로세스나 읽는다. STDIN 으로.
+            QProcess obs; obs.start(rclone, {"obscure", "-"});
+            if (obs.waitForStarted(5000)) { obs.write(pass.toUtf8() + "\n"); obs.closeWriteChannel(); }
+            obs.waitForFinished(5000);
             obscured = QString::fromUtf8(obs.readAllStandardOutput()).trimmed();
         }
         const QString conf = QDir::tempPath() + "/" + QStringLiteral(APP_NAME_ASCII).toLower() + "_sftp_test.conf";
