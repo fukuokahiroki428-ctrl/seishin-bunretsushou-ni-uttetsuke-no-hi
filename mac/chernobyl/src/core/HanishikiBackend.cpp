@@ -12031,9 +12031,12 @@ void HanishikiBackend::startTrad(const QString &configJson)
 #ifdef Q_OS_WIN
                 // Windows: mklink /H — cmd 내장 (hard link, NTFS 필요)
                 QProcess lnProc;
+                // ★ mklink 는 260자를 못 넘는다. 다행히 \\?\ 접두어는 받는다(실측).
+                //   실패해도 아래에서 복사로 물러나지만, 10GB 짜리를 괜히 한 벌 더
+                //   쓰게 된다 — 링크로 끝낼 수 있으면 그게 맞다.
                 lnProc.start("cmd.exe", {"/c", "mklink", "/H",
-                    QDir::toNativeSeparators(zipAltPath),
-                    QDir::toNativeSeparators(outputPath)});
+                    Common::longPathArg(QDir::toNativeSeparators(zipAltPath)),
+                    Common::longPathArg(QDir::toNativeSeparators(outputPath))});
                 if (lnProc.waitForFinished(5000) && lnProc.exitCode() == 0) {
                     linkOk = true;
                     log(QString(".zip 복사본 (hard link, NTFS): %1 — 디스크 추가 0").arg(QFileInfo(zipAltPath).fileName()),
