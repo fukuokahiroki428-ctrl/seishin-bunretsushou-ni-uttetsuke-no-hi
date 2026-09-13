@@ -3148,7 +3148,9 @@ void HanishikiBackend::naikakukaiTick()
     // 여기서 보충해야 실제로 다운로드가 동작한다.
     QJsonObject runConfig = watch;
     runConfig["platform"] = platform;
-    if (!runConfig.contains("count")) runConfig["count"] = 10;
+    // 트위터는 예전엔 최대 수집 수를 읽지 않아 감시가 사실상 '전부' 로 돌았다 — 그대로 둔다(0 = 전체).
+    //   이제 그 값을 지키므로 10 을 넣으면 새 글이 10개를 넘는 날 나머지를 다음 폴링으로 미룬다.
+    if (!runConfig.contains("count")) runConfig["count"] = (platform == "twitter") ? 0 : 10;
     if (!runConfig.contains("type"))  runConfig["type"] = "tweets";  // 기본: 유저 타임라인
     if (!runConfig.contains("mode"))  runConfig["mode"] = "tweets";
 
