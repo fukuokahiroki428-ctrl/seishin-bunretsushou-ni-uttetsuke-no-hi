@@ -9495,7 +9495,7 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
         baseArgs << "--cookies-from-browser" << "chrome";
 
     // ★ 핸드오프 F/G: 이어받기 + 봇차단 수렴 (전 플랫폼) — 완료 ID 기록/스킵, .part 이어받기, 간헐 오류 무시.
-    baseArgs << "--download-archive" << (ytBaseDir + "/.yt_archive.txt");
+    baseArgs << "--download-archive" << Common::longPathArg(ytBaseDir + "/.yt_archive.txt");
     baseArgs << "--ignore-errors";
     baseArgs << "--no-overwrites" << "--continue";
 
@@ -12435,18 +12435,24 @@ void HanishikiBackend::extractTrad(const QString &configJson)
                     // Has EOCD but extraction failed → offsets may need fixing
                     // Try python3 with offset-aware extraction
                     log("EOCD 발견, 오프셋 복원 시도 중...", "info", "trad");
-                    QString pyScript = QString(
+                    // ★ 경로를 파이썬 소스에 끼워 넣지 않는다. 윈도우 경로의 역슬래시가
+                    //   파이썬 이스케이프로 해석되고('\1' 은 8진 이스케이프다), 따옴표가
+                    //   든 이름은 구문 자체를 깨뜨린다. argv 로 넘기면 둘 다 사라지고,
+                    //   덤으로 긴 경로 접두어를 붙일 수 있다(접두어는 역슬래시투성이라
+                    //   끼워 넣는 방식과는 애초에 같이 못 쓴다).
+                    QString pyScript = QStringLiteral(
                         "import zipfile, sys\n"
                         "try:\n"
-                        "    with zipfile.ZipFile('%1') as z:\n"
-                        "        z.extractall('%2')\n"
+                        "    with zipfile.ZipFile(sys.argv[1]) as z:\n"
+                        "        z.extractall(sys.argv[2])\n"
                         "        print(len(z.namelist()))\n"
                         "except Exception as e:\n"
                         "    print(f'ERROR: {e}', file=sys.stderr)\n"
-                        "    sys.exit(1)\n"
-                    ).arg(pngPath, outputDir);
+                        "    sys.exit(1)\n");
                     QProcess py2;
-                    py2.start(pyCmd, {"-c", pyScript});
+                    py2.start(pyCmd, {"-c", pyScript,
+                                      Common::longPathArg(pngPath),
+                                      Common::longPathArg(outputDir)});
                     if (py2.waitForFinished(-1) && py2.exitCode() == 0) {
                         QString out = QString::fromUtf8(py2.readAllStandardOutput()).trimmed();
                         int cnt2 = out.toInt();

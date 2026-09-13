@@ -3684,7 +3684,7 @@ void MiyoBackend::writeTerminalLog(const QString &message, const QString &platfo
 
     // ★ 앱 안 로그 창으로 바로 보낸다 — 파일을 폴링하지 않으므로 지연이 없다.
     //   ANSI 색코드는 여기서 뗀다. 콘솔이 아니면 해석되지 않고 "[0m" 같은 날것이 보인다.
-    static const QRegularExpression ansiEsc(QStringLiteral("\x1B\[[0-9;]*m"));
+    static const QRegularExpression ansiEsc(QStringLiteral("\x1B\\[[0-9;]*m"));
     QString clean = message;
     clean.remove(ansiEsc);
     // ★ 감시(内閣会)가 돌린 수집이면 그 기능 창에도 같은 줄을 보낸다.
@@ -9697,7 +9697,9 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     // ★ 대량 다운로드 이어받기 — 봇 차단으로 일부가 실패해도 재실행 시 완료분은 건너뛰고
     //   실패분만 재시도(완료 video ID 를 .yt_archive.txt 에 기록). 차단이 간헐적이라
     //   같은 다운로드를 몇 번 다시 돌리면 100% 수렴한다. 무로그인 봇차단 대응의 핵심.
-    baseArgs << "--download-archive" << QDir::toNativeSeparators(ytBaseDir + "/.yt_archive.txt");
+    // yt-dlp(파이썬)가 직접 여는 파일이다 — 260자를 넘으면 못 연다.
+    baseArgs << "--download-archive"
+             << Common::longPathArg(QDir::toNativeSeparators(ytBaseDir + "/.yt_archive.txt"));
     baseArgs << "--ignore-errors";   // 한 영상 실패가 전체 재생목록/채널 배치를 멈추지 않게
     // ★ 이어서 받기 보강 — 아카이브(ID 기록)만으론 그 전에 이미 받아둔 영상(기록 없음)을 못 거른다.
     //   --no-overwrites : 최종 파일이 이미 있으면 건너뜀(파일 존재 기준 — 기존 다운로드분도 스킵.
@@ -10600,9 +10602,22 @@ void MiyoBackend::runPixivCollection(const QJsonObject &config)
                 // ★ Windows 에는 유닉스 unzip 바이너리가 없다 → PowerShell Expand-Archive 사용.
                 //   예전엔 그대로 호출해 우고이라(움직이는 그림) GIF 변환이 항상 실패했다.
 #ifdef Q_OS_WIN
-                unzip.start("powershell", {"-NoProfile", "-NonInteractive", "-Command",
-                    QString("Expand-Archive -LiteralPath '%1' -DestinationPath '%2' -Force")
-                        .arg(QString(zipPath).replace("'", "''"), QString(tmpDir).replace("'", "''"))});
+                // ★ PowerShell 5.1 의 Expand-Archive 는 260자를 못 넘는다. 게다가 \\?\ 접두어도
+                //   안 받는다 — 내부 Join-Path 가 "drive 가 null" 로 죽는다(실측). 즉 이 자리만은
+                //   접두어로 풀 수 없다. 번들 파이썬의 zipfile 로 푼다(이미 다른 세 자리에서 쓴다).
+                //   파이썬이 없는 경우에만 예전 방식으로 물러난다 — 얕은 경로에서는 그대로 동작한다.
+                const QString pyUnzip = Common::bundledPythonPath();
+                if (!pyUnzip.isEmpty() && QFile::exists(pyUnzip)) {
+                    unzip.start(pyUnzip, {"-c",
+                        "import zipfile, sys\n"
+                        "with zipfile.ZipFile(sys.argv[1]) as z:\n"
+                        "    z.extractall(sys.argv[2])\n",
+                        Common::longPathArg(zipPath), Common::longPathArg(tmpDir)});
+                } else {
+                    unzip.start("powershell", {"-NoProfile", "-NonInteractive", "-Command",
+                        QString("Expand-Archive -LiteralPath '%1' -DestinationPath '%2' -Force")
+                            .arg(QString(zipPath).replace("'", "''"), QString(tmpDir).replace("'", "''"))});
+                }
 #else
                 unzip.start("unzip", {"-o", "-q", zipPath, "-d", tmpDir});
 #endif
@@ -12775,18 +12790,24 @@ void MiyoBackend::extractTrad(const QString &configJson)
                     // Has EOCD but extraction failed → offsets may need fixing
                     // Try python3 with offset-aware extraction
                     log("EOCD 발견, 오프셋 복원 시도 중...", "info", "trad");
-                    QString pyScript = QString(
+                    // ★ 경로를 파이썬 소스에 끼워 넣지 않는다. 윈도우 경로의 역슬래시가
+                    //   파이썬 이스케이프로 해석되고('\1' 은 8진 이스케이프다), 따옴표가
+                    //   든 이름은 구문 자체를 깨뜨린다. argv 로 넘기면 둘 다 사라지고,
+                    //   덤으로 긴 경로 접두어를 붙일 수 있다(접두어는 역슬래시투성이라
+                    //   끼워 넣는 방식과는 애초에 같이 못 쓴다).
+                    QString pyScript = QStringLiteral(
                         "import zipfile, sys\n"
                         "try:\n"
-                        "    with zipfile.ZipFile('%1') as z:\n"
-                        "        z.extractall('%2')\n"
+                        "    with zipfile.ZipFile(sys.argv[1]) as z:\n"
+                        "        z.extractall(sys.argv[2])\n"
                         "        print(len(z.namelist()))\n"
                         "except Exception as e:\n"
                         "    print(f'ERROR: {e}', file=sys.stderr)\n"
-                        "    sys.exit(1)\n"
-                    ).arg(pngPath, outputDir);
+                        "    sys.exit(1)\n");
                     QProcess py2;
-                    py2.start(pyCmd, {"-c", pyScript});
+                    py2.start(pyCmd, {"-c", pyScript,
+                                      Common::longPathArg(pngPath),
+                                      Common::longPathArg(outputDir)});
                     if (py2.waitForFinished(-1) && py2.exitCode() == 0) {
                         QString out = QString::fromUtf8(py2.readAllStandardOutput()).trimmed();
                         int cnt2 = out.toInt();
