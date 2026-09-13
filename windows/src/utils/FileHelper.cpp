@@ -119,6 +119,29 @@ QString reuseExistingName(const QString &parentDir, const QString &name)
     return name;
 }
 
+// 어느 파일시스템에서도 같은 이름이 되게 — 위 헤더의 설명 참고.
+QString portableName(const QString &name, int maxBytes)
+{
+    QString out = name.normalized(QString::NormalizationForm_C);
+
+    // 끝의 점·공백. 윈도우가 조용히 떼어내므로 우리가 먼저 뗀다.
+    while (!out.isEmpty() && (out.endsWith(QLatin1Char('.')) || out.endsWith(QLatin1Char(' '))))
+        out.chop(1);
+
+    // 예약어. 확장자가 붙어도(CON.jpg) 막히므로 점 앞까지 본다.
+    static const QRegularExpression kReserved(
+        QStringLiteral("^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\\.|$)"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (kReserved.match(out).hasMatch()) out.prepend(QLatin1Char('_'));
+
+    // 바이트 상한. 글자 중간(서로게이트 쌍)에서 자르지 않는다.
+    while (out.toUtf8().size() > maxBytes && !out.isEmpty()) {
+        out.chop(1);
+        if (!out.isEmpty() && out.back().isHighSurrogate()) out.chop(1);
+    }
+    return out;
+}
+
 QString sanitizeFilename(const QString &name, int maxLength)
 {
     // 1) 유니코드 NFC 정규화.

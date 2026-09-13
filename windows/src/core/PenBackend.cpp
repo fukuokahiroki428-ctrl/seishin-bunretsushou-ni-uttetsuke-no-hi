@@ -1422,6 +1422,7 @@ void PenBackend::crawlDownloadMedia()
                 if (fname.isEmpty()) fname = "media_" + QString::number(ok + fail);
                 fname.remove(QRegularExpression("[/\\\\:*?\"<>|]"));
                 if (fname.length() > 100) fname = fname.left(100);
+                fname = FileHelper::portableName(fname);   // FileHelper.h 설명
                 QString outPath = mediaDir + "/" + fname;
                 if (QFile::exists(outPath)) { ok++; continue; }
                 // ★ curl 대신 앱이 띄운 Chrome(브라우저 세션) 페이지 fetch — 봇 차단 우회.

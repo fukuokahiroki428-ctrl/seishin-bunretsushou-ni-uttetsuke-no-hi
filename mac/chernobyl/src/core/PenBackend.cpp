@@ -1324,6 +1324,7 @@ void PenBackend::crawlDownloadMedia()
                 if (fname.isEmpty()) fname = "media_" + QString::number(ok + fail);
                 fname.remove(QRegularExpression("[/\\\\:*?\"<>|]"));
                 if (fname.length() > 100) fname = fname.left(100);
+                fname = FileHelper::portableName(fname);   // FileHelper.h 설명
                 QString outPath = mediaDir + "/" + fname;
                 if (QFile::exists(outPath)) { ok++; continue; }
                 // curl로 다운로드 (Qt 의존성 최소화)

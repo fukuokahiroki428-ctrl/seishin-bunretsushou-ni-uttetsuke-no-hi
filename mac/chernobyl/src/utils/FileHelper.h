@@ -16,6 +16,18 @@ void setFinderComment(const QString &filePath, const QString &comment);
 
 // Sanitize filename
 QString sanitizeFilename(const QString &name, int maxLength = 200);
+// ★ 어느 파일시스템에 저장해도 같은 이름이 되게 다듬는다.
+//   sanitizeFilename 과 달리 '문자를 바꾸지 않는다' — 이미 받아 둔 이름이 달라지면
+//   보관함이 둘로 갈리기 때문이다. 보통 이름에는 아무 일도 일어나지 않는다.
+//     ① NFC 정규화       — HFS+(맥 옛 디스크)는 NFD 를 강제한다. 맞춰 두지 않으면
+//                          같은 계정인데 맥과 윈도우의 폴더 바이트가 달라진다.
+//     ② 끝의 점·공백 제거 — 윈도우가 조용히 떼어내 이름이 달라진다.
+//     ③ 예약어 앞에 _    — CON·PRN·AUX·NUL·COM1~9·LPT1~9 는 윈도우에서 못 만든다.
+//     ④ UTF-8 바이트 상한 — ext4·APFS 는 바이트 기준(255)이고 NTFS 는 UTF-16 칸 기준이다.
+//                          짧은 쪽에 맞춘다. 서로게이트 짝은 깨지 않는다.
+//   ※ 확장자가 붙은 완성된 파일명에는 쓰지 말 것 — ④가 뒤에서 자르므로 확장자가 잘린다.
+//     그런 자리는 본문 쪽을 미리 줄여서 맞춘다(downloadTweetMedia 가 그렇게 한다).
+QString portableName(const QString &name, int maxBytes = 255);
 
 // ★ 산출물을 최종 저장 위치로 안전하게 옮긴다.
 //   QFile::rename 만 쓰면 두 경우에 실패한다 — (1) 대상이 다른 디스크(NAS·외장)일 때,
