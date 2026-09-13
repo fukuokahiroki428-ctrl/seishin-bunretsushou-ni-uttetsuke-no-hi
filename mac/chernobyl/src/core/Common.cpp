@@ -163,13 +163,19 @@ void setFileTimes(const QString &filePath, const QDateTime &timestamp)
     struct _utimbuf times;
     times.actime = static_cast<time_t>(epoch);
     times.modtime = static_cast<time_t>(epoch);
-    int ret = _wutime(filePath.toStdWString().c_str(), &times);
+    // ★ 260자 넘는 경로 — CRT(_wutime)도 원시 CreateFileW 도 접두어 없이는 못 연다.
+    //   실측(302자 경로): 접두어를 붙이면 둘 다 통과하고, 없으면 CreateFileW 가
+    //   오류 3(ERROR_PATH_NOT_FOUND)으로 죽는다.
+    //   이 함수는 받은 파일마다 불린다. 여기서 조용히 실패하면 깊은 폴더의 파일만
+    //   시각이 안 박혀서 맥에서 받은 것과 달라진다 — 동일화가 거기서 깨진다.
+    const std::wstring wpath = longPathArg(filePath).toStdWString();
+    int ret = _wutime(wpath.c_str(), &times);
     if (ret != 0) {
         qWarning() << "[setFileTimes] _wutime failed for:" << filePath;
     }
 
     // Also set creation time via SetFileTime API
-    HANDLE hFile = CreateFileW(filePath.toStdWString().c_str(),
+    HANDLE hFile = CreateFileW(wpath.c_str(),
         FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
         nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hFile != INVALID_HANDLE_VALUE) {
@@ -1099,6 +1105,35 @@ void killProcessByPid(qint64 pid)
     QProcess::execute("taskkill", {"/PID", QString::number(pid), "/F", "/T"});
 #else
     ::kill(static_cast<pid_t>(pid), SIGKILL);
+#endif
+}
+
+QString longPathArg(const QString &path, int reserveChars)
+{
+#ifndef Q_OS_WIN
+    Q_UNUSED(reserveChars);
+    return path;   // 맥·리눅스에는 260자 한계가 없다
+#else
+    if (path.isEmpty()) return path;
+    if (path.startsWith(QLatin1String("\\\\?\\"))) return path;   // 이미 붙어 있다
+
+    // ★ \\?\ 는 '경로 정규화를 끄는' 접두어다. 슬래시(/)도, . 이나 .. 도 안 고쳐
+    //   준다 — 커널에 그대로 넘어간다. 그래서 먼저 네이티브 절대경로로 펴야 한다.
+    //   이 앱은 내부적으로 슬래시 경로를 쓰므로 이 단계가 없으면 조용히 실패한다.
+    const QString abs = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    const QString n = QDir::toNativeSeparators(abs);
+
+    const bool unc   = n.startsWith(QLatin1String("\\\\"));
+    const bool drive = n.size() >= 3 && n.at(1) == QLatin1Char(':')
+                                     && n.at(2) == QLatin1Char('\\');
+    if (!unc && !drive) return path;   // 붙일 수 없는 모양이면 건드리지 않는다
+
+    // 짧으면 그대로 둔다 — 로그·엑셀·manifest 에 \\?\ 가 새어 나가지 않게.
+    //   248 은 폴더 생성 한계(MAX_PATH - 12)다. 파일은 259 까지지만 짧은 쪽에 맞춘다.
+    if (n.size() + reserveChars < 248) return path;
+
+    if (unc) return QLatin1String("\\\\?\\UNC\\") + n.mid(2);   // \\nas\share -> \\?\UNC\nas\share
+    return QLatin1String("\\\\?\\") + n;
 #endif
 }
 

@@ -1,4 +1,5 @@
 #include "WebDavUploader.h"
+#include "core/Common.h"   // longPathArg — 260자 넘는 경로
 #include <QCoreApplication>
 #include <QFile>
 #include <QProcess>
@@ -352,7 +353,9 @@ void WebDavUploader::workerLoop()
         //   예전엔 한 번 실패하면 그대로 버려서 파일이 조용히 유실됐다.
         bool ok = false; int code = 0; QString out; int rc = 0;
         for (int attempt = 1; attempt <= 3 && !m_stop.load(); ++attempt) {
-            rc = curlWithTlsFallback({"-T", path, "--max-time", "600", remoteUrl}, &code, &out);
+            // curl 도 260자를 못 넘는다(실측 rc=3) — 올릴 파일 경로에 접두어를 붙인다.
+            rc = curlWithTlsFallback({"-T", Common::longPathArg(path),
+                                      "--max-time", "600", remoteUrl}, &code, &out);
             ok = (rc == 0 && (code == 200 || code == 201 || code == 204));
             if (ok) break;
             // 인증/권한/경로 문제는 재시도해도 소용없다 → 즉시 중단

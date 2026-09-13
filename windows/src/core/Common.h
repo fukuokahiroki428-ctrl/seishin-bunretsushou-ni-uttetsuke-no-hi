@@ -162,4 +162,19 @@ void killProcessByPid(qint64 pid);
 //   who: 무엇인지 알려 줄 이름 (예: "cookie", "auth_token")
 QString maskSecret(const QString &value, const QString &who = QString());
 
+// ★ 외부 도구에 넘길 긴 경로 — 윈도우의 260자 한계를 넘는다.
+//   실측(2026-09-13, 윈도우 11 / LongPathsEnabled=0, 342~349자 경로):
+//     · Qt 의 QFile·QDir·QFileInfo 는 통과한다 — Qt 가 내부에서 접두어를 붙인다.
+//       그래서 우리 C++ 파일 입출력은 손댈 것이 없다.
+//     · exiftool·ffmpeg·rclone·deno 도 통과한다.
+//     · python·yt-dlp·curl 은 실패한다. \?\ 접두어를 붙이면 통과한다.
+//   레지스트리(LongPathsEnabled)를 안 켜도 접두어만으로 된다 — 그래서 이 방법을 쓴다.
+//
+//   reserveChars: 넘기는 것이 '완성된 경로' 가 아니라 '출력 템플릿' 일 때 쓴다.
+//     yt-dlp 의 -o 는 %(title).180s 처럼 나중에 부풀어 오르는 자리가 있어서,
+//     지금 길이만 재면 짧아 보이는데 실제 파일은 260을 넘는다. 부풀 만큼을
+//     미리 얹어 재라는 뜻이다(템플릿 자리는 255 를 준다).
+//   윈도우가 아니면 원본을 그대로 돌려준다 — 맥·리눅스에는 이 한계가 없다.
+QString longPathArg(const QString &path, int reserveChars = 0);
+
 } // namespace Common

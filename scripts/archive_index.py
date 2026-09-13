@@ -160,14 +160,46 @@ def open_db(path: Path, reset: bool) -> sqlite3.Connection:
 #   "없다" 고 한다. 실측: 앱이 만든 305자 파일을 파이썬이 errno 2 로 못 열었고,
 #   \\?\ 접두어를 붙이니 그대로 읽혔다.
 #   그대로 두면 색인이 그 파일들을 아무 말 없이 빠뜨린다 — 보관함이 불완전해진다.
-def _long_path(p):
-    """윈도우에서 260자를 넘는 경로에 접두어를 붙인다. 그 외에는 그대로 둔다."""
+def _long_path(p, always=False):
+    r"""윈도우에서 260자를 넘는 경로에 접두어를 붙인다. 그 외에는 그대로 둔다.
+
+    ★ 길이는 반드시 abspath 를 취한 뒤에 재야 한다. 상대 경로를 받으면 원본은
+      짧아도 펼친 결과가 260을 넘을 수 있다 — 전에는 원본 길이만 보고 넘겼다.
+    ★ \\?\ 는 경로 정규화를 끄는 접두어다. 슬래시(/)를 알아서 역슬래시로
+      바꿔 주지 않으므로 abspath 로 먼저 정규화해야 한다. Qt(C++)가 보내는
+      경로는 슬래시 구분자라 이 단계가 없으면 조용히 실패한다.
+    ★ NAS(UNC)는 형식이 다르다 — \\nas\share 는 \\?\UNC\nas\share 가 된다.
+    """
     s = str(p)
-    if os.name != "nt" or len(s) < 250:
+    if os.name != "nt" or not s:
         return s
     if s.startswith("\\\\?\\"):
         return s
-    return "\\\\?\\" + os.path.abspath(s)
+    a = os.path.abspath(s)
+    # ★ always 는 '훑기 시작점' 을 위한 것이다. 뿌리 폴더는 짧고(D:\123 = 6자)
+    #   잎이 길다 — 뿌리 길이만 재면 접두어가 영영 안 붙고, os.walk 는 여전히
+    #   깊은 가지에 못 들어간다. 실측으로 잡았다: 18자 뿌리 아래 313자 파일이
+    #   길이 판정만 걸었을 때 색인에서 통째로 빠졌다.
+    if not always and len(a) < 250:
+        return s
+    if a.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + a[2:]
+    return "\\\\?\\" + a
+
+
+def _plain_path(p):
+    """_long_path 의 반대 — 접두어를 뗀다.
+
+    DB 에 넣는 경로·사용자에게 보이는 경로는 접두어가 없어야 한다. 붙은 채로
+    저장하면 기존 색인 행과 어긋나 처음부터 다시 만들게 되고, archive_ask.py
+    질의도 안 맞는다.
+    """
+    s = str(p)
+    if s.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + s[8:]
+    if s.startswith("\\\\?\\"):
+        return s[4:]
+    return s
 
 
 def read_exif_batch(exiftool: str, paths: list[Path]) -> dict[str, dict]:
@@ -203,7 +235,8 @@ def read_xlsx(p: Path) -> str:
     """엑셀은 작가별 작품 목록이라 행 자체가 검색 대상이다."""
     try:
         import openpyxl
-        wb = openpyxl.load_workbook(str(p), read_only=True, data_only=True)
+        # 접두어를 붙여 연다 — openpyxl 은 내부에서 zipfile→내장 open() 을 쓴다.
+        wb = openpyxl.load_workbook(_long_path(p), read_only=True, data_only=True)
     except Exception:
         return ''
     chunks = []
@@ -232,7 +265,9 @@ def read_xlsx(p: Path) -> str:
 
 def read_text(p: Path) -> str:
     try:
-        raw = p.read_bytes()[:TEXT_CAP * 3]
+        # Path.read_bytes 도 결국 내장 open() 이다 — 접두어를 붙여 연다.
+        with open(_long_path(p), 'rb') as _f:
+            raw = _f.read(TEXT_CAP * 3)
     except Exception:
         return ''
     try:
@@ -267,7 +302,11 @@ def main() -> int:
     ap.add_argument('--reset', action='store_true', help='색인을 새로 만든다')
     args = ap.parse_args()
 
-    root = Path(args.root).expanduser()
+    # ★ abspath 로 펼친다(resolve 가 아니다 — resolve 는 정션·심볼릭 링크를
+    #   실체 경로로 바꿔 버린다. 이 저장소는 한글 경로를 피하려고 영문 정션을
+    #   쓰고 있어서, 그걸 풀면 오히려 한글 경로로 되돌아간다).
+    #   아래에서 p 를 절대경로로 만들므로 root 도 절대경로여야 relative_to 가 맞는다.
+    root = Path(os.path.abspath(str(Path(args.root).expanduser())))
     if not root.is_dir():
         print(f"폴더가 없습니다: {root}"); return 1
 
@@ -283,12 +322,16 @@ def main() -> int:
     todo, skipped, scanned = [], 0, 0
     unreadable = []
     t0 = time.time()
-    for dirpath, dirnames, filenames in os.walk(root):
+    # ★ 훑는 것은 접두어 붙인 경로로 — 안 그러면 260자 넘는 가지가 통째로,
+    #   아무 오류도 없이 빠진다(os.walk 의 onerror 가 None 이라 조용하다).
+    #   대신 아래에서 p 를 만들 때 접두어를 떼어 DB 키를 그대로 유지한다.
+    for dirpath, dirnames, filenames in os.walk(_long_path(root, always=True)):
         dirnames[:] = [d for d in dirnames if not d.startswith('.') and d != '#recycle']
         for fn in filenames:
             if fn in SKIP_NAME or fn.startswith('._') or fn.startswith(SKIP_PREFIX):
                 continue
-            p = Path(dirpath) / fn
+            # DB 키·표시용은 접두어 없는 경로. 실제 파일 접근은 _long_path 로.
+            p = Path(_plain_path(dirpath)) / fn
             try:
                 st = os.stat(_long_path(p))
             except OSError as e:

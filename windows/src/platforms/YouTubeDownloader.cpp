@@ -349,7 +349,10 @@ void YouTubeDownloader::runDownload()
     // Build yt-dlp arguments
     QStringList baseArgs;
     // 업로드 시각 prefix → OS 기본 정렬로 업로드 순 배치
-    baseArgs << "-o" << savePath + "/%(upload_date>%Y%m%d)s_%(title)s.%(ext)s";
+    // ★ yt-dlp(파이썬)는 260자 넘는 출력 경로에서 죽는다 — 접두어를 붙인다.
+    //   제목 길이를 미리 알 수 없으므로 부풀 만큼(255)을 얹어 잰다. (Common.h 설명)
+    baseArgs << "-o" << Common::longPathArg(
+        savePath + "/%(upload_date>%Y%m%d)s_%(title)s.%(ext)s", 255);
     baseArgs << "--no-mtime";
 
     // Proxy

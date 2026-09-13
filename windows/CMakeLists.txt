@@ -708,6 +708,39 @@ if(WIN32)
         target_sources(Miyo PRIVATE "${RC_FILE}")
     endif()
 
+    # ═══ 긴 경로(260자 초과) 선언 ═══════════════════════════════════════
+    # ★ 실측하고 넣었다(2026-09-13, 윈도우 11 / LongPathsEnabled=0):
+    #     · Qt 6.7.3 의 QFile·QDir·QFileInfo 는 내부에서 \\?\ 를 붙인다 —
+    #       349자 경로에서 mkpath·열기·훑기·개명·삭제가 NTFS·exFAT 양쪽 다 통과.
+    #     · 같은 자리에서 접두사 없는 Win32 CreateDirectoryW 는 죽는다(오류 3).
+    #     · exiftool·ffmpeg·rclone·deno 도 342자 경로를 그대로 통과한다.
+    #     · 못 하는 것은 파이썬 하나뿐 — 그쪽은 코드에서 \\?\ 를 붙여 푼다.
+    #   그러니 이 선언만으로 당장 고쳐지는 것은 없다. 레지스트리
+    #   (HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled=1,
+    #   관리자 권한·기계 전체)가 같이 켜져야 효력이 생긴다. 그날 앱이 준비돼
+    #   있게 하는 선언이고, 우리가 직접 부르는 Win32 호출에도 적용된다.
+    set(APP_MANIFEST "${CMAKE_SOURCE_DIR}/resources/predormition.manifest")
+    if(EXISTS "${APP_MANIFEST}")
+        if(MSVC)
+            # CMake 는 .manifest 소스를 링커의 /MANIFESTINPUT 으로 넘겨 기본
+            # 매니페스트와 합쳐 준다. .rc 에 "1 24" 로 직접 넣으면 링커가
+            # 만드는 것과 충돌한다(리소스 중복) — 그래서 툴체인별로 갈린다.
+            target_sources(Miyo PRIVATE "${APP_MANIFEST}")
+            message(STATUS "긴 경로 매니페스트: 링커에 합침 (MSVC)")
+        else()
+            # MinGW(windres)는 매니페스트를 자동 생성하지 않는다 — 직접 넣는다.
+            # 아이콘 .rc 와 별개 파일로 둔다. 아이콘이 없어 그 .rc 가 안 생겨도
+            # 매니페스트는 들어가야 하기 때문이다.
+            configure_file("${APP_MANIFEST}"
+                           "${CMAKE_BINARY_DIR}/predormition.manifest" COPYONLY)
+            file(WRITE "${CMAKE_BINARY_DIR}/app_manifest.rc"
+                 "1 24 \"predormition.manifest\"\n")
+            target_sources(Miyo PRIVATE "${CMAKE_BINARY_DIR}/app_manifest.rc")
+            message(STATUS "긴 경로 매니페스트: .rc 로 삽입 (MinGW)")
+        endif()
+    else()
+        message(WARNING "긴 경로 매니페스트가 없다: ${APP_MANIFEST}")
+    endif()
     # windeployqt: deploy all Qt DLLs and plugins
     find_program(WINDEPLOYQT windeployqt HINTS "${Qt6_DIR}/../../../bin")
     if(WINDEPLOYQT)

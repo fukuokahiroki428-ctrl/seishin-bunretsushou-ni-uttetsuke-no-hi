@@ -7606,7 +7606,11 @@ bool MiyoBackend::downloadSpaceUrl(const QString &urlIn, const QString &outDir,
     }
     // 위 후보가 모두 없으면 --ffmpeg-location 생략 → PATH 에서 탐색.
     args << "--embed-metadata"
-         << "-o" << (outDir + "/%(title).180s [%(id)s].%(ext)s")
+         // ★ yt-dlp 는 파이썬이라 260자 넘는 출력 경로에서 죽는다(실측: 접두어
+         //   없이는 "Unable to create directory [WinError 3]", 붙이면 통과).
+         //   템플릿이라 지금 길이는 짧은데 %(title).180s 가 나중에 부풀어 오른다 —
+         //   부풀 만큼(255)을 미리 얹어 재게 한다. (Common.h 의 longPathArg 설명)
+         << "-o" << Common::longPathArg(outDir + "/%(title).180s [%(id)s].%(ext)s", 255)
          << url;
 
     log(QString("🎙️ 스페이스 다운로드: %1").arg(url), "info", "twitter");
@@ -9817,7 +9821,10 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 
     // ★ yt-dlp 출력 템플릿의 % 를 %% 로 이스케이프 — cmd.exe 는 %VAR% 를 환경변수로 확장하므로
     //   %(channel,uploader)s 가 빈 문자열로 치환되어 파일명이 깨지는 버그 수정
-    QString outTemplate = ytTypeDir + "/%(channel,uploader)s/%(upload_date)s_%(title)s.%(ext)s";
+    // ★ yt-dlp 는 파이썬이라 260자 넘는 출력 경로에서 죽는다 — 접두어를 붙인다.
+    //   %% 로 바꾸는 것보다 반드시 앞에 와야 한다. (Common.h 의 longPathArg 설명)
+    QString outTemplate = Common::longPathArg(
+        ytTypeDir + "/%(channel,uploader)s/%(upload_date)s_%(title)s.%(ext)s", 255);
     outTemplate.replace("%", "%%");
 
     for (int i = 0; i < urls.size(); i++) {
@@ -9909,7 +9916,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
         script += "RETRY=0\n";
         script += "MAX_RETRY=3\n";
         script += "while [ $RETRY -le $MAX_RETRY ]; do\n";
-        script += "  " + esc(ytdlpPath) + " -o " + esc(ytTypeDir + "/%(channel,uploader)s/%(upload_date)s_%(title)s.%(ext)s") + " " + argsStr + esc(urls[i]) + " &\n";
+        script += "  " + esc(ytdlpPath) + " -o " + esc(Common::longPathArg(ytTypeDir + "/%(channel,uploader)s/%(upload_date)s_%(title)s.%(ext)s", 255)) + " " + argsStr + esc(urls[i]) + " &\n";
         script += "  YT_PID=$!\n";
         script += "  while kill -0 $YT_PID 2>/dev/null; do\n";
         script += "    if [ -f \"$STOP_MARKER\" ]; then\n";
@@ -11665,7 +11672,8 @@ void MiyoBackend::startTrad(const QString &configJson)
                     "import zipfile,sys,os\n"
                     "with zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED,allowZip64=True) as z:\n"
                     "    z.write(sys.argv[2],os.path.basename(sys.argv[2]))\n",
-                    compPath, fpath});
+                    // 파이썬은 260자를 못 넘는다 — 넘기는 경로에 접두어를 붙인다.
+                    Common::longPathArg(compPath), Common::longPathArg(fpath)});
                 // 대용량 파일 대응: 무제한 대기 (10GB 이상이면 수 분 이상 소요)
                 if (zipProc.waitForFinished(-1) && zipProc.exitCode() == 0) {
                     QFileInfo ci(compPath);
@@ -11880,6 +11888,13 @@ void MiyoBackend::startTrad(const QString &configJson)
                 "fl = sys.argv[2]\n"
                 "CHUNK = 8 * 1024 * 1024  # 8MB streaming chunks\n"
                 "try:\n"
+                // ★ 목록 파일 안의 경로는 파이썬이 직접 연다 — 여기서 접두어를 붙인다.
+                //   역슬래시 리터럴을 겹겹이 쓰지 않으려고 chr(92) 로 만든다.
+                "    P = chr(92)*2 + '?' + chr(92)\n"
+                "    def _lp(p):\n"
+                "        if os.name != 'nt' or p.startswith(P):\n"
+                "            return p\n"
+                "        return P + os.path.abspath(p)\n"
                 "    with open(fl, 'r', encoding='utf-8') as f:\n"
                 "        files = [l.strip() for l in f if l.strip()]\n"
                 "    used = {}\n"
@@ -11892,6 +11907,7 @@ void MiyoBackend::startTrad(const QString &configJson)
                 "                name = f'{base}_{used[name]}{ext}'\n"
                 "            else:\n"
                 "                used[name] = 0\n"
+                "            fp = _lp(fp)\n"
                 "            fsize = os.path.getsize(fp)\n"
                 "            if fsize > 512 * 1024 * 1024:\n"
                 "                # Large file: stream into ZIP to avoid memory spike\n"
@@ -11917,7 +11933,9 @@ void MiyoBackend::startTrad(const QString &configJson)
 
             QProcess zipProc;
             zipProc.setProcessChannelMode(QProcess::MergedChannels);
-            zipProc.start(pyZipCmd, {"-c", pyScript, zipPath, fileListPath});
+            zipProc.start(pyZipCmd, {"-c", pyScript,
+                                     Common::longPathArg(zipPath),
+                                     Common::longPathArg(fileListPath)});
             log(QString("ZIP 생성: 번들 Python (UTF-8), %1개 파일...").arg(filePaths.size()), "info", "trad");
 
             // 대용량 파일 대응: 진행 상황 모니터링 + 중단 체크
@@ -12460,7 +12478,7 @@ void MiyoBackend::startTrad(const QString &configJson)
                 "except Exception as e:\n"
                 "    print(f'ERR {e}')\n";
             QProcess verifyProc;
-            verifyProc.start(vPyCmd, {"-c", verifyScript, outputPath});
+            verifyProc.start(vPyCmd, {"-c", verifyScript, Common::longPathArg(outputPath)});
             if (verifyProc.waitForFinished(-1)) {
                 QString vout = QString::fromUtf8(verifyProc.readAllStandardOutput()).trimmed();
                 if (vout.startsWith("OK ")) {
@@ -12606,7 +12624,9 @@ void MiyoBackend::extractTrad(const QString &configJson)
                     "    print(f'ERROR: {e}', file=sys.stderr)\n"
                     "    sys.exit(1)\n";
                 QProcess py;
-                py.start(pyCmd, {"-c", extractScript, zipFilePath, destDir});
+                py.start(pyCmd, {"-c", extractScript,
+                                 Common::longPathArg(zipFilePath),
+                                 Common::longPathArg(destDir)});
                 if (py.waitForFinished(-1) && py.exitCode() == 0) {
                     int cnt = countFiles(destDir);
                     if (cnt > 0) {
@@ -15865,7 +15885,8 @@ void MiyoBackend::runFanboxCollection(const QJsonObject &config)
                     QProcess curl;
                     curl.start("curl", {"-sSL", "-H", "Origin: https://www.fanbox.cc",
                                         "-H", "Referer: https://www.fanbox.cc/", "-H", "Cookie: " + cookie,
-                                        "-o", out, origUrl, "--max-time", "60"});
+                                        // curl 도 260자를 못 넘는다(실측: rc=3). 접두어를 붙인다.
+                                        "-o", Common::longPathArg(out), origUrl, "--max-time", "60"});
                     if (curl.waitForFinished(65000) && curl.exitCode() == 0 && QFileInfo(out).size() > 100) {
                         mediaCount++;
                         FileHelper::setDownloadMeta(out, detailUrl);
@@ -15886,7 +15907,7 @@ void MiyoBackend::runFanboxCollection(const QJsonObject &config)
                     QProcess curl;
                     curl.start("curl", {"-sSL", "-H", "Origin: https://www.fanbox.cc",
                                         "-H", "Referer: https://www.fanbox.cc/", "-H", "Cookie: " + cookie,
-                                        "-o", out, url, "--max-time", "120"});
+                                        "-o", Common::longPathArg(out), url, "--max-time", "120"});
                     if (curl.waitForFinished(125000) && curl.exitCode() == 0 && QFileInfo(out).size() > 100) {
                         mediaCount++;
                         FileHelper::setDownloadMeta(out, detailUrl);

@@ -26,8 +26,43 @@ import os, json, os, time, asyncio, re, subprocess, shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+# ── 윈도우 260자 경로 ───────────────────────────────────────────────────────
+# ★ 실측(2026-09-13, 윈도우 11): 349자 경로에서 Qt(C++)·exiftool·ffmpeg·rclone·
+#   deno 는 전부 멀쩡한데 파이썬만 FileNotFoundError 로 죽는다. \\?\ 접두어를
+#   붙이면 레지스트리(LongPathsEnabled)를 안 켜도 그대로 된다.
+#   맥에서는 아무 일도 일어나지 않는다(os.name != "nt") — 그래서 두 트리에 같은
+#   코드를 넣을 수 있고, 만들어지는 파일 이름·내용은 양쪽이 똑같이 유지된다.
+def _lp(p, always=False):
+    r"""윈도우에서 긴 경로에 \\?\ 를 붙인다. 그 외에는 그대로 둔다.
+
+    ★ abspath 를 먼저 취해야 한다. \\?\ 는 경로 정규화를 끄는 접두어라
+      슬래시(/)를 역슬래시로 바꿔 주지 않는다 — C++(Qt)가 보내는 경로는
+      슬래시 구분자다.
+    ★ always 는 '저장 폴더 뿌리' 를 위한 것이다. 뿌리는 짧고(D:\123 = 6자)
+      잎이 길다. 뿌리 길이만 재면 접두어가 영영 안 붙는다 — 색인기에서
+      실측으로 겪었다(18자 뿌리 아래 313자 파일이 통째로 빠졌다).
+    ★ NAS(UNC)는 형식이 다르다: \\nas\share -> \\?\UNC\nas\share
+    """
+    s = str(p)
+    if os.name != "nt" or not s:
+        return s
+    if s.startswith("\\\\?\\"):
+        return s
+    a = os.path.abspath(s)
+    if not always and len(a) < 250:
+        return s
+    if a.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + a[2:]
+    return "\\\\?\\" + a
+
+
+def _plain(p):
+    """접두어를 뗀다. 접두어는 우리 사정이라 사용자에게 보이는 글에는 안 나와야 한다."""
+    return str(p).replace("\\\\?\\UNC\\", "\\\\").replace("\\\\?\\", "")
+
+
 def log(msg):
-    print(json.dumps({"log": str(msg)}), flush=True)
+    print(json.dumps({"log": _plain(msg)}), flush=True)
 
 def progress(count, media_count=0, status="수집 중..."):
     print(json.dumps({"progress": {"count": count, "media": media_count, "status": status}}), flush=True)
@@ -1686,6 +1721,15 @@ def main():
             print(json.dumps({"error": f"Invalid JSON: {e}"}), flush=True)
             continue
 
+        # ★ 저장 폴더를 여기서 한 번만 다듬는다 — 이 파일의 유일한 초크 포인트다.
+        #   13개 수집 핸들러가 전부 save_path = args.get("save_path", ".") 로
+        #   시작하고 그 아래 모든 경로가 os.path.join 파생이다. 그래서 여기서
+        #   붙여 두면 makedirs·urlretrieve·open·os.replace·os.rename·os.utime·
+        #   shutil.copy2·엑셀 저장까지 40여 곳이 한꺼번에 덮인다.
+        #   윈도우 밖에서는 _lp 가 원본을 그대로 돌려주므로 아무 일도 없다.
+        if isinstance(args.get("save_path"), str) and args["save_path"]:
+            args["save_path"] = _lp(args["save_path"], always=True)
+
         action = args.get("action", "")
 
         if action == "quit":
@@ -1705,7 +1749,8 @@ def main():
                 result = handler(args)
                 print(json.dumps(result), flush=True)
             except Exception as e:
-                print(json.dumps({"error": str(e)}), flush=True)
+                # 예외문에 경로가 섞여 나올 수 있다 — 접두어는 떼고 보여 준다.
+                print(json.dumps({"error": _plain(e)}), flush=True)
         else:
             print(json.dumps({"error": f"Unknown action: {action}"}), flush=True)
 
