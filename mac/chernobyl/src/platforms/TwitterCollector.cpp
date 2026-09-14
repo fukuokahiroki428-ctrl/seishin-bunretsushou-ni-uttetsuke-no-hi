@@ -1466,6 +1466,10 @@ int TwitterCollector::downloadTweetMedia(const QJsonObject &tweet, const QString
             tweetText.replace(QRegularExpression("[\\n\\r]"), "");
             tweetText.remove(QRegularExpression("[<>:\"/\\\\|?*]"));
             tweetText.replace(QRegularExpression("\\s+"), "");
+            // ★ NFC 로 모은다. HFS+(맥 옛 디스크)는 파일명을 NFD 로 강제하므로,
+            //   맞춰 두지 않으면 같은 트윗인데 맥과 윈도우의 파일명 바이트가 달라진다.
+            //   (길이·서로게이트는 아래에서 이미 다룬다 — 윈도우판 4b87220 과 같은 자리)
+            tweetText = tweetText.normalized(QString::NormalizationForm_C);
             tweetText = tweetText.trimmed();
             if (tweetText.startsWith('.')) tweetText = tweetText.mid(1).trimmed();
             // ★ 글자 중간에서 자르지 않는다. 이모지는 UTF-16 두 칸(서로게이트 쌍)이라
@@ -1683,6 +1687,8 @@ void TwitterCollector::downloadUserProfileMedia(const QJsonObject &tweet, const 
         } else {
             filePrefix = screenName;
         }
+        // 어느 파일시스템에 저장해도 같은 이름이 되게 (FileHelper.h 설명)
+        filePrefix = FileHelper::portableName(filePrefix);
 
         // 유저별 서브폴더: profiles/tweets/@handle/ or profiles/tweets/이름(@handle)/
         QString userDirName = filePrefix;
@@ -2709,6 +2715,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             tDisplayName.remove(QRegularExpression("[/\\\\:*?\"<>|]"));
             tDisplayName = tDisplayName.trimmed().left(40);
             QString tFilePrefix = !tDisplayName.isEmpty() ? QString("%1(@%2)").arg(tDisplayName, target) : target;
+            tFilePrefix = FileHelper::portableName(tFilePrefix);   // FileHelper.h 설명
             QString tDirName = tFilePrefix;
             tDirName.remove(QRegularExpression("[/\\\\:*?\"<>|]"));
             tDirName = FileHelper::reuseExistingName(userDir + "/profiles/target", tDirName);
@@ -2970,6 +2977,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 displayName.remove(QRegularExpression("[/\\\\:*?\"<>|]"));
                 displayName = displayName.trimmed().left(40);
                 QString filePrefix = !displayName.isEmpty() ? QString("%1(@%2)").arg(displayName, handle) : handle;
+                filePrefix = FileHelper::portableName(filePrefix);   // FileHelper.h 설명
 
                 // 유저별 서브폴더: profiles/{type}/{이름(@handle)}/
                 QString userDirName = filePrefix;
@@ -4013,6 +4021,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         tDispName.remove(QRegularExpression("[/\\\\:*?\"<>|]"));
         tDispName = tDispName.trimmed().left(40);
         QString tPrefix = !tDispName.isEmpty() ? QString("%1(@%2)").arg(tDispName, target) : target;
+        tPrefix = FileHelper::portableName(tPrefix);   // FileHelper.h 설명
         QString tDirN = tPrefix;
         tDirN.remove(QRegularExpression("[/\\\\:*?\"<>|]"));
         tDirN = FileHelper::reuseExistingName(userDir + "/profiles/target", tDirN);
