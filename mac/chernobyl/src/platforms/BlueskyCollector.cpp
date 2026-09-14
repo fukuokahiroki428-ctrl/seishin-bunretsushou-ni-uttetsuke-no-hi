@@ -403,6 +403,9 @@ void BlueskyCollector::collect(const QJsonObject &config, const std::atomic<bool
             // 전체 다운로드 모드: 항상 대기+재시도 (15분)
             cmd["rl_mode"] = "wait";
             cmd["rl_wait_mins"] = 15;
+            // 최대 수집 수(0 = 전체) — 종류마다 이 개수까지. 예전엔 넘기지 않아
+            // 5 를 넣어도 7종을 끝까지 받았다(실측 2026-09-15: 10분에 465파일).
+            cmd["max_count"] = qMax(0, config["count"].toInt(0));
 
             QJsonObject result = sendCommand(cmd, isRunning, 24 * 3600 * 1000);
 
@@ -443,6 +446,7 @@ void BlueskyCollector::collect(const QJsonObject &config, const std::atomic<bool
     // Rate Limit 모드: 사용자 선택에 따라
     cmd["rl_mode"] = m_rateLimitWait ? "wait" : "stop";
     cmd["rl_wait_mins"] = m_rateLimitWaitMins;
+    cmd["max_count"] = qMax(0, config["count"].toInt(0));   // 최대 수집 수(0 = 전체)
 
     if (type == "search") {
         cmd["query"] = config["query"].toString();

@@ -597,6 +597,13 @@ def main():
 
     # ═══ Collection handlers ═══
 
+    # ★ 최대 수집 수(화면의 '최대 수집 수', 0 = 전체). 명령마다 max_count 로 온다.
+    #   예전엔 C++ 이 이 값을 넘기지 않아 5 를 넣어도 전체 모드 7종을 끝까지 받았다
+    #   (실측 2026-09-15: 10분에 465파일). 목록마다 '이번에 담은 개수' 로 센다.
+    cap_limit = 0
+    def over_cap(n):
+        return cap_limit > 0 and n >= cap_limit
+
     def apply_rl_settings(args):
         """커맨드에서 rate limit 설정 적용"""
         mode = args.get("rl_mode", "wait")
@@ -687,6 +694,9 @@ def main():
             if stop_requested or check_stdin_for_quit():
                 log("⛔ 중지 요청 감지 — 포스트 수집 중단")
                 break
+            if over_cap(len(all_data)):
+                log(f"최대 수집 수 {cap_limit}개에 닿아 멈춤")
+                break
             try:
                 resp = client.get_author_feed(
                     actor=api_handle, limit=100, cursor=cursor,
@@ -713,6 +723,7 @@ def main():
                 break
 
             for item in feed:
+                if over_cap(len(all_data)): break
                 post = getattr(item, 'post', None)
                 if not post:
                     continue
@@ -824,6 +835,9 @@ def main():
             if stop_requested or check_stdin_for_quit():
                 log("⛔ 중지 요청 감지 — 좋아요 수집 중단")
                 break
+            if over_cap(len(all_data)):
+                log(f"최대 수집 수 {cap_limit}개에 닿아 멈춤")
+                break
             try:
                 params = {'actor': user_did, 'limit': 100}
                 if cursor:
@@ -843,6 +857,7 @@ def main():
                 break
 
             for item in feed:
+                if over_cap(len(all_data)): break
                 post = getattr(item, 'post', None)
                 if not post:
                     continue
@@ -903,6 +918,9 @@ def main():
             if stop_requested or check_stdin_for_quit():
                 log("⛔ 중지 요청 감지 — 팔로워 수집 중단")
                 break
+            if over_cap(len(all_data)):
+                log(f"최대 수집 수 {cap_limit}개에 닿아 멈춤")
+                break
             try:
                 resp = client.get_followers(actor=api_handle, limit=100, cursor=cursor)
             except Exception as e:
@@ -919,6 +937,7 @@ def main():
                 break
 
             for f in followers:
+                if over_cap(len(all_data)): break
                 did = getattr(f, 'did', '')
                 fhandle = getattr(f, 'handle', '')
                 name = getattr(f, 'display_name', '')
@@ -982,6 +1001,9 @@ def main():
             if stop_requested or check_stdin_for_quit():
                 log("⛔ 중지 요청 감지 — 팔로잉 수집 중단")
                 break
+            if over_cap(len(all_data)):
+                log(f"최대 수집 수 {cap_limit}개에 닿아 멈춤")
+                break
             try:
                 resp = client.get_follows(actor=api_handle, limit=100, cursor=cursor)
             except Exception as e:
@@ -998,6 +1020,7 @@ def main():
                 break
 
             for f in follows:
+                if over_cap(len(all_data)): break
                 did = getattr(f, 'did', '')
                 fhandle = getattr(f, 'handle', '')
                 name = getattr(f, 'display_name', '')
@@ -1050,6 +1073,9 @@ def main():
             if stop_requested or check_stdin_for_quit():
                 log("⛔ 중지 요청 감지 — 차단 목록 수집 중단")
                 break
+            if over_cap(len(all_data)):
+                log(f"최대 수집 수 {cap_limit}개에 닿아 멈춤")
+                break
             try:
                 params = {'limit': 100}
                 if cursor: params['cursor'] = cursor
@@ -1062,6 +1088,7 @@ def main():
             if not blocks: break
 
             for b in blocks:
+                if over_cap(len(all_data)): break
                 all_data.append([
                     getattr(b, 'did', ''),
                     getattr(b, 'handle', ''),
@@ -1095,6 +1122,9 @@ def main():
             if stop_requested or check_stdin_for_quit():
                 log("⛔ 중지 요청 감지 — 뮤트 목록 수집 중단")
                 break
+            if over_cap(len(all_data)):
+                log(f"최대 수집 수 {cap_limit}개에 닿아 멈춤")
+                break
             try:
                 params = {'limit': 100}
                 if cursor: params['cursor'] = cursor
@@ -1107,6 +1137,7 @@ def main():
             if not mutes: break
 
             for m in mutes:
+                if over_cap(len(all_data)): break
                 all_data.append([
                     getattr(m, 'did', ''),
                     getattr(m, 'handle', ''),
@@ -1149,6 +1180,9 @@ def main():
             if stop_requested or check_stdin_for_quit():
                 log("⛔ 중지 요청 감지 — 검색 수집 중단")
                 break
+            if over_cap(len(all_data)):
+                log(f"최대 수집 수 {cap_limit}개에 닿아 멈춤")
+                break
             try:
                 params = {'q': query, 'limit': 100}
                 if cursor: params['cursor'] = cursor
@@ -1161,6 +1195,7 @@ def main():
             if not posts: break
 
             for post in posts:
+                if over_cap(len(all_data)): break
                 data = process_post(post)
                 if data:
                     all_data.append(data)
@@ -1194,6 +1229,9 @@ def main():
             if stop_requested or check_stdin_for_quit():
                 log("⛔ 중지 요청 감지 — 알림 수집 중단")
                 break
+            if over_cap(len(all_data)):
+                log(f"최대 수집 수 {cap_limit}개에 닿아 멈춤")
+                break
             try:
                 params = {'limit': 100}
                 if cursor: params['cursor'] = cursor
@@ -1206,6 +1244,7 @@ def main():
             if not notifs: break
 
             for n in notifs:
+                if over_cap(len(all_data)): break
                 author = getattr(n, 'author', None)
                 record = getattr(n, 'record', None)
                 all_data.append([
@@ -1365,6 +1404,9 @@ def main():
             if stop_requested or check_stdin_for_quit():
                 log("⛔ 중지 요청 감지 — 답글 수집 중단")
                 break
+            if over_cap(len(all_data)):
+                log(f"최대 수집 수 {cap_limit}개에 닿아 멈춤")
+                break
             try:
                 # posts_with_replies: 포스트 + 답글 포함
                 resp = client.get_author_feed(
@@ -1391,6 +1433,7 @@ def main():
                 break
 
             for item in feed:
+                if over_cap(len(all_data)): break
                 post = getattr(item, 'post', None)
                 if not post:
                     continue
@@ -1549,6 +1592,9 @@ def main():
         import urllib.request
 
         for idx, (uri, expected_replies) in enumerate(post_uris):
+            if over_cap(len(all_comments)):
+                log(f"최대 수집 수 {cap_limit}개에 닿아 멈춤")
+                break
             try:
                 # depth=1000 to get as many nested replies as possible
                 # The API typically returns up to ~1000 replies per thread
@@ -1608,6 +1654,8 @@ def main():
                           "has_media", "media_count", "media_urls"]
                 save_xlsx(os.path.join(excel_dir, f"{short_handle}_comments.xlsx"), all_comments, headers)
 
+        if cap_limit > 0:
+            all_comments = all_comments[:cap_limit]   # 스레드 하나에서 넘친 만큼
         # Final save
         if all_comments:
             headers = ["parent_post_url", "reply_depth",
@@ -1665,6 +1713,10 @@ def main():
                 rate_limit_count = 0  # reset per action
                 adaptive_delay = 1.0  # reset adaptive delay per action
                 stop_requested = False  # reset stop flag per action
+                try:
+                    cap_limit = max(0, int(args.get("max_count", 0) or 0))
+                except (TypeError, ValueError):
+                    cap_limit = 0
                 result = handler(args)
                 print(json.dumps(result), flush=True)
             except Exception as e:

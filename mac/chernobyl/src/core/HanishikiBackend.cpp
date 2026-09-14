@@ -2392,8 +2392,10 @@ void HanishikiBackend::logCollectionOptions(const QJsonObject &config, const QSt
         if (sensitiveKeys.contains(k) || k.contains("token", Qt::CaseInsensitive)
             || k.contains("password", Qt::CaseInsensitive) || k.contains("secret", Qt::CaseInsensitive)
             || k.contains("apikey", Qt::CaseInsensitive)) {
-            if (v.length() > 8) v = v.left(4) + "...***";
-            else v = "***";
+            // ★ 앞 몇 글자도 보이지 않는다. 예전엔 8자 넘으면 앞 4자를 그대로 적었다 —
+            //   블루스키 비밀번호 앞 4자가 화면 기록과 로그 파일에 남았다(실측 2026-09-15).
+            //   길이만 적는다(Common::maskSecret 과 같은 방식).
+            v = QString("***(%1자)").arg(v.length());
         }
         // 너무 긴 값은 자름
         if (v.length() > 80) v = v.left(77) + "...";
