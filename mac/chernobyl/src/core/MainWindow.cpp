@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include <QWindow>   // startSystemMove — 상단 띠 끌기로 창 옮기기
 #include "Config.h"
 #include <QResizeEvent>
 #include "HanishikiBackend.h"
@@ -106,6 +107,23 @@ MainWindow::MainWindow(QWidget *parent)
     setCentralWidget(central);
     auto *layout = new QVBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
+
+#ifdef Q_OS_MACOS
+    // ★ 화면을 타이틀바 밑까지 올린다 — Qt 6.9+ 의 공식 방법.
+    //   예전엔 applyDarkTitlebar 에서 NSWindow 에 FullSizeContentView 를 직접 켜고
+    //   1px 크기 흔들기로 Qt 레이아웃을 깨우려 했다. 실측(Qt 6.11): 창 820px 에
+    //   웹뷰 788px — 웹뷰가 타이틀바 아래에 앉아, 신호등만 있는 흰 띠가 남았다.
+    //   사용자 판(9월 7일)에서는 제목 글자와 구분선까지 그대로 보였다.
+    //   · ExpandedClientAreaHint  — 창 전체를 그리는 영역으로
+    //   · NoTitleBarBackgroundHint — 타이틀바 배경을 그리지 않는다(신호등만 뜬다)
+    //   · 안전 영역을 비켜 앉지 않게 — 기본값은 '비켜 앉기' 라, 그대로 두면 레이아웃이
+    //     타이틀바 높이만큼 내려앉아 다시 흰 띠가 된다. 신호등 자리는 화면 쪽
+    //     (.sidebar-header 52px, 접힘 시 툴바 왼쪽 여백)이 이미 비워 두었다.
+    setWindowFlag(Qt::ExpandedClientAreaHint, true);
+    setWindowFlag(Qt::NoTitleBarBackgroundHint, true);
+    setAttribute(Qt::WA_ContentsMarginsRespectsSafeArea, false);
+    central->setAttribute(Qt::WA_ContentsMarginsRespectsSafeArea, false);
+#endif
 
     // WebEngineView (main UI)
     m_webView = new QWebEngineView(this);
@@ -336,6 +354,9 @@ void MainWindow::openFeatureWindow(const QString &tabId, const QString &title)
     // 별도 창도 자기 크기에 맞춰 배율을 맞춘다 — 본 창만 맞추면 이 창은 늘 100%%다.
     view->setZoomFactor(zoomForWidth(win->width()));
     win->installEventFilter(this);
+    // 웹뷰에도 건다 — 마우스는 웹뷰가 나중에 붙이는 그리기 위젯으로 가는데,
+    // 그 위젯은 ChildAdded 로만 잡힌다. 창에만 걸면 이 창의 상단 띠 끌기가 안 먹는다.
+    view->installEventFilter(this);
 
     connect(win, &QObject::destroyed, this, [this, tabId]() { m_featureWindows.remove(tabId); });
     m_featureWindows.insert(tabId, win);
@@ -749,15 +770,44 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         }
     }
 
+    // ★ 창 끌어서 옮기기 — JS(상단 띠를 5px 넘게 끌기)가 armWindowMove() 로 걸어 두면,
+    //   바로 다음 네이티브 '끌기' 이벤트 안에서 그 이벤트가 속한 창의 이동을 시작한다.
+    //   예전엔 JS 가 부른 슬롯에서 곧장 본 창의 startSystemMove() 를 불렀는데,
+    //   ① 맥의 startSystemMove 는 '지금 처리 중인 NSEvent' 가 마우스 누름·끌기일 때만
+    //     움직인다. 채널을 건너온 호출은 이벤트 밖이라 될 때도 안 될 때도 있었고,
+    //     버튼을 뗀 뒤 도착하면 창이 커서에 붙어 따라다녔다.
+    //   ② 늘 본 창을 옮겼다 — 기능 창의 상단을 끌면 본 창이 움직였다.
+    //   이벤트 안에서, 그 이벤트의 창을 옮기면 둘 다 풀린다.
+    if (m_moveArmed) {
+        if (event->type() == QEvent::MouseMove) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            m_moveArmed = false;
+            if (me->buttons() & Qt::LeftButton) {
+                QWidget *w = obj->isWidgetType() ? static_cast<QWidget *>(obj)->window() : nullptr;
+                if (w && w->windowHandle()) w->windowHandle()->startSystemMove();
+                return true;
+            }
+            // 버튼이 이미 떨어졌다 — 걸어 둔 것만 풀고 지나간다
+        } else if (event->type() == QEvent::MouseButtonRelease) {
+            m_moveArmed = false;
+        }
+    }
+
     // ★ 상단 띠(신호등이 있는 52px) 더블클릭 → 확대/원복.
     //   macOS 의 기본 동작이지만, 이 앱은 타이틀바를 투명하게 만들고
     //   (FullSizeContentView) 그 자리를 웹뷰가 덮고 있어 더블클릭이 창까지
     //   가지 못한다. 여기서 직접 받아 처리한다.
-    if (event->type() == QEvent::MouseButtonDblClick) {
+    //   · 본 창에서만 — 기능 창은 보통 타이틀바가 있어 OS 가 알아서 한다
+    //     (예전엔 기능 창 위쪽을 더블클릭하면 본 창이 커졌다).
+    //   · 띠 높이는 화면 배율을 따른다 — 배율 0.7 이면 36px. 고정 52px 이면
+    //     툴바 바로 아래 본문을 더블클릭해도 창이 커졌다.
+    if (event->type() == QEvent::MouseButtonDblClick
+        && obj->isWidgetType() && static_cast<QWidget *>(obj)->window() == this) {
         auto *me = static_cast<QMouseEvent *>(event);
         if (me->button() == Qt::LeftButton) {
             const QPoint inWindow = mapFromGlobal(me->globalPosition().toPoint());
-            constexpr int kTitleStrip = 52;   // index.html 의 .sidebar-header / .toolbar 높이
+            // index.html 의 .sidebar-header / .toolbar 높이(52 CSS px) × 화면 배율
+            const int kTitleStrip = qRound(52 * (m_webView ? m_webView->zoomFactor() : 1.0));
             if (inWindow.y() >= 0 && inWindow.y() < kTitleStrip) {
                 if (isMaximized()) showNormal(); else showMaximized();
                 return true;
@@ -841,10 +891,11 @@ void MainWindow::applyDarkTitlebar()
     SEL setAppearanceSel = sel_registerName("setAppearance:");
     reinterpret_cast<void (*)(id, SEL, id)>(objc_msgSend)(app, setAppearanceSel, lightAppearance);
 
-    // ★ 통합(일체형) 타이틀바 — 흰 타이틀바 띠를 없애고 콘텐츠가
-    //   창 최상단까지 올라오게 한다. 신호등(빨/노/초) 버튼은 콘텐츠 위에 떠 있고,
-    //   그 자리는 .sidebar-header 의 padding-top:52px 가 이미 비워 두었다.
-    //     titlebarAppearsTransparent=YES + titleVisibility=Hidden + FullSizeContentView
+    // ★ 통합(일체형) 타이틀바 — 콘텐츠를 타이틀바 밑까지 올리는 일은 이제 생성자의
+    //   ExpandedClientAreaHint 가 한다(Qt 가 레이아웃까지 맞춘다). 여기서는 제목 글자만
+    //   감춘다 — 배경을 안 그려도 글자는 남아 신호등 옆에 '앱 이름 — 上野' 가 뜬다.
+    //   (예전의 styleMask 직접 조작 + 1px 크기 흔들기는 걷어냈다: 흰 띠가 남았고,
+    //    켤 때마다 창이 한 번 출렁였다.)
     {
         id nsView = reinterpret_cast<id>(winId());
         if (nsView) {
@@ -854,16 +905,6 @@ void MainWindow::applyDarkTitlebar()
                     win, sel_registerName("setTitlebarAppearsTransparent:"), YES);
                 reinterpret_cast<void (*)(id, SEL, long)>(objc_msgSend)(
                     win, sel_registerName("setTitleVisibility:"), 1 /* NSWindowTitleHidden */);
-                unsigned long mask = reinterpret_cast<unsigned long (*)(id, SEL)>(objc_msgSend)(
-                    win, sel_registerName("styleMask"));
-                reinterpret_cast<void (*)(id, SEL, unsigned long)>(objc_msgSend)(
-                    win, sel_registerName("setStyleMask:"), mask | (1UL << 15) /* FullSizeContentView */);
-                // ★ FullSizeContentView 만으론 Qt 가 중앙 위젯을 '전체' 컨텐츠 영역으로 재배치하지
-                //   않아 상단에 타이틀바 높이(~28px)만큼 빈 띠가 남는다(웹 innerHeight < 창높이).
-                //   1px resize nudge 로 Qt 의 레이아웃을 강제 갱신 → 콘텐츠가 최상단까지 올라옴.
-                const QSize sz = size();
-                resize(sz.width(), sz.height() + 1);
-                resize(sz);
             }
         }
     }

@@ -14261,10 +14261,13 @@ if __name__ == "__main__":
 //     이미 우회하고 있었는데 이동은 빠져 있었다.
 //   startSystemMove() 는 OS 의 이동 루프를 그대로 쓴다 — 스냅·다중 모니터·
 //   Mission Control 이 네이티브와 똑같이 동작한다.
+//   ★ 여기서 곧장 부르지 않고 걸어만 둔다. 맥은 '지금 처리 중인 마우스 이벤트' 가
+//     있어야 옮기는데, 채널로 건너온 이 호출은 이벤트 밖이다(될 때도 안 될 때도 있었고,
+//     늦게 오면 창이 커서에 붙었다). 또 늘 본 창을 옮겨 기능 창을 끌면 본 창이 움직였다.
+//     실제 시작은 MainWindow::eventFilter 가 다음 끌기 이벤트 안에서, 그 창에 대해 한다.
 void HanishikiBackend::winStartMove()
 {
-    if (m_window && m_window->windowHandle())
-        m_window->windowHandle()->startSystemMove();
+    if (m_window) m_window->armWindowMove();
 }
 
 void HanishikiBackend::setWindowChrome(bool dark)

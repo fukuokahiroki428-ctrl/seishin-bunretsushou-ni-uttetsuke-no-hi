@@ -97,7 +97,11 @@ public:
     void applyZoom();
     // 기능 하나를 별도 창으로 연다(이미 열려 있으면 앞으로).
     void openFeatureWindow(const QString &tabId, const QString &title);
+    // 상단 띠를 끌면 JS 가 부른다 — 바로 다음 '진짜' 마우스 끌기 이벤트 안에서
+    // 그 이벤트가 속한 창을 옮긴다(eventFilter 설명).
+    void armWindowMove() { m_moveArmed = true; }
 private:
+    bool m_moveArmed = false;
 
 #ifdef Q_OS_MACOS
     IOPMAssertionID m_sleepAssertion = 0;
