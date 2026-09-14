@@ -578,18 +578,21 @@ void MainWindow::openFolderDialog()
 }
 
 
-// 화면 배율 — 창 폭과 상관없이 100% 로 둔다.
-//   예전엔 1180px 을 기준으로 창 폭에 비례해 0.72~1.60 배로 늘이고 줄였다(95a3b47).
-//   사용자 판정: "창 크기 대비 GUI 크기가 조절되는 것이 문제, 렉도 문제".
-//     · 창을 줄이면 글자·버튼이 같이 작아져 읽기 어려웠다 — 좁은 폭은 원래 있던
-//       반응형 규칙(680px·480px 기준점)이 배치를 바꿔 맞춘다.
-//     · 배율이 0.72 면 레티나에서 픽셀 비가 1.44 — 정수가 아니라 스크롤할 때마다
-//       다시 그리는 비용이 컸다(실측: 스크롤 중앙값 33ms·최대 133ms 프레임).
-//     · 창 크기를 끄는 동안 배율이 계속 바뀌어 화면 전체를 다시 배치했다.
-//   함수 이름과 부르는 자리는 그대로 둔다 — 나중에 사용자가 고르는 배율을 붙일 자리다.
-qreal MainWindow::zoomForWidth(int /*w*/)
+// 창 폭에 비례하는 화면 배율 — 기준 1180px(기본 창 크기)에서 100%.
+//   창을 줄이면 화면 전체가 같은 모양 그대로 작아지고, 키우면 커진다.
+//   ★ 아래 한계를 0.72 에서 0.50 으로 내렸다. 0.72 에서 멈추니 창 폭 850px 아래로는
+//     아무리 줄여도 화면이 그대로였다(사용자: "창 제일 작은 크기로 했는데 GUI 가 그대로").
+//     0.50 이면 590px 까지 비례하고, 그보다 좁으면 반응형 배치가 받는다.
+//     (cee87ae 에서 잠깐 100% 로 묶었던 것은 요청을 거꾸로 읽은 것이다 — 되돌린다.)
+//   ★ 렉의 주범은 배율이 아니라 사이드바·툴바의 뒤 흐림이었다(cee87ae 에서 걷음) —
+//     흐림을 끄면 배율 0.72 에서도 스크롤이 16.7ms 로 고르다(실측).
+qreal MainWindow::zoomForWidth(int w)
 {
-    return 1.0;
+    const qreal ref = 1180.0;
+    qreal z = w / ref;
+    if (z < 0.50) z = 0.50;
+    if (z > 1.60) z = 1.60;
+    return z;
 }
 
 void MainWindow::applyZoom()
@@ -603,7 +606,16 @@ void MainWindow::applyZoom()
 void MainWindow::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
-    applyZoom();
+    // ★ 창을 끄는 동안 크기 이벤트가 초당 수십 번 온다. 그때마다 배율을 바꾸면 화면
+    //   전체를 매번 다시 배치해 끌기가 버벅인다(렉). 50ms 에 한 번만 맞춘다 —
+    //   끄는 동안에도 따라가고, 손을 떼면 50ms 안에 마지막 크기로 맞는다.
+    if (!m_zoomTimer) {
+        m_zoomTimer = new QTimer(this);
+        m_zoomTimer->setSingleShot(true);
+        m_zoomTimer->setInterval(50);
+        connect(m_zoomTimer, &QTimer::timeout, this, &MainWindow::applyZoom);
+    }
+    if (!m_zoomTimer->isActive()) m_zoomTimer->start();
 }
 
 QList<QWebEngineView *> MainWindow::allWebViews() const

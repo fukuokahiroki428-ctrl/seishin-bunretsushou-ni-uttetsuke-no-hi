@@ -102,6 +102,7 @@ public:
     void armWindowMove() { m_moveArmed = true; }
 private:
     bool m_moveArmed = false;
+    class QTimer *m_zoomTimer = nullptr;   // 창 크기 바뀔 때 배율 맞추기를 50ms 에 한 번으로
 
 #ifdef Q_OS_MACOS
     IOPMAssertionID m_sleepAssertion = 0;
