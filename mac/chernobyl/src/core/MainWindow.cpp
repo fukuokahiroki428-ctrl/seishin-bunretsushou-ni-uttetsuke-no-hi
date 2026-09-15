@@ -578,16 +578,32 @@ void MainWindow::openFolderDialog()
 }
 
 
-// 화면 배율 — 창 크기와 상관없이 100%. 좁아지면 '배치' 가 바뀐다(반응형 규칙).
-//   ★ 사용자가 두 방식을 그림으로 보고 골랐다(2026-09-15): 창을 줄일 때 화면 전체가
-//     같은 배치로 작아지는 것(A)이 아니라, 글자·버튼 크기는 그대로 두고 칸이 세로로
-//     쌓이는 식으로 배치가 바뀌는 것(B).
-//     그 전의 비례 배율(95a3b47, ff35165 — 0.5~1.6배)은 창을 줄여도 배치가 그대로라
-//     "창 크기를 바꿔도 GUI 가 그대로" 였다. 좁은 폭 배치는 index.html 의 @media 규칙이 맡는다.
-//   함수와 부르는 자리는 둔다 — 나중에 사용자가 고르는 배율(보기 크게/작게)을 붙일 자리다.
-qreal MainWindow::zoomForWidth(int /*w*/)
+// 화면 배율 — 두 방식을 설정에서 고른다(사용자: "A·B 둘 다 되게 하라", 2026-09-15).
+//   B 배치 바꾸기(기본) — 배율 100%. 좁아지면 칸이 세로로 쌓이고, 560px 아래에선
+//     사이드바가 접힌다(index.html 의 @media).
+//   A 통째로 크기 조절 — 기준 1180px(기본 창 크기)에서 100%, 창 폭에 비례해 0.5~1.6배.
+//     배치는 그대로 두고 화면 전체가 커지고 작아진다.
+//   고른 값은 화면(localStorage 'uiScaleMode')이 기억해, 켤 때마다 setUiScaleMode 로 알려 준다.
+static bool g_scaleWithWindow = false;
+
+qreal MainWindow::zoomForWidth(int w)
 {
-    return 1.0;
+    if (!g_scaleWithWindow) return 1.0;
+    qreal z = w / 1180.0;
+    if (z < 0.50) z = 0.50;
+    if (z > 1.60) z = 1.60;
+    return z;
+}
+
+void MainWindow::setScaleWithWindow(bool on)
+{
+    if (g_scaleWithWindow == on) return;
+    g_scaleWithWindow = on;
+    applyZoom();
+    for (auto it = m_featureWindows.begin(); it != m_featureWindows.end(); ++it) {   // 기능 창도 같이
+        if (QWidget *w = it->data())
+            if (auto *v = w->findChild<QWebEngineView *>()) v->setZoomFactor(zoomForWidth(w->width()));
+    }
 }
 
 void MainWindow::applyZoom()

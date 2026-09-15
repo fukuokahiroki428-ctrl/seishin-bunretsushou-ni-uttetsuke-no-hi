@@ -95,6 +95,8 @@ public:
     //   어떤 곳은 커지고 어떤 곳은 그대로인 어긋난 화면이 된다.
     static qreal zoomForWidth(int w);
     void applyZoom();
+    // 설정 '창 크기를 바꿀 때' — true: 통째로 크기 조절(A), false: 배치 바꾸기(B, 기본)
+    void setScaleWithWindow(bool on);
     // 기능 하나를 별도 창으로 연다(이미 열려 있으면 앞으로).
     void openFeatureWindow(const QString &tabId, const QString &title);
     // 창 끌기 — JS 가 끌 수 있는 빈 곳에서 5px 넘게 끌면 부른다. 그때부터 왼쪽 버튼을

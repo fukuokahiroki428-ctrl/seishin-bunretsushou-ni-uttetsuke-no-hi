@@ -2387,6 +2387,18 @@
                             <button type="button" class="theme-seg-btn" data-theme-mode="dark">다크</button>
                         </div>
                     </div>
+                    <!-- ★ 창 크기를 바꿀 때 — 사용자: "A·B 둘 다 되게 하라"(2026-09-15) -->
+                    <div class="section">
+                        <div class="section-label">창 크기를 바꿀 때</div>
+                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                            배치 바꾸기 — 글자·버튼 크기는 그대로, 좁아지면 칸이 세로로 쌓이고 사이드바가 접힙니다.<br>
+                            통째로 크기 조절 — 배치는 그대로, 화면 전체가 창 크기에 비례해 커지고 작아집니다(50~160%).
+                        </p>
+                        <div class="theme-seg" id="scaleSeg">
+                            <button type="button" class="theme-seg-btn" data-scale-mode="layout">배치 바꾸기</button>
+                            <button type="button" class="theme-seg-btn" data-scale-mode="scale">통째로 크기 조절</button>
+                        </div>
+                    </div>
                     <!-- ★ 사용자 정보 내보내기 / 불러오기 — 계정 + 경로 + 폼 + 토큰 통째 백업/복원 -->
                     <div class="section">
                         <div class="section-label">사용자 정보 백업 / 복원</div>
@@ -3849,6 +3861,8 @@
             window.backend = backend;
             // 백엔드 연결 시점에 네이티브 창 크롬을 현재 테마와 동기화(로드 초기 흰 띠 방지)
             try{ if (backend && backend.setWindowChrome) backend.setWindowChrome(!!window._chromeDark); }catch(e){}
+            // 창 크기 방식(배치 바꾸기 / 통째로 크기 조절) — 기억해 둔 것을 앱에 알린다
+            try{ if (backend && backend.setUiScaleMode) backend.setUiScaleMode(localStorage.getItem('uiScaleMode')||'layout'); }catch(e){}
             // 저장된 웹 검색 키 복원
             try{ var _bk=localStorage.getItem('braveKey')||''; if(_bk){ var _el=document.getElementById('ai-search-key'); if(_el)_el.value=_bk; if(backend.setSearchKey) backend.setSearchKey(_bk); } }catch(e){}
             if (backend) backend.loadConfig();
@@ -7347,6 +7361,21 @@
             b.addEventListener('click',function(){ applyTheme(b.getAttribute('data-theme-mode')); }); }); }
         applyTheme(cur());
         if(window.matchMedia){ try{ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(){ if(cur()==='auto') applyTheme('auto'); }); }catch(e){} }
+    })();
+    /* 창 크기를 바꿀 때 — 배치 바꾸기(layout, 기본) / 통째로 크기 조절(scale). 배율은 앱(C++)이 맡는다. */
+    (function(){
+        function cur(){ try{ return localStorage.getItem('uiScaleMode')||'layout'; }catch(e){ return 'layout'; } }
+        function paint(mode){ var seg=document.getElementById('scaleSeg');
+            if(seg){ seg.querySelectorAll('.theme-seg-btn').forEach(function(x){ x.classList.toggle('active', x.getAttribute('data-scale-mode')===mode); }); } }
+        window.applyUiScaleMode=function(mode){
+            try{ localStorage.setItem('uiScaleMode', mode); }catch(e){}
+            paint(mode);
+            try{ if(window.backend && backend.setUiScaleMode) backend.setUiScaleMode(mode); }catch(e){}
+        };
+        var seg=document.getElementById('scaleSeg');
+        if(seg){ seg.querySelectorAll('.theme-seg-btn').forEach(function(b){
+            b.addEventListener('click',function(){ applyUiScaleMode(b.getAttribute('data-scale-mode')); }); }); }
+        paint(cur());
     })();
     </script>
 
