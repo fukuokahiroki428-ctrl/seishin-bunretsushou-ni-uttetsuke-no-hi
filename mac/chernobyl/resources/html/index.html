@@ -3905,6 +3905,7 @@
         function switchTab(tab) {
             currentTab = tab;
             currentPlatform = tab;
+            { const a = document.querySelector('.app'); if (a) a.classList.remove('nav-open-narrow'); }   // 좁은 창: 고르면 닫는다
             // ★ index 매칭 X → onclick 문자열에서 탭 이름 추출해서 비교 (DOM 변경에 안전)
             document.querySelectorAll('.sidebar-nav .nav-item').forEach(n => {
                 const onclick = n.getAttribute('onclick') || '';
@@ -4702,6 +4703,12 @@
         }
         function toggleSidebar() {
             const app = document.querySelector('.app');
+            // 좁은 창에선 사이드바가 저절로 접혀 있다 — ☰ 는 본문 위에 잠깐 여닫는 것이고
+            // 저장하지 않는다(창을 넓히면 사용자가 정해 둔 접기/펴기로 돌아간다).
+            if (app && window.matchMedia && matchMedia('(max-width: 560px)').matches) {
+                app.classList.toggle('nav-open-narrow');
+                return;
+            }
             applySidebarState(!(app && app.classList.contains('nav-collapsed')));
         }
         function initSidebarState() {
@@ -4712,6 +4719,12 @@
         }
         document.addEventListener('DOMContentLoaded', initSidebarState);
         if (document.readyState !== 'loading') initSidebarState();
+        // 좁은 창에서 띄워 연 사이드바는 창을 넓히면 닫는다(넓은 창의 배치로 돌아간다)
+        try {
+            matchMedia('(max-width: 560px)').addEventListener('change', function (e) {
+                if (!e.matches) { const a = document.querySelector('.app'); if (a) a.classList.remove('nav-open-narrow'); }
+            });
+        } catch (e) {}
 
         function singleTargetOverride(id) {
             const e = document.getElementById(id);
@@ -7752,6 +7765,26 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
     .app:not(.nav-collapsed) .sidebar-toggle { left: 154px; }
 }
 .account-list > * + * { margin-top: 2px; }
+
+/* ★ 좁은 창(560px 이하) — 사이드바를 저절로 접는다.
+   사용자가 두 방식을 그림으로 보고 골랐다(2026-09-15): 창을 줄이면 화면이 통째로 작아지는
+   것이 아니라, 글자 크기는 두고 배치가 바뀌는 것. 그런데 680px 아래에선 사이드바가 오히려
+   190px 로 넓어져 최소 창(360px)에선 절반을 먹었다. 이 폭에선 접어 두고 본문이 폭을 다 쓴다.
+   ☰ 를 누르면 본문 위에 떠서 열린다(저장하지 않는다 — 넓히면 원래 설정대로). */
+@media (max-width: 560px) {
+    .app:not(.nav-open-narrow) .sidebar { width: 0; min-width: 0; max-width: 0; padding: 0; border-right: none; overflow: hidden; }
+    .app:not(.nav-open-narrow) .sidebar * { visibility: hidden; }
+    .app:not(.nav-open-narrow) .main { max-width: 100%; }
+    .app:not(.nav-open-narrow) .sidebar-toggle { left: 96px; }
+    .app:not(.nav-open-narrow) .toolbar { padding-left: 134px; }
+    .app.nav-open-narrow .sidebar {
+        position: fixed; top: 0; bottom: 0; left: 0; z-index: 28;
+        width: 190px; min-width: 190px; max-width: 190px;
+        background: var(--bg) !important; box-shadow: 0 0 24px rgba(0,0,0,.18);
+    }
+    .app.nav-open-narrow .sidebar * { visibility: visible; }
+    .app.nav-open-narrow .sidebar-toggle { left: 154px; }
+}
 
 </style>
 </body>
