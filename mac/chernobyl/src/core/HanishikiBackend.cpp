@@ -3066,8 +3066,24 @@ void HanishikiBackend::emailWatchTick()
 
     QThread *t = QThread::create([this, scriptPath, python, server, port, user, pass, ff, fs, lastUid]() {
         QProcess p;
-        QStringList args{scriptPath, server, QString::number(port), user, pass, ff, fs, QString::number(lastUid)};
-        p.start(python, args);
+        // ★ 자격증명을 명령줄로 넘기지 않는다. 윈도우에서 남의 프로세스 명령줄은
+        //   아무 프로세스나 읽을 수 있다(WMI Win32_Process, 작업 관리자의 '명령줄' 열)
+        //   — 메일 계정과 비밀번호가 그대로 보였다. 트위터·블루스카이 데몬에서
+        //   이미 고친 것과 같은 버그다. 같은 방식으로 stdin 한 줄에 실어 보낸다.
+        p.start(python, {scriptPath, QStringLiteral("--stdin-args")});
+        if (p.waitForStarted(10000)) {
+            QJsonObject init;
+            init["server"]         = server;
+            init["port"]           = port;
+            init["user"]           = user;
+            init["password"]       = pass;
+            init["filter_from"]    = ff;
+            init["filter_subject"] = fs;
+            init["last_uid"]       = lastUid;
+            p.write(QJsonDocument(init).toJson(QJsonDocument::Compact));
+            p.write("\n");
+            p.closeWriteChannel();
+        }
         bool ok = p.waitForFinished(20000);
         QString out = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
         QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();

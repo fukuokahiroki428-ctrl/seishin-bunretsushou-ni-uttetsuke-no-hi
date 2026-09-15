@@ -2623,8 +2623,11 @@ void MiyoBackend::logCollectionOptions(const QJsonObject &config, const QString 
         if (sensitiveKeys.contains(k) || k.contains("token", Qt::CaseInsensitive)
             || k.contains("password", Qt::CaseInsensitive) || k.contains("secret", Qt::CaseInsensitive)
             || k.contains("apikey", Qt::CaseInsensitive)) {
-            if (v.length() > 8) v = v.left(4) + "...***";
-            else v = "***";
+            // ★ 앞 4자도 남기지 않는다. 블루스카이 앱 비밀번호·픽시브 쿠키의
+            //   앞부분이 화면 기록과 로그 파일에 그대로 남고 있었다(맥에서 실측).
+            //   앞 4자는 "가렸다" 고 하기에는 너무 많다 — 대조·추측의 실마리가 된다.
+            //   Common::maskSecret 과 같은 방식으로 길이만 남긴다.
+            v = QStringLiteral("***(%1자)").arg(v.length());
         }
         // 너무 긴 값은 자름
         if (v.length() > 80) v = v.left(77) + "...";
@@ -3304,8 +3307,24 @@ void MiyoBackend::emailWatchTick()
 
     QThread *t = QThread::create([this, scriptPath, python, server, port, user, pass, ff, fs, lastUid]() {
         QProcess p;
-        QStringList args{scriptPath, server, QString::number(port), user, pass, ff, fs, QString::number(lastUid)};
-        p.start(python, args);
+        // ★ 자격증명을 명령줄로 넘기지 않는다. 윈도우에서 남의 프로세스 명령줄은
+        //   아무 프로세스나 읽을 수 있다(WMI Win32_Process, 작업 관리자의 '명령줄' 열)
+        //   — 메일 계정과 비밀번호가 그대로 보였다. 트위터·블루스카이 데몬에서
+        //   이미 고친 것과 같은 버그다. 같은 방식으로 stdin 한 줄에 실어 보낸다.
+        p.start(python, {scriptPath, QStringLiteral("--stdin-args")});
+        if (p.waitForStarted(10000)) {
+            QJsonObject init;
+            init["server"]         = server;
+            init["port"]           = port;
+            init["user"]           = user;
+            init["password"]       = pass;
+            init["filter_from"]    = ff;
+            init["filter_subject"] = fs;
+            init["last_uid"]       = lastUid;
+            p.write(QJsonDocument(init).toJson(QJsonDocument::Compact));
+            p.write("\n");
+            p.closeWriteChannel();
+        }
         bool ok = p.waitForFinished(20000);
         QString out = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
         QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();

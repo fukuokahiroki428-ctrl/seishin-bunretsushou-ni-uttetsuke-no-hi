@@ -3,7 +3,13 @@
 email_watch.py — IMAP 새 메일 감지 (내각회 알림 트리거용)
 
 호출:
+  email_watch.py --stdin-args
+      → stdin 으로 JSON 한 줄을 받는다:
+        {"server":"...","port":993,"user":"...","password":"...",
+         "filter_from":"","filter_subject":"","last_uid":0}
   email_watch.py <server> <port> <user> <password> [filter_from] [filter_subject] [last_uid]
+      → 손으로 시험할 때만. ★ 이 길로 부르면 비밀번호가 명령줄에 남고,
+        윈도우에서는 아무 프로세스나 그것을 읽을 수 있다.
 
 stdout: JSON {found: bool, count: N, last_uid: M, samples: [{from, subject, date}]}
         매치된 미읽음 메일이 있으면 found=true. backend가 그 신호 받고 내각회 즉시 실행.
@@ -36,17 +42,54 @@ def decode_str(s):
     return "".join(out)
 
 
-def main():
+def _read_init_line():
+    """첫 줄을 원시 fd 에서 한 바이트씩 읽는다.
+
+    ★ 파이썬의 버퍼는 한 번에 여러 줄을 삼킨다. 이 도구는 지금 한 줄만 받지만,
+      나중에 명령을 이어 받게 바꿔도 첫 줄 뒤가 사라지지 않도록 다른 데몬들과
+      같은 방식으로 맞춰 둔다.
+    """
+    import os as _os
+    buf = b""
+    while True:
+        ch = _os.read(0, 1)
+        if not ch or ch == b"\n":
+            break
+        buf += ch
+    return buf.decode("utf-8", "replace")
+
+
+def _load_args():
+    """자격증명을 받는다.
+
+    ★ 예전에는 서버·계정·비밀번호를 argv 로 받았다. 윈도우에서 남의 프로세스
+      명령줄은 아무 프로세스나 읽을 수 있어서(WMI Win32_Process, 작업 관리자의
+      '명령줄' 열) 메일 비밀번호가 그대로 노출됐다. 이제 stdin 으로 받는다.
+      argv 길은 손으로 시험할 때를 위해 남겨 두되, 그 쓰임은 노출된다.
+    """
+    if len(sys.argv) >= 2 and sys.argv[1] == "--stdin-args":
+        line = _read_init_line()
+        if not line.strip():
+            print(json.dumps({"error": "init args not received on stdin"}))
+            sys.exit(2)
+        a = json.loads(line)
+        return (a.get("server", ""), int(a.get("port", 993) or 993),
+                a.get("user", ""), a.get("password", ""),
+                str(a.get("filter_from", "") or "").strip().lower(),
+                str(a.get("filter_subject", "") or "").strip().lower(),
+                int(a.get("last_uid", 0) or 0))
     if len(sys.argv) < 5:
-        print(json.dumps({"error": "usage: server port user pass [from_filter] [subj_filter] [last_uid]"}))
+        print(json.dumps({"error": "usage: --stdin-args (or: server port user pass [from] [subj] [uid])"}))
         sys.exit(2)
-    server = sys.argv[1]
-    port = int(sys.argv[2])
-    user = sys.argv[3]
-    password = sys.argv[4]
-    filter_from = (sys.argv[5] if len(sys.argv) > 5 else "").strip().lower()
-    filter_subject = (sys.argv[6] if len(sys.argv) > 6 else "").strip().lower()
-    last_uid = int(sys.argv[7]) if len(sys.argv) > 7 and sys.argv[7].isdigit() else 0
+    return (sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4],
+            (sys.argv[5] if len(sys.argv) > 5 else "").strip().lower(),
+            (sys.argv[6] if len(sys.argv) > 6 else "").strip().lower(),
+            int(sys.argv[7]) if len(sys.argv) > 7 and sys.argv[7].isdigit() else 0)
+
+
+def main():
+    (server, port, user, password,
+     filter_from, filter_subject, last_uid) = _load_args()
 
     try:
         mail = imaplib.IMAP4_SSL(server, port, timeout=15)
