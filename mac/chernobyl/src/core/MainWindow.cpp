@@ -1,5 +1,5 @@
 #include "MainWindow.h"
-#include <QWindow>   // startSystemMove — 상단 띠 끌기로 창 옮기기
+#include <QCursor>   // 창 끌기 — 커서를 따라 옮긴다
 #include "Config.h"
 #include <QResizeEvent>
 #include "HanishikiBackend.h"
@@ -618,6 +618,49 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     if (!m_zoomTimer->isActive()) m_zoomTimer->start();
 }
 
+// ★ 창 끌기 — 커서를 직접 따라 옮긴다.
+//   예전엔 startSystemMove()(맥: performWindowDragWithEvent)에 맡겼는데 창이 꿈쩍하지
+//   않았다(사용자 확인 2026-09-15, 두 판 연속). 화면 쪽은 멀쩡했다 — 격리 앱에 마우스를
+//   흘려 보니 툴바·제목·사이드바 머리에서 winStartMove 가 한 번씩 불렸다. 막힌 곳은
+//   네이티브 쪽이다: Qt 는 마우스 이벤트를 모아 두었다 나중에 처리해, 그 순간
+//   NSApp.currentEvent 가 마우스 이벤트가 아니면 startSystemMove 는 아무것도 안 한다.
+//   → 이벤트에 기대지 않는다. 걸린 순간부터 왼쪽 버튼을 뗄 때까지 8ms 마다 커서 위치를
+//     읽어 커서 아래 창(본 창이든 기능 창이든)을 그만큼 옮긴다. 버튼 상태는 OS 에
+//     직접 묻는다 — Qt 가 기억하는 상태는 이벤트를 처리한 뒤에야 바뀌어 늦다.
+static bool leftMouseDown()
+{
+#ifdef Q_OS_MACOS
+    const unsigned long b = reinterpret_cast<unsigned long (*)(id, SEL)>(objc_msgSend)(
+        reinterpret_cast<id>(objc_getClass("NSEvent")), sel_registerName("pressedMouseButtons"));
+    return b & 1;
+#else
+    return QGuiApplication::mouseButtons() & Qt::LeftButton;
+#endif
+}
+
+void MainWindow::armWindowMove()
+{
+    if (!leftMouseDown()) return;                  // 이미 뗐다 — 늦게 온 요청은 버린다
+    QWidget *w = QApplication::widgetAt(QCursor::pos());
+    w = w ? w->window() : QApplication::activeWindow();
+    if (!w || w->isFullScreen()) return;          // 전체 화면 창은 옮기지 않는다(OS 와 같다)
+    m_dragWin = w;
+    m_dragOffset = QCursor::pos() - w->pos();
+    if (!m_dragTimer) {
+        m_dragTimer = new QTimer(this);
+        m_dragTimer->setInterval(8);
+        connect(m_dragTimer, &QTimer::timeout, this, &MainWindow::dragTick);
+    }
+    m_dragTimer->start();
+}
+
+void MainWindow::dragTick()
+{
+    if (!m_dragWin || !leftMouseDown()) { m_dragTimer->stop(); m_dragWin = nullptr; return; }
+    const QPoint to = QCursor::pos() - m_dragOffset;
+    if (to != m_dragWin->pos()) m_dragWin->move(to);
+}
+
 QList<QWebEngineView *> MainWindow::allWebViews() const
 {
     QList<QWebEngineView *> views;
@@ -777,29 +820,6 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
                 if (qAbs(v->zoomFactor() - z) >= 0.01) v->setZoomFactor(z);
             }
             break;
-        }
-    }
-
-    // ★ 창 끌어서 옮기기 — JS(상단 띠를 5px 넘게 끌기)가 armWindowMove() 로 걸어 두면,
-    //   바로 다음 네이티브 '끌기' 이벤트 안에서 그 이벤트가 속한 창의 이동을 시작한다.
-    //   예전엔 JS 가 부른 슬롯에서 곧장 본 창의 startSystemMove() 를 불렀는데,
-    //   ① 맥의 startSystemMove 는 '지금 처리 중인 NSEvent' 가 마우스 누름·끌기일 때만
-    //     움직인다. 채널을 건너온 호출은 이벤트 밖이라 될 때도 안 될 때도 있었고,
-    //     버튼을 뗀 뒤 도착하면 창이 커서에 붙어 따라다녔다.
-    //   ② 늘 본 창을 옮겼다 — 기능 창의 상단을 끌면 본 창이 움직였다.
-    //   이벤트 안에서, 그 이벤트의 창을 옮기면 둘 다 풀린다.
-    if (m_moveArmed) {
-        if (event->type() == QEvent::MouseMove) {
-            auto *me = static_cast<QMouseEvent *>(event);
-            m_moveArmed = false;
-            if (me->buttons() & Qt::LeftButton) {
-                QWidget *w = obj->isWidgetType() ? static_cast<QWidget *>(obj)->window() : nullptr;
-                if (w && w->windowHandle()) w->windowHandle()->startSystemMove();
-                return true;
-            }
-            // 버튼이 이미 떨어졌다 — 걸어 둔 것만 풀고 지나간다
-        } else if (event->type() == QEvent::MouseButtonRelease) {
-            m_moveArmed = false;
         }
     }
 

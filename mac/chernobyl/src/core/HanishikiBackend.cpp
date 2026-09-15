@@ -14266,7 +14266,8 @@ if __name__ == "__main__":
 //   ★ 여기서 곧장 부르지 않고 걸어만 둔다. 맥은 '지금 처리 중인 마우스 이벤트' 가
 //     있어야 옮기는데, 채널로 건너온 이 호출은 이벤트 밖이다(될 때도 안 될 때도 있었고,
 //     늦게 오면 창이 커서에 붙었다). 또 늘 본 창을 옮겨 기능 창을 끌면 본 창이 움직였다.
-//     실제 시작은 MainWindow::eventFilter 가 다음 끌기 이벤트 안에서, 그 창에 대해 한다.
+//     실제로는 MainWindow::armWindowMove 가 버튼을 뗄 때까지 커서를 따라 그 창을 옮긴다
+//     (startSystemMove 는 맥에서 끝내 창을 움직이지 못했다 — 거기 설명).
 void HanishikiBackend::winStartMove()
 {
     if (m_window) m_window->armWindowMove();

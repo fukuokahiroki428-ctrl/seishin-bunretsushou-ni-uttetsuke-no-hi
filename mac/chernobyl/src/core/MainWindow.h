@@ -97,11 +97,14 @@ public:
     void applyZoom();
     // 기능 하나를 별도 창으로 연다(이미 열려 있으면 앞으로).
     void openFeatureWindow(const QString &tabId, const QString &title);
-    // 상단 띠를 끌면 JS 가 부른다 — 바로 다음 '진짜' 마우스 끌기 이벤트 안에서
-    // 그 이벤트가 속한 창을 옮긴다(eventFilter 설명).
-    void armWindowMove() { m_moveArmed = true; }
+    // 창 끌기 — JS 가 끌 수 있는 빈 곳에서 5px 넘게 끌면 부른다. 그때부터 왼쪽 버튼을
+    // 떼기까지 커서를 따라 커서 아래 창을 옮긴다(MainWindow.cpp 설명).
+    void armWindowMove();
 private:
-    bool m_moveArmed = false;
+    void dragTick();
+    QPointer<QWidget> m_dragWin;           // 지금 끌고 있는 창(본 창 또는 기능 창)
+    QPoint m_dragOffset;                   // 커서 - 창 왼쪽 위
+    class QTimer *m_dragTimer = nullptr;   // 끄는 동안 8ms 마다 따라간다
     class QTimer *m_zoomTimer = nullptr;   // 창 크기 바뀔 때 배율 맞추기를 50ms 에 한 번으로
 
 #ifdef Q_OS_MACOS

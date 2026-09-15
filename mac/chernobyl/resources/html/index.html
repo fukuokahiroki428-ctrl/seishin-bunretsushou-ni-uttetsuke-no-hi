@@ -383,6 +383,7 @@
             height: 52px; border-bottom: 1px solid var(--border-light);
             display: flex; align-items: center; padding: 0 24px; gap: 12px;
             flex-shrink: 0; -webkit-app-region: drag;
+            user-select: none;   /* 끌 때 제목 글자가 선택되지 않게 */
         }
         .toolbar-title { font-size: 15px; font-weight: 600; color: var(--text); -webkit-app-region: no-drag; }
         .toolbar-spacer { flex: 1; }
@@ -4026,7 +4027,21 @@
                     if (logEl.firstElementChild) logEl.removeChild(logEl.firstElementChild);
                 }
             }
-            logEl.scrollTop = logEl.scrollHeight;
+            // ★ 줄마다 맨 아래로 스크롤하지 않는다 — 한 프레임에 한 번만.
+            //   백엔드는 300ms 마다 최대 50줄을 appendLog 50번으로 흘린다. 줄마다
+            //   scrollHeight 를 읽고 scrollTop 을 쓰면 그때마다 로그 상자(최대 800줄)를
+            //   다시 배치해야 해서, 수집 중에 화면이 버벅였다(렉). 다음 프레임에 몰아서 한 번.
+            _scheduleLogScroll(logEl);
+        }
+        const _logScrollPending = new Set();
+        function _scheduleLogScroll(el) {
+            if (_logScrollPending.has(el)) return;
+            const first = _logScrollPending.size === 0;
+            _logScrollPending.add(el);
+            if (first) requestAnimationFrame(function () {
+                _logScrollPending.forEach(function (e) { e.scrollTop = e.scrollHeight; });
+                _logScrollPending.clear();
+            });
         }
 
         function clearLog(platform) {
@@ -5998,32 +6013,40 @@
                     'button, input, select, textarea, a, [onclick], [contenteditable], .nav-item, label');
             }
             var __drag = null;
+            // ★ 끌 수 있는 곳을 넓혔다(사용자: "창 이동하는 히트박스를 늘리시오").
+            //   예전엔 상단 띠(사이드바 머리 · 툴바)뿐이었다. 이제
+            //     · 상단 띠 전체 — 제목·통계 글자 위도
+            //     · 사이드바의 빈 곳 — 메뉴 항목 사이·아래
+            //     · 본문의 빈 바탕 — 카드 사이·바깥 여백
+            //   카드 안(글·입력칸·버튼)과 스크롤 막대 위는 끌기가 아니다.
+            function isDragSurface(ev) {
+                var t = ev.target;
+                if (!t || !t.closest) return false;
+                if (t.scrollHeight > t.clientHeight + 1) {           // 스크롤 막대 — 오른쪽 16px
+                    var r = t.getBoundingClientRect();
+                    if (ev.clientX > r.right - 16) return false;
+                }
+                if (t.closest('.sidebar-header, .toolbar, .sidebar')) return true;
+                return t.matches('.scroll-area, .tab-content, .main, .app');
+            }
             function dragStart(ev) {
                 if (ev.button !== 0) return;
                 if (isInteractive(ev.target)) return;
+                if (!isDragSurface(ev)) return;
                 __drag = { x: ev.clientX, y: ev.clientY };
             }
             document.addEventListener('mousemove', function (ev) {
                 if (!__drag) return;
                 if (!ev.buttons) { __drag = null; return; }
                 var dx = ev.clientX - __drag.x, dy = ev.clientY - __drag.y;
-                if (dx * dx + dy * dy > 25) {          // 5px 이상 = 진짜 드래그
+                if (dx * dx + dy * dy > 25) {          // 5px 이상 = 진짜 드래그(짧은 클릭·더블클릭은 그대로)
                     __drag = null;
                     if (window.backend && backend.winStartMove) backend.winStartMove();
                 }
             });
             document.addEventListener('mouseup', function () { __drag = null; });
-            function attach() {
-                document.querySelectorAll('.sidebar-header, .toolbar').forEach(function (el) {
-                    if (el.__dragBound) return;
-                    el.__dragBound = true;
-                    el.style.cursor = 'default';
-                    el.addEventListener('mousedown', dragStart);
-                });
-            }
-            if (document.readyState === 'loading')
-                document.addEventListener('DOMContentLoaded', attach);
-            else attach();
+            // 문서 전체에 한 번 — 요소마다 붙이면 나중에 그려진 곳(기능 창·탭)이 빠진다
+            document.addEventListener('mousedown', dragStart, true);
         })();
 
         // ── AI 방식 — 로컬(번들 엔진) / 온라인(OpenAI 호환 API) ──────────────
