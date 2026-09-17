@@ -2581,6 +2581,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     m_saveExcel = config["excel"].toBool(true);
     m_saveExif = config["exif"].toBool(true);
     m_saveProgress = config["saveProgress"].toBool(false);  // 이어서 수집 기능 (체크박스)
+    // ★ 최대 수집 수 — 화면의 '최대 수집 수(0 = 전체)'. 이번 판에 새로 받은 것만 센다.
+    //   전에는 이 값을 어디서도 읽지 않아 8 을 넣어도 406개를 끝까지 받았다(맥 실측 2026-09-13).
+    //   트윗·좋아요·북마크·리포스트·하이라이트·리스트·커뮤니티·좁히기·스레드·좋아요/RT 한 유저에 걸린다.
+    const int maxCount = qMax(0, config["count"].toInt(0));
 
     if (accounts.isEmpty()) {
         m_backend->log("Add account first", "error", "twitter");
@@ -3206,7 +3210,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         bool hasMore = true;
         int consecutiveEmptyLikes = 0;
 
-        while (isRunning && hasMore) {
+        while (isRunning && hasMore && !(maxCount > 0 && tweetCount >= maxCount)) {
             auto [tweets, nextCursor] = getLikes(userId, cursor);
 
             if (nextCursor == "RATE_LIMITED") {
@@ -3229,7 +3233,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             consecutiveEmptyLikes = 0;
 
             for (const auto &tweetVal : tweets) {
-                if (!isRunning) break;
+                if (!isRunning || (maxCount > 0 && tweetCount >= maxCount)) break;
                 QJsonObject tweet = tweetVal.toObject();
                 QJsonObject legacy = tweet["legacy"].toObject();
                 QString tweetId = legacy["id_str"].toString();
@@ -3321,7 +3325,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         bool hasMore = true;
         int consecutiveEmptyBkmk = 0;
 
-        while (isRunning && hasMore) {
+        while (isRunning && hasMore && !(maxCount > 0 && tweetCount >= maxCount)) {
             auto [tweets, nextCursor] = getBookmarks(cursor);
 
             if (nextCursor == "RATE_LIMITED") {
@@ -3344,7 +3348,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             consecutiveEmptyBkmk = 0;
 
             for (const auto &tweetVal : tweets) {
-                if (!isRunning) break;
+                if (!isRunning || (maxCount > 0 && tweetCount >= maxCount)) break;
                 QJsonObject tweet = tweetVal.toObject();
                 QJsonObject legacy = tweet["legacy"].toObject();
                 QString tweetId = legacy["id_str"].toString();
@@ -3447,7 +3451,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 m_backend->log(QString("기간: %1 ~ %2").arg(since, until), "info", "twitter");
         }
 
-        while (isRunning && hasMore) {
+        while (isRunning && hasMore && !(maxCount > 0 && tweetCount >= maxCount)) {
             auto [tweets, nextCursor] = getUserTweets(userId, cursor);
 
             if (nextCursor == "RATE_LIMITED") {
@@ -3474,7 +3478,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
             bool pastRange = false;
             for (const auto &tweetVal : tweets) {
-                if (!isRunning) break;
+                if (!isRunning || (maxCount > 0 && tweetCount >= maxCount)) break;
                 QJsonObject tweet = tweetVal.toObject();
                 QJsonObject legacy = tweet["legacy"].toObject();
 
@@ -3930,6 +3934,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         }
     }
 
+    // 최대 수집 수는 이번 판에 새로 받은 것만 센다 — 위에서 불러온 기존 개수는 뺀다.
+    const int runStartCount = tweetCount;
+    auto capReached = [&]() { return maxCount > 0 && tweetCount - runStartCount >= maxCount; };
+
     // ★ '마지막으로 본 트윗 ID' 만은 체크박스와 무관하게 읽는다.
     //   m_newestTweetId 는 이번 판에서 실제로 처리한 트윗에서만 채워진다. 그런데
     //   이 앱의 보통 쓰임인 '현재 이어서' 는 새 글이 0개인 날이 대부분이라,
@@ -4071,7 +4079,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     auto processTweetBatch = [&](const QJsonArray &tweets) -> bool {
         bool pastRange = false;
         for (const auto &tweetVal : tweets) {
-            if (!isRunning) break;
+            if (!isRunning || capReached()) break;
 
             QJsonObject tweet = tweetVal.toObject();
             QJsonObject legacy = tweet["legacy"].toObject();
@@ -4430,7 +4438,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 saveExcelStreaming(userDir, target, collectedData, excelSuffix);
             }
         }
-        return pastRange;
+        return pastRange || capReached();   // 최대 수집 수에 닿아도 '그만' 신호
     };
 
     // ══════════════════════════════════════════════════════════════
@@ -4598,7 +4606,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
         QString hCursor;
         int hEmptyPages = 0;
-        while (isRunning) {
+        while (isRunning && !capReached()) {
             auto [batch, nextCursor] = getHighlights(userId, hCursor);
             if (nextCursor == "RATE_LIMITED") {
                 handleRateLimit(accounts, currentAccountIdx, isRunning);
@@ -4657,7 +4665,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
         QJsonArray users;
         QString uCursor;
-        while (isRunning) {
+        while (isRunning && !(maxCount > 0 && users.size() >= maxCount)) {
             auto [batch, nextCursor] =
                 (type == "favoriters") ? getFavoriters(focalId, uCursor)
                                         : getRetweeters(focalId, uCursor);
@@ -4678,6 +4686,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             uCursor = nextCursor;
             QThread::sleep(1);
         }
+        while (maxCount > 0 && users.size() > maxCount) users.removeLast();   // 페이지째 받아 넘친 만큼
 
         // 유저 리스트를 Excel 로 저장 (간단 포맷)
         if (m_saveExcel && !users.isEmpty()) {
@@ -4735,7 +4744,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
         QString lCursor;
         int lEmpty = 0;
-        while (isRunning) {
+        while (isRunning && !capReached()) {
             auto [batch, nextCursor] = getListTweets(listId, lCursor);
             if (nextCursor == "RATE_LIMITED") { handleRateLimit(accounts, currentAccountIdx, isRunning); continue; }
             if (nextCursor == "ERROR") {
@@ -4773,7 +4782,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
         QString cCursor;
         int cEmpty = 0;
-        while (isRunning) {
+        while (isRunning && !capReached()) {
             auto [batch, nextCursor] = getCommunityTweets(commId, cCursor);
             if (nextCursor == "RATE_LIMITED") { handleRateLimit(accounts, currentAccountIdx, isRunning); continue; }
             if (nextCursor == "ERROR") {
@@ -4814,7 +4823,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         QString cur;
         int pages = 0;
         const int NARROW_MAX_PAGES = 400;   // 과도한 페이지네이션 상한
-        while (isRunning && pages < NARROW_MAX_PAGES) {
+        while (isRunning && !capReached() && pages < NARROW_MAX_PAGES) {
             auto [tweets, nextCursor] = searchTweets(q, cur);
             if (nextCursor == "RATE_LIMITED") { handleRateLimit(accounts, currentAccountIdx, isRunning); continue; }
             if (nextCursor == "ERROR") { for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1); continue; }
@@ -4865,7 +4874,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
             QString searchCursor;
             bool searchHasMore = true;
-            while (isRunning && searchHasMore) {
+            while (isRunning && !capReached() && searchHasMore) {
                 auto [tweets, nextCursor] = searchTweets(currentQuery, searchCursor);
                 if (nextCursor == "RATE_LIMITED") { handleRateLimit(accounts, currentAccountIdx, isRunning); continue; }
                     if (nextCursor == "ERROR") { m_backend->log("API 오류 — 5초 후 재시도", "warning", "twitter"); for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1); continue; }
@@ -4894,7 +4903,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 QString futCursor;
                 int futureNew = 0;
                 int futurePages = 0;
-                while (isRunning && futurePages < 50) {  // 안전장치 50페이지
+                while (isRunning && !capReached() && futurePages < 50) {  // 안전장치 50페이지
                     auto [tweets, nextCursor] = searchTweets(futureQuery, futCursor);
                     if (nextCursor == "RATE_LIMITED") {
                         handleRateLimit(accounts, currentAccountIdx, isRunning);
@@ -4947,7 +4956,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             int consecutiveEmpty = 0;
             int iteration = 0;
 
-            while (isRunning && consecutiveEmpty < MAX_EMPTY) {
+            while (isRunning && !capReached() && consecutiveEmpty < MAX_EMPTY) {
                 iteration++;
                 backtrackCount++;
                 m_backend->log(QString("[%1] %2").arg(iteration).arg(currentQuery), "info", "twitter");
@@ -4957,7 +4966,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 int iterBatchCount = 0;  // API 가 반환한 총 트윗 수 (중복 포함)
                 QDate iterOldestDate;
 
-                while (isRunning) {
+                while (isRunning && !capReached()) {
                     auto [tweets, nextCursor] = searchTweets(currentQuery, searchCursor);
                     if (nextCursor == "RATE_LIMITED") {
                         handleRateLimit(accounts, currentAccountIdx, isRunning);
@@ -5013,6 +5022,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                     break;
                 }
 
+                // ★ 최대 수집 수에 닿으면 여기서 멈춘다. 이 판의 가장 오래된 날짜(iterOldestDate)는
+                //   아직 처리하지 못한 트윗까지 보고 정한 값이라 progress 에 적으면 안 된다.
+                if (capReached()) break;
+
                 // 다음 iteration 쿼리 결정
                 QDate nextUntil;
                 if (iterOldestDate.isValid()) {
@@ -5059,7 +5072,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     // Phase 2: UserTweets API (보충 — 검색에서 누락된 트윗 보충)
     // type="tweets_api"또는 type="all"에서만 실행
     // ══════════════════════════════════════════════════════════════
-    if (isRunning && (type == "tweets"|| type == "tweets_api"|| type == "all") && mode != "period") {
+    if (isRunning && !capReached() && (type == "tweets"|| type == "tweets_api"|| type == "all") && mode != "period") {
         m_backend->log(QString("Phase 2: UserTweets API로 누락 보충 (현재 %1개)").arg(tweetCount), "info", "twitter");
         int phase2New = 0;
         QString cursor;
@@ -5067,7 +5080,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         int emptyRetries = 0;
         int phase2Pages = 0;
 
-        while (isRunning && hasMore) {
+        while (isRunning && !capReached() && hasMore) {
             auto [tweets, nextCursor] = getUserTweets(userId, cursor);
 
             if (nextCursor == "RATE_LIMITED") {
@@ -5114,7 +5127,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     // Phase 3: 답글 별도 검색 (filter:replies)
     // type="replies"또는 type="all"에서만 실행
     // ══════════════════════════════════════════════════════════════
-    if (isRunning && (type == "replies"|| type == "all") && mode != "period") {
+    if (isRunning && !capReached() && (type == "replies"|| type == "all") && mode != "period") {
         m_backend->log("Phase 3: 답글 검색 (filter:replies) + 주간 백트래킹...", "info", "twitter");
         int replyNew = 0;
 
@@ -5125,7 +5138,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             bool replyHasMore = true;
             int replyEmptyRetries = 0;
 
-            while (isRunning && replyHasMore) {
+            while (isRunning && !capReached() && replyHasMore) {
                 auto [tweets, nextCursor] = searchTweets(replyQuery, replyCursor);
                 if (nextCursor == "RATE_LIMITED") {
                     handleRateLimit(accounts, currentAccountIdx, isRunning);
@@ -5178,13 +5191,13 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 replyQuery2 = QString("from:%1 filter:replies").arg(target);
             }
 
-            while (isRunning && replyConsecutiveEmpty < REPLY_MAX_EMPTY) {
+            while (isRunning && !capReached() && replyConsecutiveEmpty < REPLY_MAX_EMPTY) {
                 QString rCursor;
                 int iterNew = 0;
                 int iterBatch = 0;
                 QDate iterOldest;
 
-                while (isRunning) {
+                while (isRunning && !capReached()) {
                     auto [tweets, nextCursor] = searchTweets(replyQuery2, rCursor);
                     if (nextCursor == "RATE_LIMITED") {
                         handleRateLimit(accounts, currentAccountIdx, isRunning);
@@ -5343,6 +5356,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         }
     }
 
+    if (capReached())
+        m_backend->log(QString("최대 수집 수 %1개에 닿아 멈췄습니다 — 다음 '이어서 수집' 은 이번에 멈춘 자리를 다시 훑고, 받아 둔 것은 건너뜁니다.")
+                           .arg(maxCount), "info", "twitter");
+
     {
         double collectRatio = (statusesCount > 0) ? (double)tweetCount / statusesCount : 1.0;
         m_backend->log(QString("최종: %1개 트윗, %2개 미디어 (수집률 %3%)")
@@ -5359,7 +5376,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
     // 완료 시 progress 파일은 유지 (다음 이어서 수집에 사용)
     // 최종 상태 저장
-    if (oldestTweetDate.isValid()) {
+    // ★ 최대 수집 수에서 멈춘 판은 progress 를 적지 않는다. 이 판의 가장 오래된·새 날짜는
+    //   끝까지 못 본 구간을 덮고 있어, 적으면 다음 '이어서' 가 그 사이를 영영 건너뛴다.
+    //   안 적으면 같은 자리를 다시 훑고, 받아 둔 것은 엑셀 ID 로 건너뛰므로 빠짐없이 이어진다.
+    if (oldestTweetDate.isValid() && !capReached()) {
         saveProgress(oldestTweetDate.toString("yyyy-MM-dd"));
     }
 
