@@ -55,6 +55,25 @@ protected:
 #pragma comment(lib, "dwmapi.lib")
 #endif
 
+// ★ 화면(UI) 전용 프로필 — 화면이 적어 둔 설정이 켤 때마다 남는다.
+//   Qt 6 의 기본 프로필은 off-the-record(디스크에 아무것도 남기지 않는다)라, 화면이
+//   localStorage 에 적어 둔 설정 — 테마 · 사이드바 접기 · 창 크기 방식 · 웹 검색 키 — 이
+//   앱을 켤 때마다 사라졌다. 실측(2026-09-15): '통째로 크기 조절' 로 두고 껐다 켜니 저장값이
+//   null. 데이터 폴더에 웹 저장소가 한 번도 생긴 적이 없었다.
+//   이름 붙인 프로필은 AppData/QtWebEngine/ui 에 남는다. 캐시는 메모리에만 둔다 — 이 화면은
+//   로컬 파일이라 디스크 캐시가 필요 없고, 예전 내장 브라우저처럼 캐시가 불어나지 않게.
+//   본 창과 기능 창이 같이 쓴다(같은 설정을 본다). 부모는 qApp — 창(페이지)보다 늦게 사라진다.
+static QWebEngineProfile *uiProfile()
+{
+    static QWebEngineProfile *p = nullptr;
+    if (!p) {
+        p = new QWebEngineProfile(QStringLiteral("ui"), qApp);
+        p->setHttpCacheType(QWebEngineProfile::MemoryHttpCache);
+        p->setHttpCacheMaximumSize(16 * 1024 * 1024);
+    }
+    return p;
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
@@ -128,7 +147,7 @@ MainWindow::MainWindow(QWidget *parent)
     // WebEngineView (main UI)
     m_webView = new QWebEngineView(this);
     // ★ JS 콘솔 메시지 stderr 로 redirect — debug 용
-    m_webView->setPage(new DebugWebEnginePage(m_webView));
+    m_webView->setPage(new DebugWebEnginePage(uiProfile(), m_webView));   // 설정이 남는 프로필(위 설명)
     // 우클릭 메뉴 비활성화 (Reload/Inspect/View Source 같은 컨텍스트 메뉴 안 뜸)
     m_webView->setContextMenuPolicy(Qt::NoContextMenu);
 
@@ -337,7 +356,7 @@ void MainWindow::openFeatureWindow(const QString &tabId, const QString &title)
     win->setMinimumSize(360, 420);
 
     auto *view = new QWebEngineView(win);
-    view->setPage(new DebugWebEnginePage(view));
+    view->setPage(new DebugWebEnginePage(uiProfile(), view));   // 본 창과 같은 프로필 — 같은 설정을 본다
     view->setContextMenuPolicy(Qt::NoContextMenu);
     view->page()->setWebChannel(m_channel);        // 같은 채널 — 백엔드 공유
     view->settings()->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, true);
