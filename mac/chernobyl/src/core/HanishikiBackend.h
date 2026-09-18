@@ -286,6 +286,9 @@ private slots:
     void appendLogMainThread(const QString &message, const QString &type, const QString &platform);
 
 private:
+    // 프록시 도우미 — 비밀번호를 담아 돌려주므로 슬롯이 아니다(HanishikiBackend.cpp 설명).
+    QString proxyUrl(const QJsonObject &p, bool withCredentials = true) const;
+    QJsonObject proxyForAccount(const QJsonObject &account) const;
     MainWindow *m_window;
     Config *m_config;
     HttpClient *m_http;

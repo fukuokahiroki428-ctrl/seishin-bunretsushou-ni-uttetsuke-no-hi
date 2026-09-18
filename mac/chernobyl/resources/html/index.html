@@ -1474,6 +1474,16 @@
                             <label class="option-item" title="영상 페이지를 보이는 그대로 HTML 한 장으로 저장합니다. 영상이 내려가도 화면은 남습니다. 다운로드가 끝난 뒤에 진행합니다."><input type="checkbox" id="niconico-real-capture"> 진짜 페이지 캡쳐</label>
                             <label class="option-item"><input type="checkbox" id="niconico-cookies"> Chrome 쿠키 (로그인 필요 영상)</label>
                         </div>
+                        <div class="input-row" style="margin-top:8px;">
+                            <div class="field">
+                                <label class="field-label">프록시</label>
+                                <select class="input" id="niconico-proxy">
+                                    <option value="">직접 연결</option>
+                                    <option value="global">프록시 (VPN) 탭 설정</option>
+                                </select>
+                                <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">일본 전용(so…) 영상은 일본 경유가 있어야 받아집니다. 주소는 '프록시 (VPN)' 탭에서 넣습니다.</div>
+                            </div>
+                        </div>
                     </div>
                     <div class="section">
                         <div class="section-label">저장 경로</div>
@@ -4869,7 +4879,8 @@
                 thumb:document.getElementById('niconico-thumb').checked,
                 comments:document.getElementById('niconico-comments').checked,
                 browserCookies:document.getElementById('niconico-cookies').checked,
-                realCapture:!!(document.getElementById('niconico-real-capture')||{}).checked
+                realCapture:!!(document.getElementById('niconico-real-capture')||{}).checked,
+                proxy:((document.getElementById('niconico-proxy')||{}).value || '')
             };
             setRunning('niconico', true);
             clearLog('niconico');
@@ -5812,6 +5823,9 @@
             if (pw) pw.placeholder = o.hasPass ? '저장돼 있습니다 (바꾸려면 새로 입력)' : 'service password';
             var cb = document.getElementById('proxy-enabled');
             if (cb) cb.checked = !!o.enabled;
+            // 니코동 탭의 '프록시 (VPN) 탭 설정' 칸에 주소를 보여 준다(비밀번호는 없다)
+            var np = document.querySelector('#niconico-proxy option[value="global"]');
+            if (np) np.textContent = o.host ? ('프록시 (VPN) 탭 설정 — ' + o.host + ':' + (o.port || 1080)) : '프록시 (VPN) 탭 설정 (아직 비어 있음)';
         }
 
         function saveProxyConfig() {

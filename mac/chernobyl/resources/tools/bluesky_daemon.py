@@ -1280,6 +1280,7 @@ def main():
             resp = client.chat.bsky.convo.list_convos({'limit': 100})
             convos = getattr(resp, 'convos', [])
             for c in convos:
+                if over_cap(len(all_data)): break   # 최대 수집 수 — 다른 종류와 같게(윈도우 be7c0b2 가 짚었다)
                 members = getattr(c, 'members', [])
                 handles = ', '.join(getattr(m, 'handle', '') for m in members)
                 names = ', '.join(getattr(m, 'display_name', '') or '' for m in members)

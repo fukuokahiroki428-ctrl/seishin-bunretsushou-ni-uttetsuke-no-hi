@@ -3069,8 +3069,22 @@ void HanishikiBackend::emailWatchTick()
 
     QThread *t = QThread::create([this, scriptPath, python, server, port, user, pass, ff, fs, lastUid]() {
         QProcess p;
-        QStringList args{scriptPath, server, QString::number(port), user, pass, ff, fs, QString::number(lastUid)};
-        p.start(python, args);
+        // ★ 자격증명을 명령줄로 넘기지 않는다 — 메일 계정·비밀번호가 ps 로 보였다.
+        //   트위터·블루스키 데몬과 같은 방식으로 stdin 한 줄에 실어 보낸다(윈도우 916c093 과 같다).
+        p.start(python, {scriptPath, QStringLiteral("--stdin-args")});
+        if (p.waitForStarted(10000)) {
+            QJsonObject init;
+            init["server"]         = server;
+            init["port"]           = port;
+            init["user"]           = user;
+            init["password"]       = pass;
+            init["filter_from"]    = ff;
+            init["filter_subject"] = fs;
+            init["last_uid"]       = lastUid;
+            p.write(QJsonDocument(init).toJson(QJsonDocument::Compact));
+            p.write("\n");
+            p.closeWriteChannel();
+        }
         bool ok = p.waitForFinished(20000);
         QString out = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
         QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();
@@ -4831,6 +4845,43 @@ void HanishikiBackend::getProxyConfig()
         QJsonDocument(o).toJson(QJsonDocument::Compact))));
 }
 
+// 프록시 도우미 — 윈도우 MiyoBackend 와 같은 이름·같은 모양(니코동 경유를 두 판이 같게 쓰려고).
+//   맥은 이름 붙은 프로필 목록 대신 '프록시 (VPN)' 탭 설정 하나와 계정별 프록시가 있다.
+//     proxyForAccount({"proxy":"global"}) → 프록시 (VPN) 탭 설정(켜짐 여부와 상관없이 주소가 있으면)
+//     proxyForAccount(계정 객체)          → 그 계정의 proxyHost/proxyPort/proxyUser/proxyPass
+//   ★ 비밀번호를 담아 돌려주므로 슬롯이 아니다(화면에서 부를 수 없게 private).
+QString HanishikiBackend::proxyUrl(const QJsonObject &p, bool withCredentials) const
+{
+    const QString host = p["host"].toString();
+    const int port = p["port"].toInt();
+    if (host.isEmpty() || port <= 0) return QString();
+    QString scheme = p["type"].toString().toLower();
+    if (scheme.isEmpty()) scheme = "socks5";
+    QString auth;
+    if (withCredentials) {
+        const QString u = p["user"].toString(), pw = p["pass"].toString();
+        if (!u.isEmpty())
+            auth = QUrl::toPercentEncoding(u) + (pw.isEmpty() ? QByteArray() : ":" + QUrl::toPercentEncoding(pw)) + "@";
+    }
+    return QString("%1://%2%3:%4").arg(scheme, auth, host).arg(port);
+}
+
+QJsonObject HanishikiBackend::proxyForAccount(const QJsonObject &account) const
+{
+    const QString ph = account.value("proxyHost").toString();
+    const int pp = account.value("proxyPort").toInt();
+    if (!ph.isEmpty() && pp > 0)
+        return QJsonObject{{"name", "account"}, {"type", "socks5"}, {"host", ph}, {"port", pp},
+                           {"user", account.value("proxyUser").toString()},
+                           {"pass", account.value("proxyPass").toString()}};
+    if (account.value("proxy").toString() == QLatin1String("global") && m_config
+        && !m_config->proxyHost().isEmpty() && m_config->proxyPort() > 0)
+        return QJsonObject{{"name", "global"}, {"type", "socks5"},
+                           {"host", m_config->proxyHost()}, {"port", m_config->proxyPort()},
+                           {"user", m_config->proxyUser()}, {"pass", m_config->proxyPass()}};
+    return QJsonObject();
+}
+
 void HanishikiBackend::testProxy()
 {
     log("나가는 IP 를 확인합니다…", "info", "settings");
@@ -5505,14 +5556,12 @@ void HanishikiBackend::startYoutube(const QString &configJson)
 void HanishikiBackend::stopYoutube()
 {
     setPlatformRunning("youtube", false);
-    // Signal terminal script to stop — 마지막 config의 path에서 찾기
-    QString ytPath = m_lastConfig.value("youtube")["path"].toString();
-    if (ytPath.startsWith(QLatin1Char('~'))) ytPath.replace(0, 1, QDir::homePath());
-    QString ytBaseDir = ytPath + "/youtube";
-    // ★ 시스템 /tmp 안 씀 — 사용자가 지정한 임시 디스크 사용 (없으면 ytBaseDir)
-    QString tempDir = ytPath.isEmpty()
-        ? Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_yt"
-        : ytBaseDir + "/.abiwa_tmp";
+    // 터미널 스크립트에 중지 신호 — 실행부(runYoutubeDownload)와 '같은 자리' 에 쓴다.
+    //   ★ 예전엔 저장 경로가 있으면 <저장경로>/youtube/.abiwa_tmp 에 썼다. 실행부는 늘
+    //     <임시 디스크>/abiwa_yt 를 보므로 스크립트가 표식을 영영 못 봤고(pkill 만 멈췄다),
+    //     사용자 저장 폴더에 빈 .abiwa_tmp 가 쓰레기로 생겼다. 윈도우가 찾아 알려 왔다(fa808be).
+    QString tempDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString())
+                      + "/abiwa_yt";
     QFile stopFile(tempDir + "/miyo_yt_status.txt.stop");
     if (stopFile.open(QIODevice::WriteOnly)) {
         stopFile.write("STOP");
@@ -9586,6 +9635,40 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     baseArgs << "--ignore-errors";
     baseArgs << "--no-overwrites" << "--continue";
 
+    // ★ 프록시 경유 — 니코동의 일본 전용(so…) 영상은 실제 접속 IP 를 본다. yt-dlp 의
+    //   --geo-bypass·--xff(헤더 위조)는 안 통한다(니코동 추출기가 _GEO_BYPASS = False,
+    //   윈도우 실측 2026-09-18). 경유만이 방법이다.
+    //   프록시는 새로 받지 않고 '프록시 (VPN)' 탭에 등록해 둔 것을 쓴다(proxyForAccount).
+    //   ★ 인증이 있으면 로컬 중계기(127.0.0.1)를 준다 — 이 인자들은 .command 스크립트 파일에
+    //     그대로 적히므로, 비밀번호를 넣으면 디스크와 명령줄(ps)에 남는다.
+    {
+        const QString wantProxy = config["proxy"].toString().trimmed();
+        if (!wantProxy.isEmpty()) {
+            const QJsonObject prof = proxyForAccount(QJsonObject{{"proxy", wantProxy}});
+            QString arg;
+            if (!proxyUrl(prof).isEmpty()) {
+                if (prof["user"].toString().isEmpty()) {
+                    arg = proxyUrl(prof);
+                } else {
+                    Common::setThreadProxy(true, prof["host"].toString(), prof["port"].toInt(),
+                                           prof["user"].toString(), prof["pass"].toString());
+                    arg = Common::proxyLocalRelayUrl();
+                    Common::clearThreadProxy();
+                }
+            }
+            if (arg.isEmpty()) {
+                log(QString("프록시 '%1' 을 쓸 수 없습니다 — 직접 연결로 진행합니다. "
+                            "'프록시 (VPN)' 탭에 주소·포트가 들어 있는지 확인하세요.")
+                        .arg(wantProxy == QLatin1String("global") ? QStringLiteral("프록시 (VPN) 탭 설정") : wantProxy),
+                    "warning", platform);
+            } else {
+                baseArgs << "--proxy" << arg;
+                // 로그에는 자격증명 없는 형태만 적는다(proxyUrl 의 두 번째 인자).
+                log(QString("%1 프록시 경유: %2").arg(plabel, proxyUrl(prof, false)), "info", platform);
+            }
+        }
+    }
+
     // ★ 임시 script/status 는 로컬 temp 에 (NAS 는 POSIX 실행권한 보존 안 함 → .command 실행 실패).
     //   yt-dlp output 은 ytBaseDir (NAS 가능) 로 그대로.
     // youtube 는 기존 abiwa_yt 유지(stopYoutube 호환), 그 외 플랫폼은 abiwa_<platform>
@@ -12509,18 +12592,19 @@ void HanishikiBackend::extractTrad(const QString &configJson)
                     // Has EOCD but extraction failed → offsets may need fixing
                     // Try python3 with offset-aware extraction
                     log("EOCD 발견, 오프셋 복원 시도 중...", "info", "trad");
-                    QString pyScript = QString(
+                    // ★ 경로를 파이썬 소스에 끼워 넣지 않는다 — 이름에 따옴표가 있으면 구문이
+                    //   깨졌다. argv 로 넘긴다(윈도우 6687702 와 같다).
+                    const QString pyScript = QStringLiteral(
                         "import zipfile, sys\n"
                         "try:\n"
-                        "    with zipfile.ZipFile('%1') as z:\n"
-                        "        z.extractall('%2')\n"
+                        "    with zipfile.ZipFile(sys.argv[1]) as z:\n"
+                        "        z.extractall(sys.argv[2])\n"
                         "        print(len(z.namelist()))\n"
                         "except Exception as e:\n"
                         "    print(f'ERROR: {e}', file=sys.stderr)\n"
-                        "    sys.exit(1)\n"
-                    ).arg(pngPath, outputDir);
+                        "    sys.exit(1)\n");
                     QProcess py2;
-                    py2.start(pyCmd, {"-c", pyScript});
+                    py2.start(pyCmd, {"-c", pyScript, pngPath, outputDir});
                     if (py2.waitForFinished(-1) && py2.exitCode() == 0) {
                         QString out = QString::fromUtf8(py2.readAllStandardOutput()).trimmed();
                         int cnt2 = out.toInt();
