@@ -87,7 +87,11 @@ static void predormitionLogHandler(QtMsgType type, const QMessageLogContext &, c
                     .arg(nm.isEmpty() ? QStringLiteral("(이름없음)") : nm);
     }
     if (logFile && logFile->isOpen()) {
-        const QByteArray line = (QDateTime::currentDateTime().toString("HH:mm:ss.zzz")
+        // ★ 날짜까지 적는다. 시각만 찍으면 어제 22:56 줄과 오늘 22:56 줄을 구분할 수
+        //   없다 — 이 앱은 30분마다 폴링하며 몇 달을 내리 도는 물건이라, 로그를 볼
+        //   때 "이게 오늘 것인가" 를 매번 헷갈리게 된다(실제로 헷갈렸다).
+        //   한 줄에 11자가 늘어 5MB 회전이 그만큼 빨라지지만, 날짜 없는 로그보다는 낫다.
+        const QByteArray line = (QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz")
                                  + " [" + lvl + "] " + msg + extra + "\n").toUtf8();
         logFile->write(line);
         logFile->flush();
