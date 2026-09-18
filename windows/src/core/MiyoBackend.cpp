@@ -853,7 +853,7 @@ void MiyoBackend::startNaikakukai(const QString &configJson)
     for (const auto &v : m_naikakukaiWatches) {
         QJsonObject w = v.toObject();
         QString p = w["platform"].toString();
-        if (p == "twitter" || p == "bluesky" || p == "tumblr") {
+        if (p == "twitter" || p == "bluesky" || p == "tumblr" || p == "niconico") {
             filtered.append(w);
         } else {
             log(QString("内閣会: %1 은(는) 지원 안 함 — 건너뜀").arg(p), "warning", "naikakukai");
@@ -861,7 +861,7 @@ void MiyoBackend::startNaikakukai(const QString &configJson)
     }
     m_naikakukaiWatches = filtered;
     if (m_naikakukaiWatches.isEmpty()) {
-        log("内閣会: 지원 플랫폼(Twitter/Bluesky/Tumblr) 대상이 없습니다", "error", "naikakukai");
+        log("内閣会: 지원 플랫폼(Twitter/Bluesky/Tumblr/ニコニコ) 대상이 없습니다", "error", "naikakukai");
         return;
     }
 
@@ -905,7 +905,10 @@ void MiyoBackend::stopNaikakukai()
     if (!active.isEmpty() && platformRunning(active)) {
         log(QString("内閣会: 진행 중이던 %1 폴링도 함께 멈춥니다").arg(active),
             "warning", "naikakukai");
-        stopCollection(active);
+        // ★ 니코동은 수집 트랙이 아니라 yt-dlp 배치다. stopCollection 은 깃발만
+        //   내리고 받고 있는 yt-dlp 를 못 멈춘다 — 전용 중지라야 끝난다.
+        if (active == "niconico") stopNiconico();
+        else                      stopCollection(active);
     }
 
     log("内閣会 중지됨", "warning", "naikakukai");
@@ -3378,6 +3381,84 @@ void MiyoBackend::emailWatchTick()
     t->start();
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+//  内閣会가 감시할 니코동 대상 한 줄을 yt-dlp 가 받는 주소로 바꾼다.
+//    니코동 유저는 트위터처럼 핸들로 가리키지 않는다 — 번호다. 그래서 사용자가
+//    적을 수 있는 형태가 여러 가지다. 받아들이는 것만 적는다:
+//      12345678            → 유저 페이지(그 사람이 올린 영상 목록)
+//      user/12345678       ·  mylist/123  ·  series/123  ·  watch/sm123
+//      sm12345 · so12345 · nm12345   → 영상 하나
+//      https://…            → 적은 그대로
+//    알아볼 수 없으면 빈 문자열을 준다. 짐작해서 검색 같은 것으로 돌리지 않는다
+//    — 오타 하나가 1년짜리 무인 감시를 엉뚱한 영상 더미로 채운다.
+//    ※ 태그는 일부러 빼 두었다. yt-dlp 의 niconico:tag·nicovideo:search 가 지금
+//      0건을 돌려준다(2026-09-18 실측: ゲーム·VOCALOID 둘 다 0건, user·mylist·
+//      series 는 정상). 받는 게 없는 형태를 목록에 넣으면 사용자는 감시하고 있다고
+//      믿는데 1년 내내 아무 일도 일어나지 않는다.
+static QString niconicoWatchUrl(const QString &raw)
+{
+    QString t = raw.trimmed();
+    if (t.isEmpty()) return QString();
+    if (t.startsWith(QLatin1String("http://"), Qt::CaseInsensitive) ||
+        t.startsWith(QLatin1String("https://"), Qt::CaseInsensitive)) {
+        return (t.contains(QLatin1String("nicovideo.jp"), Qt::CaseInsensitive) ||
+                t.contains(QLatin1String("nico.ms"), Qt::CaseInsensitive)) ? t : QString();
+    }
+    // 스킴만 빠진 주소
+    static const QRegularExpression kBare(
+        QStringLiteral("^(www\\.|sp\\.|ch\\.)?nicovideo\\.jp/"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (kBare.match(t).hasMatch()) {
+        // 맨 도메인(nicovideo.jp/…)은 www 를 채워 둔다. 지금은 리다이렉트로 닿지만,
+        // 그 리다이렉트가 없어지면 1년짜리 무인 감시가 조용히 멈춘다.
+        if (t.startsWith(QLatin1String("nicovideo.jp/"), Qt::CaseInsensitive))
+            t.prepend(QLatin1String("www."));
+        return QStringLiteral("https://") + t;
+    }
+
+    if (t.startsWith(QLatin1Char('@'))) t.remove(0, 1);   // @12345 로 적는 사람도 있다
+
+    // 경로만 적은 경우
+    static const QRegularExpression kPath(
+        QStringLiteral("^(user|mylist|series|watch|channel)/"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (kPath.match(t).hasMatch()) {
+        QString u = QStringLiteral("https://www.nicovideo.jp/") + t;
+        // 유저 페이지는 /video 까지 가야 올린 영상 목록이다(그냥 /user/N 은 프로필).
+        if (t.startsWith(QLatin1String("user/"), Qt::CaseInsensitive) &&
+            !t.contains(QLatin1String("/video")))
+            u += QLatin1String("/video");
+        return u;
+    }
+
+    // 영상 ID
+    static const QRegularExpression kVideo(QStringLiteral("^(sm|so|nm)\\d+$"),
+                                           QRegularExpression::CaseInsensitiveOption);
+    if (kVideo.match(t).hasMatch()) return QStringLiteral("https://www.nicovideo.jp/watch/") + t;
+
+    // 숫자만 = 유저 번호
+    static const QRegularExpression kDigits(QStringLiteral("^\\d+$"));
+    if (kDigits.match(t).hasMatch())
+        return QStringLiteral("https://www.nicovideo.jp/user/") + t + QLatin1String("/video");
+
+    return QString();
+}
+
+//  내려받기 아카이브(.yt_archive.txt)의 줄 수. 폴링 전후로 재서 이번에 새로 받은
+//  영상이 몇 개인지 안다 — yt-dlp 는 받은 영상 ID 를 한 줄씩 덧붙이고 이미 있는
+//  것은 건드리지 않으므로, 늘어난 줄이 곧 새 영상이다.
+//  파일이 아직 없으면 -1 (첫 폴링).
+static int naikakukaiArchiveCount(const QString &nicoBaseDir)
+{
+    if (nicoBaseDir.isEmpty()) return -1;
+    QFile f(nicoBaseDir + QStringLiteral("/.yt_archive.txt"));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return -1;
+    int n = 0;
+    while (!f.atEnd())
+        if (!f.readLine().trimmed().isEmpty()) ++n;
+    return n;
+}
+
 void MiyoBackend::naikakukaiTick()
 {
     if (!m_naikakukaiRunning || m_naikakukaiWatches.isEmpty()) return;
@@ -3404,11 +3485,63 @@ void MiyoBackend::naikakukaiTick()
     // 여기서 보충해야 실제로 다운로드가 동작한다.
     QJsonObject runConfig = watch;
     runConfig["platform"] = platform;
-    // 트위터는 예전엔 최대 수집 수를 읽지 않아 감시가 사실상 '전부' 로 돌았다 — 그대로 둔다(0 = 전체).
-    //   이제 그 값을 지키므로 10 을 넣으면 새 글이 10개를 넘는 날 나머지를 다음 폴링으로 미룬다.
-    if (!runConfig.contains("count")) runConfig["count"] = (platform == "twitter") ? 0 : 10;
-    if (!runConfig.contains("type"))  runConfig["type"] = "tweets";  // 기본: 유저 타임라인
-    if (!runConfig.contains("mode"))  runConfig["mode"] = "tweets";
+    // ★ 니코동은 수집기가 아니라 yt-dlp 배치다. 트윗용 기본값(count/type/mode)을
+    //   그대로 넣으면 type 이 "tweets" 가 되어 저장 폴더(video/audio/thumbnail)도
+    //   포맷 선택도 어긋난다. 대신 감시 대상을 주소로 바꾸고, 화면의 니코동 설정을
+    //   그대로 쓴다 — 감시가 받은 파일이 직접 받은 것과 한 글자도 달라지지 않게.
+    QString nicoBase;          // <저장경로>/niconico — 새로 받은 게 몇 개인지 세는 자리
+    if (platform == "niconico") {
+        const QString u = niconicoWatchUrl(target);
+        if (u.isEmpty()) {
+            log(QString("内閣会: 니코동 대상 '%1' 을 알아볼 수 없습니다 — 유저번호(12345)·"
+                        "user/12345·mylist/123·series/123·sm12345·전체 주소 중 하나로 적어 주세요.")
+                    .arg(target), "error", "naikakukai");
+            return;
+        }
+        runConfig["url"] = u;
+        // 주소를 통째로 붙여 넣어 태그·검색을 가리킬 수는 있다. 막지는 않되,
+        // 지금은 아무것도 안 돌아온다는 것을 말해 준다(위 niconicoWatchUrl 설명).
+        if (u.contains(QLatin1String("/tag/")) || u.contains(QLatin1String("/search/")))
+            log("内閣会: 니코동 태그·검색 목록은 현재 0건을 돌려줍니다 — "
+                "유저 번호·마이리스트·시리즈로 지정하세요.", "warning", "naikakukai");
+        // 영상 하나가 아니라 목록(유저·마이리스트·시리즈·태그)이면 펼쳐야 한다.
+        runConfig["playlist"] = !u.contains(QLatin1String("/watch/"));
+
+        // 화질·유형·썸네일·메타데이터·댓글·프록시는 화면에 저장해 둔 값을 쓴다.
+        //   m_lastConfig 는 앱을 껐다 켜면 비어 있다 — 저장된 폼만 살아남는다.
+        const QJsonObject form = m_config ? m_config->formData() : QJsonObject();
+        auto formStr = [&form](const char *id, const QString &def) {
+            const QString v = form.value(QLatin1String(id)).toString().trimmed();
+            return v.isEmpty() ? def : v;
+        };
+        auto formBool = [&form](const char *id, bool def) {
+            const QJsonValue v = form.value(QLatin1String(id));
+            return v.isBool() ? v.toBool() : def;
+        };
+        if (!runConfig.contains("quality"))  runConfig["quality"]  = formStr("niconico-quality", QStringLiteral("1080p"));
+        if (!runConfig.contains("type"))     runConfig["type"]     = formStr("niconico-type", QStringLiteral("video"));
+        if (!runConfig.contains("thumb"))    runConfig["thumb"]    = formBool("niconico-thumb", true);
+        if (!runConfig.contains("metadata")) runConfig["metadata"] = formBool("niconico-metadata", true);
+        if (!runConfig.contains("comments")) runConfig["comments"] = formBool("niconico-comments", false);
+        if (!runConfig.contains("proxy"))    runConfig["proxy"]    = formStr("niconico-proxy", QString());
+
+        // ★ 페이지 캡쳐는 끈다. 캡쳐 대상은 '넘긴 주소' 라서, 감시에서는 같은 유저
+        //   페이지를 주기마다 한 장씩 다시 찍을 뿐이다. 그때마다 크롬이 뜬다.
+        runConfig["realCapture"] = false;
+
+        QString npath = runConfig["path"].toString().trimmed();
+        if (npath.isEmpty()) npath = formStr("niconico-path", QStringLiteral("~/Downloads"));
+        runConfig["path"] = npath;                     // ~ 는 runYoutubeDownload 가 편다
+        if (npath.startsWith(QLatin1Char('~'))) npath.replace(0, 1, QDir::homePath());
+        nicoBase = npath + QStringLiteral("/niconico");
+        log(QString("内閣会: 니코동 → %1").arg(u), "info", "naikakukai");
+    } else {
+        // 트위터는 예전엔 최대 수집 수를 읽지 않아 감시가 사실상 '전부' 로 돌았다 — 그대로 둔다(0 = 전체).
+        //   이제 그 값을 지키므로 10 을 넣으면 새 글이 10개를 넘는 날 나머지를 다음 폴링으로 미룬다.
+        if (!runConfig.contains("count")) runConfig["count"] = (platform == "twitter") ? 0 : 10;
+        if (!runConfig.contains("type"))  runConfig["type"] = "tweets";  // 기본: 유저 타임라인
+        if (!runConfig.contains("mode"))  runConfig["mode"] = "tweets";
+    }
 
     // 1) 계정 주입 — Config 저장소 우선, 없으면 이전 수집 config fallback
     QJsonArray accounts = m_config ? m_config->getAccounts(platform) : QJsonArray();
@@ -3442,13 +3575,18 @@ void MiyoBackend::naikakukaiTick()
     //   resumeMode=future로 since:newestDate 검색 → 새 글 0개면 collection 자체를 skip
     if (!runConfig.contains("resumeMode")) runConfig["resumeMode"] = "future";
 
+    // 니코동은 yt-dlp 의 진행 줄이 터미널 로그로 나간다. 창은 띄우지 않고
+    // 로그만 열어 둔다 — 그러면 그 줄이 内閣会 창으로 그대로 흘러들고,
+    // 주기마다 창이 튀어나와 포커스를 빼앗는 일도 없다.
+    if (platform == "niconico") openTerminalLog("niconico", nicoBase, false);
+
     // 백그라운드 스레드에서 실행
     setPlatformRunning(platform, true);
     {   // 어느 플랫폼을 内閣会가 띄웠는지 기억한다 — 중지 버튼이 이것만 멈추게.
         QMutexLocker lock(&m_runningMutex);
         m_naikakukaiActivePlatform = platform;
     }
-    QThread *thread = QThread::create([this, runConfig, platform, target]() {
+    QThread *thread = QThread::create([this, runConfig, platform, target, nicoBase]() {
         const QString p = platform;
         // ★ 이 워커의 trackKey 를 등록한다.
         //   안 하면 trackKey 가 빈 문자열이 되고, 그러면 페이지 캡쳐가
@@ -3461,12 +3599,15 @@ void MiyoBackend::naikakukaiTick()
         if (p == "twitter" && m_twitterCollector) {
             prevNewest = m_twitterCollector->newestTweetId();
         }
+        // 니코동은 '새 글' 을 아카이브 줄 수로 잰다 — 폴링 전후를 비교한다.
+        const int prevArchive = naikakukaiArchiveCount(nicoBase);
 
         // 이 수집은 감시가 돌린 것이다 — 로그를 内閣会 창에도 같이 흘린다.
         m_naikakukaiMirroring = true;
         if (p == "twitter") runTwitterCollection(runConfig);
         else if (p == "bluesky") runBlueskyCollection(runConfig);
         else if (p == "tumblr") runTumblrCollection(runConfig);
+        else if (p == "niconico") runYoutubeDownload(runConfig);
         m_naikakukaiMirroring = false;
         setPlatformRunning(p, false);
         clearThreadTrackKey();
@@ -3490,13 +3631,28 @@ void MiyoBackend::naikakukaiTick()
             newNewest = m_twitterCollector->newestTweetId();
         }
         bool foundNew = !newNewest.isEmpty() && newNewest != prevNewest;
-        QMetaObject::invokeMethod(this, [this, p, target, foundNew]() {
+        // 니코동 — 아카이브가 늘어난 만큼이 이번에 새로 받은 영상이다.
+        int nicoNew = 0;
+        if (p == "niconico") {
+            const int nowCount = naikakukaiArchiveCount(nicoBase);
+            if (nowCount >= 0) nicoNew = qMax(0, nowCount - qMax(0, prevArchive));
+            foundNew = nicoNew > 0;
+        }
+        QMetaObject::invokeMethod(this, [this, p, target, foundNew, nicoNew]() {
+            // 니코동 폴링이 열어 둔 로그를 닫는다(창은 남는다 — [DONE] 만 찍는다).
+            //   다른 플랫폼 폴링에서 부르면 안 된다. 사용자가 그 사이 직접 돌리고 있는
+            //   니코동 다운로드의 로그 통로를 남의 폴링이 끊어 버린다.
+            if (p == "niconico") closeTerminalLog("niconico");
             if (foundNew) {
-                log(QString("📢 内閣会: %1/%2 새 글 발견 — 다운 완료").arg(p, target),
+                const QString what = (nicoNew > 0) ? QString("새 영상 %1개 발견").arg(nicoNew)
+                                                   : QStringLiteral("새 글 발견");
+                // 니코동 대상은 핸들이 아니라 번호·주소라 @ 를 붙이지 않는다.
+                const QString who = (p == "niconico") ? target : QStringLiteral("@") + target;
+                log(QString("📢 内閣会: %1/%2 %3 — 다운 완료").arg(p, target, what),
                     "success", "naikakukai");
                 showSystemNotification(
                     QString("내각회 — %1").arg(target),
-                    QString("@%1 새 글 발견 → 자동 다운로드 완료").arg(target));
+                    QString("%1 %2 → 자동 다운로드 완료").arg(who, what));
             } else {
                 log(QString("内閣会: %1/%2 새 글 없음").arg(p, target), "info", "naikakukai");
             }
@@ -3637,7 +3793,8 @@ void MiyoBackend::openBackupTerminalLog()
               .arg(Common::jsStringLiteral(platform), Common::jsStringLiteral(QString())));
 }
 
-void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePath)
+void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePath,
+                                  bool showWindow)
 {
     // ★ 별도 cmd 창을 띄우지 않는다. 앱 안에 로그 창을 만든다.
     //   콘솔 창은 우리 규칙이 아니라 conhost 의 규칙을 따른다 — 그래서 계속 싸웠다.
@@ -3665,6 +3822,9 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
         f.write("=========================================\n\n");
         f.close();
     }
+
+    // 부르는 쪽이 창을 원하지 않으면 여기서 끝이다(로그 파일은 이미 열렸다).
+    if (!showWindow) return;
 
     // 창은 메인 스레드에서만 만든다 — 수집은 워커 스레드에서 불러온다.
     QMetaObject::invokeMethod(this, [this, platform, savePath]() {
@@ -9885,6 +10045,19 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
         q.replace("!", "^!");
         return "\"" + q + "\"";
     };
+    // ★ 주소만 % 를 %% 로 적는다. 배치는 큰따옴표 안에서도 %…% 를 변수로 읽고,
+    //   없는 변수면 통째로 지운다 — 퍼센트 인코딩된 주소가 녹아 없어진다.
+    //   실측(2026-09-18): /tag/%E3%82%B2%E3%83%BC%E3%83%A0 를 넘겼더니 yt-dlp 가
+    //   받은 것은 "82E33E33A0" 이었고 404 가 났다.
+    //   ※ esc() 전체에 넣으면 안 된다. -o 서식은 아래 outTemplate 에서 이미 한 번
+    //     두 배로 만들어 두므로, 여기서 또 두 배가 되면 %%%% 가 되어 yt-dlp 가
+    //     %(title)s 를 '치환할 서식' 이 아니라 '글자 그대로' 로 읽는다 —
+    //     실측으로 확인했다: 폴더 이름이 통째로 "%(channel,uploader)s" 가 되었다.
+    auto escUrl = [&esc](const QString &s) {
+        QString q = s;
+        q.replace("%", "%%");
+        return esc(q);
+    };
 
     QString argsStr;
     for (const QString &a : baseArgs) argsStr += esc(a) + " ";
@@ -9932,7 +10105,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
         script += "echo -----------------------------------------\r\n";
         script += "set RETRY=0\r\n";
         script += ":RETRY_LOOP_" + QString::number(i) + "\r\n";
-        script += esc(ytdlpPath) + " -o " + esc(outTemplate) + " " + argsStr + esc(urls[i]) + "\r\n";
+        script += esc(ytdlpPath) + " -o " + esc(outTemplate) + " " + argsStr + escUrl(urls[i]) + "\r\n";
         script += "if %errorlevel%==0 (\r\n  set /a SUCCESS+=1\r\n  echo ^>^> 완료\r\n) else (\r\n";
         // ★ if/else 블록 안에서 %RETRY% 는 파싱 시점(=0) 으로 고정됨 → !RETRY! 사용
         script += "  set /a RETRY+=1\r\n";

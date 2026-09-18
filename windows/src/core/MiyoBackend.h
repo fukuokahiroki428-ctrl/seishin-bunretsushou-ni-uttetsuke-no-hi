@@ -400,7 +400,10 @@ private:
     QString m_currentPlatform;
 
     // Terminal log window
-    void openTerminalLog(const QString &platform, const QString &savePath = QString());
+    //   showWindow=false 면 로그 파일만 연다 — 창을 만들지도, 이미 있는 창을
+    //   앞으로 끌어내지도 않는다. 内閣会의 폴링처럼 사람이 보고 있지 않은 자리에서 쓴다.
+    void openTerminalLog(const QString &platform, const QString &savePath = QString(),
+                         bool showWindow = true);
     // 백업 전용 — 컬러 + 스피너 애니메이션 (clear + tail -n 30 + spinner refresh 200ms)
     void openBackupTerminalLog();
     void writeTerminalLog(const QString &message, const QString &platform = QString());

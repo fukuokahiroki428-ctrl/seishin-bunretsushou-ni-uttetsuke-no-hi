@@ -2841,7 +2841,7 @@
                         <h3>개요</h3>
                         <div class="nt-card">
                             <div class="nt-row nt-stack"><div class="nt-rc">
-                                <div class="nt-hint">지정한 사용자의 신글을 주기적으로 감지하고 자동 다운로드합니다.<br>지원: <b>Twitter</b> (공식 API), <b>Bluesky</b> (AT Protocol), <b>Tumblr</b> (OAuth v2)<br>주기는 5분 이상 권장. 각 플랫폼은 이미 다운받은 글을 자동 스킵합니다.</div>
+                                <div class="nt-hint">지정한 사용자의 신글을 주기적으로 감지하고 자동 다운로드합니다.<br>지원: <b>Twitter</b> (공식 API), <b>Bluesky</b> (AT Protocol), <b>Tumblr</b> (OAuth v2), <b>ニコニコ</b> (yt-dlp)<br>주기는 5분 이상 권장. 각 플랫폼은 이미 다운받은 글을 자동 스킵합니다.<br>ニコニコ 는 유저 번호·마이리스트·시리즈·영상 ID·주소를 받습니다(태그·검색은 니코동이 목록을 주지 않아 제외). 화질·유형 등은 <b>ニコニコ 탭 설정</b>을 그대로 씁니다. 첫 폴링은 과거 영상까지 전부 받습니다.</div>
                             </div></div>
                         </div>
                     </div>
@@ -2851,10 +2851,11 @@
                         <div class="nt-card">
                             <div class="nt-row">
                                 <div class="nt-rl">플랫폼</div>
-                                <div class="nt-rc"><select class="nt-input" id="naikakukai-platform">
+                                <div class="nt-rc"><select class="nt-input" id="naikakukai-platform" onchange="onNaikakukaiPlatformChange()">
                                     <option value="twitter">Twitter</option>
                                     <option value="bluesky">Bluesky</option>
                                     <option value="tumblr">Tumblr</option>
+                                    <option value="niconico">ニコニコ</option>
                                 </select></div>
                             </div>
                             <div class="nt-row nt-stack">
@@ -5884,6 +5885,28 @@
         };
 
         // ── 内閣会 (Naikakukai) ──
+        // ★ 니코동 감시 대상 — 백엔드의 niconicoWatchUrl 과 같은 형태만 받는다.
+        //   니코동 유저는 이름이 아니라 번호로 가리킨다. 이름을 적으면 아무 일도
+        //   일어나지 않으므로, 여기서 먼저 막고 무엇을 적어야 하는지 알려 준다.
+        function _niconicoWatchOk(t) {
+            t = (t || '').trim();
+            if (!t) return false;
+            if (/^https?:\/\//i.test(t)) return /nicovideo\.jp|nico\.ms/i.test(t);
+            if (/^(www\.|sp\.|ch\.)?nicovideo\.jp\//i.test(t)) return true;
+            if (t.charAt(0) === '@') t = t.slice(1);
+            if (/^(user|mylist|series|watch|channel)\//i.test(t)) return true;
+            if (/^(sm|so|nm)\d+$/i.test(t)) return true;
+            return /^\d+$/.test(t);
+        }
+        // 플랫폼을 바꾸면 무엇을 적는 칸인지도 바뀐다.
+        function onNaikakukaiPlatformChange() {
+            const p = document.getElementById('naikakukai-platform');
+            const el = document.getElementById('naikakukai-target');
+            if (!p || !el) return;
+            el.placeholder = (p.value === 'niconico')
+                ? '예: 12345678 (유저번호) · mylist/123 · series/123 · sm12345'
+                : '예: user123 또는 handle.bsky.social';
+        }
         function renderNaikakukaiList() {
             const box = document.getElementById('naikakukai-list');
             const cnt = document.getElementById('naikakukai-count');
@@ -5895,7 +5918,7 @@
             }
             let html = '';
             naikakukaiWatches.forEach((w,i) => {
-                const plName = {twitter:'Twitter', bluesky:'Bluesky', tumblr:'Tumblr'}[w.platform] || w.platform;
+                const plName = {twitter:'Twitter', bluesky:'Bluesky', tumblr:'Tumblr', niconico:'ニコニコ'}[w.platform] || w.platform;
                 html += `<div style="display:flex; align-items:center; justify-content:space-between; padding:6px 8px; border-bottom:1px solid var(--border); font-size:13px;">
                     <span>${plName} / <b>${w.target}</b></span>
                     <button class="btn btn-secondary btn-sm" onclick="removeNaikakukaiWatch(${i})">삭제</button>
@@ -5908,6 +5931,11 @@
             const target = document.getElementById('naikakukai-target').value.trim();
             const path = document.getElementById('naikakukai-path').value.trim() || '~/Downloads';
             if (!target) { appendLog('대상을 입력하세요', 'warning', 'naikakukai'); return; }
+            if (platform === 'niconico' && !_niconicoWatchOk(target)) {
+                appendLog('니코동 대상 형식: 유저번호(12345) · user/12345 · mylist/123 · series/123 · sm12345 · 전체 주소 (태그·검색은 니코동이 목록을 안 줘서 제외)',
+                          'warning', 'naikakukai');
+                return;
+            }
             if (naikakukaiWatches.some(w => w.platform === platform && w.target === target)) {
                 appendLog('이미 추가된 대상입니다', 'warning', 'naikakukai'); return;
             }
