@@ -3677,8 +3677,13 @@ void MiyoBackend::openTerminalLog(const QString &platform, const QString &savePa
                 // ★ 内閣会 창은 수집 트랙이 아니라 감시 자체다. stopCollection("naikakukai")
                 //   는 있지도 않은 플랫폼의 깃발만 내리고 아무것도 멈추지 않는다.
                 //   감시를 멈춰야 진행 중인 폴링까지 함께 멈춘다.
-                if (key == "naikakukai") stopNaikakukai();
-                else                     stopCollection(key);
+                // ★ 유튜브·니코동은 수집 트랙이 아니라 yt-dlp 배치다. stopCollection 은
+                //   깃발만 내리고 받고 있는 yt-dlp 를 못 멈춘다 — 전용 중지를 불러야
+                //   콘솔 트리째(yt-dlp·ffmpeg 포함) 끝난다.
+                if      (key == "naikakukai") stopNaikakukai();
+                else if (key == "youtube")    stopYoutube();
+                else if (key == "niconico")   stopNiconico();
+                else                          stopCollection(key);
             }, Qt::QueuedConnection);
         }
         w->show();
@@ -5554,14 +5559,18 @@ void MiyoBackend::startYoutube(const QString &configJson)
     //   대신 m_terminalLogPaths 에 dummy 등록만 (writeTerminalLog 의 fallback skip 위해)
     //   yt-dlp 자체 출력은 yt-dlp script 가 직접 stdout 으로 보여줌.
     QString ytSavePath = config["path"].toString();
-    Q_UNUSED(ytSavePath);
-    // 의도적으로 openTerminalLog 호출 안 함 — 터미널 2개 뜨는 거 방지
+    if (ytSavePath.startsWith(QLatin1Char('~'))) ytSavePath.replace(0, 1, QDir::homePath());
+    // ★ 앱 터미널 창을 연다. 예전에는 열지 않았다 — 검은 cmd.exe 콘솔이 따로 떠서
+    //   터미널이 둘이 되기 때문이었다. 이제 그 콘솔을 안 띄우고 출력을 이 창으로
+    //   보내므로 창은 하나다. 덤으로 이 창의 ⏹ 중지 버튼이 유튜브에도 먹는다.
+    openTerminalLog("youtube", ytSavePath + "/youtube");
 
     QThread *thread = QThread::create([this, config]() {
         runYoutubeDownload(config);
         // 완료 처리 — 메인 스레드에서 실행 (QProcess/QSocketNotifier는 cross-thread 접근 불가)
         QMetaObject::invokeMethod(this, [this]() {
             setPlatformRunning("youtube", false);
+            closeTerminalLog("youtube");   // 창은 닫지 않는다 — 끝났다고 표시만 한다
             if (!isAnyRunning() && m_window) m_window->releaseAwake();
         });
     });
@@ -5633,12 +5642,18 @@ void MiyoBackend::startNiconico(const QString &configJson)
     config["platform"] = "niconico";        // runYoutubeDownload 가 <path>/niconico 저장 + 로그/게이지 키 분리
     m_lastConfig["niconico"] = config;
     setPlatformRunning("niconico", true);
+    {   // 유튜브와 같은 이유로 앱 터미널 창을 연다 — ⏹ 중지 버튼이 여기에도 먹는다.
+        QString nicoPath = config["path"].toString();
+        if (nicoPath.startsWith(QLatin1Char('~'))) nicoPath.replace(0, 1, QDir::homePath());
+        openTerminalLog("niconico", nicoPath + "/niconico");
+    }
     if (m_window) m_window->holdAwake();
 
     QThread *thread = QThread::create([this, config]() {
         runYoutubeDownload(config);
         QMetaObject::invokeMethod(this, [this]() {
             setPlatformRunning("niconico", false);
+            closeTerminalLog("niconico");
             if (!isAnyRunning() && m_window) m_window->releaseAwake();
         });
     });
@@ -9765,6 +9780,15 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     //   Windows-safe ⊂ macOS-safe 라 맥/윈도우 어디서나 열리는 이름이 됨 (NAS·이동 시 안전).
     baseArgs << "--windows-filenames" << "--trim-filenames" << "150";
 
+    // ★ 출력 인코딩을 UTF-8 로 못박는다. yt-dlp 는 제 preferredencoding() 을 쓰는데,
+    //   콘솔이 없으면(=앱 터미널로 파이프할 때) 그것이 시스템 ANSI 코드페이지가 된다.
+    //   이 기계는 1252 라 일본어·한글이 '?' 도 아니고 그냥 사라진다 — 실측:
+    //     그대로            → "Ore Factory Squad #8"      (20바이트, 앞의 일본어 소실)
+    //     --encoding utf-8  → "琴葉茜と金を掘りまくって…"  (89바이트, 온전)
+    //   PYTHONIOENCODING·PYTHONUTF8 로는 안 된다(yt-dlp 가 제 값으로 덮는다).
+    //   파일명에는 영향이 없다 — 붙이기 전후의 -o 결과가 같은 것을 확인했다.
+    baseArgs << "--encoding" << "utf-8";
+
     if (type == "audio") {
         // 오디오: AAC(m4a) 우선 추출 → mp4/m4a 컨테이너로 맥·윈도우 모두 재생.
         //   (mp3 재인코딩 대신 원본 AAC 유지; AAC 없을 때만 best 추출)
@@ -9924,7 +9948,10 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     script += "del /f \"%STOP_MARKER%\" 2>nul\r\n";
     script += "echo.\r\n";
     script += "echo   다운로드가 끝났습니다. 이 창을 닫아도 됩니다.\r\n";
-    script += "pause >nul\r\n";   // ★ 보이는 콘솔 — 사용자가 결과를 읽도록 대기. DONE 은 위에서 status 파일에 기록됨(앱은 status 로 감지).
+    // ★ pause 를 두지 않는다. 예전에는 보이는 콘솔에서 사용자가 결과를 읽도록
+    //   키 입력을 기다렸다. 이제 콘솔을 안 띄우므로 그대로 두면 아무도 키를 못 눌러
+    //   cmd.exe 가 영영 안 끝난다(앱이 '수집 중' 으로 남고 종료도 막힌다).
+    //   결과는 앱 터미널 창에 남아 있어 끝난 뒤에도 읽을 수 있다.   // ★ 보이는 콘솔 — 사용자가 결과를 읽도록 대기. DONE 은 위에서 status 파일에 기록됨(앱은 status 로 감지).
 #else
     // macOS/Linux: generate .command script
     QString scriptPath = tempDir + "/miyo_yt_download.command";
@@ -10056,20 +10083,33 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     //   기다리므로 잠깐 막혀도 상관없다.
     {
         const QString scriptPathCopy = scriptPath;
-        QMetaObject::invokeMethod(this, [this, scriptPathCopy]() {
+        const QString platformCopy = platform;   // 람다가 platform 을 캡처할 수 있게 밖에서 복사
+        QMetaObject::invokeMethod(this, [this, scriptPathCopy, platformCopy]() {
             QProcess *p = new QProcess(this);
             p->setProgram("cmd.exe");
             p->setArguments({"/c", QDir::toNativeSeparators(scriptPathCopy)});
-            p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) {
-                a->flags |= CREATE_NEW_CONSOLE;
-                a->flags &= ~CREATE_NO_WINDOW;
-                if (a->startupInfo) {
-                    a->startupInfo->dwFlags &= ~STARTF_USESTDHANDLES;
-                    a->startupInfo->dwFlags |= STARTF_USESHOWWINDOW;
-                    a->startupInfo->wShowWindow = SW_SHOWNORMAL;
+            // ★ 검은 콘솔을 따로 띄우지 않는다. 출력은 앱 터미널 창으로 보낸다.
+            //   예전 콘솔은 앱 바깥이라 ⏹ 중지도, 로그 저장도, 스크롤도 앱과 따로
+            //   놀았고 끝에 pause 로 남아 있었다. Qt 는 부모가 콘솔 없는 GUI 앱이면
+            //   자식에 CREATE_NO_WINDOW 를 자동으로 붙이므로 따로 할 일이 없다.
+            p->setProcessChannelMode(QProcess::MergedChannels);
+            QProcess *raw = p;
+            // yt-dlp 는 진행률을 \r 로 같은 줄에 덮어쓴다. 그대로 줄로 쪼개면 수백 줄이
+            //   쏟아진다 — \n 으로만 나누고 각 줄에서는 마지막 \r 구간만 남긴다.
+            //   콘솔에서 사람이 보던 것과 같은 모양이 된다.
+            auto pending = std::make_shared<QString>();
+            connect(p, &QProcess::readyRead, this, [this, raw, platformCopy, pending]() {
+                *pending += QString::fromUtf8(raw->readAll());
+                int at;
+                while ((at = pending->indexOf(QLatin1Char('\n'))) >= 0) {
+                    QString line = pending->left(at);
+                    pending->remove(0, at + 1);
+                    const int cr = line.lastIndexOf(QLatin1Char('\r'));
+                    if (cr >= 0) line = line.mid(cr + 1);
+                    line = line.trimmed();
+                    if (!line.isEmpty()) writeTerminalLog(line, platformCopy);
                 }
             });
-            QProcess *raw = p;
             connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
                 [this, raw](int, QProcess::ExitStatus) { m_childConsoleProcs.removeAll(raw); raw->deleteLater(); });
             m_childConsoleProcs.append(p);
