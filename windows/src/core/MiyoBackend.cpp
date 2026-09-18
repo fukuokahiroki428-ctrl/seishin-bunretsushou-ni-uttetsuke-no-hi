@@ -3894,7 +3894,17 @@ void MiyoBackend::updateStats(int posts, int media, const QString &status, const
         p = tk;
     }
     qint64 now = QDateTime::currentMSecsSinceEpoch();
-    bool forceUpdate = status.contains("Done") || status.contains("완료") || status.contains("待機") || status.contains("대기");
+    // ★ '끝' 을 알리는 상태는 절대 버리지 않는다.
+    //   이 1초 스로틀은 진행률처럼 쉴 새 없이 오는 것을 솎아내려고 둔 것인데,
+    //   마지막 한 줄까지 솎아 버리면 화면이 직전 상태로 굳는다. 실측: 중지를 눌러
+    //   프로세스가 다 죽고 버튼도 풀렸는데, 상태 배지는 '다운로드 중' 이고 사이드바
+    //   LED 는 켜진 채로 남았다 — '중지됨' 이 진행률 바로 뒤에 와서 버려진 탓이었다.
+    //   니코동만의 일이 아니라 모든 플랫폼의 중지가 같았다.
+    const bool forceUpdate = status.contains("Done")    || status.contains("완료")
+                          || status.contains("待機")    || status.contains("대기")
+                          || status.contains("중지")    || status.contains("중단")
+                          || status.contains("Stopped") || status.contains("오류")
+                          || status.contains("Error");
     if (!forceUpdate && m_lastStatsUpdate.contains(p) && (now - m_lastStatsUpdate[p]) < 1000) {
         return;
     }
@@ -10334,8 +10344,27 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
             int pct = (current * 100) / qMax(total, 1);
             if (platform == "youtube") runJs(QString("if(window.setYoutubeProgress)setYoutubeProgress(%1)").arg(pct));
             else runJs(QString("var _e=document.getElementById('niconico-progress-fill'); if(_e)_e.style.width='%1%';").arg(pct));
-            updateStats(current, 0, "Downloading", platform);
+            // ★ 한국어로 적는다. 사이드바 LED 와 상단 전역 게이지는 상태 문구를
+            //   /수집|다운로드|진행|중/ 으로 판정한다 — 영어 "Downloading" 은 거기에
+            //   안 걸려서, 받기 시작하고 3초쯤 뒤 LED 가 꺼진 채로 끝까지 갔다.
+            //   JS 쪽 startNiconico/startYoutube 도 처음엔 "다운로드 중" 을 넣는다 —
+            //   C++ 이 그것을 영어로 덮어쓰고 있었다.
+            updateStats(current, 0, "다운로드 중", platform);
         }
+    }
+
+    // ★ 중지로 빠져나온 판은 여기서 마지막 상태를 적는다.
+    //   stopYoutube/stopNiconico 가 '중지됨' 을 적어도, 이 루프가 그 직후에 진행
+    //   상태를 한 번 더 덮어쓰는 경합이 있었다 — 프로세스는 다 죽고 버튼도 풀렸는데
+    //   상태 배지만 '다운로드 중' 으로, 사이드바 LED 는 켜진 채로 굳어 있었다(실측).
+    //   마지막 말은 이 루프가 한다. 정상 완료로 빠져나왔을 때는 아직 running 이
+    //   true 라(그 깃발은 호출부가 내린다) 여기에 걸리지 않는다.
+    if (!platformRunning(platform)) {
+        updateStats(0, 0, "중지됨", platform);
+        runJs(platform == "youtube"
+                  ? QStringLiteral("if(window.setYoutubeProgress)setYoutubeProgress(0)")
+                  : QStringLiteral("var _e=document.getElementById('niconico-progress-fill');"
+                                   " if(_e)_e.style.width='0%';"));
     }
 
     // Cleanup temp files

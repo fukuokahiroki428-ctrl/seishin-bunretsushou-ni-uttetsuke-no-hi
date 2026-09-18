@@ -4548,7 +4548,7 @@
             document.getElementById('stat-media').textContent = s.media;
             const el = document.getElementById('stat-status');
             el.textContent = s.status;
-            const done = s.status==='대기'||s.status==='완료'||s.status==='Ready'||s.status==='Done';
+            const done = s.status==='대기'||s.status==='완료'||s.status==='Ready'||s.status==='Done'||s.status==='중단됨'||s.status==='중지됨'||s.status==='Stopped';
             const err = s.status==='오류'||s.status==='Error';
             el.className = 'badge ' + (done?'badge-ready':err?'badge-error':'badge-active');
             // Crawl 탭이 아닌 곳으로 전환 시 브라우저 창 숨기지 않음 (별도 창이므로)
@@ -4572,6 +4572,16 @@
         };
 
         // ── Button State ──
+        // ★ 상태 문구가 '끝난 것' 인지 한 곳에서 판정한다.
+        //   예전에는 자리마다 제각각이었고, LED·전역 게이지는 /중/ 한 글자로 봤다 —
+        //   그런데 '중지됨'·'중단됨' 에도 '중' 이 들어 있어서 멈춘 뒤에도 계속
+        //   '돌고 있음' 으로 잡혔다(실측: 프로세스가 다 죽고 배지가 '중지됨' 인데 LED 는 켜짐).
+        window.isDoneStatus = function(s){
+            s = String(s || '');
+            return s==='대기' || s==='완료' || s==='Ready' || s==='Done'
+                || s==='중단됨' || s==='중지됨' || s==='Stopped' || s==='';
+        };
+
         function setRunning(platform, running) {
             const startBtn = document.getElementById(platform + '-start-btn');
             const stopBtn = document.getElementById(platform + '-stop-btn');
@@ -4594,7 +4604,7 @@
             platformStats[p].status = status;
             if (window.setNavLed) setNavLed(p, status);   // 스테이션 레일 LED 동기화
             try { var _act=0; for (var _k in platformStats){ var _s=String((platformStats[_k]||{}).status||'');
-                if(!/오류|error|fail/i.test(_s) && /수집|다운로드|진행|중/.test(_s) && !/완료|대기/.test(_s)) _act++; }
+                if(!/오류|error|fail/i.test(_s) && !window.isDoneStatus(_s)) _act++; }
                 var _ga=document.getElementById('global-active'); if(_ga)_ga.textContent=_act;
                 var _tg=document.getElementById('tb-global'); if(_tg)_tg.setAttribute('data-on', _act>0?'1':'0'); } catch(e){}   // 상단바 전역 활성 게이지
             // 현재 보고 있는 탭이면 UI 업데이트
@@ -4603,12 +4613,12 @@
                 document.getElementById('stat-media').textContent = media;
                 const el = document.getElementById('stat-status');
                 el.textContent = status;
-                const done = status==='대기'||status==='완료'||status==='Ready'||status==='Done'||status==='중단됨'||status==='Stopped';
+                const done = status==='대기'||status==='완료'||status==='Ready'||status==='Done'||status==='중단됨'||status==='중지됨'||status==='Stopped';
                 const err = status==='오류'||status==='Error';
                 const stopped = status==='중단됨'||status==='Stopped';
                 el.className = 'badge ' + (stopped?'badge-warning':done?'badge-ready':err?'badge-error':'badge-active');
             }
-            const done = status==='대기'||status==='완료'||status==='Ready'||status==='Done'||status==='중단됨'||status==='Stopped';
+            const done = status==='대기'||status==='완료'||status==='Ready'||status==='Done'||status==='중단됨'||status==='중지됨'||status==='Stopped';
             const err = status==='오류'||status==='Error';
             // ★ 다중 수집 중에는 한 항목 완료/오류 시 setRunning(false) 하지 않음.
             //   _multis 가 살아있고 아직 running 상태인 항목이 있으면 정지 버튼 유지.
@@ -7907,7 +7917,7 @@
       window.setNavLed=function(plat,status){
         var it=document.querySelector('.sidebar-nav .nav-item[data-plat="'+plat+'"]'); if(!it) return;
         var s=String(status||'');
-        var v=/오류|error|fail/i.test(s)?'err':((/수집|다운로드|진행|중/.test(s)&&!/완료|대기/.test(s))?'live':'idle');
+        var v=/오류|error|fail/i.test(s)?'err':(window.isDoneStatus(s)?'idle':'live');
         it.setAttribute('data-led', v);
       };
       if(document.readyState!=='loading') tag(); else document.addEventListener('DOMContentLoaded', tag);
