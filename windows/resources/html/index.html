@@ -1797,6 +1797,13 @@
                                     <option value="thumbnail">썸네일만</option>
                                 </select></div>
                             </div>
+                            <div class="nt-row">
+                                <div class="nt-rl">프록시</div>
+                                <div class="nt-rc"><select class="nt-input" id="niconico-proxy" style="max-width:220px;">
+                                    <option value="">직접 연결</option>
+                                </select>
+                                <span style="margin-left:9px;color:var(--muted);font-size:12px;">일본 전용(so…) 영상은 일본 경유가 있어야 받아집니다. 설정 → 프록시에서 먼저 등록하세요.</span></div>
+                            </div>
                             <div class="nt-row nt-stack"><div class="nt-rc">
                                 <div class="nt-checks">
                                     <label class="nt-check"><input type="checkbox" id="niconico-thumb"> 썸네일</label>
@@ -5424,7 +5431,8 @@
                 thumb:document.getElementById('niconico-thumb').checked,
                 metadata:document.getElementById('niconico-metadata').checked,
                 comments:document.getElementById('niconico-comments').checked,
-                realCapture:!!(document.getElementById('niconico-real-capture')||{}).checked
+                realCapture:!!(document.getElementById('niconico-real-capture')||{}).checked,
+                proxy:((document.getElementById('niconico-proxy')||{}).value || '')
             };
             setRunning('niconico', true);
             clearLog('niconico');
@@ -6385,6 +6393,9 @@
         function loadProxyProfiles(){ if (window.backend && backend.getProxyProfiles) backend.getProxyProfiles(); }
         window.onProxyProfiles = function(list){
             _proxyProfiles = list || [];
+            // 니코동 탭의 프록시 칸도 같이 채운다 — 설정에서 프로필을 추가하면 바로 보이게.
+            var _np = document.getElementById('niconico-proxy');
+            if (_np) fillProxySelect(_np);
             var box = document.getElementById('proxy-list');
             if (box) {
                 if (!_proxyProfiles.length) {

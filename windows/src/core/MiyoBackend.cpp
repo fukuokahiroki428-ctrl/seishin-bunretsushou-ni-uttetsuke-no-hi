@@ -9727,6 +9727,30 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     //   실패분만 재시도(완료 video ID 를 .yt_archive.txt 에 기록). 차단이 간헐적이라
     //   같은 다운로드를 몇 번 다시 돌리면 100% 수렴한다. 무로그인 봇차단 대응의 핵심.
     // yt-dlp(파이썬)가 직접 여는 파일이다 — 260자를 넘으면 못 연다.
+    // ★ 프록시 경유 — 지역 제한이 걸린 영상(니코동의 일본 전용 so… 등)은 실제 접속 IP 를
+    //   본다. yt-dlp 의 --geo-bypass·--xff(헤더 위조)는 통하지 않는다: 니코동 추출기가
+    //   _GEO_BYPASS = False 로 꺼 두었고, 실측으로도 --geo-bypass / --xff JP /
+    //   --xff <일본 IP 대역> 셋 다 막혔다(2026-09-18). 경유만이 방법이다.
+    //   프록시는 새로 받지 않고 설정 화면에 등록해 둔 프로필을 이름으로 고른다 —
+    //   자격증명은 앱이 들고 있으므로 화면·로그에 나가지 않는다.
+    {
+        const QString wantProxy = config["proxy"].toString().trimmed();
+        if (!wantProxy.isEmpty()) {
+            const QJsonObject prof = proxyForAccount(QJsonObject{{"proxy", wantProxy}});
+            const QString purl = proxyUrl(prof);
+            if (purl.isEmpty()) {
+                log(QString("프록시 '%1' 을 찾지 못했습니다 — 직접 연결로 진행합니다. "
+                            "설정 → 프록시에서 등록했는지 확인하세요.").arg(wantProxy),
+                    "warning", platform);
+            } else {
+                baseArgs << "--proxy" << purl;
+                // 로그에는 자격증명 없는 형태만 적는다(proxyUrl 의 두 번째 인자).
+                log(QString("%1 프록시 경유: %2").arg(plabel, proxyUrl(prof, false)),
+                    "info", platform);
+            }
+        }
+    }
+
     baseArgs << "--download-archive"
              << Common::longPathArg(QDir::toNativeSeparators(ytBaseDir + "/.yt_archive.txt"));
     baseArgs << "--ignore-errors";   // 한 영상 실패가 전체 재생목록/채널 배치를 멈추지 않게
