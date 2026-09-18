@@ -5572,14 +5572,14 @@ void MiyoBackend::startYoutube(const QString &configJson)
 void MiyoBackend::stopYoutube()
 {
     setPlatformRunning("youtube", false);
-    // Signal terminal script to stop — 마지막 config의 path에서 찾기
-    QString ytPath = m_lastConfig.value("youtube")["path"].toString();
-    if (ytPath.startsWith(QLatin1Char('~'))) ytPath.replace(0, 1, QDir::homePath());
-    QString ytBaseDir = ytPath + "/youtube";
-    // ★ 시스템 /tmp 안 씀 — 사용자가 지정한 임시 디스크 사용 (없으면 ytBaseDir)
-    QString tempDir = ytPath.isEmpty()
-        ? Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_yt"
-        : ytBaseDir + "/.abiwa_tmp";
+    // 저장 경로는 이제 볼 필요가 없다 — 임시 폴더가 저장 경로와 무관해졌다(아래 참고).
+    // ★ 실행부(runYoutubeDownload)와 반드시 같은 폴더를 봐야 한다.
+    //   윈도우 실행부는 저장 경로와 무관하게 늘 <tempBase>/abiwa_yt 를 쓴다.
+    //   예전엔 저장 경로가 있으면 <저장경로>/youtube/.abiwa_tmp 를 봤는데(맥에서
+    //   그대로 옮겨 온 줄), 그래서 .bat 이 STOP 표식을 영영 못 보고 사용자 저장
+    //   폴더에는 빈 .abiwa_tmp 만 생겼다.
+    QString tempDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString())
+                      + "/abiwa_yt";
     QFile stopFile(tempDir + "/miyo_yt_status.txt.stop");
     if (stopFile.open(QIODevice::WriteOnly)) {
         stopFile.write("STOP");
@@ -5592,10 +5592,14 @@ void MiyoBackend::stopYoutube()
     //   (영상 편집 중이었다면 그 작업이 날아간다). 우리 것은 명령줄에 앱 임시
     //   폴더(abiwa_) 가 들어 있으므로 그것으로만 고른다.
     // 부모 콘솔을 트리째 — 이것이 실제로 지금 받고 있는 것을 멈춘다.
-    killTreeByCommandLine("cmd.exe", "miyo_yt_download.bat");
+    // ★ needle 은 .bat 이름이 아니라 '자기 임시 폴더 이름' 이어야 한다.
+    //   유튜브와 니코동은 .bat 이름이 같아서(miyo_yt_download.bat) 이름으로 고르면
+    //   둘 다 걸린다 — 한쪽을 멈출 때 다른 쪽이 같이 죽었다(실측 확인).
+    const QString killTag = QFileInfo(tempDir).fileName();   // abiwa_yt
+    killTreeByCommandLine("cmd.exe", killTag);
     // 남은 것이 있으면 보조로 한 번 더 (명령줄에 앱 임시 폴더가 든 경우).
-    killByCommandLine("yt-dlp.exe", "abiwa_");
-    killByCommandLine("ffmpeg.exe", "abiwa_");
+    killByCommandLine("yt-dlp.exe", killTag);
+    killByCommandLine("ffmpeg.exe", killTag);
 #else
     // macOS/Linux: pkill로 yt-dlp, ffmpeg 즉시 종료
     // ★ "yt-dlp" 만으로 고르면 사용자가 터미널에서 따로 돌리던 것까지 끝난다.
@@ -5653,10 +5657,14 @@ void MiyoBackend::stopNiconico()
     // ★ 이름만으로 죽이면 사용자가 따로 돌리던 yt-dlp·ffmpeg 까지 끝난다.
     //   우리 것은 명령줄에 앱 임시 폴더(abiwa_)가 들어 있으므로 그것으로만 고른다.
     // 부모 콘솔을 트리째 — 이것이 실제로 지금 받고 있는 것을 멈춘다.
-    killTreeByCommandLine("cmd.exe", "miyo_yt_download.bat");
+    // ★ needle 은 .bat 이름이 아니라 '자기 임시 폴더 이름'(abiwa_niconico) 이어야 한다.
+    //   .bat 이름은 유튜브와 같아서, 그것으로 고르면 유튜브 다운로드까지 죽는다.
+    //   맥이 stopNiconico 에서 프로세스를 안 죽이는 이유가 바로 그 보호다.
+    const QString killTag = QFileInfo(tempDir).fileName();   // abiwa_niconico
+    killTreeByCommandLine("cmd.exe", killTag);
     // 남은 것이 있으면 보조로 한 번 더 (명령줄에 앱 임시 폴더가 든 경우).
-    killByCommandLine("yt-dlp.exe", "abiwa_");
-    killByCommandLine("ffmpeg.exe", "abiwa_");
+    killByCommandLine("yt-dlp.exe", killTag);
+    killByCommandLine("ffmpeg.exe", killTag);
 #else
     // 맥도 같은 이유로 우리 임시 폴더를 쓰는 것만 고른다.
     QProcess::execute("pkill", {"-f", "yt-dlp.*abiwa_"});
