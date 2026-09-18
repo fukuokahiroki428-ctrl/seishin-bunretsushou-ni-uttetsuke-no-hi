@@ -14276,7 +14276,10 @@ void HanishikiBackend::winStartMove()
 // 설정 '창 크기를 바꿀 때' — 화면이 켤 때마다, 그리고 고를 때마다 알려 준다.
 void HanishikiBackend::setUiScaleMode(const QString &mode)
 {
-    if (m_window) m_window->setScaleWithWindow(mode == QLatin1String("scale"));
+    if (!m_window) return;
+    m_window->setScaleMode(mode == QLatin1String("layout") ? MainWindow::ScaleLayout
+                         : mode == QLatin1String("scale")  ? MainWindow::ScaleWhole
+                                                            : MainWindow::ScaleBoth);
 }
 
 void HanishikiBackend::setWindowChrome(bool dark)
