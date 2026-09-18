@@ -7474,7 +7474,7 @@ bool HanishikiBackend::downloadSpaceUrl(const QString &urlIn, const QString &out
          //   없이는 "Unable to create directory [WinError 3]", 붙이면 통과).
          //   템플릿이라 지금 길이는 짧은데 %(title).180s 가 나중에 부풀어 오른다 —
          //   부풀 만큼(255)을 미리 얹어 재게 한다. (Common.h 의 longPathArg 설명)
-         << "-o" << Common::longPathArg(outDir + "/%(title).180s [%(id)s].%(ext)s", 255)
+         << "-o" << Common::longPathTemplate(outDir, "%(title).180s [%(id)s].%(ext)s")
          << url;
 
     log(QString("🎙️ 스페이스 다운로드: %1").arg(url), "info", "twitter");

@@ -1227,6 +1227,20 @@ void killProcessByPid(qint64 pid)
 #endif
 }
 
+QString longPathTemplate(const QString &dir, const QString &tail)
+{
+    QString t = tail;
+    while (t.startsWith(QLatin1Char('/')) || t.startsWith(QLatin1Char('\\'))) t.remove(0, 1);
+
+    const QString d = longPathArg(dir);          // 깊지 않으면 원본 그대로 돌아온다
+    QString out = d + QLatin1Char('/') + t;
+#ifdef Q_OS_WIN
+    // 접두사가 붙었을 때만 구분자를 맞춘다. 안 붙었으면 예전과 한 글자도 다르지 않다.
+    if (d.startsWith(QLatin1String("\\\\?\\"))) out = QDir::toNativeSeparators(out);
+#endif
+    return out;
+}
+
 QString longPathArg(const QString &path, int reserveChars)
 {
 #ifndef Q_OS_WIN

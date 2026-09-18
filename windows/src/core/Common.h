@@ -177,4 +177,15 @@ QString maskSecret(const QString &value, const QString &who = QString());
 //   윈도우가 아니면 원본을 그대로 돌려준다 — 맥·리눅스에는 이 한계가 없다.
 QString longPathArg(const QString &path, int reserveChars = 0);
 
+// ★ yt-dlp 의 -o 처럼 '폴더 + 출력 템플릿' 인 인자를 만든다.
+//   템플릿 전체를 longPathArg 에 넣으면 안 된다. 그러면 짧은 경로에도 접두사가 붙는데,
+//   yt-dlp 는 그 접두사까지 260자 예산에 넣고 세어서 파일명을 그만큼 깎는다.
+//   실측(2026-09-18, 같은 영상·같은 폴더):
+//       접두사 없이 : 20260917_(제목 23자).mp4
+//       접두사 붙여 : 20260917_(제목 19자).mp4   ← 4자가 사라진다
+//   파일명이 맥판과 달라지면 이 저장소의 제1 요구("맥에서 받은 폴더에 붙여넣으면
+//   전부 중복")가 깨진다. 그래서 '폴더가 실제로 깊을 때만' 접두사를 붙인다.
+//   붙을 때는 구분자를 역슬래시로 맞춘다 — \\?\ 는 경로 정규화를 끄므로 / 가 섞이면 죽는다.
+QString longPathTemplate(const QString &dir, const QString &tail);
+
 } // namespace Common
