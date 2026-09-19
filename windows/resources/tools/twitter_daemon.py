@@ -1335,6 +1335,13 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
                     updated, err = await auto_repair_hashes(client, Endpoint, auth_token=auth_tk, ct0=ct0_tk)
                     if err:
                         print(json.dumps({"info": f"{action} hash fetch 실패: {err}"}), flush=True)
+                    elif not updated:
+                        # ★ 빈 배열이면 아무것도 안 바뀐 것이다. 그대로 다시 물으면 같은 404 가
+                        #   온다 — '갱신됨' 이라고 적으면 안 된다. 예전에는 그렇게 적고 한 번 더
+                        #   똑같이 물어본 뒤 "API error: 404" 로 끝났다(실측: _0_zero_h).
+                        print(json.dumps({"info": f"{action} hash 갱신 결과가 비어 있음 — 새 해시를 못 받았습니다. "
+                                                  f"이 계정이 그 목록을 못 보는 상태이거나(비공개·차단·미로그인), "
+                                                  f"X 가 끝점을 바꿨을 수 있습니다. 다시 묻지 않고 끝냅니다."}), flush=True)
                     else:
                         endpoint = Endpoint.FOLLOWERS if action == "followers" else Endpoint.FOLLOWING
                         print(json.dumps({"info": f"hash 갱신됨: {updated} → retry"}), flush=True)

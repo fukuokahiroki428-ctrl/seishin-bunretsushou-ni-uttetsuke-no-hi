@@ -829,7 +829,15 @@ void MiyoBackend::testProxy(const QString &json)
     log(QString("프록시 시험 → %1").arg(proxyUrl(p, false)), "info", "settings");
 
     // curl 로 확인한다 — SOCKS5 인증까지 그대로 처리하고, 앱 네트워크 설정을 건드리지 않는다.
+    // ★ 주소는 명령줄이 아니라 환경변수로 준다. --proxy 로 주면 자격증명이
+    //   프로세스 명령줄에 그대로 남는다(yt-dlp 쪽에서 막은 것과 같은 종류).
     QProcess *proc = new QProcess(this);
+    {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("ALL_PROXY"), url);
+        env.insert(QStringLiteral("HTTPS_PROXY"), url);
+        proc->setProcessEnvironment(env);
+    }
     connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
         [this, proc](int code, QProcess::ExitStatus) {
             const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
@@ -840,14 +848,21 @@ void MiyoBackend::testProxy(const QString &json)
                 runJs(QString("if(window.onProxyTest)onProxyTest(true,%1);")
                           .arg(Common::jsStringLiteral(out)));
             } else {
-                const QString why = err.isEmpty() ? QString("연결 실패 (curl %1)").arg(code)
-                                                  : err.left(200);
+                // 종료코드로 원인을 가른다 — 주소를 고쳐야 하는지 비밀번호를 고쳐야 하는지.
+                QString why;
+                switch (code) {
+                case 5:  why = QStringLiteral("주소를 찾을 수 없습니다 — 서버가 없어졌거나 주소가 틀렸습니다"); break;
+                case 7:  why = QStringLiteral("연결할 수 없습니다 — 포트가 막혔거나 서버가 꺼져 있습니다"); break;
+                case 28: why = QStringLiteral("응답이 없습니다(시간 초과)"); break;
+                case 97: why = QStringLiteral("프록시가 거절했습니다 — 아이디·비밀번호를 확인하세요"); break;
+                default: why = err.isEmpty() ? QString("연결 실패 (curl %1)").arg(code) : err.left(200); break;
+                }
                 log(QString("프록시 실패 — %1").arg(why), "error", "settings");
                 runJs(QString("if(window.onProxyTest)onProxyTest(false,%1);")
                           .arg(Common::jsStringLiteral(why)));
             }
         });
-    proc->start("curl", {"-s", "--max-time", "20", "--proxy", url, "https://api.ipify.org"});
+    proc->start("curl", {"-s", "--max-time", "20", "https://api.ipify.org"});
 }
 
 void MiyoBackend::startNaikakukai(const QString &configJson)
@@ -9856,6 +9871,49 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
 //    사용자는 받고 있다고 믿는다.
 //  이름이 풀리나 · 포트가 열리나 둘만 본다. 프록시가 실제로 통과시켜 주는지까지는
 //  보지 않는다(그건 testProxy 가 나가는 IP 로 확인한다).
+//  프록시가 '실제로 쓸 수 있는 상태' 인지 본다.
+//    이름이 풀리고 포트가 열려 있어도 아이디·비밀번호를 거절하면 못 쓴다. 그 둘을
+//    가려 주지 않으면 사용자는 무엇을 고쳐야 할지 알 수 없다 — 주소를 바꿔야 하는지,
+//    비밀번호를 다시 받아야 하는지.
+//    curl 로 한 번 실제로 나가 보고 종료코드로 가른다(실측, 2026-09-19):
+//        5 주소 못 찾음 · 7 연결 실패 · 28 시간 초과 · 97 프록시가 거절 · 0 정상
+//    ★ 자격증명은 명령줄에 올리지 않는다. 환경변수로 준다 —
+//      curl 이 ALL_PROXY 를 읽는 것도 종료코드가 갈리는 것도 실측으로 확인했다.
+//    curl 을 못 띄우면 막지 않는다. 확인 수단이 없다고 받기를 멈추면 그게 더 나쁘다.
+static bool proxyUsable(const QString &urlWithCreds, QString *why, int timeoutSec = 15)
+{
+    QProcess c;
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("ALL_PROXY"), urlWithCreds);
+    env.insert(QStringLiteral("HTTPS_PROXY"), urlWithCreds);
+    c.setProcessEnvironment(env);
+    c.start(QStringLiteral("curl"),
+            {QStringLiteral("-s"), QStringLiteral("--max-time"), QString::number(timeoutSec),
+             QStringLiteral("https://api.ipify.org")});
+    if (!c.waitForStarted(5000)) {
+        if (why) *why = QStringLiteral("curl 을 실행할 수 없어 확인을 건너뜁니다");
+        return true;                       // 확인 불가 — 막지 않는다
+    }
+    if (!c.waitForFinished((timeoutSec + 5) * 1000)) {
+        c.kill();
+        c.waitForFinished(2000);
+        if (why) *why = QStringLiteral("응답이 없습니다(시간 초과)");
+        return false;
+    }
+    const int code = c.exitCode();
+    if (code == 0) return true;
+    if (why) {
+        switch (code) {
+        case 5:  *why = QStringLiteral("주소를 찾을 수 없습니다 — 서버가 없어졌거나 주소가 틀렸습니다"); break;
+        case 7:  *why = QStringLiteral("연결할 수 없습니다 — 포트가 막혔거나 서버가 꺼져 있습니다"); break;
+        case 28: *why = QStringLiteral("응답이 없습니다(시간 초과)"); break;
+        case 97: *why = QStringLiteral("프록시가 거절했습니다 — 아이디·비밀번호를 확인하세요"); break;
+        default: *why = QStringLiteral("연결 실패 (curl %1)").arg(code); break;
+        }
+    }
+    return false;
+}
+
 static bool proxyReachable(const QString &host, int port, QString *why, int timeoutMs = 6000)
 {
     if (host.isEmpty() || port <= 0) {
@@ -10037,7 +10095,9 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
             {
                 // ★ 쓰기 전에 살아 있는지 본다(위 proxyReachable 설명).
                 QString why;
-                if (!proxyReachable(prof["host"].toString(), prof["port"].toInt(), &why)) {
+                // 먼저 이름·포트(빠르다), 그 다음 실제로 나가 본다(자격증명까지 걸러진다).
+                if (!proxyReachable(prof["host"].toString(), prof["port"].toInt(), &why)
+                    || !proxyUsable(purl, &why)) {
                     log(QString("프록시 '%1' 에 닿지 않습니다 — %2\n"
                                 "   주소: %3\n"
                                 "   다운로드를 멈춥니다. 설정 → 프록시에서 주소를 확인하거나 "
