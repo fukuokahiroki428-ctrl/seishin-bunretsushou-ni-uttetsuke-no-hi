@@ -689,6 +689,9 @@ def main():
         save_path = args.get("save_path", ".")
         do_media = args.get("download_media", True)
         do_exif = args.get("exif", True)
+        # ★ 화면의 '답글 포함'·'리포스트 포함'. 없으면 예전처럼 다 받는다.
+        inc_replies = args.get("include_replies", True)
+        inc_reposts = args.get("include_reposts", True)
 
         short_handle, api_handle = norm_handle(target)
         user_dir = os.path.join(save_path, "bluesky", short_handle)
@@ -773,7 +776,9 @@ def main():
             try:
                 resp = client.get_author_feed(
                     actor=api_handle, limit=100, cursor=cursor,
-                    filter='posts_and_author_threads'
+                    # 답글을 빼면 서버에서 걸러 온다 — 받아서 버리는 것보다 빠르고
+                    # 최대 수집 수도 '실제로 받은 것' 기준으로 맞는다.
+                    filter=('posts_and_author_threads' if inc_replies else 'posts_no_replies')
                 )
             except Exception as e:
                 err = str(e).lower()
@@ -803,6 +808,9 @@ def main():
 
                 # Check if repost
                 is_repost = hasattr(item, 'reason') and item.reason is not None
+                # 리포스트를 빼기로 했으면 여기서 건너뛴다(서버 필터로는 못 뺀다).
+                if is_repost and not inc_reposts:
+                    continue
 
                 data = process_post(post)
                 if not data:

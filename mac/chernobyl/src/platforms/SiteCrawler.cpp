@@ -75,6 +75,10 @@ void SiteCrawler::crawl(const QJsonObject &config)
     m_sameDomainOnly = config["sameDomain"].toBool(true);
     m_saveExif = config["exif"].toBool(true);
     m_waitLogin = config["waitLogin"].toBool(false);
+    // ★ 화면의 '동적 스크롤'·'보안 검사' — 보내기만 하고 여기서 안 읽었다.
+    //   헤더에서 둘 다 true 로 초기화돼 있어 체크를 풀어도 늘 켜진 채 돌았다.
+    m_deepScroll = config["deepScroll"].toBool(true);
+    m_securityScan = config["securityScan"].toBool(true);
 
     QUrl baseUrl(startUrl);
     m_baseDomain = baseUrl.host();

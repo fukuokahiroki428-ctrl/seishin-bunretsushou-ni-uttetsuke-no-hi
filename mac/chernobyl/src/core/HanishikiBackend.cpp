@@ -15886,6 +15886,9 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
 
     bool saveExcel = config["excel"].toBool(true);
     bool downloadMedia = config["downloadMedia"].toBool(true);
+    // ★ 화면의 '첨부 파일 다운' — 예전엔 보내기만 하고 아무도 안 읽어서,
+    //   체크를 풀어도 zip/pdf 가 그대로 받아졌다(미디어를 꺼야만 같이 꺼졌다).
+    bool downloadFiles = config["downloadFiles"].toBool(true);
     int maxPosts = config["count"].toInt(0);
 
     QString bufTmp = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_fanbox_" + target;
@@ -15976,7 +15979,8 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
                     }
                 }
                 // fileMap (zip/pdf 등)
-                QJsonObject fileMap = content["fileMap"].toObject();
+                QJsonObject fileMap = downloadFiles ? content["fileMap"].toObject()
+                                                    : QJsonObject();
                 for (auto it = fileMap.constBegin(); it != fileMap.constEnd(); ++it) {
                     QJsonObject f = it.value().toObject();
                     QString url = f["url"].toString();

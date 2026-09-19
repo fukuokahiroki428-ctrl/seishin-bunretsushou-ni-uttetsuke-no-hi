@@ -2273,7 +2273,7 @@
                             <button class="btn btn-secondary btn-sm" onclick="browseFolder('naikakukai')">찾아보기</button>
                             <div class="field" style="margin:0;">
                                 <label class="field-label">주기 (분)</label>
-                                <input type="number" class="input" id="naikakukai-interval" value="30" min="5" max="1440">
+                                <input type="number" class="input" id="naikakukai-interval" value="30" min="5" max="1440" onchange="saveConfig()">
                             </div>
                         </div>
                     </div>
@@ -3828,7 +3828,7 @@
 
         // ── 캡처 콘솔 홈: 현황 대시보드 (platformStats/platformTargets 기반, 클릭 시 해당 탭으로) ──
         var DASH_PLATS=[['twitter','T','Twitter'],['bluesky','B','Bluesky'],['youtube','Y','YouTube'],['niconico','ニ','ニコニコ'],['discord','D','Discord'],['instagram','I','Instagram'],['pixiv','P','Pixiv'],['fanbox','F','Fanbox'],['tumblr','T','Tumblr'],['spinspin','S','SpinSpin'],['asked','A','Asked'],['trad','F','trad']];
-        function dashLed(s){ s=String(s||''); return /오류|error|fail/i.test(s)?'err':((/수집|다운로드|진행|중/.test(s)&&!/완료|대기/.test(s))?'live':'idle'); }
+        function dashLed(s){ s=String(s||''); return /오류|error|fail/i.test(s)?'err':(window.isDoneStatus(s)?'idle':'live'); }
         function renderDashboard(){
             var K=document.getElementById('dash-kpis'), G=document.getElementById('dash-grid'); if(!K||!G) return;
             function num(v){ try{return (v||0).toLocaleString();}catch(e){return String(v||0);} }
@@ -3893,13 +3893,24 @@
             document.getElementById('stat-media').textContent = s.media;
             const el = document.getElementById('stat-status');
             el.textContent = s.status;
-            const done = s.status==='대기'||s.status==='완료'||s.status==='Ready'||s.status==='Done';
+            const done = s.status==='대기'||s.status==='완료'||s.status==='Ready'||s.status==='Done'||s.status==='중단됨'||s.status==='중지됨'||s.status==='Stopped';
             const err = s.status==='오류'||s.status==='Error';
             el.className = 'badge ' + (done?'badge-ready':err?'badge-error':'badge-active');
             // Crawl 탭이 아닌 곳으로 전환 시 브라우저 창 숨기지 않음 (별도 창이므로)
         }
 
         // ── Button State ──
+        // ★ 상태 문구가 '끝난 것' 인지 한 곳에서 판정한다.
+        //   예전에는 자리마다 제각각이었고, LED·전역 게이지는 /중/ 한 글자로 봤다 —
+        //   그런데 '중지됨'·'중단됨' 에도 '중' 이 들어 있어서 멈춘 뒤에도 계속
+        //   '돌고 있음' 으로 잡혔다(윈도우에서 실측: 프로세스가 다 죽고 배지가
+        //   '중지됨' 인데 LED 는 켜진 채였다).
+        window.isDoneStatus = function(s){
+            s = String(s || '');
+            return s==='대기' || s==='완료' || s==='Ready' || s==='Done'
+                || s==='중단됨' || s==='중지됨' || s==='Stopped' || s==='';
+        };
+
         function setRunning(platform, running) {
             const startBtn = document.getElementById(platform + '-start-btn');
             const stopBtn = document.getElementById(platform + '-stop-btn');
@@ -3934,7 +3945,7 @@
             platformStats[p].status = status;
             if (window.setNavLed) setNavLed(p, status);   // 스테이션 레일 LED 동기화
             try { var _act=0; for (var _k in platformStats){ var _s=String((platformStats[_k]||{}).status||'');
-                if(!/오류|error|fail/i.test(_s) && /수집|다운로드|진행|중/.test(_s) && !/완료|대기/.test(_s)) _act++; }
+                if(!/오류|error|fail/i.test(_s) && !window.isDoneStatus(_s)) _act++; }
                 var _ga=document.getElementById('global-active'); if(_ga)_ga.textContent=_act;
                 var _tg=document.getElementById('tb-global'); if(_tg)_tg.setAttribute('data-on', _act>0?'1':'0'); } catch(e){}   // 상단바 전역 활성 게이지
             if (currentTab === 'dashboard' && window.renderDashboard) renderDashboard();   // 대시보드 실시간 갱신
@@ -3944,12 +3955,12 @@
                 document.getElementById('stat-media').textContent = media;
                 const el = document.getElementById('stat-status');
                 el.textContent = status;
-                const done = status==='대기'||status==='완료'||status==='Ready'||status==='Done'||status==='중단됨'||status==='Stopped';
+                const done = status==='대기'||status==='완료'||status==='Ready'||status==='Done'||status==='중단됨'||status==='중지됨'||status==='Stopped';
                 const err = status==='오류'||status==='Error';
                 const stopped = status==='중단됨'||status==='Stopped';
                 el.className = 'badge ' + (stopped?'badge-warning':done?'badge-ready':err?'badge-error':'badge-active');
             }
-            const done = status==='대기'||status==='완료'||status==='Ready'||status==='Done'||status==='중단됨'||status==='Stopped';
+            const done = status==='대기'||status==='완료'||status==='Ready'||status==='Done'||status==='중단됨'||status==='중지됨'||status==='Stopped';
             const err = status==='오류'||status==='Error';
             // ★ 다중 수집 중에는 한 항목 완료/오류 시 setRunning(false) 하지 않음.
             //   _multis 가 살아있고 아직 running 상태인 항목이 있으면 정지 버튼 유지.
@@ -6281,10 +6292,14 @@
             'bsky-query','bsky-count','bsky-media','bsky-excel','bsky-replies','bsky-reposts','bsky-comments','bsky-real-capture',
             'bsky-method','bsky-ratelimit-mins','bsky-ratelimit-wait','bsky-cookie',
             'youtube-path','youtube-quality','youtube-type','youtube-subs','youtube-thumb','youtube-metadata','youtube-playlist','youtube-sponsor','youtube-comments','youtube-real-capture',
+            // ★ 니코동이 통째로 빠져 있었다 — 바꿔도 다시 켜면 기본값으로 돌아갔다.
+            //   (윈도우는 1bf9056 에서 고쳤는데 이쪽에 안 넘어와 있었다)
+            'niconico-path','niconico-quality','niconico-type','niconico-thumb','niconico-metadata','niconico-comments','niconico-cookies','niconico-real-capture',
             'discord-server','discord-channel','discord-type','discord-count','discord-delay','discord-media','discord-excel','discord-profiles','discord-path',
             'discord-method',
             'instagram-target','instagram-count','instagram-delay',
-            'instagram-posts','instagram-reels','instagram-stories','instagram-highlights','instagram-tagged','instagram-excel','instagram-path',
+            // (instagram-posts/reels/stories/highlights/tagged 는 instagram-type 셀렉트로 대체돼 화면에 없다)
+            'instagram-excel','instagram-path',
             'instagram-type','instagram-mode','instagram-media-quality','instagram-real-capture',
             'instagram-media','instagram-method','instagram-since','instagram-until','instagram-cookie',
             'pixiv-target','pixiv-path','pixiv-type','pixiv-count','pixiv-delay','pixiv-method',
@@ -6294,7 +6309,14 @@
             'spinspin-cookie','spinspin-target','spinspin-method','spinspin-media','spinspin-excel','spinspin-exif','spinspin-path','spinspin-real-capture',
             'asked-cookie','asked-target','asked-method','asked-media','asked-excel','asked-exif','asked-path','asked-real-capture',
             'crawl-url','crawl-depth','crawl-maxpages','crawl-delay','crawl-same-domain','crawl-deep-scroll','crawl-security','crawl-exif','crawl-wait-login','crawl-path',
-            'crawl-method','crawl-real-chrome','crawl-login-check','crawl-login-cookie',
+            'crawl-real-chrome','crawl-login-check','crawl-login-cookie',
+            // ★ 内閣会 — 저장 경로와 주기, 그리고 이메일 감시 설정.
+            //   여기 없어서 앱을 다시 켜면 경로는 ~/Downloads 로, IMAP 설정은 빈칸으로
+            //   돌아갔다. 1년을 켜 두는 물건이라 재시작을 견뎌야 한다.
+            //   ※ email-pass 는 앱 비밀번호다. 이 앱은 이미 다른 자격증명(트위터 토큰·
+            //     블스카이 비밀번호)을 같은 설정 파일에 같은 방식으로 담고 있다.
+            'naikakukai-path','naikakukai-interval',
+            'email-server','email-port','email-user','email-pass','email-filter-from','email-filter-subject',
             'trad-path','trad-filename',
             'twitter-integrity-check','bsky-integrity-check','instagram-integrity-check','pixiv-integrity-check','tumblr-integrity-check','spinspin-integrity-check','asked-integrity-check',
             'settings-disk-path'
@@ -7392,7 +7414,7 @@
       window.setNavLed=function(plat,status){
         var it=document.querySelector('.sidebar-nav .nav-item[data-plat="'+plat+'"]'); if(!it) return;
         var s=String(status||'');
-        var v=/오류|error|fail/i.test(s)?'err':((/수집|다운로드|진행|중/.test(s)&&!/완료|대기/.test(s))?'live':'idle');
+        var v=/오류|error|fail/i.test(s)?'err':(window.isDoneStatus(s)?'idle':'live');
         it.setAttribute('data-led', v);
       };
       function _boot(){ tag(); [200,900,2000].forEach(function(ms){ setTimeout(function(){ try{ if(window.renderDashboard) renderDashboard(); }catch(e){} }, ms); }); }

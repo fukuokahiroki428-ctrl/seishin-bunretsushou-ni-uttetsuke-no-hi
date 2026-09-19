@@ -400,6 +400,8 @@ void BlueskyCollector::collect(const QJsonObject &config, const std::atomic<bool
             cmd["save_path"] = basePath;
             cmd["download_media"] = config["media"].toBool(true);
             cmd["exif"] = config["exif"].toBool(true);
+            cmd["include_replies"] = config["includeReplies"].toBool(true);
+            cmd["include_reposts"] = config["includeReposts"].toBool(true);
             // 전체 다운로드 모드: 항상 대기+재시도 (15분)
             cmd["rl_mode"] = "wait";
             cmd["rl_wait_mins"] = 15;
@@ -440,6 +442,10 @@ void BlueskyCollector::collect(const QJsonObject &config, const std::atomic<bool
     cmd["save_path"] = basePath;
     cmd["download_media"] = config["media"].toBool(true);
     cmd["exif"] = config["exif"].toBool(true);
+    // ★ 화면의 '답글 포함'·'리포스트 포함' — 예전엔 보내기만 하고 아무도 안 읽어서
+    //   체크를 풀어도 그대로 다 받았다. 데몬까지 내려 준다.
+    cmd["include_replies"] = config["includeReplies"].toBool(true);
+    cmd["include_reposts"] = config["includeReposts"].toBool(true);
     // Rate Limit 모드: 사용자 선택에 따라
     cmd["rl_mode"] = m_rateLimitWait ? "wait" : "stop";
     cmd["rl_wait_mins"] = m_rateLimitWaitMins;
