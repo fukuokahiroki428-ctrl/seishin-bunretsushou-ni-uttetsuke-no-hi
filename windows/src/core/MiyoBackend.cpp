@@ -44,6 +44,8 @@ using FileHelper::sanitizeFilename;
 #include <QFile>
 #include <QFileInfo>
 #include <QUrl>
+#include <QHostInfo>
+#include <QTcpSocket>
 #include <QCoreApplication>
 #ifndef Q_OS_WIN
 #include <signal.h>
@@ -540,6 +542,24 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
                 .arg(watches.size()).arg(m_config->naikakukaiInterval()),
             "info", "naikakukai");
         startNaikakukai(QString::fromUtf8(QJsonDocument(cfg).toJson(QJsonDocument::Compact)));
+    });
+
+    // ★ 이메일 감시도 저장된 설정이 있으면 알아서 시작한다.
+    //   설정은 남는데 켤 때마다 '감시 시작' 을 눌러야 하면 자동 감시가 아니다 —
+    //   전원이 한 번 나갔다 들어오면 그 뒤로는 영영 안 돈다. 1년을 켜 두는 물건이다.
+    //   설정이 비어 있으면 아무 일도 하지 않는다(처음 쓰는 사람에게는 조용하다).
+    QTimer::singleShot(0, this, [this]() {
+        if (!m_config) return;
+        const QJsonObject f = m_config->formData();
+        const QString server = f.value(QStringLiteral("email-server")).toString().trimmed();
+        const QString user   = f.value(QStringLiteral("email-user")).toString().trimmed();
+        const QString pass   = f.value(QStringLiteral("email-pass")).toString();
+        if (server.isEmpty() || user.isEmpty() || pass.isEmpty()) return;
+        log(QStringLiteral("📧 이메일 감시 자동 시작 — 저장된 설정을 씁니다"), "info", "naikakukai");
+        startEmailWatch(server, f.value(QStringLiteral("email-port")).toString().toInt(),
+                        user, pass,
+                        f.value(QStringLiteral("email-filter-from")).toString().trimmed(),
+                        f.value(QStringLiteral("email-filter-subject")).toString().trimmed());
     });
 }
 
@@ -9807,6 +9827,36 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+//  프록시가 살아 있는지 쓰기 전에 본다.
+//    죽은 프록시를 그냥 넘기면 yt-dlp 가 한참 헤매다 영어 예외 한 줄만 남기고 끝난다.
+//    실제로 겪었다(2026-09-19): 프로필 '일본1' 의 jp.socks.nordhold.net 이 사라져
+//    "getaddrinfo failed" 만 반복했고, 화면에는 아무 설명도 없었다.
+//    1년을 무인으로 도는 물건에서 '조용히 실패' 는 안 된 것보다 나쁘다 —
+//    사용자는 받고 있다고 믿는다.
+//  이름이 풀리나 · 포트가 열리나 둘만 본다. 프록시가 실제로 통과시켜 주는지까지는
+//  보지 않는다(그건 testProxy 가 나가는 IP 로 확인한다).
+static bool proxyReachable(const QString &host, int port, QString *why, int timeoutMs = 6000)
+{
+    if (host.isEmpty() || port <= 0) {
+        if (why) *why = QStringLiteral("주소나 포트가 비어 있습니다");
+        return false;
+    }
+    const QHostInfo info = QHostInfo::fromName(host);
+    if (info.error() != QHostInfo::NoError || info.addresses().isEmpty()) {
+        if (why) *why = QStringLiteral("이름을 풀 수 없습니다(DNS) — 서버가 없어졌을 수 있습니다");
+        return false;
+    }
+    QTcpSocket sock;
+    sock.connectToHost(info.addresses().first(), quint16(port));
+    if (!sock.waitForConnected(timeoutMs)) {
+        if (why) *why = QStringLiteral("포트가 열리지 않습니다(%1초 기다림)").arg(timeoutMs / 1000);
+        return false;
+    }
+    sock.disconnectFromHost();
+    return true;
+}
+
 void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
 {
     // ★ platform: "youtube"(기본) 또는 "niconico" — yt-dlp 파이프라인 공용(니코동도 yt-dlp 가 nicovideo 처리).
@@ -9954,10 +10004,32 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
             const QJsonObject prof = proxyForAccount(QJsonObject{{"proxy", wantProxy}});
             const QString purl = proxyUrl(prof);
             if (purl.isEmpty()) {
-                log(QString("프록시 '%1' 을 찾지 못했습니다 — 직접 연결로 진행합니다. "
-                            "설정 → 프록시에서 등록했는지 확인하세요.").arg(wantProxy),
-                    "warning", platform);
-            } else {
+                // ★ 직접 연결로 몰래 넘어가지 않는다. 프록시를 켠 이유가 바로 그것이다 —
+                //   지역 제한을 넘으려던 것이면 직접 연결은 어차피 막히고, 숨기려던
+                //   것이면 진짜 주소가 그대로 나간다. 멈추고 말해 주는 편이 낫다.
+                log(QString("프록시 '%1' 을 찾지 못했습니다 — 다운로드를 멈춥니다.\n"
+                            "   설정 → 프록시에서 그 이름으로 등록했는지 확인하세요.").arg(wantProxy),
+                    "error", platform);
+                showSystemNotification(plabel + " 다운로드 중단",
+                                       QString("프록시 '%1' 을 찾지 못했습니다").arg(wantProxy));
+                return;
+            }
+            {
+                // ★ 쓰기 전에 살아 있는지 본다(위 proxyReachable 설명).
+                QString why;
+                if (!proxyReachable(prof["host"].toString(), prof["port"].toInt(), &why)) {
+                    log(QString("프록시 '%1' 에 닿지 않습니다 — %2\n"
+                                "   주소: %3\n"
+                                "   다운로드를 멈춥니다. 설정 → 프록시에서 주소를 확인하거나 "
+                                "다른 프로필을 고르세요.")
+                            .arg(wantProxy, why, proxyUrl(prof, false)),
+                        "error", platform);
+                    showSystemNotification(plabel + " 다운로드 중단",
+                                           QString("프록시 '%1' 에 닿지 않습니다 — %2").arg(wantProxy, why));
+                    return;
+                }
+            }
+            {
                 proxyEnvUrl = purl;
                 // 로그에는 자격증명 없는 형태만 적는다(proxyUrl 의 두 번째 인자).
                 log(QString("%1 프록시 경유: %2").arg(plabel, proxyUrl(prof, false)),

@@ -366,6 +366,24 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
         killChildProcesses();
     });
+
+    // ★ 이메일 감시도 저장된 설정이 있으면 알아서 시작한다.
+    //   설정은 남는데 켤 때마다 '감시 시작' 을 눌러야 하면 자동 감시가 아니다 —
+    //   전원이 한 번 나갔다 들어오면 그 뒤로는 영영 안 돈다. 1년을 켜 두는 물건이다.
+    //   설정이 비어 있으면 아무 일도 하지 않는다(처음 쓰는 사람에게는 조용하다).
+    QTimer::singleShot(0, this, [this]() {
+        if (!m_config) return;
+        const QJsonObject f = m_config->formData();
+        const QString server = f.value(QStringLiteral("email-server")).toString().trimmed();
+        const QString user   = f.value(QStringLiteral("email-user")).toString().trimmed();
+        const QString pass   = f.value(QStringLiteral("email-pass")).toString();
+        if (server.isEmpty() || user.isEmpty() || pass.isEmpty()) return;
+        log(QStringLiteral("📧 이메일 감시 자동 시작 — 저장된 설정을 씁니다"), "info", "naikakukai");
+        startEmailWatch(server, f.value(QStringLiteral("email-port")).toString().toInt(),
+                        user, pass,
+                        f.value(QStringLiteral("email-filter-from")).toString().trimmed(),
+                        f.value(QStringLiteral("email-filter-subject")).toString().trimmed());
+    });
 }
 
 HanishikiBackend::~HanishikiBackend()
