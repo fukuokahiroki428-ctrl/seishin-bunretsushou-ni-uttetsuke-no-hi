@@ -447,6 +447,9 @@ public:
     //   사용자가 직접 시작한 수집까지 멈추면 안 되므로 구별이 필요하다.
     //   m_runningMutex 로 보호한다.
     QString m_naikakukaiActivePlatform;
+    // ★ 디스크가 안 붙어 임시 폴더가 폴백으로 갈 때, 처음 한 번만 알리려고 둔다.
+    //   매 tick 마다 적으면 1년치 로그가 그 한 줄로 덮인다. 다시 붙으면 false 로 돌린다.
+    bool m_tempFallbackWarned = false;
     // 감시가 돌려놓은 수집인가 — 맞으면 그 수집 로그를 内閣会 창에도 같이 보여 준다.
     std::atomic<bool> m_naikakukaiMirroring{false};
 

@@ -3546,6 +3546,28 @@ void MiyoBackend::naikakukaiTick()
         return;
     }
 
+    // ★ 디스크가 안 붙어 있어도 감시는 멈추지 않는다 — 1년 무인 실행이 이 기능의 존재
+    //   이유고, 여기서 막으면 '껐다 켜도 이어 돌게' 한 것과 정반대가 된다. 저장 경로(path)는
+    //   디스크 설정과 별개라 받은 파일은 제자리로 가고, 임시 파일만 폴백으로 간다.
+    //   설정을 더는 지우지 않으므로 남는 피해도 없다. 다만 조용히 넘어가지는 않는다 —
+    //   처음 한 번만 알린다(매 tick 마다 적으면 1년치 로그가 그 줄로 덮인다).
+    //   맥과 같은 선택이다(2026-09-20 합의).
+    if (m_config) {
+        const QString td = m_config->tempDir();
+        if (!td.isEmpty() && !QDir(td).exists()) {
+            if (!m_tempFallbackWarned) {
+                m_tempFallbackWarned = true;
+                log(QString("디스크가 붙어 있지 않습니다: %1").arg(td), "warning", "naikakukai");
+                log(QString("   감시는 그대로 돕니다 — 임시 파일만 %1 에 씁니다. 설정은 그대로입니다.")
+                        .arg(QDir::toNativeSeparators(Common::resolveTempBase(td))),
+                    "info", "naikakukai");
+            }
+        } else if (m_tempFallbackWarned) {
+            m_tempFallbackWarned = false;   // 다시 붙었다 — 다음에 빠지면 또 알린다
+            log("디스크가 다시 붙었습니다 — 임시 파일도 제자리로 돌아갑니다.", "success", "naikakukai");
+        }
+    }
+
     log(QString("内閣会 폴링 → %1 / %2").arg(platform, target), "info", "naikakukai");
 
     // ── 각 플랫폼 config 구성 ──
