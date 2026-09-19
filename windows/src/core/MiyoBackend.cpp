@@ -4216,12 +4216,15 @@ void MiyoBackend::loadConfig()
 
     // Check temp dir: prompt if not set OR path no longer exists
     {
-        QString td = m_config->tempDir();
+        const QString td = m_config->tempDir();
+        // ★ 설정을 지우지 않는다. 외장 디스크는 로그인 직후 앱보다 늦게 붙기도 하고,
+        //   잠깐 빠졌다 붙기도 하며, 윈도우에서는 드라이브 문자가 바뀌기도 한다.
+        //   여기서 지워 저장하면 그 뒤로 모든 수집이 "디스크 설정을 먼저 해주세요!" 로
+        //   멈춘다 — 1년 켜 두는 동안 가장 흔히 일어날 일이고, 사용자는 까닭을 모른다.
+        //   (맥에서 짚어 주었다, 2026-09-19)
         if (!td.isEmpty() && !QDir(td).exists()) {
-            log(QString("⚠️ 디스크 경로가 존재하지 않습니다: %1").arg(td), "warning", "settings");
-            m_config->setTempDir("");
-            m_config->save();
-            td = "";
+            log(QString("디스크가 지금 보이지 않습니다: %1").arg(td), "warning", "settings");
+            log("   설정은 그대로 둡니다 — 연결되면 그대로 씁니다.", "info", "settings");
         }
         runJs(QString("checkDiskSetup('%1')").arg(td));
     }
@@ -4760,18 +4763,26 @@ void MiyoBackend::startCollection(const QString &configJson)
 
     // 디스크 설정 필수 체크 + 경로 존재 여부
     {
-        QString td = m_config->tempDir();
-        if (!td.isEmpty() && !QDir(td).exists()) {
-            log(QString("⚠️ 디스크 경로가 사라졌습니다: %1").arg(td), "warning", platformName);
-            m_config->setTempDir("");
-            m_config->save();
-            td = "";
-        }
+        const QString td = m_config->tempDir();
         if (td.isEmpty()) {
+            // 아직 한 번도 정하지 않았다 — 정하라고 창을 띄운다.
             dbg("EARLY RETURN: 디스크 설정 없음", platformName);
             log("디스크 설정을 먼저 해주세요!", "error", platformName);
+            updateStats(0, 0, "대기", trackKey);
             runJs(QString("setRunning('%1', false)").arg(platformName));
             runJs("showDiskModal()");
+            return;
+        }
+        if (!QDir(td).exists()) {
+            // ★ 설정을 지우지 않는다(위 loadConfig 의 설명과 같은 이유).
+            //   이번 판만 멈추고, 디스크가 돌아오면 다음 차례부터 그대로 쓴다.
+            //   설정 창도 띄우지 않는다 — 고칠 것이 없다. 꽂으면 된다.
+            dbg("EARLY RETURN: 디스크 미연결", platformName);
+            log(QString("디스크가 연결되어 있지 않습니다: %1").arg(td), "error", platformName);
+            log("   이번 수집만 멈춥니다 — 설정은 그대로이고, 연결되면 그대로 씁니다.",
+                "info", platformName);
+            updateStats(0, 0, "대기", trackKey);
+            runJs(QString("setRunning('%1', false)").arg(platformName));
             return;
         }
     }
