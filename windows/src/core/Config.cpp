@@ -257,6 +257,8 @@ QJsonObject Config::toJson() const
     if (!m_proxyProfiles.isEmpty()) root["proxyProfiles"] = m_proxyProfiles;
     if (!m_naikakukaiWatches.isEmpty()) root["naikakukaiWatches"] = m_naikakukaiWatches;
     root["naikakukaiInterval"] = m_naikakukaiInterval;
+    root["naikakukaiResume"] = m_naikakukaiResume;
+    root["emailWatchResume"] = m_emailWatchResume;
     if (!m_webdavUrl.isEmpty())  root["webdavUrl"]  = m_webdavUrl;
     if (!m_webdavUser.isEmpty()) root["webdavUser"] = m_webdavUser;
     if (!m_webdavPass.isEmpty()) root["webdavPass"] = m_webdavPass;
@@ -297,6 +299,8 @@ void Config::fromJson(const QJsonObject &obj)
     if (obj.contains("proxyProfiles")) m_proxyProfiles = obj["proxyProfiles"].toArray();
     if (obj.contains("naikakukaiWatches")) m_naikakukaiWatches = obj["naikakukaiWatches"].toArray();
     if (obj.contains("naikakukaiInterval")) m_naikakukaiInterval = obj["naikakukaiInterval"].toInt(30);
+    if (obj.contains("naikakukaiResume")) m_naikakukaiResume = obj["naikakukaiResume"].toBool(false);
+    if (obj.contains("emailWatchResume")) m_emailWatchResume = obj["emailWatchResume"].toBool(false);
     if (obj.contains("webdavUrl"))      m_webdavUrl  = obj["webdavUrl"].toString();
     if (obj.contains("webdavUser"))     m_webdavUser = obj["webdavUser"].toString();
     if (obj.contains("webdavPass"))     m_webdavPass = obj["webdavPass"].toString();

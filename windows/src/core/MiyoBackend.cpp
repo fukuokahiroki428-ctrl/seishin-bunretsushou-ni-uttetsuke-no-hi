@@ -44,6 +44,7 @@ using FileHelper::sanitizeFilename;
 #include <QFile>
 #include <QFileInfo>
 #include <QUrl>
+#include <QScopeGuard>
 #include <QHostInfo>
 #include <QTcpSocket>
 #include <QCoreApplication>
@@ -533,12 +534,15 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     //     수집은 곧바로 시작하고 화면은 페이지가 뜨는 순간 맞춰진다.
     QTimer::singleShot(0, this, [this]() {
         if (!m_config) return;
+        // ★ '설정이 있으면' 이 아니라 '끌 때 돌고 있었으면' 이어서 돈다.
+        //   설정만 보고 켜면 사용자가 일부러 멈춰 둔 감시도 되살아난다.
+        if (!m_config->naikakukaiResume()) return;
         const QJsonArray watches = m_config->naikakukaiWatches();
         if (watches.isEmpty()) return;
         QJsonObject cfg;
         cfg["watches"] = watches;
         cfg["intervalMin"] = m_config->naikakukaiInterval();
-        log(QString("신글 감시 자동 시작 — 대상 %1개, %2분마다")
+        log(QString("신글 감시 이어 돌림 — 대상 %1개, %2분마다 (끄기 전에 돌고 있었습니다)")
                 .arg(watches.size()).arg(m_config->naikakukaiInterval()),
             "info", "naikakukai");
         startNaikakukai(QString::fromUtf8(QJsonDocument(cfg).toJson(QJsonDocument::Compact)));
@@ -550,12 +554,13 @@ MiyoBackend::MiyoBackend(MainWindow *window, QObject *parent)
     //   설정이 비어 있으면 아무 일도 하지 않는다(처음 쓰는 사람에게는 조용하다).
     QTimer::singleShot(0, this, [this]() {
         if (!m_config) return;
+        if (!m_config->emailWatchResume()) return;   // 위와 같은 이유
         const QJsonObject f = m_config->formData();
         const QString server = f.value(QStringLiteral("email-server")).toString().trimmed();
         const QString user   = f.value(QStringLiteral("email-user")).toString().trimmed();
         const QString pass   = f.value(QStringLiteral("email-pass")).toString();
         if (server.isEmpty() || user.isEmpty() || pass.isEmpty()) return;
-        log(QStringLiteral("📧 이메일 감시 자동 시작 — 저장된 설정을 씁니다"), "info", "naikakukai");
+        log(QStringLiteral("📧 이메일 감시 이어 돌림 — 저장된 설정을 씁니다"), "info", "naikakukai");
         startEmailWatch(server, f.value(QStringLiteral("email-port")).toString().toInt(),
                         user, pass,
                         f.value(QStringLiteral("email-filter-from")).toString().trimmed(),
@@ -910,6 +915,8 @@ void MiyoBackend::startNaikakukai(const QString &configJson)
     m_naikakukaiTimer->setInterval(m_naikakukaiIntervalMin * 60 * 1000);
     m_naikakukaiTimer->start();
 
+    // 끌 때 돌고 있었다는 표시 — 다음에 켤 때 이어서 돌린다.
+    if (m_config) { m_config->setNaikakukaiResume(true); m_config->save(); }
     log(QString("内閣会 시작 — 대상 %1개 | 주기 %2분")
         .arg(m_naikakukaiWatches.size()).arg(m_naikakukaiIntervalMin), "success", "naikakukai");
     runJs("setNaikakukaiRunning(true)");
@@ -946,6 +953,8 @@ void MiyoBackend::stopNaikakukai()
         else                      stopCollection(active);
     }
 
+    // 사용자가 끈 것이다 — 다음에 켤 때 되살리지 않는다.
+    if (m_config) { m_config->setNaikakukaiResume(false); m_config->save(); }
     log("内閣会 중지됨", "warning", "naikakukai");
     runJs("setNaikakukaiRunning(false)");
     // 터미널 종료
@@ -3285,6 +3294,7 @@ void MiyoBackend::startEmailWatch(const QString &server, int port,
     }
     m_emailWatchTimer->setInterval(30000);  // 30초
     m_emailWatchTimer->start();
+    if (m_config) { m_config->setEmailWatchResume(true); m_config->save(); }
     log(QString("📧 이메일 감시 시작 — %1:%2 (from=%3, subject=%4)")
         .arg(server).arg(port).arg(filterFrom.isEmpty() ? "*" : filterFrom)
         .arg(filterSubject.isEmpty() ? "*" : filterSubject), "success", "naikakukai");
@@ -3296,6 +3306,7 @@ void MiyoBackend::startEmailWatch(const QString &server, int port,
 void MiyoBackend::stopEmailWatch()
 {
     if (m_emailWatchTimer) m_emailWatchTimer->stop();
+    if (m_config) { m_config->setEmailWatchResume(false); m_config->save(); }
     log("📧 이메일 감시 중지", "warning", "naikakukai");
 }
 
@@ -9943,6 +9954,18 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                              ? QStringLiteral("youtube") : config["platform"].toString();
     const QString plabel = (platform == "niconico") ? QStringLiteral("ニコニコ") : QStringLiteral("YouTube");
 
+    // ★ 어느 길로 빠져나가도 화면을 풀어 준다.
+    //   이 함수에는 이른 return 이 여럿이다(주소 없음·yt-dlp 없음·프록시를 못 씀·
+    //   스크립트 생성 실패). 그 길로 나가면 시작할 때 걸어 둔 '수집 중' 이 그대로 남아
+    //   중지 버튼만 켜진 채 시작 버튼이 잠긴다 — 앱을 껐다 켜야 풀렸다.
+    //   빠져나가는 자리마다 고치면 다음에 하나 더 생길 때 또 빠뜨린다. 끝에서 한 번에 푼다.
+    bool finishedNormally = false;
+    auto uiRelease = qScopeGuard([&]() {
+        if (finishedNormally) return;      // 정상 종료는 아래에서 제 손으로 이미 알렸다
+        updateStats(0, 0, "중단됨", platform);
+        runJs(QStringLiteral("if(window.setRunning)setRunning('%1', false);").arg(platform));
+    });
+
     QString url = config["url"].toString();
     QString path = config["path"].toString();
     if (path.startsWith(QLatin1Char('~'))) path.replace(0, 1, QDir::homePath());
@@ -10730,9 +10753,16 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                                    " if(_e)_e.style.width='0%';"));
     }
 
+    finishedNormally = true;    // 여기까지 왔으면 위 가드가 다시 알릴 필요가 없다
+
     // Cleanup temp files
     QFile::remove(statusFile);
-    QFile::remove(stopMarker);
+    // ★ 중지로 끝났으면 표식을 남긴다.
+    //   여기서 지우면 .bat 이 그것을 보기 전에 사라진다 — 스크립트는 yt-dlp 가 끊긴 것을
+    //   '그냥 실패' 로 읽고 60초 뒤 재시도한다(맥에서 실측: 그대로 영상을 끝까지 받았다).
+    //   윈도우는 콘솔을 트리째 꺼서 대개 안 드러나지만, 그 끄기가 실패하면 같은 일이 난다.
+    //   남겨도 새는 것은 없다 — 다음 실행이 시작할 때 지운다(위쪽 QFile::remove(stopMarker)).
+    if (platformRunning(platform)) QFile::remove(stopMarker);
     // Don't delete scriptPath immediately - Terminal may still be reading it
 }
 

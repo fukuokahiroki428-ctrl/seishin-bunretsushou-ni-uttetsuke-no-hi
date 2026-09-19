@@ -75,6 +75,12 @@ public:
     QJsonArray naikakukaiWatches() const { return m_naikakukaiWatches; }
     void setNaikakukaiWatches(const QJsonArray &arr) { m_naikakukaiWatches = arr; }
     int naikakukaiInterval() const { return m_naikakukaiInterval; }
+    // ★ '끌 때 돌고 있었나' — 앱을 켤 때 이어서 돌릴지 판단한다.
+    //   '설정이 차 있으면 켠다' 로 하면 사용자가 일부러 멈춰 둔 감시도 되살아난다.
+    bool naikakukaiResume() const { return m_naikakukaiResume; }
+    void setNaikakukaiResume(bool on) { m_naikakukaiResume = on; }
+    bool emailWatchResume() const { return m_emailWatchResume; }
+    void setEmailWatchResume(bool on) { m_emailWatchResume = on; }
     void setNaikakukaiInterval(int min) { m_naikakukaiInterval = min; }
 
     // WebDAV 업로드 설정 (시놀로지 등 NAS)
@@ -156,6 +162,11 @@ private:
     QJsonArray m_proxyProfiles;
     QJsonArray m_naikakukaiWatches;
     int m_naikakukaiInterval = 30;
+    // ★ 기본값이 true 인 것은 일부러다. 이 값이 없던 판에서 올라온 설정은 키가 없는데,
+    //   그때의 동작은 '감시 대상이 있으면 켤 때 자동으로 돈다' 였다. false 로 두면
+    //   업데이트한 순간 1년 돌던 감시가 소리 없이 멈춘다.
+    bool m_naikakukaiResume = true;
+    bool m_emailWatchResume = false;
     QString m_webdavUrl;
     QString m_webdavUser;
     QString m_webdavPass;
