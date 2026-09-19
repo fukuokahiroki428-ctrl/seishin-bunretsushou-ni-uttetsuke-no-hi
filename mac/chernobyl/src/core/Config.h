@@ -123,6 +123,13 @@ public:
     void setUnixFilenames(bool v) { m_unixFilenames = v; }
     void setNasAutoReconnect(bool b) { m_nasAutoReconnect = b; }
 
+    // ★ 内閣会·이메일 감시가 '앱을 끌 때 돌고 있었는가'. 켜면 이어서 돈다.
+    //   사용자가 중지를 눌러 끈 것은 false 로 남아 다시 켜지지 않는다.
+    bool naikakukaiResume() const { return m_naikakukaiResume; }
+    void setNaikakukaiResume(bool b) { m_naikakukaiResume = b; }
+    bool emailWatchResume() const { return m_emailWatchResume; }
+    void setEmailWatchResume(bool b) { m_emailWatchResume = b; }
+
     // ★ 동시 다운로드 개수 — 0 = 플랫폼별 기본값, 1~N = 모든 플랫폼 동시 작업 한도(전역 override)
     // ── 프록시(VPN) ────────────────────────────────────────────────────────
     //   ★ 켜면 '전부' 이 경로로 나가야 한다. Qt·파이썬 데몬·yt-dlp·rclone·
@@ -178,6 +185,8 @@ private:
     bool m_firstRunCompleted = false;
     bool m_unixFilenames = false;
     bool m_nasAutoReconnect = true;  // 기본 ON (대부분 원하는 동작)
+    bool m_naikakukaiResume = false;
+    bool m_emailWatchResume = false;
     int m_maxConcurrent = 0;         // 0 = 플랫폼별 기본값
     QString m_windowGeometry;
     bool m_proxyEnabled = false;

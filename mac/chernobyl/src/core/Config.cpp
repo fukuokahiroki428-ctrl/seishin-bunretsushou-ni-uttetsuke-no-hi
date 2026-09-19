@@ -284,6 +284,8 @@ QJsonObject Config::toJson() const
     root["ytDlpAutoUpdate"] = m_ytDlpAutoUpdate;
     root["firstRunCompleted"] = m_firstRunCompleted;
     root["nasAutoReconnect"] = m_nasAutoReconnect;
+    root["naikakukaiResume"] = m_naikakukaiResume;
+    root["emailWatchResume"] = m_emailWatchResume;
     root["unixFilenames"] = m_unixFilenames;
     root["maxConcurrent"] = m_maxConcurrent;
     root["windowGeometry"] = m_windowGeometry;
@@ -328,6 +330,8 @@ void Config::fromJson(const QJsonObject &obj)
     if (obj.contains("ytDlpAutoUpdate")) m_ytDlpAutoUpdate = obj["ytDlpAutoUpdate"].toBool();
     if (obj.contains("firstRunCompleted")) m_firstRunCompleted = obj["firstRunCompleted"].toBool();
     if (obj.contains("nasAutoReconnect")) m_nasAutoReconnect = obj["nasAutoReconnect"].toBool();
+    if (obj.contains("naikakukaiResume")) m_naikakukaiResume = obj["naikakukaiResume"].toBool();
+    if (obj.contains("emailWatchResume")) m_emailWatchResume = obj["emailWatchResume"].toBool();
     if (obj.contains("unixFilenames")) m_unixFilenames = obj["unixFilenames"].toBool();
     if (obj.contains("maxConcurrent")) m_maxConcurrent = obj["maxConcurrent"].toInt(0);
     if (obj.contains("windowGeometry")) m_windowGeometry = obj["windowGeometry"].toString();

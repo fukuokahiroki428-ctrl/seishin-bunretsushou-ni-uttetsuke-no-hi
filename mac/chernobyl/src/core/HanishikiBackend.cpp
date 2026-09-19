@@ -120,6 +120,8 @@ QSemaphore* HanishikiBackend::platformSem(const QString &platform)
     return sem;
 }
 #include <QTimer>
+#include <QHostAddress>
+#include <QHostInfo>
 #include <QDateTime>
 #include <QCryptographicHash>
 #include <QSysInfo>
@@ -570,6 +572,7 @@ void HanishikiBackend::startNaikakukai(const QString &configJson)
 
     m_naikakukaiCursor = 0;
     m_naikakukaiRunning = true;
+    if (m_config && !m_config->naikakukaiResume()) { m_config->setNaikakukaiResume(true); m_config->save(); }
 
     if (!m_naikakukaiTimer) {
         m_naikakukaiTimer = new QTimer(this);
@@ -592,6 +595,8 @@ void HanishikiBackend::stopNaikakukai()
     // 다음 tick 이 또 폴링을 띄우면 끝이 없다.
     m_naikakukaiRunning = false;
     if (m_naikakukaiTimer) m_naikakukaiTimer->stop();
+    // 사용자가 끈 것 — 앱을 다시 켜도 이어 돌지 않게 기억한다(앱 종료는 이 길을 안 지난다).
+    if (m_config && m_config->naikakukaiResume()) { m_config->setNaikakukaiResume(false); m_config->save(); }
 
     // ★ 깃발만 내리면 '지금 돌고 있는 폴링' 은 그대로 계속 돈다.
     //   그래서 중지를 눌러도 그 판이 끝날 때까지(길면 몇 분) 아무 일도
@@ -930,7 +935,9 @@ void HanishikiBackend::silentRemountWebDav()
 
     QThread *t = QThread::create([this, script]() {
         QProcess osa;
-        osa.start("osascript", {"-e", script});
+        // ★ 스크립트(비밀번호가 들어 있다)를 명령줄이 아니라 표준입력으로 준다 — '-e' 로 주면 ps 로 보였다.
+        osa.start("/usr/bin/osascript", {"-"});
+        if (osa.waitForStarted(5000)) { osa.write(script.toUtf8()); osa.closeWriteChannel(); }
         bool fin = osa.waitForFinished(45000);
         QString err = QString::fromUtf8(osa.readAllStandardError()).trimmed();
         int code = osa.exitCode();
@@ -3026,6 +3033,8 @@ void HanishikiBackend::startEmailWatch(const QString &server, int port,
         .arg(server).arg(port).arg(filterFrom.isEmpty() ? "*" : filterFrom)
         .arg(filterSubject.isEmpty() ? "*" : filterSubject), "success", "naikakukai");
 
+    if (m_config && !m_config->emailWatchResume()) { m_config->setEmailWatchResume(true); m_config->save(); }
+
     // 즉시 1회 baseline (last_uid 초기화 용)
     QTimer::singleShot(500, this, &HanishikiBackend::emailWatchTick);
 }
@@ -3033,6 +3042,7 @@ void HanishikiBackend::startEmailWatch(const QString &server, int port,
 void HanishikiBackend::stopEmailWatch()
 {
     if (m_emailWatchTimer) m_emailWatchTimer->stop();
+    if (m_config && m_config->emailWatchResume()) { m_config->setEmailWatchResume(false); m_config->save(); }
     log("📧 이메일 감시 중지", "warning", "naikakukai");
 }
 
@@ -4079,6 +4089,9 @@ void HanishikiBackend::loadConfig()
 
     writeStartupLog();
 
+    // 끄기 전에 돌던 감시를 이어 돌린다 — 아래 토큰 새로고침(1초 뒤)이 먼저 끝나도록 조금 늦게.
+    QTimer::singleShot(5000, this, &HanishikiBackend::autoResumeWatchers);
+
     // 앱 시작 시 자동 유지보수
     QTimer::singleShot(1000, this, [this]() {
         // 1. Chrome에서 모든 플랫폼 토큰/세션 자동 추출
@@ -4092,6 +4105,48 @@ void HanishikiBackend::loadConfig()
         //         그 경우 사용자가 작업 완료 후 앱 재빌드/재서명해서 해결.
         log("Python 자동 업데이트 비활성화 — 설정 탭에서 수동 실행", "info", "settings");
     });
+}
+
+// ★ 内閣会·이메일 감시 — 앱을 끌 때 돌고 있었으면 이어서 돈다.
+//   1년을 켜 두는 물건인데, 전원이 한 번 나갔다 들어오면 그 뒤로 영영 안 돌았다
+//   (설정은 남아도 '시작' 을 다시 눌러야 했다). 윈도우가 먼저 넣었다(cba34f5).
+//   윈도우는 '설정이 차 있으면' 켠다. 여기서는 '끌 때 돌고 있었으면' 켠다 —
+//   사용자가 일부러 중지해 둔 것까지 되살리면 그건 사용자의 뜻을 거스르는 것이다.
+//   화면이 설정을 받은 뒤(loadConfig) 한 번만 — 그래야 화면의 '실행 중' 표시도 맞는다.
+void HanishikiBackend::autoResumeWatchers()
+{
+    if (m_autoResumeDone || !m_config) return;
+    m_autoResumeDone = true;
+
+    if (m_config->naikakukaiResume() && !m_naikakukaiRunning) {
+        const QJsonArray watches = m_config->naikakukaiWatches();
+        if (watches.isEmpty()) {
+            log("内閣会: 끄기 전에 돌고 있었는데 감시 대상이 비어 있어 이어 돌리지 않습니다", "warning", "naikakukai");
+        } else {
+            log("内閣会 이어 돌림 — 앱을 끄기 전에 돌고 있었습니다", "info", "naikakukai");
+            QJsonObject cfg;
+            cfg["intervalMin"] = m_config->naikakukaiInterval();
+            cfg["watches"] = watches;
+            startNaikakukai(QString::fromUtf8(QJsonDocument(cfg).toJson(QJsonDocument::Compact)));
+        }
+    }
+
+    if (m_config->emailWatchResume() && !(m_emailWatchTimer && m_emailWatchTimer->isActive())) {
+        const QJsonObject f = m_config->formData();
+        const QString server = f.value(QStringLiteral("email-server")).toString().trimmed();
+        const QString user   = f.value(QStringLiteral("email-user")).toString().trimmed();
+        const QString pass   = f.value(QStringLiteral("email-pass")).toString();
+        if (server.isEmpty() || user.isEmpty() || pass.isEmpty()) {
+            // 이 판 이전에는 이메일 칸이 저장되지 않았다 — 한 번 더 '감시 시작' 을 누르면 그 뒤로 남는다.
+            log("📧 이메일 감시: 끄기 전에 돌고 있었는데 저장된 설정이 없어 이어 돌리지 못했습니다 — '감시 시작' 을 한 번 눌러 주세요",
+                "warning", "naikakukai");
+        } else {
+            log("📧 이메일 감시 이어 돌림 — 저장된 설정을 씁니다", "info", "naikakukai");
+            startEmailWatch(server, f.value(QStringLiteral("email-port")).toString().toInt(), user, pass,
+                            f.value(QStringLiteral("email-filter-from")).toString().trimmed(),
+                            f.value(QStringLiteral("email-filter-subject")).toString().trimmed());
+        }
+    }
 }
 
 void HanishikiBackend::saveConfig(const QString &configJson)
@@ -5029,6 +5084,46 @@ QJsonObject HanishikiBackend::proxyForAccount(const QJsonObject &account) const
     return QJsonObject();
 }
 
+// 프록시로 한 번 실제로 나가 보고, 안 되면 '왜' 를 한글로 돌려준다(되면 빈 문자열).
+//   ★ 이름이 풀리나·포트가 열리나만 보면 '서버는 살아 있는데 비밀번호를 거절' 을 못 가른다.
+//     그러면 사용자는 주소를 고칠지 비밀번호를 새로 받을지 알 수 없다. curl 종료코드로 가른다
+//     (윈도우 실측: 없는 주소 5 · 인증 거절 97 · 정상 0).
+//   ★ 자격증명은 명령줄이 아니라 환경변수(ALL_PROXY)로 넘긴다 — ps 에 남지 않게.
+//   ★ curl 을 못 띄우면 막지 않는다(빈 문자열). 확인 수단이 없다고 받기를 멈추면 그게 더 나쁘다.
+//   ★ 프록시 이름은 먼저 따로 풀어 본다. 맥의 curl 은 '프록시 이름을 못 풂' 을 5 가 아니라
+//     6(사이트 이름을 못 풂)으로 돌려줘서(실측 2026-09-19, 윈도우 curl 은 5) 둘이 섞인다.
+//   블로킹(최대 약 25초) — 작업 스레드에서만 부른다.
+static QString proxyProblem(const QString &proxyHost, const QString &proxyUrlWithAuth, const QString &probeUrl)
+{
+    if (QHostAddress(proxyHost).isNull()) {
+        const QHostInfo hi = QHostInfo::fromName(proxyHost);
+        if (hi.error() != QHostInfo::NoError || hi.addresses().isEmpty())
+            return QStringLiteral("이름을 풀 수 없습니다(DNS) — 서버가 없어졌을 수 있습니다");
+    }
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    for (const char *k : {"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "no_proxy", "NO_PROXY"})
+        env.remove(QString::fromLatin1(k));   // https_proxy 가 ALL_PROXY 보다 앞서므로 지운다
+    QString u = proxyUrlWithAuth;
+    if (u.startsWith(QLatin1String("socks5://"))) u.replace(0, 9, QStringLiteral("socks5h://"));  // 이름 풀기도 프록시 너머에서
+    env.insert("ALL_PROXY", u);
+    env.insert("all_proxy", u);
+    QProcess c;
+    c.setProcessEnvironment(env);
+    c.start("/usr/bin/curl", {"-sS", "-o", "/dev/null", "--connect-timeout", "10", "--max-time", "20", probeUrl});
+    if (!c.waitForStarted(5000)) return QString();
+    if (!c.waitForFinished(25000)) { c.kill(); c.waitForFinished(2000); return QStringLiteral("응답이 없습니다(25초) — 서버가 멈췄거나 매우 느립니다"); }
+    if (c.exitStatus() != QProcess::NormalExit) return QString();
+    switch (c.exitCode()) {
+    case 0:  return QString();
+    case 5:  return QStringLiteral("이름을 풀 수 없습니다(DNS) — 서버가 없어졌을 수 있습니다");
+    case 7:  return QStringLiteral("연결할 수 없습니다 — 서버가 꺼졌거나 포트가 닫혀 있습니다");
+    case 97: return QStringLiteral("프록시가 거절했습니다 — 아이디·비밀번호를 확인하세요(구독이 끝났을 수도 있습니다)");
+    case 28: return QStringLiteral("시간 초과 — 서버가 매우 느리거나 막혀 있습니다");
+    case 6:  return QStringLiteral("프록시 너머에서 사이트 이름을 풀지 못했습니다 — 프록시 쪽 DNS 문제입니다");
+    default: return QString("프록시로 나가지 못했습니다(curl %1)").arg(c.exitCode());
+    }
+}
+
 void HanishikiBackend::testProxy()
 {
     log("나가는 IP 를 확인합니다…", "info", "settings");
@@ -5366,7 +5461,9 @@ void HanishikiBackend::mountWebDavInFinder()
         }
 
         QProcess osa;
-        osa.start("osascript", {"-e", script});
+        // ★ 스크립트(비밀번호가 들어 있을 수 있다)를 표준입력으로 — '-e' 로 주면 ps 로 보였다.
+        osa.start("/usr/bin/osascript", {"-"});
+        if (osa.waitForStarted(5000)) { osa.write(script.toUtf8()); osa.closeWriteChannel(); }
         bool fin = osa.waitForFinished(60000);  // Finder 인증 다이얼로그 떴을 수 있음 → 60초
         QString stdoutS = QString::fromUtf8(osa.readAllStandardOutput()).trimmed();
         QString stderrS = QString::fromUtf8(osa.readAllStandardError()).trimmed();
@@ -5693,6 +5790,10 @@ void HanishikiBackend::startYoutube(const QString &configJson)
         // 완료 처리 — 메인 스레드에서 실행 (QProcess/QSocketNotifier는 cross-thread 접근 불가)
         QMetaObject::invokeMethod(this, [this]() {
             setPlatformRunning("youtube", false);
+            // ★ 어떤 길로 끝났든 화면의 시작/중지 버튼을 되돌린다. 일찍 돌아가는 길(프록시를 못 씀·
+            //   주소 없음·스크립트 못 만듦)은 '완료' 를 알리지 않아서, 중지 버튼이 켜진 채 시작
+            //   버튼이 잠겨 앱을 다시 켜기 전엔 그 탭을 못 썼다(실측 2026-09-19).
+            runJs("if(window.onCollectionEnded)window.onCollectionEnded('youtube');");
             if (!isAnyRunning() && m_window) m_window->releaseAwake();
         });
     });
@@ -5721,13 +5822,20 @@ void HanishikiBackend::stopYoutube()
     killByCommandLine("yt-dlp.exe", "abiwa_");
     killByCommandLine("ffmpeg.exe", "abiwa_");
 #else
-    // macOS/Linux: pkill로 yt-dlp, ffmpeg 즉시 종료
-    // ★ "yt-dlp" 만으로 고르면 사용자가 터미널에서 따로 돌리던 것까지 끝난다.
-    //   우리 것은 명령줄에 앱 임시 폴더(abiwa_)가 들어 있으므로 그것으로만 고른다.
-    QProcess::execute("pkill", {"-f", "yt-dlp.*abiwa_"});
-    QProcess::execute("pkill", {"-f", "ffmpeg.*abiwa_"});
-    // 다운로드 스크립트도 종료
-    QProcess::execute("pkill", {"-f", "miyo_yt_download.command"});
+    // macOS/Linux: 실제로 멈추는 것은 위의 STOP 표식이다 — 스크립트가 1초마다 보고 자기 yt-dlp
+    //   (과 그 자식 ffmpeg)를 끄고 "사용자에 의해 중지됨" 을 남긴다. 스크립트는 죽이지 않는다
+    //   (죽이면 그 마무리를 못 한다). 3초 뒤에도 yt-dlp 가 남았으면 — 스크립트가 이미 죽어
+    //   표식을 볼 이가 없는 것 — 그때만 직접 끈다.
+    // ★ 예전 패턴 "yt-dlp.*abiwa_"·"ffmpeg.*abiwa_" 는 실제 프로세스에 한 번도 맞지 않았다 — 번들
+    //   껍데기가 'python -m yt_dlp'(밑줄)로 넘기고, 명령줄에 abiwa_ 도 없다(실측 2026-09-19).
+    //   대신 엉뚱한 것을 맞혔다: 명령줄에 두 낱말이 우연히 든 사용자 셸이 꺼졌다.
+    //   → 우리 yt-dlp 만 고른다 — 유튜브 저장 폴더의 .yt_archive.txt 를 인자로 가진 것.
+    //   예전엔 스크립트도 이름(miyo_yt_download.command)으로 껐는데, 니코동 스크립트도 같은
+    //   이름이라 유튜브를 멈추면 니코동까지 죽었다(윈도우 fa808be 와 같은 문제).
+    QTimer::singleShot(3000, this, [this]() {
+        if (platformRunning("youtube")) return;   // 그새 다시 시작했다 — 새 것을 끄면 안 된다
+        QProcess::execute("/usr/bin/pkill", {"-f", "yt[-_]dlp .*/youtube/\\.yt_archive\\.txt"});
+    });
 #endif
 
     // 상태 파일에 DONE 기록 → 모니터링 루프 즉시 탈출
@@ -5758,6 +5866,10 @@ void HanishikiBackend::startNiconico(const QString &configJson)
         runYoutubeDownload(config);
         QMetaObject::invokeMethod(this, [this]() {
             setPlatformRunning("niconico", false);
+            // ★ 어떤 길로 끝났든 화면의 시작/중지 버튼을 되돌린다. 일찍 돌아가는 길(프록시를 못 씀·
+            //   주소 없음·스크립트 못 만듦)은 '완료' 를 알리지 않아서, 중지 버튼이 켜진 채 시작
+            //   버튼이 잠겨 앱을 다시 켜기 전엔 그 탭을 못 썼다(실측 2026-09-19).
+            runJs("if(window.onCollectionEnded)window.onCollectionEnded('niconico');");
             if (!isAnyRunning() && m_window) m_window->releaseAwake();
         });
     });
@@ -9817,16 +9929,31 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
                     Common::clearThreadProxy();
                 }
             }
+            // ★ 프록시를 못 쓰면 멈춘다 — 직접 연결로 몰래 넘어가지 않는다(윈도우 cba34f5 와 같은 뜻).
+            //   프록시를 켠 이유가 바로 그것이다. 지역 제한을 넘으려던 것이면 직접 연결은 어차피
+            //   막히고, 주소를 숨기려던 것이면 진짜 주소가 그대로 나간다. 예전엔 "직접 연결로
+            //   진행합니다" 하고 갔고, 죽은 프록시는 yt-dlp 가 몇 분 헤매다 영어 한 줄로 끝났다.
+            const QString pname = (wantProxy == QLatin1String("global")) ? QStringLiteral("프록시 (VPN) 탭 설정") : wantProxy;
             if (arg.isEmpty()) {
-                log(QString("프록시 '%1' 을 쓸 수 없습니다 — 직접 연결로 진행합니다. "
-                            "'프록시 (VPN)' 탭에 주소·포트가 들어 있는지 확인하세요.")
-                        .arg(wantProxy == QLatin1String("global") ? QStringLiteral("프록시 (VPN) 탭 설정") : wantProxy),
-                    "warning", platform);
-            } else {
-                baseArgs << "--proxy" << arg;
-                // 로그에는 자격증명 없는 형태만 적는다(proxyUrl 의 두 번째 인자).
-                log(QString("%1 프록시 경유: %2").arg(plabel, proxyUrl(prof, false)), "info", platform);
+                log(QString("프록시 '%1' 을 찾을 수 없습니다 — 다운로드를 멈춥니다. "
+                            "'프록시 (VPN)' 탭에 주소·포트가 들어 있는지 확인하세요.").arg(pname), "error", platform);
+                showSystemNotification(QString(APP_NAME_DISPLAY) + " — " + plabel, QStringLiteral("프록시를 찾을 수 없어 다운로드를 멈췄습니다"));
+                updateStats(0, 0, "오류", platform);
+                return;
             }
+            const QString why = proxyProblem(prof["host"].toString(), proxyUrl(prof),
+                platform == QLatin1String("niconico") ? QStringLiteral("https://www.nicovideo.jp/") : QStringLiteral("https://www.youtube.com/"));
+            if (!why.isEmpty()) {
+                // 주소는 자격증명 없는 형태로만 적는다.
+                log(QString("프록시 '%1' 에 닿지 않습니다 — %2\n   주소: %3\n   다운로드를 멈춥니다.")
+                        .arg(pname, why, proxyUrl(prof, false)), "error", platform);
+                showSystemNotification(QString(APP_NAME_DISPLAY) + " — " + plabel, QStringLiteral("프록시에 닿지 않아 다운로드를 멈췄습니다 — ") + why);
+                updateStats(0, 0, "오류", platform);
+                return;
+            }
+            baseArgs << "--proxy" << arg;
+            // 로그에는 자격증명 없는 형태만 적는다(proxyUrl 의 두 번째 인자).
+            log(QString("%1 프록시 경유: %2 (미리 확인 통과)").arg(plabel, proxyUrl(prof, false)), "info", platform);
         }
     }
 
@@ -9918,6 +10045,13 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     // ★ 한글/유니코드 채널·제목 파일명 — Python(yt-dlp) UTF-8 강제 (로케일 미설정 시 ASCII 폴백 → UnicodeError 방지)
     script += "export PYTHONUTF8=1\nexport PYTHONIOENCODING=UTF-8\n";
     script += "export LANG=\"${LANG:-en_US.UTF-8}\"\nexport LC_ALL=\"${LC_ALL:-en_US.UTF-8}\"\n";
+    // ★ 터미널은 앱의 환경을 물려받지 않는다 — 껍데기(tools/yt-dlp)가 앱과 같은 파이썬을 쓰도록 알려 준다.
+    //   없으면 껍데기가 Application Support 를 훑다 옛 앱(Predormition 등)의 낡은 python_env 를 잡을 수 있다.
+    {
+        const QString py = Common::bundledPythonPath();
+        if (!py.isEmpty() && QFileInfo(py).isExecutable())
+            script += "export HANISHIKI_PYTHON=" + esc(py) + "\n";
+    }
     script += "STATUS=" + esc(statusFile) + "\n";
     script += "STOP_MARKER=" + esc(stopMarker) + "\n";
     script += "echo 'STARTED' > \"$STATUS\"\n\n";
@@ -10242,7 +10376,14 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
 
     // Cleanup temp files
     QFile::remove(statusFile);
-    QFile::remove(stopMarker);
+    // ★ 중지로 끝났으면 STOP 표식을 지우지 않는다 — 그것을 봐야 할 이는 터미널의 스크립트다.
+    //   중지 버튼은 platformRunning 을 내리고 표식을 쓴다. 그러면 위 감시 루프가 1초 안에 빠져나와
+    //   여기서 표식을 지웠는데, 스크립트도 1초마다 보므로 대개 이쪽이 먼저였다 — 스크립트는 표식을
+    //   못 보고 계속 받았다(실측 2026-09-19: 중지 뒤 60초 쉬고 재시도해 영상을 끝까지 받음).
+    //   예전엔 스크립트를 이름으로 pkill 해서 가려져 있었다. 니코동 중지는 표식뿐이라 그대로 안 멈췄다.
+    //   표식은 스크립트가 보고 지우고, 스크립트가 이미 없으면 다음 실행이 시작할 때 지운다.
+    if (platformRunning(platform))
+        QFile::remove(stopMarker);
     // Don't delete scriptPath immediately - Terminal may still be reading it
 }
 

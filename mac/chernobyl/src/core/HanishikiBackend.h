@@ -416,6 +416,8 @@ public:
     QJsonArray m_naikakukaiWatches;
     int m_naikakukaiIntervalMin = 30;
     int m_naikakukaiCursor = 0;
+    bool m_autoResumeDone = false;          // autoResumeWatchers 는 앱이 뜬 뒤 한 번만
+    void autoResumeWatchers();
     std::atomic<bool> m_naikakukaiRunning{false};
     // 内閣会가 띄운 수집의 플랫폼. 중지 버튼이 '그것만' 멈추게 하려고 둔다.
     //   사용자가 직접 시작한 수집까지 멈추면 안 되므로 구별이 필요하다.
