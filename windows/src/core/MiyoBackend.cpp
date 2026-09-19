@@ -9024,6 +9024,21 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     QString userInfoUrl = QString("https://www.instagram.com/api/v1/users/web_profile_info/?username=%1").arg(username);
     HttpResponse resp = http.get(userInfoUrl, baseHeaders);
 
+    // ★ 429 는 '지금은 말고 나중에' 라는 뜻인데 예전에는 첫 요청에서 곧바로 포기했다.
+    //   같은 계정을 다른 데서 막 쓴 직후엔 첫 요청부터 429 가 온다(맥에서 실측).
+    //   1분·3분 쉬고 다시 묻는다. 401 갱신보다 먼저 와야 한다 — 쉬고 난 뒤 401 이 오면
+    //   아래의 쿠키 갱신이 그대로 이어받는다.
+    for (int waitMin : {1, 3}) {
+        if (resp.isOk() || resp.statusCode != 429) break;
+        log(QString("get user info 429 (요청이 너무 잦음) — %1분 쉬고 다시 시도합니다").arg(waitMin),
+            "warning", "instagram");
+        for (int sec = 0; sec < waitMin * 60; ++sec) {
+            if (!platformRunning("instagram")) return;   // 중지를 눌렀으면 즉시 나간다
+            QThread::sleep(1);
+        }
+        resp = http.get(userInfoUrl, baseHeaders);
+    }
+
     // ★ 401 시 한 번 더 자동 갱신 + 재시도
     if (!resp.isOk() && resp.statusCode == 401) {
         log("get user info 401 — 세션 자동 갱신 시도", "warning", "instagram");
@@ -9038,6 +9053,11 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
 
     if (!resp.isOk()) {
         log(QString("Failed to get user info (HTTP %1)").arg(resp.statusCode), "error", "instagram");
+        if (resp.statusCode == 429) {
+            log("  → 요청이 너무 잦습니다. 같은 계정을 다른 곳에서 함께 쓰고 있지 않은지 보고,"
+                " 잠시 뒤 다시 시작하세요(1분·3분 쉬며 두 번 더 시도한 결과입니다).",
+                "info", "instagram");
+        }
         if (resp.statusCode == 401) {
             log("  → Chrome 에서 instagram.com 로그인 상태 확인 필요", "info", "instagram");
             log("  → 또는 인스타 탭 → 'capture cookie' 필드에 직접 입력 (sessionid + csrftoken 등)", "info", "instagram");
