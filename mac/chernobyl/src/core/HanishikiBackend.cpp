@@ -4021,12 +4021,13 @@ void HanishikiBackend::loadConfig()
     // Check temp dir: prompt if not set OR path no longer exists
     {
         QString td = m_config->tempDir();
-        if (!td.isEmpty() && !QDir(td).exists()) {
-            log(QString("⚠️ 디스크 경로가 존재하지 않습니다: %1").arg(td), "warning", "settings");
-            m_config->setTempDir("");
-            m_config->save();
-            td = "";
-        }
+        // ★ 지금 안 보인다고 설정을 지우지 않는다. 예전엔 여기서 비우고 저장했다 — 외장 디스크가
+        //   로그인 직후 앱보다 늦게 붙거나 잠깐 빠졌다 붙기만 해도 설정이 영영 사라졌고, 그 뒤로는
+        //   (内閣会 무인 수집까지) 모든 수집이 "디스크 설정을 먼저 해주세요!" 로 멈췄다.
+        //   디스크가 다시 붙으면 그대로 쓰면 된다. 없는 동안은 수집 시작에서 까닭을 말하고 멈춘다.
+        if (!td.isEmpty() && !QDir(td).exists())
+            log(QString("⚠️ 디스크가 지금 보이지 않습니다: %1 — 연결되면 그대로 씁니다. "
+                        "디스크를 바꾸셨다면 설정에서 새로 고르십시오.").arg(td), "warning", "settings");
         runJsAll(QString("checkDiskSetup('%1')").arg(td));
     }
 
@@ -4560,16 +4561,22 @@ void HanishikiBackend::startCollection(const QString &configJson)
     // 디스크 설정 필수 체크 + 경로 존재 여부
     {
         QString td = m_config->tempDir();
+        // ★ 안 보인다고 설정을 지우지 않는다(loadConfig 의 같은 자리 참고) — 이번 판만 멈춘다.
         if (!td.isEmpty() && !QDir(td).exists()) {
-            log(QString("⚠️ 디스크 경로가 사라졌습니다: %1").arg(td), "warning", platformName);
-            m_config->setTempDir("");
-            m_config->save();
-            td = "";
+            dbg("EARLY RETURN: 디스크가 안 보임", platformName);
+            log(QString("⚠️ 디스크가 연결되어 있지 않습니다: %1 — 연결한 뒤 다시 시작하십시오. "
+                        "디스크를 바꾸셨다면 설정에서 새로 고르십시오.").arg(td), "error", platformName);
+            runJsAll(QString("setRunning('%1', false)").arg(platformName));
+            updateStats(0, 0, "대기", trackKey);   // 화면이 시작할 때 '수집 중' 으로 바꿔 둔 것을 되돌린다
+            return;
         }
         if (td.isEmpty()) {
             dbg("EARLY RETURN: 디스크 설정 없음", platformName);
             log("디스크 설정을 먼저 해주세요!", "error", platformName);
             runJsAll(QString("setRunning('%1', false)").arg(platformName));
+            // ★ 시작 버튼만 돌려주고 상태는 '수집 중' 으로 남아, 사이드바 불과 상단 게이지가
+            //   계속 '돌고 있음' 을 가리켰다(실측 2026-09-19: spinspin·asked).
+            updateStats(0, 0, "대기", trackKey);
             runJs("showDiskModal()");
             return;
         }
@@ -16664,7 +16671,24 @@ void HanishikiBackend::writeStartupLog()
     // Bundled tools
     ts << "── Bundled Tools ──\n";
     QString appDir = QCoreApplication::applicationDirPath();
+#ifndef Q_OS_WIN
+    // ★ yt-dlp 는 MacOS/ 에 없다 — 실제로 쓰는 것은 Resources/tools 의 껍데기(python -m yt_dlp)나
+    //   사용자 폴더의 자동 갱신본이다. 예전엔 MacOS/ 만 봐서, 멀쩡히 받고 있는데도 이 진단서에는
+    //   늘 'yt-dlp: (missing)' 이 적혔다(실측 2026-09-19). 앱이 실제로 고르는 경로를 그대로 적는다.
+    {
+        const QString yt = Common::ytDlpExecutable();
+        const QFileInfo fi(yt);
+        if (!fi.exists())
+            ts << "  yt-dlp: (missing) — " << yt << "\n";
+        else if (fi.size() < 1000000)
+            ts << "  yt-dlp: 껍데기 → 번들 파이썬의 yt_dlp (버전은 위 꾸러미 목록) — " << yt << "\n";
+        else
+            ts << "  yt-dlp: " << QString("%1 MB").arg(fi.size()/(1024.0*1024.0), 0, 'f', 1) << " — " << yt << "\n";
+    }
+    for (const QString &tool : {"ffmpeg", "ffprobe"}) {
+#else
     for (const QString &tool : {"yt-dlp", "ffmpeg", "ffprobe"}) {
+#endif
 #ifdef Q_OS_WIN
         QString path = appDir + "/" + tool + ".exe";
 #else
