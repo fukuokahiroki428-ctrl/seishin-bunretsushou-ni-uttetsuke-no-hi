@@ -5898,7 +5898,10 @@
             if (/^https?:\/\//i.test(t)) return /nicovideo\.jp|nico\.ms/i.test(t);
             if (/^(www\.|sp\.|ch\.)?nicovideo\.jp\//i.test(t)) return true;
             if (t.charAt(0) === '@') t = t.slice(1);
-            if (/^(user|mylist|series|watch|channel)\//i.test(t)) return true;
+            // 니코동 ID 는 전부 숫자다 — 백엔드(niconicoWatchUrl)와 같은 모양으로 좁힌다.
+            if (/^user\/\d+(\/video)?$/i.test(t)) return true;
+            if (/^(mylist|series)\/\d+$/i.test(t)) return true;
+            if (/^watch\/(sm|so|nm)?\d+$/i.test(t)) return true;
             if (/^(sm|so|nm)\d+$/i.test(t)) return true;
             return /^\d+$/.test(t);
         }

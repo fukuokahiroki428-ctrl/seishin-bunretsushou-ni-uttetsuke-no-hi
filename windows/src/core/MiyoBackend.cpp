@@ -3387,6 +3387,7 @@ void MiyoBackend::emailWatchTick()
 //    적을 수 있는 형태가 여러 가지다. 받아들이는 것만 적는다:
 //      12345678            → 유저 페이지(그 사람이 올린 영상 목록)
 //      user/12345678       ·  mylist/123  ·  series/123  ·  watch/sm123
+//        (여기의 번호는 반드시 숫자다 — user/abc 같은 것은 받지 않는다)
 //      sm12345 · so12345 · nm12345   → 영상 하나
 //      https://…            → 적은 그대로
 //    알아볼 수 없으면 빈 문자열을 준다. 짐작해서 검색 같은 것으로 돌리지 않는다
@@ -3418,17 +3419,38 @@ static QString niconicoWatchUrl(const QString &raw)
 
     if (t.startsWith(QLatin1Char('@'))) t.remove(0, 1);   // @12345 로 적는 사람도 있다
 
-    // 경로만 적은 경우
-    static const QRegularExpression kPath(
-        QStringLiteral("^(user|mylist|series|watch|channel)/"),
-        QRegularExpression::CaseInsensitiveOption);
-    if (kPath.match(t).hasMatch()) {
-        QString u = QStringLiteral("https://www.nicovideo.jp/") + t;
+    // 경로만 적은 경우 — ID 를 숫자로 좁힌다.
+    //   니코동의 유저·마이리스트·시리즈는 전부 번호다. 좁히지 않으면 user/abc 같은 것을
+    //   받아 …/user/abc/video 를 만드는데, 그 주소는 404 라 감시가 조용히 아무것도
+    //   받지 않는다 — '알아볼 수 없으면 거부' 라는 이 함수의 뜻과 어긋난다.
+    //   (맥이 이 함수를 오려 16가지로 재 보고 잡아 주었다, 2026-09-19)
+    //   channel/ 은 ID 모양을 확신할 수 없어 뺐다. 주소를 통째로 붙이면 그대로 나간다.
+    {
+        static const QRegularExpression kUserPath(
+            QStringLiteral("^user/(\\d+)(?:/video)?$"),
+            QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch m = kUserPath.match(t);
         // 유저 페이지는 /video 까지 가야 올린 영상 목록이다(그냥 /user/N 은 프로필).
-        if (t.startsWith(QLatin1String("user/"), Qt::CaseInsensitive) &&
-            !t.contains(QLatin1String("/video")))
-            u += QLatin1String("/video");
-        return u;
+        if (m.hasMatch())
+            return QStringLiteral("https://www.nicovideo.jp/user/") + m.captured(1)
+                 + QLatin1String("/video");
+    }
+    {
+        static const QRegularExpression kListPath(
+            QStringLiteral("^(mylist|series)/(\\d+)$"),
+            QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch m = kListPath.match(t);
+        if (m.hasMatch())
+            return QStringLiteral("https://www.nicovideo.jp/") + m.captured(1).toLower()
+                 + QLatin1Char('/') + m.captured(2);
+    }
+    {
+        static const QRegularExpression kWatchPath(
+            QStringLiteral("^watch/((?:sm|so|nm)?\\d+)$"),
+            QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch m = kWatchPath.match(t);
+        if (m.hasMatch())
+            return QStringLiteral("https://www.nicovideo.jp/watch/") + m.captured(1);
     }
 
     // 영상 ID
@@ -9918,6 +9940,14 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     //   --xff <일본 IP 대역> 셋 다 막혔다(2026-09-18). 경유만이 방법이다.
     //   프록시는 새로 받지 않고 설정 화면에 등록해 둔 프로필을 이름으로 고른다 —
     //   자격증명은 앱이 들고 있으므로 화면·로그에 나가지 않는다.
+    // ★ 프록시 주소는 명령줄에 넣지 않는다. 넣으면 자격증명이 miyo_yt_download.bat
+    //   파일과 cmd.exe·yt-dlp 의 명령줄에 그대로 남는다 — 916c093 에서 메일 비밀번호를
+    //   막은 것과 같은 종류다(맥 쪽에서 짚어 주었다, 2026-09-19).
+    //   대신 자식 프로세스의 환경변수로 넘긴다. 파일에도, 명령줄에도 남지 않는다.
+    //   yt-dlp 가 HTTP_PROXY/HTTPS_PROXY 를 읽는 것은 실측으로 확인했다:
+    //     없이        → sm9 정상 수집
+    //     죽은 주소   → "Unable to connect to proxy ... 127.0.0.1:9"
+    QString proxyEnvUrl;
     {
         const QString wantProxy = config["proxy"].toString().trimmed();
         if (!wantProxy.isEmpty()) {
@@ -9928,7 +9958,7 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
                             "설정 → 프록시에서 등록했는지 확인하세요.").arg(wantProxy),
                     "warning", platform);
             } else {
-                baseArgs << "--proxy" << purl;
+                proxyEnvUrl = purl;
                 // 로그에는 자격증명 없는 형태만 적는다(proxyUrl 의 두 번째 인자).
                 log(QString("%1 프록시 경유: %2").arg(plabel, proxyUrl(prof, false)),
                     "info", platform);
@@ -10266,11 +10296,19 @@ void MiyoBackend::runYoutubeDownload(const QJsonObject &config)
     //   기다리므로 잠깐 막혀도 상관없다.
     {
         const QString scriptPathCopy = scriptPath;
+        const QString proxyEnvCopy = proxyEnvUrl;   // 자격증명은 환경변수로만 간다
         const QString platformCopy = platform;   // 람다가 platform 을 캡처할 수 있게 밖에서 복사
-        QMetaObject::invokeMethod(this, [this, scriptPathCopy, platformCopy]() {
+        QMetaObject::invokeMethod(this, [this, scriptPathCopy, platformCopy, proxyEnvCopy]() {
             QProcess *p = new QProcess(this);
             p->setProgram("cmd.exe");
             p->setArguments({"/c", QDir::toNativeSeparators(scriptPathCopy)});
+            if (!proxyEnvCopy.isEmpty()) {
+                // .bat 은 이 환경을 물려받고, yt-dlp 가 그것을 읽는다.
+                QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+                env.insert(QStringLiteral("HTTP_PROXY"), proxyEnvCopy);
+                env.insert(QStringLiteral("HTTPS_PROXY"), proxyEnvCopy);
+                p->setProcessEnvironment(env);
+            }
             // ★ 검은 콘솔을 따로 띄우지 않는다. 출력은 앱 터미널 창으로 보낸다.
             //   예전 콘솔은 앱 바깥이라 ⏹ 중지도, 로그 저장도, 스크롤도 앱과 따로
             //   놀았고 끝에 pause 로 남아 있었다. Qt 는 부모가 콘솔 없는 GUI 앱이면

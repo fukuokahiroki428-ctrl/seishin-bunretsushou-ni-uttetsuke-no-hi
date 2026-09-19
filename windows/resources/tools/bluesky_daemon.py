@@ -1361,6 +1361,8 @@ def main():
             resp = client.chat.bsky.convo.list_convos({'limit': 100})
             convos = getattr(resp, 'convos', [])
             for c in convos:
+                # 최대 수집 수(화면의 그 값). 맥에서 먼저 넣고 같은 줄을 요청해 왔다.
+                if over_cap(len(all_data)): break
                 members = getattr(c, 'members', [])
                 handles = ', '.join(getattr(m, 'handle', '') for m in members)
                 names = ', '.join(getattr(m, 'display_name', '') or '' for m in members)

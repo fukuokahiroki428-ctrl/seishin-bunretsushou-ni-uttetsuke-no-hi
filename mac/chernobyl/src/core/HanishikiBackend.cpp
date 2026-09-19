@@ -3146,6 +3146,7 @@ void HanishikiBackend::emailWatchTick()
 //    적을 수 있는 형태가 여러 가지다. 받아들이는 것만 적는다:
 //      12345678            → 유저 페이지(그 사람이 올린 영상 목록)
 //      user/12345678       ·  mylist/123  ·  series/123  ·  watch/sm123
+//        (여기의 번호는 반드시 숫자다 — user/abc 같은 것은 받지 않는다)
 //      sm12345 · so12345 · nm12345   → 영상 하나
 //      https://…            → 적은 그대로
 //    알아볼 수 없으면 빈 문자열을 준다. 짐작해서 검색 같은 것으로 돌리지 않는다
@@ -3177,17 +3178,38 @@ static QString niconicoWatchUrl(const QString &raw)
 
     if (t.startsWith(QLatin1Char('@'))) t.remove(0, 1);   // @12345 로 적는 사람도 있다
 
-    // 경로만 적은 경우
-    static const QRegularExpression kPath(
-        QStringLiteral("^(user|mylist|series|watch|channel)/"),
-        QRegularExpression::CaseInsensitiveOption);
-    if (kPath.match(t).hasMatch()) {
-        QString u = QStringLiteral("https://www.nicovideo.jp/") + t;
+    // 경로만 적은 경우 — ID 를 숫자로 좁힌다.
+    //   니코동의 유저·마이리스트·시리즈는 전부 번호다. 좁히지 않으면 user/abc 같은 것을
+    //   받아 …/user/abc/video 를 만드는데, 그 주소는 404 라 감시가 조용히 아무것도
+    //   받지 않는다 — '알아볼 수 없으면 거부' 라는 이 함수의 뜻과 어긋난다.
+    //   (맥이 이 함수를 오려 16가지로 재 보고 잡아 주었다, 2026-09-19)
+    //   channel/ 은 ID 모양을 확신할 수 없어 뺐다. 주소를 통째로 붙이면 그대로 나간다.
+    {
+        static const QRegularExpression kUserPath(
+            QStringLiteral("^user/(\\d+)(?:/video)?$"),
+            QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch m = kUserPath.match(t);
         // 유저 페이지는 /video 까지 가야 올린 영상 목록이다(그냥 /user/N 은 프로필).
-        if (t.startsWith(QLatin1String("user/"), Qt::CaseInsensitive) &&
-            !t.contains(QLatin1String("/video")))
-            u += QLatin1String("/video");
-        return u;
+        if (m.hasMatch())
+            return QStringLiteral("https://www.nicovideo.jp/user/") + m.captured(1)
+                 + QLatin1String("/video");
+    }
+    {
+        static const QRegularExpression kListPath(
+            QStringLiteral("^(mylist|series)/(\\d+)$"),
+            QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch m = kListPath.match(t);
+        if (m.hasMatch())
+            return QStringLiteral("https://www.nicovideo.jp/") + m.captured(1).toLower()
+                 + QLatin1Char('/') + m.captured(2);
+    }
+    {
+        static const QRegularExpression kWatchPath(
+            QStringLiteral("^watch/((?:sm|so|nm)?\\d+)$"),
+            QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch m = kWatchPath.match(t);
+        if (m.hasMatch())
+            return QStringLiteral("https://www.nicovideo.jp/watch/") + m.captured(1);
     }
 
     // 영상 ID
