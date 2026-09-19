@@ -9050,24 +9050,56 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
     QString userInfoUrl = QString("https://www.instagram.com/api/v1/users/web_profile_info/?username=%1").arg(username);
     HttpResponse resp = http.get(userInfoUrl, baseHeaders);
 
-    // ★ 429 는 '지금은 말고 나중에' 라는 뜻인데 예전에는 첫 요청에서 곧바로 포기했다.
-    //   같은 계정을 다른 데서 막 쓴 직후엔 첫 요청부터 429 가 온다(맥에서 실측).
-    //   1분·3분 쉬고 다시 묻는다. 401 갱신보다 먼저 와야 한다 — 쉬고 난 뒤 401 이 오면
-    //   아래의 쿠키 갱신이 그대로 이어받는다.
-    for (int waitMin : {1, 3}) {
-        if (resp.isOk() || resp.statusCode != 429) break;
-        log(QString("get user info 429 (요청이 너무 잦음) — %1분 쉬고 다시 시도합니다").arg(waitMin),
-            "warning", "instagram");
-        for (int sec = 0; sec < waitMin * 60; ++sec) {
-            if (!platformRunning("instagram")) return;   // 중지를 눌렀으면 즉시 나간다
-            QThread::sleep(1);
+    // ★ 429 를 '요청이 잦다' 로만 읽으면 안 된다.
+    //   인스타 웹 API 는 '제대로 로그인되지 않은 요청' 에도 429 를 준다. 이 함수 위쪽
+    //   주석이 이미 말하고 있다 — sessionid 만으론 미인증이고, csrftoken 과 ds_user_id 가
+    //   함께 있어야 200 이 나온다. 크롬 추출이 실패하고 입력 쿠키에 sessionid 가 없으면
+    //   Cookie 헤더는 "sessionid=..." 하나로 나간다. 그 상태로는 몇 분을 쉬어도 똑같다 —
+    //   즉시 알 수 있는 실패를 몇 분짜리 침묵으로 바꿀 뿐이고, 1년 무인 실행에서는 그게 더 나쁘다.
+    //   그래서 쉬기 전에 쿠키부터 본다. 온전할 때만 진짜 과다 요청일 수 있으므로 그때만 쉰다.
+    bool igCookieIncomplete = false;
+    QStringList igCookieMissing;
+    if (!resp.isOk() && resp.statusCode == 429) {
+        const QString ck = baseHeaders.value("Cookie");
+        auto cookieValue = [&ck](const char *key) {
+            for (const QString &part : ck.split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+                const QString p = part.trimmed();
+                const QString pfx = QString::fromLatin1(key) + QLatin1Char('=');
+                if (p.startsWith(pfx)) return p.mid(pfx.size()).trimmed();
+            }
+            return QString();
+        };
+        QStringList missing;
+        for (const char *k : {"sessionid", "csrftoken", "ds_user_id"})
+            if (cookieValue(k).isEmpty()) missing << QString::fromLatin1(k);
+
+        if (!missing.isEmpty()) {
+            // 기다릴 일이 아니라 고칠 일이다. 아래 '세션 자동 갱신' 으로 넘긴다 —
+            // 크롬에서 한 시점의 온전한 쿠키를 받아 오는 그 길이 바로 이 경우의 답이다.
+            igCookieIncomplete = true;
+            igCookieMissing = missing;
+            log(QString("인스타 429 — 쿠키가 반쪽입니다 (없음: %1). 기다릴 일이 아니라서 "
+                        "세션을 다시 받아 봅니다.").arg(missing.join(QStringLiteral(", "))),
+                "warning", "instagram");
+        } else {
+            // 쿠키는 온전하다 — 이제야 '정말로 잦아서' 일 수 있다. 1분·3분 쉬고 다시 묻는다.
+            //   401 갱신보다 먼저 와야 한다 — 쉬고 난 뒤 401 이 오면 아래 쿠키 갱신이 이어받는다.
+            for (int waitMin : {1, 3}) {
+                if (resp.isOk() || resp.statusCode != 429) break;
+                log(QString("인스타 429 (쿠키는 온전함) — %1분 쉬고 다시 시도합니다").arg(waitMin),
+                    "warning", "instagram");
+                for (int sec = 0; sec < waitMin * 60; ++sec) {
+                    if (!platformRunning("instagram")) return;   // 중지를 눌렀으면 즉시 나간다
+                    QThread::sleep(1);
+                }
+                resp = http.get(userInfoUrl, baseHeaders);
+            }
         }
-        resp = http.get(userInfoUrl, baseHeaders);
     }
 
-    // ★ 401 시 한 번 더 자동 갱신 + 재시도
-    if (!resp.isOk() && resp.statusCode == 401) {
-        log("get user info 401 — 세션 자동 갱신 시도", "warning", "instagram");
+    // ★ 401, 그리고 '쿠키가 반쪽이라 429' 인 경우 — 크롬에서 온전한 쿠키를 받아 재시도.
+    if (!resp.isOk() && (resp.statusCode == 401 || igCookieIncomplete)) {
+        log("get user info — 세션 자동 갱신 시도", "warning", "instagram");
         QString fullCookie = extractInstagramSessionSync();
         QString currentCookie = baseHeaders["Cookie"];
         if (!fullCookie.isEmpty() && fullCookie != currentCookie) {
@@ -9079,9 +9111,18 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
 
     if (!resp.isOk()) {
         log(QString("Failed to get user info (HTTP %1)").arg(resp.statusCode), "error", "instagram");
-        if (resp.statusCode == 429) {
-            log("  → 요청이 너무 잦습니다. 같은 계정을 다른 곳에서 함께 쓰고 있지 않은지 보고,"
-                " 잠시 뒤 다시 시작하세요(1분·3분 쉬며 두 번 더 시도한 결과입니다).",
+        if (resp.statusCode == 429 && igCookieIncomplete) {
+            log(QStringLiteral("  → 쿠키가 반쪽입니다 (없음: %1).\n")
+                    .arg(igCookieMissing.join(QStringLiteral(", ")))
+                + QStringLiteral("     인스타 웹 API 는 sessionid 만 있는 요청을 '로그인 안 됨' 으로 보고\n"
+                                 "     429 를 줍니다 — 기다린다고 달라지지 않습니다.\n"
+                                 "     Chrome 에서 instagram.com 에 로그인해 두시거나, 인스타 탭의\n"
+                                 "     'capture cookie' 칸에 sessionid·csrftoken·ds_user_id 를 한 번에\n"
+                                 "     복사해 넣어 주세요 — 따로 복사한 값을 섞으면 그것도 거부됩니다."),
+                "info", "instagram");
+        } else if (resp.statusCode == 429) {
+            log("  → 쿠키는 온전한데도 429 입니다. 같은 계정을 다른 곳에서 함께 쓰고 있지 않은지"
+                " 보고, 잠시 뒤 다시 시작하세요(1분·3분 쉬며 두 번 더 시도한 결과입니다).",
                 "info", "instagram");
         }
         if (resp.statusCode == 401) {
