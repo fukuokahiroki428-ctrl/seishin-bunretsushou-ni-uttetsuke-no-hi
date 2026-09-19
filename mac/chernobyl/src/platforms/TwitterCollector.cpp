@@ -2892,7 +2892,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         QString cursor;
         int currentAccountIdx = 0;
 
-        while (isRunning) {
+        // ★ 최대 수집 수 — 목록도 그 개수에서 멈춘다. 빠져 있어서 '전체' 로 3개를 주면 팔로워 목록을
+        //   끝까지 모으고 한 명씩 프로필 사진·배너까지 받았다(실측 2026-09-19: 14초에 2,208파일).
+        auto usersCapped = [&]() { return maxCount > 0 && allUsers.count() >= maxCount; };
+        while (isRunning && !usersCapped()) {
             QJsonObject cmd;
             cmd["action"] = type;  // "followers" or "following"
             cmd["user_id"] = userId;  // ★ BUG: 이전엔 주석 끝에 붙어서 실행 안 됨
@@ -2931,7 +2934,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                         if (eid.startsWith("user-")) {
                             QJsonObject userResult = e["content"].toObject()["itemContent"].toObject()
                                 ["user_results"].toObject()["result"].toObject();
-                            if (!userResult.isEmpty()) {
+                            if (!userResult.isEmpty() && !usersCapped()) {
                                 allUsers.append(userResult);
                                 foundEntries = true;
                             }

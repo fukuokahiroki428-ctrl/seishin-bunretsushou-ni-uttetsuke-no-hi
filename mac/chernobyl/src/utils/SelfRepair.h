@@ -102,7 +102,10 @@ inline QStringList toolCandidates(const QString &name)
     const QString sfx = exeSuffix();
     QStringList c;
     if (name == "yt-dlp") {
-        c << userToolsDir() + "/yt-dlp" + sfx;          // 자동 업데이트본
+        // 자동 업데이트본 — 앱 본체(Common::ytDlpExecutable)와 같은 규칙: 1MB 미만(껍데기)은 쓰지 않는다.
+        //   그 규칙이 여기만 없어서, 데이터 폴더의 껍데기 사본을 집어 yt-dlp 를 '건너뜀' 으로 적었다.
+        const QString ub = userToolsDir() + "/yt-dlp" + sfx;
+        if (QFileInfo(ub).size() >= 1000000) c << ub;
         c << appDir() + "/yt-dlp" + sfx;                // mac: Contents/MacOS
         c << resourcesDir() + "/tools/yt-dlp" + sfx;    // 번들 tools/
     } else if (name == "python") {

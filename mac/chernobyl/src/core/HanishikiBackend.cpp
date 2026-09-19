@@ -8849,6 +8849,18 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     QString userInfoUrl = QString("https://www.instagram.com/api/v1/users/web_profile_info/?username=%1").arg(username);
     HttpResponse resp = http.get(userInfoUrl, baseHeaders);
 
+    // ★ 429(요청이 너무 많다)면 곧바로 포기하지 않는다 — 인스타가 잠시 막은 것이다.
+    //   실측(2026-09-19): 로그인 없이는 401(주소는 살아 있다), 세션으로는 첫 요청부터 429 —
+    //   같은 계정을 다른 곳(켜 둔 앱 등)에서 막 쓴 뒤였다. 1분·3분 쉬고 다시 묻는다.
+    for (int wait : {60, 180}) {
+        if (resp.isOk() || resp.statusCode != 429 || !*runFlag("instagram")) break;
+        log(QString("인스타가 잠시 막았습니다(429) — %1초 쉬고 다시 시도합니다").arg(wait), "warning", "instagram");
+        for (int s = 0; s < wait && *runFlag("instagram"); ++s) QThread::sleep(1);
+        if (!*runFlag("instagram")) break;
+        resp = http.get(userInfoUrl, baseHeaders);
+    }
+    //   ★ 401 갱신보다 먼저 둔다 — 쉬고 난 뒤 401 이 오면(세션 만료) 아래에서 크롬 쿠키로 갱신해 다시 묻게.
+
     // ★ 401 시 한 번 더 자동 갱신 + 재시도
     if (!resp.isOk() && resp.statusCode == 401) {
         log("get user info 401 — 세션 자동 갱신 시도", "warning", "instagram");
@@ -8863,6 +8875,8 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
 
     if (!resp.isOk()) {
         log(QString("Failed to get user info (HTTP %1)").arg(resp.statusCode), "error", "instagram");
+        if (resp.statusCode == 429)
+            log("  → 인스타가 이 계정·이 IP 의 요청을 잠시 막고 있습니다. 몇십 분 뒤 다시 하거나, 다른 계정·프록시로 하세요.", "info", "instagram");
         if (resp.statusCode == 401) {
             log("  → Chrome 에서 instagram.com 로그인 상태 확인 필요", "info", "instagram");
             log("  → 또는 인스타 탭 → 'capture cookie' 필드에 직접 입력 (sessionid + csrftoken 등)", "info", "instagram");

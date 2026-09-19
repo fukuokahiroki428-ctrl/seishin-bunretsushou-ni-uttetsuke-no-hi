@@ -1016,8 +1016,17 @@ void ensureYtDlpReady(bool autoUpdate)
 #endif
 
     // 1) 사용자 폴더에 yt-dlp 없거나 너무 작으면 번들 복사 (앱과 함께 출하된 검증된 버전)
+    // ★ 번들이 1MB 도 안 되는 '껍데기'(맥: python -m yt_dlp 로 넘기는 셸 스크립트)면 복사하지 않는다.
+    //   읽는 쪽(ytDlpExecutable)은 1MB 미만 사본을 쓰지 않으니 복사해 봐야 쓰이지 않고,
+    //   이 껍데기는 번들 옆에서만 제 파이썬을 찾는다 — 데이터 폴더로 옮기면 시스템 파이썬(3.9)으로
+    //   떨어져 "unsupported version of Python" 으로 죽는다(실측 2026-09-19). 자가진단은 그 사본을 집어
+    //   yt-dlp 를 '건너뜀' 으로 적었다. 이미 생긴 작은 사본도 치운다.
+    if (!bundled.isEmpty() && QFileInfo(bundled).size() < 1000000) {
+        if (QFile::exists(userBin) && QFileInfo(userBin).size() < 1000000) QFile::remove(userBin);
+        if (!autoUpdate) return;
+    }
     bool needCopy = !QFile::exists(userBin) || QFileInfo(userBin).size() < 1000000;
-    if (needCopy && !bundled.isEmpty()) {
+    if (needCopy && !bundled.isEmpty() && QFileInfo(bundled).size() >= 1000000) {
         QFile::remove(userBin);
         if (QFile::copy(bundled, userBin)) {
             QFile::setPermissions(userBin,
@@ -1195,6 +1204,12 @@ QProcessEnvironment bundledProcessEnv()
     //   명령줄이 아니라 환경으로 주는 이유: 명령줄은 같은 기계의 아무 프로세스나
     //   ps 로 읽지만, 환경은 같은 사용자만 볼 수 있다.
     {
+        // 번들 파이썬 경로 — 도구 껍데기(tools/yt-dlp 등)가 어디로 복사돼 불려도 이것을 먼저 쓴다.
+        //   앱이 외장 디스크에 있으면 껍데기의 '/Applications 훑기' 가 번들을 못 찾았다.
+        {
+            const QString py = bundledPythonPath();
+            if (!py.isEmpty() && QFileInfo(py).isExecutable()) env.insert("HANISHIKI_PYTHON", py);
+        }
         // 덧씌운 꾸러미를 번들보다 먼저 읽게 한다 — 낡은 것을 새것이 가린다.
         {
             const QString ov = userPyOverlayDir();

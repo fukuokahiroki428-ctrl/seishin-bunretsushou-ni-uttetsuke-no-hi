@@ -29,6 +29,13 @@ if [ -z "$PYTHONPATH" ]; then
 fi
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# ★ 앱이 불렀으면 앱이 번들 파이썬 경로를 알려 준다 — 그것부터 쓴다.
+#   아래의 '/Applications 훑기' 는 앱이 외장 디스크에 있으면 번들을 못 찾아 시스템 파이썬(3.9)으로
+#   떨어졌다 → "unsupported version of Python" 으로 죽었다(실측 2026-09-19).
+if [ -n "$HANISHIKI_PYTHON" ] && [ -x "$HANISHIKI_PYTHON" ]; then
+  exec "$HANISHIKI_PYTHON" -m yt_dlp "$@"
+fi
+
 SUP="$HOME/Library/Application Support"
 # 새 위치(조직 폴더 없음) 와 옛 위치(Miyo/ 밑) 를 모두 후보로.
 for D in $(ls -1dt "$SUP"/*/ "$SUP"/Miyo/*/ 2>/dev/null); do
