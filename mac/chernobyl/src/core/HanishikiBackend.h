@@ -416,6 +416,7 @@ public:
     QJsonArray m_naikakukaiWatches;
     int m_naikakukaiIntervalMin = 30;
     int m_naikakukaiCursor = 0;
+    bool m_naikakukaiDiskGoneLogged = false;   // 디스크 빠짐/돌아옴을 한 줄씩만 적으려고
     bool m_autoResumeDone = false;          // autoResumeWatchers 는 앱이 뜬 뒤 한 번만
     void autoResumeWatchers();
     std::atomic<bool> m_naikakukaiRunning{false};

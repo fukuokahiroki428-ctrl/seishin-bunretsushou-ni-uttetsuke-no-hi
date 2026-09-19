@@ -3233,6 +3233,24 @@ void HanishikiBackend::naikakukaiTick()
 {
     if (!m_naikakukaiRunning || m_naikakukaiWatches.isEmpty()) return;
 
+    // ★ 内閣会는 startCollection 을 안 거치므로 디스크 검사에 걸리지 않는다 — 일부러 그대로 둔다.
+    //   디스크가 안 붙었다고 1년 돌던 무인 감시를 멈추는 것이 더 나쁘다(저장 경로는 따로라
+    //   받은 파일은 제자리로 가고, 임시 파일만 폴백으로 간다). 다만 조용히 그러지는 않는다.
+    //   매 tick 마다 적으면 1년치 로그가 이 줄로 덮이니, 빠질 때와 돌아올 때 한 줄씩만.
+    //   (윈도우 fa62565 와 같은 모양 — 로그만 보고 언제 빠졌다 언제 돌아왔는지 알 수 있게.)
+    {
+        const QString td = m_config ? m_config->tempDir() : QString();
+        const bool gone = !td.isEmpty() && !QDir(td).exists();
+        if (gone && !m_naikakukaiDiskGoneLogged) {
+            m_naikakukaiDiskGoneLogged = true;
+            log(QString("디스크가 붙어 있지 않습니다: %1\n   감시는 그대로 돕니다 — 임시 파일만 %2 에 씁니다. 설정은 그대로입니다.")
+                    .arg(td, Common::resolveTempBase(QString())), "warning", "naikakukai");
+        } else if (!gone && m_naikakukaiDiskGoneLogged) {
+            m_naikakukaiDiskGoneLogged = false;
+            log("디스크가 다시 붙었습니다 — 임시 파일도 제자리로 돌아갑니다.", "success", "naikakukai");
+        }
+    }
+
     // 이번 tick 에서 처리할 watch 선택 (순환 커서)
     if (m_naikakukaiCursor >= m_naikakukaiWatches.size()) m_naikakukaiCursor = 0;
     QJsonObject watch = m_naikakukaiWatches.at(m_naikakukaiCursor).toObject();
