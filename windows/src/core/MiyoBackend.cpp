@@ -9115,8 +9115,32 @@ void MiyoBackend::runInstagramCollection(const QJsonObject &config)
                         "세션을 다시 받아 봅니다.").arg(missing.join(QStringLiteral(", "))),
                 "warning", "instagram");
         } else {
-            // 쿠키는 온전하다 — 이제야 '정말로 잦아서' 일 수 있다. 1분·3분 쉬고 다시 묻는다.
-            //   401 갱신보다 먼저 와야 한다 — 쉬고 난 뒤 401 이 오면 아래 쿠키 갱신이 이어받는다.
+            // ★ 쿠키가 '있다' 는 것과 '살아 있다' 는 것은 다르다.
+            //   죽은 세션을 인스타는 401 이 아니라 429 로 먼저 알려 준다. 사용자 기계에서
+            //   실제로 나왔다(맥이 잡아 보내 줬다, 2026-09-20):
+            //       🍪 Chrome 전체 쿠키 사용 (10개, 값 일관)
+            //       인스타 429 (쿠키는 온전함) — 60초 쉬고 다시 시도합니다
+            //       get user info — 세션 자동 갱신 시도
+            //       Failed to get user info (HTTP 401)
+            //   쿠키 열 개가 다 있고 값도 일관된데 죽은 세션이었다. 그대로 두면 그런 계정이
+            //   매번 4분을 버린다 — 1년 무인 실행에서는 속도 제한보다 이쪽이 훨씬 흔하다
+            //   (세션은 언젠가 반드시 죽고, 속도 제한은 어쩌다 한 번이다).
+            //   그래서 기다리기 전에 '한 번만' 곧바로 다시 묻는다. 요청 한 번을 더 쓰는 대신
+            //   죽은 세션에 4분을 버리지 않는다.
+            {
+                const QString fresh = extractInstagramSessionSync();
+                if (!fresh.isEmpty() && fresh != baseHeaders.value("Cookie"))
+                    baseHeaders["Cookie"] = fresh;   // 크롬에 새 쿠키가 있으면 그것으로
+                resp = http.get(userInfoUrl, baseHeaders);
+                if (!resp.isOk() && resp.statusCode == 401) {
+                    log("인스타 429 뒤 401 — 세션이 죽었습니다. 기다려도 달라지지 않습니다.",
+                        "error", "instagram");
+                    log("   Chrome 에서 instagram.com 에 다시 로그인해 주세요.",
+                        "info", "instagram");
+                    return;
+                }
+            }
+            // 여기까지 왔으면 이제야 '정말로 잦아서' 일 수 있다. 1분·3분 쉬고 다시 묻는다.
             for (int waitMin : {1, 3}) {
                 if (resp.isOk() || resp.statusCode != 429) break;
                 log(QString("인스타 429 (쿠키는 온전함) — %1분 쉬고 다시 시도합니다").arg(waitMin),
