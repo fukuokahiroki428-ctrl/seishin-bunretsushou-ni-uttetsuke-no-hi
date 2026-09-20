@@ -8995,6 +8995,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     //   → 쉬기 전에 쿠키부터 본다. 반쪽이면 아래 '세션 자동 갱신'(원래 401 전용)으로 보내고,
     //     온전할 때만 정말 잦은 것일 수 있으므로 1분·3분 쉬고 다시 묻는다.
     bool igCookieIncomplete = false;
+    bool igSessionDead = false;      // 429 뒤 401 — 쿠키는 있으나 인스타가 안 받아 준다
     QStringList igCookieMissing;
     if (!resp.isOk() && resp.statusCode == 429) {
         const QString ck = baseHeaders.value("Cookie");
@@ -9014,8 +9015,27 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             log(QString("인스타 429 — 쿠키가 반쪽입니다 (없음: %1). 기다릴 일이 아니라서 세션을 다시 받아 봅니다.")
                     .arg(igCookieMissing.join(QStringLiteral(", "))), "warning", "instagram");
         } else {
-            //   401 갱신보다 먼저 둔다 — 쉬고 난 뒤 401 이 오면(세션 만료) 아래에서 크롬 쿠키로 갱신해 다시 묻게.
+            // ★ 쿠키가 '있다' 와 '살아 있다' 는 다르다. 실측(사용자 기계, 2026-09-20): 크롬 쿠키 10개가
+            //   값까지 일관됐는데도 첫 응답이 429 였고, 60초 쉬고 다시 물으니 401 이었다 — 세션이 죽은
+            //   것을 인스타가 429 로 먼저 알려 준 것이다. 그 60초는 통째로 헛일이었다.
+            //   → 기다리기 전에 한 번만 곧바로 다시 묻는다(크롬에 새 쿠키가 있으면 그것으로).
+            //     401 이 오면 죽은 세션이니 기다리지 않고 끝낸다. 그래도 429 면 그때가 진짜 속도 제한이다.
+            log("인스타 429 (쿠키 모양은 온전함) — 기다리기 전에 세션이 살아 있는지부터 봅니다", "warning", "instagram");
+            {
+                const QString fresh = extractInstagramSessionSync();
+                if (!fresh.isEmpty() && fresh != baseHeaders["Cookie"]) {
+                    baseHeaders["Cookie"] = fresh;
+                    log("크롬에서 새 쿠키를 받았습니다 — 곧바로 다시 묻습니다", "info", "instagram");
+                }
+                resp = http.get(userInfoUrl, baseHeaders);
+                if (!resp.isOk() && resp.statusCode == 401) {
+                    igSessionDead = true;
+                    log("429 뒤 401 — 쿠키는 모양만 온전하고 인스타가 받아 주지 않습니다(세션이 죽었습니다). "
+                        "기다리지 않고 끝냅니다.", "error", "instagram");
+                }
+            }
             for (int wait : {60, 180}) {
+                if (igSessionDead) break;
                 if (resp.isOk() || resp.statusCode != 429 || !*runFlag("instagram")) break;
                 log(QString("인스타 429 (쿠키는 온전함) — %1초 쉬고 다시 시도합니다").arg(wait), "warning", "instagram");
                 for (int s = 0; s < wait && *runFlag("instagram"); ++s) QThread::sleep(1);
@@ -9044,6 +9064,10 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                         "429 를 줍니다 — 기다린다고 달라지지 않습니다. Chrome 에서 instagram.com 에 로그인해 두시거나, "
                         "인스타 탭의 'capture cookie' 칸에 sessionid·csrftoken·ds_user_id 를 한 번에 복사해 넣어 주세요 "
                         "(따로 복사한 값을 섞으면 그것도 거부됩니다).").arg(igCookieMissing.join(QStringLiteral(", "))),
+                "info", "instagram");
+        else if (igSessionDead)
+            log("  → 쿠키는 모양만 온전하고 값이 죽었습니다. Chrome 에서 instagram.com 에 다시 로그인해 주세요 "
+                "— 로그인해 두면 앱이 그 쿠키를 알아서 가져옵니다. (429 는 인스타가 '로그인 안 된 요청' 에도 주는 답입니다)",
                 "info", "instagram");
         else if (resp.statusCode == 429)
             log("  → 쿠키는 온전한데도 429 입니다. 같은 계정을 다른 곳에서 함께 쓰고 있지 않은지 보고, "
