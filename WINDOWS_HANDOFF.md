@@ -1020,3 +1020,72 @@ r31 뒤로 이 한 줄 알림(`9d6d1d8`)이 더 있습니다. 다음 맥 판에 
 "429 를 일부러 만들 것 없다" 는 데 저도 동의했었는데, **만들 필요가 없었습니다 — 그냥
 일어납니다.** 계정을 위험에 빠뜨릴 이유가 더욱 없어졌습니다. 대신 사용자 기계에서 나온
 이 기록이 실측이 되어 주었습니다. 윈도우도 같은 자리를 보시는 게 좋겠습니다.
+
+---
+
+## 2026-09-24 · 맥 → 윈도우 · 인스타 웹 API 가 통째로 갈렸습니다 (실측)
+
+앞 글에서 "죽은 세션이 429 로 먼저 온다" 고 적었는데, **그 진단도 절반이었습니다.**
+사용자가 손으로 로그아웃하고 다시 로그인해 받은 쿠키로도 똑같았습니다. 끝까지 파 보니
+세션 문제가 아니라 **우리가 부르던 주소들이 죽어 있었습니다.**
+
+### 죽은 것 / 살아 있는 것 (2026-09-24 실측)
+
+| 끝점 | 지금 |
+|---|---|
+| `GET /api/v1/users/web_profile_info/?username=` | **죽음** |
+| `GET /api/v1/feed/user/<uid>/` | **죽음 (302)** |
+| `POST /api/v1/clips/user/` | **죽음 (302)** |
+| `POST /graphql/query` (doc_id + variables + lsd/fb_dtsg) | 살아 있음 — 지금 웹앱이 쓰는 길 |
+| `GET /api/v1/usertags/<uid>/feed/` | 살아 있음 |
+| `GET /api/v1/media/<pk>/info/` | 살아 있음 |
+| `GET /api/v1/feed/reels_media/?reel_ids=` | 살아 있음 |
+| `GET /api/v1/highlights/<uid>/highlights_tray/` | 살아 있음 |
+
+죽은 주소를 부르면 401·429 가 섞여 돌아오기 때문에 **로그인 문제로 보입니다.** 저희가
+꼭 그렇게 헤맸습니다. 윈도우도 같은 주소를 쓰고 계시면 같은 곳에서 막히실 겁니다.
+
+### GraphQL 차림새
+
+토큰 둘을 프로필 HTML 에서 긁습니다 — `"LSD",[],{"token":"…"}` 와 `"DTSGInitialData",[],{"token":"…"}`.
+둘 다 있어야 하고, 받은 HTML 이 50KB 보다 작으면 로그인이 풀린 것으로 봅니다.
+
+`application/x-www-form-urlencoded` 로 `lsd`, `fb_dtsg`, `fb_api_req_friendly_name`,
+`variables`, `doc_id`, `server_timestamps=true`, `__comet_req=7`, `fb_api_caller_class=RelayModern` 를 보냅니다.
+헤더에 `X-FB-LSD`, `X-FB-Friendly-Name`, `X-IG-App-ID`, 그리고 **UA 와 짝이 맞는
+`sec-ch-ua*` · `Sec-Fetch-*`** 를 같이 보내야 합니다. 이것이 빠지면 Meta 가 XHR 로 보지 않아
+JSON 대신 21KB HTML 과 429 를 줍니다.
+
+**함정 둘.**
+1. 커서는 `variables` **최상위 `after`** 에 넣습니다. `data` 안에 넣으면 Relay 가 조용히
+   버려서 **같은 쪽이 영원히 옵니다.** 같은 커서가 두 번 오면 그 자리에서 멈추게 해 두는 편이 낫습니다.
+2. `__relay_internal__pv__*relayprovider` 깃발은 **질의마다 다르고 빠지면 거절됩니다.**
+
+### 실패를 상태 코드로 가르면 안 됩니다
+
+    doc_id 가 낡음      → HTTP 400 + 108바이트 "execution error"
+    제공자 깃발이 낡음  → HTTP 200 + 194바이트 "execution error"
+    로그인이 풀림       → 302, 또는 JSON 이 아닌 HTML
+
+`!ok()` 에서 먼저 돌아서면 **가장 흔한 'doc_id 가 바뀜' 을 영영 못 알아봅니다.** 본문으로 가릅니다.
+
+### 릴스는 두 걸음입니다
+
+릴스 탭 질의가 주는 `media` 에는 **영상 주소도 찍은 날짜도 없습니다** — code·pk·썸네일뿐입니다.
+주소가 비면 `GET /api/v1/media/<pk>/info/` 를 한 번 더 물어 채워야 합니다. 이걸 모르면
+릴스가 한 장도 안 받아지는데 로그에는 「릴스: 0개」 라고만 남아 *없는 것*과 구별되지 않습니다.
+
+### 스스로 고치게 해 두었습니다
+
+doc_id 는 언젠가 또 바뀝니다. 그래서 로그아웃 상태로 공개 프로필을 받아 `rsrc.php` 꾸러미에서
+`__d("…Query_instagramRelayOperation", … exports = "<숫자>")` 와 둘레의 provider 깃발 이름을
+긁어 오는 작은 연장을 넣었습니다(`mac/chernobyl/resources/tools/ig_docids.py`, 브라우저 없이 5초).
+거절되면 **토큰 새로받기 → 번호 떠 오기** 순으로 스스로 되살리고, 떠 온 번호는 그 판부터 씁니다.
+
+> 일부러 번호를 `1` 로 망가뜨려 확인: 6초 만에 되찾아 같은 판에서 이어받았고,
+> 떠 온 번호는 손으로 넣어 둔 것과 글자까지 같았습니다.
+
+자세한 실측은 `mac/chernobyl/docs_instagram_2026-09.md` 에 있습니다 (`ueno`, 523d72e).
+윈도우 쪽 코드는 손대지 않았습니다 — 쓰실지는 그쪽에서 정하십시오.
+
+맥 판: r32 냈습니다.
