@@ -8066,6 +8066,24 @@ void HanishikiBackend::runBlueskyCollection(const QJsonObject &config)
     m_blueskyCollector->collect(enrichedConfig, *runFlag("bluesky"));
 }
 
+
+// ── 디스코드 응답 읽기 ──────────────────────────────────────────────────────
+//   디스코드는 목록을 '최상위 배열' 로 준다. 이름이 없으니 이름이 바뀔 일도 없지만,
+//   대신 어느 날 {"items":[...]} 처럼 껍데기를 씌우면 그 순간 배열이 아니게 되고,
+//   지금 코드는 빈 배열을 읽고 조용히 끝낸다. 두 꼴을 모두 받는다.
+static QJsonArray discordList(const QByteArray &raw)
+{
+    const QJsonDocument d = QJsonDocument::fromJson(raw);
+    if (d.isArray()) return d.array();
+    if (d.isObject()) {
+        const QJsonObject o = d.object();
+        QJsonArray a = JsonShape::pickArray(o, {"items", "messages", "channels", "data", "results"});
+        if (a.isEmpty()) a = JsonShape::findArrayOfObjects(o);
+        return a;
+    }
+    return QJsonArray();
+}
+
 void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
 {
     CollectionGuard _cg(platformSem("discord"), this, "discord");
@@ -8172,7 +8190,7 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
             ++m_collectionErrorCount;   // 상위 'all' 루프가 이걸 보고 완료를 거짓말하지 않는다
             return;
         }
-        QJsonArray channels = QJsonDocument::fromJson(resp.data).array();
+        QJsonArray channels = discordList(resp.data);
 
         // 카테고리(type 4)와 텍스트 채널(type 0, 5) 분리
         QMap<QString, QString> categoryNames; // id → name
@@ -8360,7 +8378,7 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
         if (!resp.isOk()) {
             log(QString("API error: %1").arg(resp.statusCode), "error", "discord");
         } else {
-            QJsonArray pins = QJsonDocument::fromJson(resp.data).array();
+            QJsonArray pins = discordList(resp.data);
             for (const auto &val : pins) {
                 if (!platformRunning("discord")) break;
                 QJsonObject msg = val.toObject();
@@ -8378,7 +8396,7 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
                     QJsonArray attachments = msg["attachments"].toArray();
                     for (const auto &attVal : attachments) {
                         QJsonObject att = attVal.toObject();
-                        QString attUrl = att["url"].toString();
+                        QString attUrl = JsonShape::pickString(att, {"url", "proxy_url", "attachment_url"});
                         if (attUrl.isEmpty()) continue;
                         QString origName = att["filename"].toString("file");
                         QString filename = dcFilename(msg, origName);
@@ -8461,7 +8479,7 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
                 break;
             }
 
-            QJsonArray batch = QJsonDocument::fromJson(resp.data).array();
+            QJsonArray batch = discordList(resp.data);
             if (batch.isEmpty()) break;
 
             int batchAttach = 0, batchEmbed = 0, batchSticker = 0, batchImg = 0, batchVid = 0;
@@ -8596,7 +8614,7 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
                 }
             }
 
-            before = batch.last().toObject()["id"].toString();
+            before = JsonShape::pickString(batch.last().toObject(), {"id", "message_id"});
             updateStats(allMessages.count(), mediaCount, "수집 중", "discord");
 
             // Date range for this batch
@@ -9237,7 +9255,18 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
              "__relay_internal__pv__PolarisReelsRecoDebugOverlayEnabledrelayprovider"}));
         // ★ 커서는 variables 최상위 after 에 넣는다. data 안에 넣으면 같은 쪽이 다시 온다(실측).
         const QJsonObject d = igGraphql("PolarisProfilePostsQuery", Common::apiOverride("instagram.profilePostsDocId", igDocPosts), v);
-        return d["xdt_api__v1__feed__user_timeline_graphql_connection"].toObject();
+        // ★ 서른 자가 넘는 이름 하나에 게시물 수집 전부가 걸려 있었다. 이름을 여러 개 대고,
+        //   그래도 없으면 edges/page_info 를 가진 묶음을 모양으로 찾는다.
+        QJsonObject c = JsonShape::pickObject(d, {"xdt_api__v1__feed__user_timeline_graphql_connection",
+                                                  "xdt_user_timeline_graphql_connection",
+                                                  "user_timeline_graphql_connection"});
+        if (c.isEmpty()) {
+            for (auto it = d.constBegin(); it != d.constEnd(); ++it) {
+                const QJsonObject o = it.value().toObject();
+                if (o.contains("edges") || o.contains("page_info")) { c = o; break; }
+            }
+        }
+        return c;
     };
     // 사다리를 끝까지 오른다: 한 번 실패 → 토큰 새로 → 또 실패 → 질의 번호 뜨기 → 마지막으로 한 번 더.
     auto igTry = [&](const QString &what, auto once) -> QJsonObject {
@@ -9458,10 +9487,12 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             break;
         }
         igRateLimitHits = 0;
-        const QJsonObject pageInfo = conn["page_info"].toObject();
-        nextMaxId = pageInfo["end_cursor"].toString();
+        const QJsonObject pageInfo = JsonShape::pickObject(conn, {"page_info", "pageInfo", "paging"});
+        nextMaxId = JsonShape::pickString(pageInfo, {"end_cursor", "endCursor", "next_max_id", "after"});
         // ★ '다음 쪽 있음' 인데 커서가 비면 첫 쪽을 영원히 다시 받는다(=디스크를 채운다). 둘 다 본다.
-        hasMore = pageInfo["has_next_page"].toBool(false) && !nextMaxId.isEmpty();
+        // ★ '다음 쪽 있음' 표시 이름이 바뀌어도 커서가 있으면 이어간다(둘 다 없어야 끝).
+        hasMore = !nextMaxId.isEmpty()
+               && (pageInfo["has_next_page"].toBool(true) || pageInfo["hasNextPage"].toBool(true));
         if (!nextMaxId.isEmpty() && nextMaxId == prevCursor) {
             log("같은 쪽이 반복됩니다 — 여기서 멈춥니다(지금까지 받은 것은 저장됩니다).", "warning", "instagram");
             break;
@@ -9470,7 +9501,8 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
 
         // GraphQL 의 node 는 옛 REST item 과 같은 모양이라 아래 파서를 그대로 쓴다.
         QJsonArray items;
-        for (const auto &e : conn["edges"].toArray()) items.append(e.toObject()["node"]);
+        for (const auto &e : JsonShape::pickArray(conn, {"edges", "items", "nodes"}))
+            items.append(e.toObject().contains("node") ? e.toObject()["node"] : e);
         if (items.isEmpty()) break;
 
         for (const auto &itemVal : items) {
@@ -9798,17 +9830,28 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             igAddProviders(rv, igProviders("instagram.profileReelsProviders",
                 {"__relay_internal__pv__PolarisShortDramaEnabledrelayprovider"}));
             if (!reelsMaxId.isEmpty()) rv["after"] = reelsMaxId;
-            auto reelsOnce = [&]() {
-                return igGraphql("PolarisProfileReelsTabContentQuery",
-                                 Common::apiOverride("instagram.profileReelsDocId", igDocReels), rv)
-                           ["fetch__XDTUserDict"].toObject()["clips_connection"].toObject();
+            auto reelsOnce = [&]() -> QJsonObject {
+                const QJsonObject d = igGraphql("PolarisProfileReelsTabContentQuery",
+                                                Common::apiOverride("instagram.profileReelsDocId", igDocReels), rv);
+                // ★ 껍데기 이름 두 개를 한 줄로 타던 자리(fetch__XDTUserDict → clips_connection).
+                //   이름을 여러 개 대고, 그래도 없으면 edges 를 가진 묶음을 모양으로 찾는다.
+                QJsonObject u = JsonShape::pickObject(d, {"fetch__XDTUserDict", "xdt_user_dict", "user"});
+                QJsonObject c = JsonShape::pickObject(u, {"clips_connection", "clips", "reels_connection"});
+                if (c.isEmpty()) {
+                    for (auto it = u.constBegin(); it != u.constEnd(); ++it) {
+                        const QJsonObject o = it.value().toObject();
+                        if (o.contains("edges") || o.contains("page_info")) { c = o; break; }
+                    }
+                }
+                return c;
             };
             QJsonObject reelsConn = igTry("릴스 질의", reelsOnce);
             if (reelsConn.isEmpty()) break;
             QJsonArray items;
-            for (const auto &e : reelsConn["edges"].toArray()) items.append(e.toObject()["node"]);
-            const QJsonObject reelsPage = reelsConn["page_info"].toObject();
-            reelsMaxId = reelsPage["end_cursor"].toString();
+            for (const auto &e : JsonShape::pickArray(reelsConn, {"edges", "items", "nodes"}))
+                items.append(e.toObject().contains("node") ? e.toObject()["node"] : e);
+            const QJsonObject reelsPage = JsonShape::pickObject(reelsConn, {"page_info", "pageInfo", "paging"});
+            reelsMaxId = JsonShape::pickString(reelsPage, {"end_cursor", "endCursor", "next_max_id", "after"});
             // ★ 릴스 커서의 자리는 실측으로 확인하지 못했다(브라우저가 첫 쪽만 부르고 멈췄다).
             //   Relay 는 모르는 변수를 말없이 버리므로, 커서가 안 먹으면 같은 쪽이 영원히 온다.
             //   그래서 같은 커서가 두 번 오면 그 자리에서 멈춘다 — 헛도는 것보다 덜 받는 편이 낫다.
@@ -9817,7 +9860,8 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                 break;
             }
             prevReelsCursor = reelsMaxId;
-            const bool reelsMore = reelsPage["has_next_page"].toBool(false) && !reelsMaxId.isEmpty();
+            const bool reelsMore = !reelsMaxId.isEmpty()
+                && (reelsPage["has_next_page"].toBool(true) || reelsPage["hasNextPage"].toBool(true));
             if (items.isEmpty()) break;
 
             bool reelsEnough = false;
@@ -9913,7 +9957,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                 break;
             }
             const QJsonObject tj = tr.json();
-            const QJsonArray titems = tj["items"].toArray();
+            const QJsonArray titems = JsonShape::pickArray(tj, {"items", "posts", "medias"});
             if (titems.isEmpty()) break;
             for (const auto &iv : titems) {
                 if (!platformRunning("instagram")) break;
@@ -9958,7 +10002,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                 QThread::msleep(static_cast<unsigned long>(igDelay * 1000));
             }
             if (tagEnough) break;
-            tagMaxId = tj["next_max_id"].toString();
+            tagMaxId = JsonShape::pickString(tj, {"next_max_id", "max_id", "next_cursor", "end_cursor"});
             if (!tagMaxId.isEmpty() && tagMaxId == prevTagCursor) {
                 log("태그된 글에서 같은 쪽이 반복됩니다 — 여기서 멈춥니다.", "warning", "instagram");
                 break;
@@ -9976,7 +10020,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
         QString storiesUrl = QString("https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=%1").arg(userId);
         HttpResponse storiesResp = http.get(storiesUrl, baseHeaders);
         if (storiesResp.isOk()) {
-            QJsonArray reels = storiesResp.json()["reels_media"].toArray();
+            QJsonArray reels = JsonShape::pickArray(storiesResp.json(), {"reels_media", "reels", "items"});
             int storiesCount = 0;
             for (const auto &reel : reels) {
                 if (!platformRunning("instagram")) break;
@@ -10038,7 +10082,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
 
         if (hlResp.isOk()) {
             const QJsonObject hlBody = hlResp.json();
-            QJsonArray tray = hlBody["tray"].toArray();
+            QJsonArray tray = JsonShape::pickArray(hlBody, {"tray", "highlights", "items"});
             log(QString("하이라이트: %1개 발견").arg(tray.size()), "info", "instagram");
             // ★ 서람은 한 쪽씩 온다. 더 있는데 말없이 끝내면 빠진 줄 모른다.
             if (!hlBody["has_fetched_all_remaining_highlights"].toBool(true))
@@ -10069,7 +10113,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                         reelsMedia = reels[reelKey].toObject();
                     }
 
-                    QJsonArray hlItems = reelsMedia["items"].toArray();
+                    QJsonArray hlItems = JsonShape::pickArray(reelsMedia, {"items", "media", "medias"});
                     for (const auto &hlItem : hlItems) {
                         if (!platformRunning("instagram")) break;
                         QJsonObject story = hlItem.toObject();
@@ -10682,19 +10726,19 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
                 // ★ 댓글 → 읽기 좋은 <base>.comments.txt (info.json 의 comments[] 변환)
                 //   필드: author / author_url / author_thumbnail / text / like_count / author_is_uploader
                 {
-                    const QJsonArray comments = info["comments"].toArray();
+                    const QJsonArray comments = JsonShape::pickArray(info, {"comments", "comment_list"});
                     if (!comments.isEmpty()) {
                         QString txt;
                         txt += QString("# %1\n# %2\n# 댓글 %3개 (yt-dlp 수집)\n\n")
-                                   .arg(info["title"].toString(),
-                                        info["webpage_url"].toString())
+                                   .arg(JsonShape::pickString(info, {"title", "fulltitle"}),
+                                        JsonShape::pickString(info, {"webpage_url", "original_url", "url"}))
                                    .arg(comments.size());
                         for (const auto &cv : comments) {
                             const QJsonObject c = cv.toObject();
-                            const QString author = c["author"].toString();
-                            const QString text   = c["text"].toString();
-                            const qint64 likes   = c["like_count"].toVariant().toLongLong();
-                            const bool isUploader = c["author_is_uploader"].toBool();
+                            const QString author = JsonShape::pickString(c, {"author", "author_name", "nickname"});
+                            const QString text   = JsonShape::pickString(c, {"text", "content", "body"});
+                            const qint64 likes   = JsonShape::pick(c, {"like_count", "likes", "vote_count"}).toVariant().toLongLong();
+                            const bool isUploader = c["author_is_uploader"].toBool() || c["is_uploader"].toBool();
                             txt += author;
                             if (isUploader) txt += " [작성자]";
                             const QString aurl = c["author_url"].toString();
@@ -11043,7 +11087,9 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
             return false;
         }
 
-        QJsonObject body = metaResp.json()["body"].toObject();
+        // ★ 껍데기 이름이 body 하나뿐이었다. Pixiv 가 ajax 응답을 손보면 그대로 0개가 된다.
+        QJsonObject body = JsonShape::pickObject(metaResp.json(), {"body", "data", "illust"});
+        body = JsonShape::unwrap(body, {"illust", "illustDetails"});
         QString title = body["title"].toString();
         QString pixivUserName = body["userName"].toString();
         int illustType = body["illustType"].toInt(); // 0=illust, 1=manga, 2=ugoira
@@ -11269,14 +11315,18 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                 return false;
             }
 
+            // body 가 '배열 그 자체' 인 꼴. 언젠가 {"body":{"pages":[...]}} 가 되어도 읽히게 둔다.
             QJsonArray pages = pResp.json()["body"].toArray();
+            if (pages.isEmpty())
+                pages = JsonShape::pickArray(JsonShape::pickObject(pResp.json(), {"body", "data"}),
+                                             {"pages", "items", "illust_pages"});
             int total = pages.size();
 
             for (int i = 0; i < total; i++) {
                 if (!platformRunning("pixiv")) return false;
 
                 QJsonObject page = pages[i].toObject();
-                QJsonObject urls = page["urls"].toObject();
+                QJsonObject urls = JsonShape::pickObject(page, {"urls", "url", "image_urls"});
                 QString imgUrl = urls["original"].toString();
                 if (imgUrl.isEmpty()) imgUrl = urls["regular"].toString();
                 if (imgUrl.isEmpty()) imgUrl = urls["small"].toString();
@@ -11373,10 +11423,11 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
             log(QString("소설 %1 오류: %2").arg(nid, errMsg), "error", "pixiv");
             return false;
         }
-        QJsonObject nBody = nRoot["body"].toObject();
+        QJsonObject nBody = JsonShape::pickObject(nRoot, {"body", "data", "novel"});
+        nBody = JsonShape::unwrap(nBody, {"novel", "novelDetails"});
         QString nTitle = nBody["title"].toString();
         QString nUserName = nBody["userName"].toString();
-        QString nContent = nBody["content"].toString();
+        QString nContent = JsonShape::pickString(nBody, {"content", "text", "body"});
         QString nCreateDate = nBody["createDate"].toString();
         QString nDescription = nBody["description"].toString();
         int nCharCount = nBody["characterCount"].toInt();
@@ -11408,14 +11459,14 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
         // ── 삽입 이미지 처리: [uploadedimage:XXX] / [pixivimage:XXX[-pageNum]] ──
         // 1) [uploadedimage:XXX] — novel body 내 textEmbeddedImages 객체에 URL 포함
         QString imagesDir = novelDir + "/images";
-        QJsonObject embeddedImgs = nBody["textEmbeddedImages"].toObject();
+        QJsonObject embeddedImgs = JsonShape::pickObject(nBody, {"textEmbeddedImages", "embeddedImages", "images"});
         int embeddedDownloaded = 0;
         if (!embeddedImgs.isEmpty()) {
             QDir().mkpath(imagesDir);
             for (auto it = embeddedImgs.begin(); it != embeddedImgs.end(); ++it) {
                 QString imgId = it.key();
                 QJsonObject imgObj = it.value().toObject();
-                QJsonObject imgUrls = imgObj["urls"].toObject();
+                QJsonObject imgUrls = JsonShape::pickObject(imgObj, {"urls", "url", "image_urls"});
                 QString imgUrl = imgUrls["original"].toString();
                 if (imgUrl.isEmpty()) imgUrl = imgUrls["1200x1200"].toString();
                 if (imgUrl.isEmpty()) imgUrl = imgUrls["480mw"].toString();
@@ -17645,7 +17696,7 @@ void HanishikiBackend::runSpinSpinCollection(const QJsonObject &config)
         return;
     }
     QJsonObject boxInfo = boxInfoArr[0].toObject();
-    QString boxId = boxInfo["_id"].toString();
+    QString boxId = JsonShape::pickString(boxInfo, {"_id", "id", "boxId"});
     QString nickname = boxInfo["nickname"].toString();
     QString boxName = boxInfo["boxName"].toString();
     QString profileImg = boxInfo["profileImg"].toString();
@@ -17734,7 +17785,14 @@ void HanishikiBackend::runSpinSpinCollection(const QJsonObject &config)
             break;
         }
         QJsonObject lj = listResp.json();
-        QJsonArray replyInfo = lj["replyInfo"].toArray();
+        QJsonArray replyInfo = JsonShape::pickArray(lj, {"replyInfo", "letters", "items", "replies"});
+        if (replyInfo.isEmpty()) {
+            QString foundAt;
+            replyInfo = JsonShape::findArrayOfObjects(lj, &foundAt);
+            if (!replyInfo.isEmpty())
+                log(QString("Asked 응답 모양이 바뀐 듯합니다 — '%1' 에서 %2개를 찾았습니다.")
+                        .arg(foundAt).arg(replyInfo.size()), "warning", "asked");
+        }
         if (replyInfo.isEmpty()) break;
         for (const auto &v : replyInfo) allLetters.append(v);
         log(QString("page=%1 수신 (%2건, 누적 %3)").arg(page).arg(replyInfo.size()).arg(allLetters.size()),
@@ -17774,12 +17832,12 @@ void HanishikiBackend::runSpinSpinCollection(const QJsonObject &config)
 
         QJsonObject letter = lv.toObject();
         QString letterId = letter["_id"].toString();
-        QString letterText = stripHtml(letter["text"].toString());
-        QString letterImage = letter["image"].toString();
+        QString letterText = stripHtml(JsonShape::pickString(letter, {"text", "content", "question"}));
+        QString letterImage = JsonShape::pickString(letter, {"image", "imageUrl", "img"});
 
         // reply can be array or object
         QJsonArray replyArr;
-        QJsonValue replyVal = letter["reply"];
+        QJsonValue replyVal = JsonShape::pick(letter, {"reply", "answer", "response"});
         if (replyVal.isArray()) replyArr = replyVal.toArray();
         else if (replyVal.isObject()) replyArr.append(replyVal);
 
@@ -17791,9 +17849,9 @@ void HanishikiBackend::runSpinSpinCollection(const QJsonObject &config)
             QString rtext = stripHtml(r["text"].toString());
             if (!rtext.isEmpty()) replyTexts << rtext;
             if (firstReplyDate.isEmpty()) firstReplyDate = r["createdAt"].toString();
-            QString rimg = r["image"].toString();
+            QString rimg = JsonShape::pickString(r, {"image", "imageUrl", "img"});
             if (!rimg.isEmpty() && rimg.startsWith("http")) replyImgs << rimg;
-            QJsonArray imgList = r["imageList"].toArray();
+            QJsonArray imgList = JsonShape::pickArray(r, {"imageList", "images", "imgList"});
             for (const auto &iv : imgList) {
                 QString u = iv.toString();
                 if (u.startsWith("http")) replyImgs << u;
@@ -18592,7 +18650,11 @@ void HanishikiBackend::runAskedCollection(const QJsonObject &config)
     // 포스트(질문/답변) 추출 — NUXT/NEXT/API
     // ──────────────────────────────────────────
     QJsonArray postsArr;
-    QStringList postItemKeys = {"question","answer","content","body","q","a","questionContent","answerContent"};
+    // ★ 글 배열을 '알아보는' 기준. 여기 없는 이름으로 바뀌면 글을 못 알아보고 조용히 0개가 된다.
+    //   SpinSpin 은 질문·답변 서비스이니 그 둘을 부르는 흔한 이름을 넉넉히 깔아 둔다.
+    QStringList postItemKeys = {"question","answer","content","body","q","a",
+                                "questionContent","answerContent","text","message",
+                                "questionText","answerText","title","createdAt","created_at"};
 
     if (!nuxtState.isEmpty()) {
         postsArr = askedFindFirstArrayOfPosts(QJsonValue(nuxtState), postItemKeys, 1);

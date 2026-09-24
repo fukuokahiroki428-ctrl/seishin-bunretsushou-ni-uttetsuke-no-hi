@@ -28,6 +28,31 @@ from pathlib import Path
 def log(msg):
     print(json.dumps({"log": str(msg)}), flush=True)
 
+# -- 응답 모양이 바뀌어도 버티는 읽기 --------------------------------------
+#   atproto SDK 도 lexicon 도 이름을 바꾼다. 이름 하나만 믿고 getattr 하면
+#   바뀐 날 빈 목록을 읽고 조용히 0개로 끝난다 -- 팬박스가 그렇게 여덟 달을
+#   비어 있었다(2026-09-24). 이름을 여러 개 대고, 못 찾으면 소리를 낸다.
+def pick(obj, names, default=None):
+    """여러 이름 중 먼저 '있고 비어 있지 않은' 것을 준다. dict 도 객체도 받는다."""
+    for n in names:
+        v = obj.get(n) if isinstance(obj, dict) else getattr(obj, n, None)
+        if v is not None and v != [] and v != "":
+            return v
+    return default
+
+_shape_warned = set()
+def pick_list(obj, names, what):
+    """목록을 꺼낸다. 아는 이름이 하나도 없으면 한 번만 경고한다(매 쪽마다 떠들지 않게)."""
+    v = pick(obj, names)
+    if isinstance(v, list):
+        return v
+    if v is None and what not in _shape_warned:
+        _shape_warned.add(what)
+        have = list(obj.keys())[:14] if isinstance(obj, dict) else [k for k in dir(obj) if not k.startswith('_')][:14]
+        log("[모양바뀜] " + what + ": 아는 이름(" + "/".join(names) + ")이 없습니다. 받은 칸: " + str(have))
+    return v if isinstance(v, list) else []
+
+
 def progress(count, media_count=0, status="수집 중..."):
     print(json.dumps({"progress": {"count": count, "media": media_count, "status": status}}), flush=True)
 
@@ -262,7 +287,7 @@ def main():
 
             like_count = getattr(post, 'like_count', 0) or 0
             repost_count = getattr(post, 'repost_count', 0) or 0
-            reply_count = getattr(post, 'reply_count', 0) or 0
+            reply_count = (pick(post, ['reply_count', 'replyCount', 'replies_count'], 0) or 0)
 
             # Media
             embed = getattr(post, 'embed', None)
@@ -275,7 +300,7 @@ def main():
                 if images:
                     has_media = True
                     for img in images:
-                        url = getattr(img, 'fullsize', '') or getattr(img, 'thumb', '')
+                        url = pick(img, ['fullsize', 'thumb', 'url', 'image'], '')
                         if url:
                             media_urls.append(url)
                             media_count += 1
@@ -283,7 +308,7 @@ def main():
                 video = getattr(embed, 'video', None)
                 if video:
                     has_media = True
-                    playlist = getattr(video, 'playlist', '')
+                    playlist = pick(video, ['playlist', 'url', 'cid'], '')
                     if playlist:
                         media_urls.append(playlist)
                         media_count += 1
@@ -295,7 +320,7 @@ def main():
                     if rimages:
                         has_media = True
                         for img in rimages:
-                            url = getattr(img, 'fullsize', '') or getattr(img, 'thumb', '')
+                            url = pick(img, ['fullsize', 'thumb', 'url', 'image'], '')
                             if url:
                                 media_urls.append(url)
                                 media_count += 1
@@ -463,7 +488,7 @@ def main():
         images = getattr(embed, 'images', None)
         if images:
             for i, img in enumerate(images):
-                url = getattr(img, 'fullsize', '') or getattr(img, 'thumb', '')
+                url = pick(img, ['fullsize', 'thumb', 'url', 'image'], '')
                 if url:
                     ext = '.jpg'
                     if '.png' in url: ext = '.png'
@@ -474,7 +499,7 @@ def main():
         # Video
         video = getattr(embed, 'video', None)
         if video:
-            playlist = getattr(video, 'playlist', '')
+            playlist = pick(video, ['playlist', 'url', 'cid'], '')
             if playlist:
                 dl(playlist, make_filename('video', '.mp4'))
 
@@ -484,7 +509,7 @@ def main():
             rimages = getattr(rmedia, 'images', None)
             if rimages:
                 for i, img in enumerate(rimages):
-                    url = getattr(img, 'fullsize', '') or getattr(img, 'thumb', '')
+                    url = pick(img, ['fullsize', 'thumb', 'url', 'image'], '')
                     if url:
                         ext = '.jpg'
                         if '.png' in url: ext = '.png'
@@ -718,13 +743,13 @@ def main():
                 log(f"API error: {e}")
                 break
 
-            feed = getattr(resp, 'feed', [])
+            feed = pick_list(resp, ['feed', 'posts', 'items'], 'feed')
             if not feed:
                 break
 
             for item in feed:
                 if over_cap(len(all_data)): break
-                post = getattr(item, 'post', None)
+                post = pick(item, ['post', 'value', 'record'])
                 if not post:
                     continue
 
@@ -775,7 +800,7 @@ def main():
             page += 1
             progress(len(all_data), total_media)
 
-            cursor = getattr(resp, 'cursor', None)
+            cursor = pick(resp, ['cursor', 'next_cursor', 'nextCursor'])
             if not cursor:
                 break
 
@@ -852,13 +877,13 @@ def main():
                 log(f"API error: {e}")
                 break
 
-            feed = getattr(resp, 'feed', [])
+            feed = pick_list(resp, ['feed', 'posts', 'items'], 'feed')
             if not feed:
                 break
 
             for item in feed:
                 if over_cap(len(all_data)): break
-                post = getattr(item, 'post', None)
+                post = pick(item, ['post', 'value', 'record'])
                 if not post:
                     continue
                 data = process_post(post)
@@ -880,7 +905,7 @@ def main():
 
             progress(len(all_data), total_media)
 
-            cursor = getattr(resp, 'cursor', None)
+            cursor = pick(resp, ['cursor', 'next_cursor', 'nextCursor'])
             if not cursor:
                 break
             time.sleep(2)  # 아이누: 2초 고정
@@ -932,7 +957,7 @@ def main():
                 log(f"API error: {e}")
                 break
 
-            followers = getattr(resp, 'followers', [])
+            followers = pick_list(resp, ['followers', 'subjects', 'items'], 'followers')
             if not followers:
                 break
 
@@ -965,7 +990,7 @@ def main():
 
             progress(len(all_data), 0)
 
-            cursor = getattr(resp, 'cursor', None)
+            cursor = pick(resp, ['cursor', 'next_cursor', 'nextCursor'])
             if not cursor:
                 break
             time.sleep(2)  # 아이누: 2초 고정
@@ -1015,7 +1040,7 @@ def main():
                 log(f"API error: {e}")
                 break
 
-            follows = getattr(resp, 'follows', [])
+            follows = pick_list(resp, ['follows', 'subjects', 'items'], 'follows')
             if not follows:
                 break
 
@@ -1047,7 +1072,7 @@ def main():
 
             progress(len(all_data), 0)
 
-            cursor = getattr(resp, 'cursor', None)
+            cursor = pick(resp, ['cursor', 'next_cursor', 'nextCursor'])
             if not cursor:
                 break
             time.sleep(2)  # 아이누: 2초 고정
@@ -1098,7 +1123,7 @@ def main():
                 ])
 
             progress(len(all_data), 0)
-            cursor = getattr(resp, 'cursor', None)
+            cursor = pick(resp, ['cursor', 'next_cursor', 'nextCursor'])
             if not cursor: break
             time.sleep(2)  # 아이누: 2초 고정
 
@@ -1147,7 +1172,7 @@ def main():
                 ])
 
             progress(len(all_data), 0)
-            cursor = getattr(resp, 'cursor', None)
+            cursor = pick(resp, ['cursor', 'next_cursor', 'nextCursor'])
             if not cursor: break
             time.sleep(2)  # 아이누: 2초 고정
 
@@ -1191,7 +1216,7 @@ def main():
                 log(f"Search error: {e}")
                 break
 
-            posts = getattr(resp, 'posts', [])
+            posts = pick_list(resp, ['posts', 'feed', 'items'], 'searchPosts')
             if not posts: break
 
             for post in posts:
@@ -1203,7 +1228,7 @@ def main():
                         total_media += download_media_files(post, media_dir, data, action_type="search")
 
             progress(len(all_data), total_media)
-            cursor = getattr(resp, 'cursor', None)
+            cursor = pick(resp, ['cursor', 'next_cursor', 'nextCursor'])
             if not cursor: break
             time.sleep(2)  # 아이누: 2초 고정
 
@@ -1258,7 +1283,7 @@ def main():
                 ])
 
             progress(len(all_data), 0)
-            cursor = getattr(resp, 'cursor', None)
+            cursor = pick(resp, ['cursor', 'next_cursor', 'nextCursor'])
             if not cursor: break
             time.sleep(2)  # 아이누: 2초 고정
 
@@ -1429,13 +1454,13 @@ def main():
                 log(f"API error: {e}")
                 break
 
-            feed = getattr(resp, 'feed', [])
+            feed = pick_list(resp, ['feed', 'posts', 'items'], 'feed')
             if not feed:
                 break
 
             for item in feed:
                 if over_cap(len(all_data)): break
-                post = getattr(item, 'post', None)
+                post = pick(item, ['post', 'value', 'record'])
                 if not post:
                     continue
 
@@ -1480,7 +1505,7 @@ def main():
 
             progress(len(all_data), total_media)
 
-            cursor = getattr(resp, 'cursor', None)
+            cursor = pick(resp, ['cursor', 'next_cursor', 'nextCursor'])
             if not cursor:
                 break
 
@@ -1566,20 +1591,20 @@ def main():
                 log(f"API error: {e}")
                 break
 
-            feed = getattr(resp, 'feed', [])
+            feed = pick_list(resp, ['feed', 'posts', 'items'], 'feed')
             if not feed:
                 break
 
             for item in feed:
-                post = getattr(item, 'post', None)
+                post = pick(item, ['post', 'value', 'record'])
                 if not post:
                     continue
                 uri = getattr(post, 'uri', '')
-                reply_count = getattr(post, 'reply_count', 0) or 0
+                reply_count = (pick(post, ['reply_count', 'replyCount', 'replies_count'], 0) or 0)
                 if reply_count > 0:
                     post_uris.append((uri, reply_count))
 
-            cursor = getattr(resp, 'cursor', None)
+            cursor = pick(resp, ['cursor', 'next_cursor', 'nextCursor'])
             if not cursor:
                 break
             time.sleep(2)  # 아이누: 2초 고정
@@ -1615,7 +1640,7 @@ def main():
                 else:
                     continue
 
-            thread = getattr(resp, 'thread', None)
+            thread = pick(resp, ['thread', 'post', 'value'])
             if not thread:
                 continue
 

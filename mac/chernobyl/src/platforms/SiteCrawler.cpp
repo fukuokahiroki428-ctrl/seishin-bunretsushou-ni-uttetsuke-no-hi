@@ -1118,13 +1118,19 @@ void SiteCrawler::deepScrollAndExtract(int maxScrolls, int scrollWaitMs,
     QString probeJs = R"JS(
     (function(){
         var h = document.body.scrollHeight;
-        var articles = document.querySelectorAll('article[data-testid="tweet"], article[role="article"]').length;
+        var articles = document.querySelectorAll('article[data-testid="tweet"], article[data-testid="tweetDetail"], article[role="article"], div[data-testid="cellInnerDiv"] article').length;
 
         // 트위터: 현재 화면의 트윗 데이터를 누적 버퍼에 추가
         if (location.hostname === 'x.com' || location.hostname === 'twitter.com' ||
             location.hostname.endsWith('.x.com') || location.hostname.endsWith('.twitter.com')) {
             if (!window.__crawl_tweet_buffer) window.__crawl_tweet_buffer = {};
-            document.querySelectorAll('article[data-testid="tweet"]').forEach(function(art){
+            // 이름 하나만 믿지 않는다 — X 는 data-testid 를 조용히 갈아치운다.
+            //   그러면 글이 0개가 되는데 화면에는 아무 말도 없다.
+            var arts = document.querySelectorAll('article[data-testid="tweet"]');
+            if (!arts.length) arts = document.querySelectorAll('article[data-testid="tweetDetail"]');
+            if (!arts.length) arts = document.querySelectorAll('article[role="article"]');
+            if (!arts.length) arts = document.querySelectorAll('div[data-testid="cellInnerDiv"] article');
+            arts.forEach(function(art){
                 try {
                     var tweetLink = art.querySelector('a[href*="/status/"]');
                     var href = tweetLink ? tweetLink.href : '';
@@ -1133,11 +1139,15 @@ void SiteCrawler::deepScrollAndExtract(int maxScrolls, int scrollWaitMs,
                     var tid = idMatch[1];
                     if (window.__crawl_tweet_buffer[tid]) return;
 
-                    var textEl = art.querySelector('[data-testid="tweetText"]');
+                    var textEl = art.querySelector('[data-testid="tweetText"]')
+                               || art.querySelector('[data-testid="tweet-text-show-more-link"]')
+                               || art.querySelector('div[lang]');
                     var text = textEl ? textEl.textContent : '';
                     var timeEl = art.querySelector('time');
                     var dt = timeEl ? timeEl.getAttribute('datetime') : '';
-                    var authorA = art.querySelector('[data-testid="User-Name"] a');
+                    var authorA = art.querySelector('[data-testid="User-Name"] a')
+                                || art.querySelector('[data-testid="User-Names"] a')
+                                || art.querySelector('a[href^="/"][role="link"] span');
                     var author = authorA ? authorA.textContent : '';
                     var imgs = [];
                     art.querySelectorAll('img[src*="pbs.twimg.com/media"]').forEach(function(im){
