@@ -8940,8 +8940,16 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     baseHeaders["User-Agent"] = Common::browserUserAgent();
     baseHeaders["Cookie"] = "sessionid=" + sessionId;
     baseHeaders["X-IG-App-ID"] = "936619743392459";
-    // ★ www.instagram.com 웹 API 가 요구하는 XHR 헤더. 특히 X-ASBD-ID 누락 시 '빈 200' 소프트 차단.
-    baseHeaders["X-Requested-With"] = "XMLHttpRequest";
+    // ★ UA 와 짝이 맞는 클라이언트 힌트 + Sec-Fetch-*. 진짜 Chrome 의 XHR 은 늘 이것들을 함께 보낸다.
+    //   빠져 있으면 Meta 쪽이 XHR 로 보지 않아 JSON 대신 21KB HTML + 429 를 준다(실측 2026-09-20:
+    //   그 HTML 에는 challenge·checkpoint·login 같은 낱말이 하나도 없었다 — 계정 탓이 아니었다).
+    {
+        const QMap<QString, QString> hints = Common::browserClientHints();
+        for (auto it = hints.constBegin(); it != hints.constEnd(); ++it) baseHeaders[it.key()] = it.value();
+    }
+    // ★ X-Requested-With 는 보내지 않는다 — 요즘 인스타 웹 자신이 안 쓰는 옛 헤더라, 붙어 있으면
+    //   오히려 '브라우저가 아닌 것' 쪽 표식이 된다.
+    baseHeaders.remove("X-Requested-With");
     baseHeaders["X-ASBD-ID"] = "129477";
     baseHeaders["X-IG-WWW-Claim"] = "0";
     baseHeaders["Accept"] = "*/*";
@@ -8971,115 +8979,137 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                 "info", "instagram");
         }
     }
-    if (!chosenCookie.isEmpty()) {
-        baseHeaders["Cookie"] = chosenCookie;
-        for (const QString &part : chosenCookie.split(';', Qt::SkipEmptyParts)) {
-            QString p = part.trimmed();
+    // ★ Cookie 를 넣을 때 X-CSRFToken 도 '같이' 맞춘다. 예전엔 여기서 한 번만 뽑아서, 아래에서
+    //   쿠키를 갈아 끼우면 헤더의 csrftoken 이 쿠키의 것과 어긋난 채 남았다 — 또 하나의 거절 사유다.
+    auto useCookie = [&baseHeaders, &sessionId](const QString &ck) {
+        if (ck.isEmpty()) return;
+        baseHeaders["Cookie"] = ck;
+        for (const QString &part : ck.split(';', Qt::SkipEmptyParts)) {
+            const QString p = part.trimmed();
             if (p.startsWith("sessionid=")) sessionId = p.mid(10);
-            // ★ csrftoken → X-CSRFToken 헤더 (POST 계열 clips/user 등에 필요)
             else if (p.startsWith("csrftoken=")) baseHeaders["X-CSRFToken"] = p.mid(10);
         }
-    }
+    };
+    useCookie(chosenCookie);
 
-    // Get user info
-    // ★ i.instagram.com 은 이제 web_profile_info 에 401 → www.instagram.com 으로 호출(검증: 200).
-    QString userInfoUrl = QString("https://www.instagram.com/api/v1/users/web_profile_info/?username=%1").arg(username);
-    HttpResponse resp = http.get(userInfoUrl, baseHeaders);
-
-    // ★ 429 를 '요청이 잦다' 로만 읽으면 안 된다 — 윈도우 862cd52 를 옮긴다.
-    //   인스타 웹 API 는 '제대로 로그인되지 않은 요청' 에도 429 를 준다. 이 함수 위쪽 주석대로
-    //   sessionid 만으론 미인증이고 csrftoken·ds_user_id 가 함께 있어야 200 이 나온다. 크롬 추출이
-    //   실패하면 Cookie 헤더가 "sessionid=..." 하나로 나가고, 그 상태로는 몇 분을 쉬어도 똑같다 —
-    //   즉시 알 수 있는 실패를 4분짜리 침묵으로 바꿀 뿐이다(1년 무인 실행에서는 그게 더 나쁘다).
-    //   맥 실측(2026-09-19)의 "세션으로는 첫 요청부터 429" 도 이것이었을 가능성이 크다.
-    //   → 쉬기 전에 쿠키부터 본다. 반쪽이면 아래 '세션 자동 갱신'(원래 401 전용)으로 보내고,
-    //     온전할 때만 정말 잦은 것일 수 있으므로 1분·3분 쉬고 다시 묻는다.
-    bool igCookieIncomplete = false;
-    bool igSessionDead = false;      // 429 뒤 401 — 쿠키는 있으나 인스타가 안 받아 준다
-    QStringList igCookieMissing;
-    if (!resp.isOk() && resp.statusCode == 429) {
-        const QString ck = baseHeaders.value("Cookie");
-        auto cookieValue = [&ck](const char *key) {
-            const QString pfx = QString::fromLatin1(key) + QLatin1Char('=');
-            for (const QString &part : ck.split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
-                const QString t = part.trimmed();
-                if (t.startsWith(pfx)) return t.mid(pfx.size()).trimmed();
-            }
-            return QString();
-        };
-        for (const char *k : {"sessionid", "csrftoken", "ds_user_id"})
-            if (cookieValue(k).isEmpty()) igCookieMissing << QString::fromLatin1(k);
-        igCookieIncomplete = !igCookieMissing.isEmpty();
-
-        if (igCookieIncomplete) {
-            log(QString("인스타 429 — 쿠키가 반쪽입니다 (없음: %1). 기다릴 일이 아니라서 세션을 다시 받아 봅니다.")
-                    .arg(igCookieMissing.join(QStringLiteral(", "))), "warning", "instagram");
-        } else {
-            // ★ 쿠키가 '있다' 와 '살아 있다' 는 다르다. 실측(사용자 기계, 2026-09-20): 크롬 쿠키 10개가
-            //   값까지 일관됐는데도 첫 응답이 429 였고, 60초 쉬고 다시 물으니 401 이었다 — 세션이 죽은
-            //   것을 인스타가 429 로 먼저 알려 준 것이다. 그 60초는 통째로 헛일이었다.
-            //   → 기다리기 전에 한 번만 곧바로 다시 묻는다(크롬에 새 쿠키가 있으면 그것으로).
-            //     401 이 오면 죽은 세션이니 기다리지 않고 끝낸다. 그래도 429 면 그때가 진짜 속도 제한이다.
-            log("인스타 429 (쿠키 모양은 온전함) — 기다리기 전에 세션이 살아 있는지부터 봅니다", "warning", "instagram");
-            {
-                const QString fresh = extractInstagramSessionSync();
-                if (!fresh.isEmpty() && fresh != baseHeaders["Cookie"]) {
-                    baseHeaders["Cookie"] = fresh;
-                    log("크롬에서 새 쿠키를 받았습니다 — 곧바로 다시 묻습니다", "info", "instagram");
-                }
-                resp = http.get(userInfoUrl, baseHeaders);
-                if (!resp.isOk() && resp.statusCode == 401) {
-                    igSessionDead = true;
-                    log("429 뒤 401 — 쿠키는 모양만 온전하고 인스타가 받아 주지 않습니다(세션이 죽었습니다). "
-                        "기다리지 않고 끝냅니다.", "error", "instagram");
-                }
-            }
-            for (int wait : {60, 180}) {
-                if (igSessionDead) break;
-                if (resp.isOk() || resp.statusCode != 429 || !*runFlag("instagram")) break;
-                log(QString("인스타 429 (쿠키는 온전함) — %1초 쉬고 다시 시도합니다").arg(wait), "warning", "instagram");
-                for (int s = 0; s < wait && *runFlag("instagram"); ++s) QThread::sleep(1);
-                if (!*runFlag("instagram")) break;
-                resp = http.get(userInfoUrl, baseHeaders);
-            }
+    // ── 인스타 웹 API 갈아타기 (실측 2026-09-24 · 자세한 것은 docs_instagram_2026-09.md) ──
+    //   옛 web_profile_info 는 죽었다. 브라우저로 불러도 429 + 21KB HTML("페이지를 찾을 수 없습니다")이
+    //   온다 — 우리 요청이 수상해서가 아니라 그 끝점이 닫힌 것이다(진짜 브라우저·curl·httpx 모두 같음).
+    //   지금 인스타 웹앱이 쓰는 길은 GraphQL 이다. 브라우저 없이도 된다(실측: httpx 로 200·게시물 12개).
+    //   1) 프로필 페이지를 한 번 받아 lsd·fb_dtsg 토큰을 뽑고
+    //   2) /graphql/query 에 doc_id + variables 로 묻는다.
+    //   ★ __relay_internal__pv__… 깃발은 질의마다 이름이 다르다. 틀리면 200 에 execution error 만 온다.
+    QString igLsd, igDtsg;
+    auto igEnsureTokens = [&](const QString &user) -> bool {
+        if (!igLsd.isEmpty() && !igDtsg.isEmpty()) return true;
+        QMap<QString, QString> h = baseHeaders;
+        h["Accept"] = "text/html,application/xhtml+xml";
+        h["Sec-Fetch-Dest"] = "document";
+        h["Sec-Fetch-Mode"] = "navigate";
+        h.remove("X-IG-App-ID"); h.remove("X-ASBD-ID"); h.remove("X-CSRFToken");
+        HttpResponse pg = http.get("https://www.instagram.com/" + user + "/", h);
+        const QString body = QString::fromUtf8(pg.data);
+        static const QRegularExpression reLsd("\"LSD\",\\[\\],\\{\"token\":\"([^\"]+)\"");
+        static const QRegularExpression reDtsg("\"DTSGInitialData\",\\[\\],\\{\"token\":\"([^\"]+)\"");
+        const auto mL = reLsd.match(body); if (mL.hasMatch()) igLsd = mL.captured(1);
+        const auto mD = reDtsg.match(body); if (mD.hasMatch()) igDtsg = mD.captured(1);
+        if (igLsd.isEmpty())
+            log(QString("프로필 페이지에서 토큰을 못 찾았습니다 (HTTP %1, %2바이트) — 로그인 상태를 확인하세요")
+                    .arg(pg.statusCode).arg(pg.data.size()), "error", "instagram");
+        return !igLsd.isEmpty();
+    };
+    auto igGraphql = [&](const QString &friendly, const QString &docId, const QJsonObject &vars) -> QJsonObject {
+        QMap<QString, QString> h = baseHeaders;
+        h["Content-Type"] = "application/x-www-form-urlencoded";
+        h["X-FB-LSD"] = igLsd;
+        h["X-FB-Friendly-Name"] = friendly;
+        h["Referer"] = "https://www.instagram.com/" + username + "/";
+        QString dsUser;
+        for (const QString &part : baseHeaders.value("Cookie").split(';', Qt::SkipEmptyParts)) {
+            const QString t = part.trimmed();
+            if (t.startsWith("ds_user_id=")) { dsUser = t.mid(11); break; }
         }
-    }
-
-    // ★ 401, 그리고 '쿠키가 반쪽이라 429' — 크롬에서 한 시점의 온전한 쿠키를 받아 한 번 더.
-    if (!resp.isOk() && (resp.statusCode == 401 || igCookieIncomplete)) {
-        log("get user info — 세션 자동 갱신 시도", "warning", "instagram");
-        QString fullCookie = extractInstagramSessionSync();
-        QString currentCookie = baseHeaders["Cookie"];
-        if (!fullCookie.isEmpty() && fullCookie != currentCookie) {
-            baseHeaders["Cookie"] = fullCookie;
-            log("✅ 갱신 후 재시도...", "info", "instagram");
-            resp = http.get(userInfoUrl, baseHeaders);
+        auto enc = [](const QString &v) { return QString::fromUtf8(QUrl::toPercentEncoding(v)); };
+        QStringList form;
+        form << "av=" + enc(dsUser) << "__d=www" << "__user=0" << "__a=1" << "__req=a" << "dpr=2"
+             << "__comet_req=7" << "fb_api_caller_class=RelayModern"
+             << "lsd=" + enc(igLsd) << "fb_dtsg=" + enc(igDtsg)
+             << "fb_api_req_friendly_name=" + enc(friendly)
+             << "variables=" + enc(QString::fromUtf8(QJsonDocument(vars).toJson(QJsonDocument::Compact)))
+             << "server_timestamps=true" << "doc_id=" + enc(docId);
+        HttpResponse r = http.post("https://www.instagram.com/graphql/query", form.join('&').toUtf8(), h);
+        if (!r.isOk()) {
+            log(QString("%1 실패 (HTTP %2, %3바이트)").arg(friendly).arg(r.statusCode).arg(r.data.size()),
+                "error", "instagram");
+            return QJsonObject();
         }
-    }
-
-    if (!resp.isOk()) {
-        log(QString("Failed to get user info (HTTP %1)").arg(resp.statusCode), "error", "instagram");
-        if (resp.statusCode == 429 && igCookieIncomplete)
-            log(QString("  → 쿠키가 반쪽입니다 (없음: %1). 인스타 웹 API 는 sessionid 만 있는 요청을 '로그인 안 됨' 으로 보고 "
-                        "429 를 줍니다 — 기다린다고 달라지지 않습니다. Chrome 에서 instagram.com 에 로그인해 두시거나, "
-                        "인스타 탭의 'capture cookie' 칸에 sessionid·csrftoken·ds_user_id 를 한 번에 복사해 넣어 주세요 "
-                        "(따로 복사한 값을 섞으면 그것도 거부됩니다).").arg(igCookieMissing.join(QStringLiteral(", "))),
-                "info", "instagram");
-        else if (igSessionDead)
-            log("  → 쿠키는 모양만 온전하고 값이 죽었습니다. Chrome 에서 instagram.com 에 다시 로그인해 주세요 "
-                "— 로그인해 두면 앱이 그 쿠키를 알아서 가져옵니다. (429 는 인스타가 '로그인 안 된 요청' 에도 주는 답입니다)",
-                "info", "instagram");
-        else if (resp.statusCode == 429)
-            log("  → 쿠키는 온전한데도 429 입니다. 같은 계정을 다른 곳에서 함께 쓰고 있지 않은지 보고, "
-                "몇십 분 뒤 다시 하거나 다른 계정·프록시로 하세요(1분·3분 쉬며 두 번 더 시도한 결과입니다).", "info", "instagram");
-        if (resp.statusCode == 401) {
-            log("  → Chrome 에서 instagram.com 로그인 상태 확인 필요", "info", "instagram");
-            log("  → 또는 인스타 탭 → 'capture cookie' 필드에 직접 입력 (sessionid + csrftoken 등)", "info", "instagram");
+        const QJsonObject j = r.json();
+        if (j.contains("errors")) {
+            // 200 인데 errors — 대개 doc_id 나 제공자 깃발이 낡은 것이다. 무엇이 틀렸는지 적어 준다.
+            log(QString("%1 이 거절됐습니다 — 인스타가 질의를 바꾼 듯합니다(doc_id %2). "
+                        "docs_instagram_2026-09.md 의 방법으로 새 값을 떠야 합니다.").arg(friendly, docId),
+                "error", "instagram");
+            return QJsonObject();
         }
+        return j["data"].toObject();
+    };
+    // 게시물 한 쪽 — 옛 REST 의 items 와 같은 모양(node)이 나오므로 아래 파서를 그대로 쓴다.
+    auto igPostsPage = [&](const QString &after) -> QJsonObject {
+        QJsonObject data{{"count", 12}, {"include_reel_media_seen_timestamp", true},
+                         {"include_relationship_info", true}, {"latest_besties_reel_media", true},
+                         {"latest_reel_media", true}};
+        QJsonObject v{{"data", data}, {"username", username}, {"first", 12},
+                      {"before", QJsonValue::Null}, {"last", QJsonValue::Null},
+                      {"after", after.isEmpty() ? QJsonValue::Null : QJsonValue(after)},
+                      {"__relay_internal__pv__PolarisMultiCaptionCarouselEnabledrelayprovider", false},
+                      {"__relay_internal__pv__PolarisShortDramaEnabledrelayprovider", false},
+                      {"__relay_internal__pv__PolarisReelsRecoDebugOverlayEnabledrelayprovider", false}};
+        // ★ 커서는 variables 최상위 after 에 넣는다. data 안에 넣으면 같은 쪽이 다시 온다(실측).
+        const QJsonObject d = igGraphql("PolarisProfilePostsQuery", "28379418928391013", v);
+        return d["xdt_api__v1__feed__user_timeline_graphql_connection"].toObject();
+    };
+
+    if (!igEnsureTokens(username)) { updateStats(0, 0, "오류", "instagram"); return; }
+
+    const QJsonObject igFirstConn = igPostsPage(QString());
+    const QJsonArray igFirstEdges = igFirstConn["edges"].toArray();
+    QString igUserId;
+    for (const auto &e : igFirstEdges) {
+        const QString id = e.toObject()["node"].toObject()["user"].toObject()["id"].toString();
+        if (!id.isEmpty()) { igUserId = id; break; }
+    }
+    if (igUserId.isEmpty()) {
+        // 글이 하나도 없는 계정 — 페이지 HTML 에서 번호를 찾는다.
+        QMap<QString, QString> h = baseHeaders; h["Accept"] = "text/html,application/xhtml+xml";
+        HttpResponse pg = http.get("https://www.instagram.com/" + username + "/", h);
+        static const QRegularExpression reId("\"profilePage_(\\d+)\"|\"user_id\":\"(\\d+)\"|\"profile_id\":\"(\\d+)\"");
+        const auto m = reId.match(QString::fromUtf8(pg.data));
+        if (m.hasMatch())
+            igUserId = m.captured(1).isEmpty() ? (m.captured(2).isEmpty() ? m.captured(3) : m.captured(2)) : m.captured(1);
+    }
+    if (igUserId.isEmpty()) {
+        log("사용자 번호를 찾지 못했습니다 — 계정 이름이 맞는지, Chrome 에서 instagram.com 에 "
+            "로그인되어 있는지 확인하세요.", "error", "instagram");
+        updateStats(0, 0, "오류", "instagram");
         return;
     }
 
-    QJsonObject userData = resp.json()["data"].toObject()["user"].toObject();
+    // 프로필 정보 — 옛 web_profile_info 와 같은 모양으로 맞춰 아래 코드를 건드리지 않는다.
+    QJsonObject userData;
+    {
+        QJsonObject v{{"enable_integrity_filters", true}, {"id", igUserId},
+                      {"__relay_internal__pv__PolarisCannesGuardianExperienceEnabledrelayprovider", true},
+                      {"__relay_internal__pv__PolarisCASB976ProfileEnabledrelayprovider", false},
+                      {"__relay_internal__pv__PolarisWebSchoolsEnabledrelayprovider", false},
+                      {"__relay_internal__pv__PolarisRepostsConsumptionEnabledrelayprovider", true},
+                      {"__relay_internal__pv__PolarisShortDramaEnabledrelayprovider", false}};
+        const QJsonObject u = igGraphql("PolarisProfilePageContentQuery", "28036671149327607", v)["user"].toObject();
+        userData = u;
+        userData["id"] = igUserId;
+        userData["edge_owner_to_timeline_media"] = QJsonObject{{"count", u["media_count"].toInt()}};
+        userData["edge_followed_by"] = QJsonObject{{"count", u["follower_count"].toInt()}};
+        userData["edge_follow"] = QJsonObject{{"count", u["following_count"].toInt()}};
+    }
     QString userId = userData["id"].toString();
     QString fullName = userData["full_name"].toString();
     int totalPosts = userData["edge_owner_to_timeline_media"].toObject()["count"].toInt();
@@ -9198,12 +9228,15 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     QString nextMaxId;
     bool hasMore = true;
 
-    // Use API v1 feed endpoint (more reliable than GraphQL query_hash)
+    // ★ 옛 /api/v1/feed/user/<id>/ 는 302 로 죽었다(실측 2026-09-24). GraphQL 로 받는다.
+    //   첫 쪽은 위에서 사용자 번호를 얻느라 이미 받아 두었으니 그대로 쓴다(한 번 덜 묻는다).
+    bool igUsedFirstPage = false;
     while (hasMore && platformRunning("instagram")) {
-        QString feedUrl = QString("https://www.instagram.com/api/v1/feed/user/%1/?count=12").arg(userId);
-        if (!nextMaxId.isEmpty()) feedUrl += "&max_id=" + nextMaxId;
-
-        HttpResponse mediaResp = http.get(feedUrl, baseHeaders);
+        QJsonObject conn;
+        if (!igUsedFirstPage) { conn = igFirstConn; igUsedFirstPage = true; }
+        else                  { conn = igPostsPage(nextMaxId); }
+        HttpResponse mediaResp;
+        mediaResp.statusCode = conn.isEmpty() ? 0 : 200;
         if (!mediaResp.isOk()) {
             if (mediaResp.statusCode == 429) {
                 igRateLimitHits++;
@@ -9275,11 +9308,13 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             break;
         }
 
-        QJsonObject respData = mediaResp.json();
-        hasMore = respData["more_available"].toBool(false);
-        nextMaxId = respData["next_max_id"].toString();
+        const QJsonObject pageInfo = conn["page_info"].toObject();
+        hasMore = pageInfo["has_next_page"].toBool(false);
+        nextMaxId = pageInfo["end_cursor"].toString();
 
-        QJsonArray items = respData["items"].toArray();
+        // GraphQL 의 node 는 옛 REST item 과 같은 모양이라 아래 파서를 그대로 쓴다.
+        QJsonArray items;
+        for (const auto &e : conn["edges"].toArray()) items.append(e.toObject()["node"]);
         if (items.isEmpty()) break;
 
         for (const auto &itemVal : items) {
@@ -9593,22 +9628,24 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     // ── Reels 수집 ──
     if (effectiveConfig["reels"].toBool(false) && platformRunning("instagram")) {
         log("릴스 수집 중...", "info", "instagram");
-        // ★ clips/user 는 웹에서 POST(form) 방식 — i.instagram.com GET 은 실패(릴스 0)했음.
-        const QString reelsUrl = "https://www.instagram.com/api/v1/clips/user/";
-        QMap<QString, QString> reelsHeaders = baseHeaders;
-        reelsHeaders["Content-Type"] = "application/x-www-form-urlencoded";
+        // ★ 옛 POST /api/v1/clips/user/ 도 302 로 죽었다(실측 2026-09-24). 게시물과 같이 GraphQL 로.
         int reelsCount = 0;
         QString reelsMaxId;
 
         while (platformRunning("instagram")) {
-            QString reelsBody = QString("target_user_id=%1&page_size=12").arg(userId);
-            if (!reelsMaxId.isEmpty()) reelsBody += "&max_id=" + reelsMaxId;
-
-            HttpResponse reelsResp = http.post(reelsUrl, reelsBody.toUtf8(), reelsHeaders);
-            if (!reelsResp.isOk()) break;
-
-            QJsonObject reelsData = reelsResp.json();
-            QJsonArray items = reelsData["items"].toArray();
+            QJsonObject rd{{"include_feed_video", true}, {"page_size", 12}, {"target_user_id", userId}};
+            QJsonObject rv{{"data", rd}, {"user_id", userId},
+                           {"__relay_internal__pv__PolarisShortDramaEnabledrelayprovider", false}};
+            if (!reelsMaxId.isEmpty()) rv["after"] = reelsMaxId;
+            const QJsonObject reelsConn =
+                igGraphql("PolarisProfileReelsTabContentQuery", "29628758406714645", rv)
+                    ["fetch__XDTUserDict"].toObject()["clips_connection"].toObject();
+            if (reelsConn.isEmpty()) break;
+            QJsonArray items;
+            for (const auto &e : reelsConn["edges"].toArray()) items.append(e.toObject()["node"]);
+            const QJsonObject reelsPage = reelsConn["page_info"].toObject();
+            QJsonObject reelsData{{"paging_info", QJsonObject{{"more_available", reelsPage["has_next_page"].toBool(false)}}}};
+            reelsMaxId = reelsPage["end_cursor"].toString();
             if (items.isEmpty()) break;
 
             for (const auto &item : items) {
@@ -9648,7 +9685,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                 allMedia.append(media);
             }
 
-            reelsMaxId = reelsData["paging_info"].toObject()["max_id"].toString();
+            // 커서는 위에서 page_info.end_cursor 로 이미 채웠다.
             if (reelsMaxId.isEmpty() || !reelsData["paging_info"].toObject()["more_available"].toBool()) break;
             updateStats(allMedia.count(), mediaDownloaded, "수집 중", "instagram");
             igConsecutiveOk++; if (igConsecutiveOk > 5) { igDelay = qMax(igDelay * 0.9, 1.0); igRateLimitHits = 0; } QThread::msleep(static_cast<unsigned long>(igDelay * 1000));

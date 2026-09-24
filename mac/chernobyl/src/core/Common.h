@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QMap>
 #include <QStringList>
 #include <QDateTime>
 #include <QProcessEnvironment>
@@ -126,6 +127,9 @@ QString bundledResourcesDir();
 //   플랫폼이 계정을 묶어 정지시키는 근거가 된다. 몇 년 지난 UA 는 더 눈에 띈다.
 //   → 설치된 브라우저에서 실제 판을 읽어 만든다. 한 번 만들고 캐시한다.
 QString browserUserAgent();
+// ★ UA 와 짝이 맞는 클라이언트 힌트(sec-ch-ua 계열). UA 만 Chrome 이라 적고 이것들이 없으면
+//   Meta 쪽이 XHR 로 보지 않아 JSON 대신 HTML 한 판을 준다(인스타 429 실측 2026-09-20).
+QMap<QString, QString> browserClientHints();
 
 // ── 프록시(VPN) ────────────────────────────────────────────────────────────
 // ★ 이 앱은 요청을 다섯 갈래로 내보낸다 — Qt(HttpClient)·파이썬 데몬·yt-dlp·

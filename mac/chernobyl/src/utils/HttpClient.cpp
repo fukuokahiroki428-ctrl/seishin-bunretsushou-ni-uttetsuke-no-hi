@@ -391,6 +391,7 @@ HttpResponse HttpClient::executeRequest(QNetworkReply *reply)
     } else if (timer.isActive()) {
         timer.stop();
         response.statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        response.http2 = reply->attribute(QNetworkRequest::Http2WasUsedAttribute).toBool();
         response.data = reply->readAll();
         if (reply->error() != QNetworkReply::NoError) {
             response.error = reply->errorString();
@@ -411,6 +412,18 @@ void HttpClient::applyHeaders(QNetworkRequest &request, const QMap<QString, QStr
     // This avoids conflicts with platform-specific User-Agents (e.g. twikit Safari UA)
     for (auto it = headers.constBegin(); it != headers.constEnd(); ++it) {
         request.setRawHeader(it.key().toUtf8(), it.value().toUtf8());
+    }
+    // ★ Qt 의 기본 쿠키 항아리(QNetworkCookieJar)는 응답의 Set-Cookie 를 저장해 두었다가, 같은 NAM 의
+    //   '두 번째' 요청부터 우리가 직접 넣은 Cookie 헤더를 통째로 덮어쓴다 — 병합이 아니라 교체다.
+    //   인스타는 첫 응답(429)에 Set-Cookie: csrftoken·mid 를 주므로, 곧바로 다시 묻는 요청은
+    //   sessionid·ds_user_id 가 빠진 채 나갔고, 인스타는 그 '로그인 안 된 요청' 에 401 을 줬다.
+    //   그 401 을 우리가 '세션이 죽었다' 로 읽어, 멀쩡히 살아 있는 세션을 두고 수집을 끝냈다.
+    //   (Qt 6.11.1 에서 재현 확인: 같은 NAM 의 2·3번째 요청 Cookie 가 csrftoken;mid 로 바뀐다.
+    //    HttpClient::setCookies 는 "헤더로 관리한다" 는 주석만 달린 빈 함수였다 — 그 전제가 틀렸다.)
+    //   → Cookie 를 직접 준 요청은 항아리를 읽지도 채우지도 않는다. 안 준 요청은 예전 그대로.
+    if (headers.contains("Cookie")) {
+        request.setAttribute(QNetworkRequest::CookieLoadControlAttribute, QNetworkRequest::Manual);
+        request.setAttribute(QNetworkRequest::CookieSaveControlAttribute, QNetworkRequest::Manual);
     }
     // Fallback if no User-Agent was provided
     if (!headers.contains("User-Agent")) {
