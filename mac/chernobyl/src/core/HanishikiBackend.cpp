@@ -8898,13 +8898,18 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
 {
     CollectionGuard _cg(platformSem("instagram"), this, "instagram");
     setIntegrityActiveForPlatform("instagram", config["integrityCheck"].toBool(false));
+    // ★ 화면이 target 을 안 채우고 username 만 보내는 길이 있다. 그대로 넘기면 주소가
+    //   /instagram// 이 되어 아무것도 못 받는다. 여기서 한 번 메워 둔다(모든 부르는 쪽에 적용된다).
+    QJsonObject cfgFixed = config;
+    if (cfgFixed["target"].toString().trimmed().isEmpty())
+        cfgFixed["target"] = cfgFixed["username"].toString();
     if (config["method"].toString() == "chrome") {
-        runRealChromeCollection(config);
+        runRealChromeCollection(cfgFixed);
         return;
     }
     if (config["method"].toString() == "web") {
         // ★ 내부 QWebEngine 대신 실제 Chrome (CDP)로 라우팅 — 사용자 로그인 세션 사용 + 봇 탐지 우회
-        runRealChromeCollection(config);
+        runRealChromeCollection(cfgFixed);
         return;
     }
     QString sessionId = config["sessionId"].toString();
@@ -8916,15 +8921,33 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     QString igType = config["type"].toString("posts");
 
     // "all" 모드: reels/stories/highlights 전부 활성화
+    // ★ 화면에는 있는데 아직 안 만든 유형들(팔로워·팔로잉·프로필·태그된 글)이 있었다.
+    //   예전엔 말없이 '게시물' 수집으로 흘러가, 사용자는 골랐는데 다른 것이 받아졌다.
+    if (igType != "all" && igType != "posts" && igType != "reels"
+        && igType != "stories" && igType != "highlights" && igType != "tagged") {
+        log(QString("아직 지원하지 않는 유형입니다: %1 — 전체/게시물/릴스/스토리/하이라이트 중에서 골라 주세요.")
+                .arg(igType), "error", "instagram");
+        updateStats(0, 0, "오류", "instagram");
+        return;
+    }
+
     QJsonObject effectiveConfig = config;
     if (igType == "all") {
         effectiveConfig["reels"] = true;
         effectiveConfig["stories"] = true;
         effectiveConfig["highlights"] = true;
+    } else {
+        // ★ 고른 유형만 받는다. 예전엔 무엇을 골라도 게시물부터 끝까지 받고 나서야
+        //   고른 것을 받아, '태그됨' 하나 받자고 525개를 훑는 일이 있었다(실측 2026-09-24).
+        effectiveConfig["reels"] = (igType == "reels");
+        effectiveConfig["stories"] = (igType == "stories");
+        effectiveConfig["highlights"] = (igType == "highlights");
     }
+    const bool igWantPosts = (igType == "all" || igType == "posts");
 
     // Adaptive delay system
-    double igDelay = 2.0;       // base delay
+    double igDelay = config["delay"].toDouble(2.0);   // 화면에서 고른 값을 쓴다(예전엔 2.0 고정이었다)
+    const double igBaseDelay = qMax(igDelay, 0.5);    // 줄어들어도 여기까지만
     int igConsecutiveOk = 0;
     int igRateLimitHits = 0;
 
@@ -8999,9 +9022,18 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     //   1) 프로필 페이지를 한 번 받아 lsd·fb_dtsg 토큰을 뽑고
     //   2) /graphql/query 에 doc_id + variables 로 묻는다.
     //   ★ __relay_internal__pv__… 깃발은 질의마다 이름이 다르다. 틀리면 200 에 execution error 만 온다.
+    // 실패의 '종류' — 상태 코드로는 갈 수 없다(아래 igGraphql 주석 참고).
+    enum class IgFail { None, SessionDead, QueryStale, UserUnavailable, Transient };
+    IgFail igFail = IgFail::None;
+    // ★ doc_id 는 메타가 제 판을 올릴 때마다 바뀐다. 설정으로 덮어쓸 수 있게 해 두면 앱을 다시
+    //   빌드하지 않고도 고칠 수 있다(트위터 해시와 같은 방식).
+    QString igDocPosts   = Common::apiOverride("instagram.profilePostsDocId", "28379418928391013");
+    QString igDocProfile = Common::apiOverride("instagram.profilePageDocId",  "28036671149327607");
+    QString igDocReels   = Common::apiOverride("instagram.profileReelsDocId", "29628758406714645");
     QString igLsd, igDtsg;
-    auto igEnsureTokens = [&](const QString &user) -> bool {
-        if (!igLsd.isEmpty() && !igDtsg.isEmpty()) return true;
+    auto igEnsureTokens = [&](const QString &user, bool force = false) -> bool {
+        if (!force && !igLsd.isEmpty() && !igDtsg.isEmpty()) return true;
+        if (force) { igLsd.clear(); igDtsg.clear(); }
         QMap<QString, QString> h = baseHeaders;
         h["Accept"] = "text/html,application/xhtml+xml";
         h["Sec-Fetch-Dest"] = "document";
@@ -9013,10 +9045,21 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
         static const QRegularExpression reDtsg("\"DTSGInitialData\",\\[\\],\\{\"token\":\"([^\"]+)\"");
         const auto mL = reLsd.match(body); if (mL.hasMatch()) igLsd = mL.captured(1);
         const auto mD = reDtsg.match(body); if (mD.hasMatch()) igDtsg = mD.captured(1);
-        if (igLsd.isEmpty())
-            log(QString("프로필 페이지에서 토큰을 못 찾았습니다 (HTTP %1, %2바이트) — 로그인 상태를 확인하세요")
+        // ★ 둘 다 있어야 한다. 예전엔 lsd 만 있어도 참을 돌려줘, 그 다음 질의가 엉뚱한 까닭으로 실패했다.
+        if (!pg.isOk() || pg.data.size() < 50000) {
+            log(QString("인스타 로그인이 필요합니다 — Chrome 에서 instagram.com 에 로그인해 주세요 "
+                        "(프로필 페이지를 못 받았습니다: HTTP %1, %2바이트).")
                     .arg(pg.statusCode).arg(pg.data.size()), "error", "instagram");
-        return !igLsd.isEmpty();
+            return false;
+        }
+        if (igLsd.isEmpty() || igDtsg.isEmpty()) {
+            log(QString("프로필 페이지에서 토큰을 못 찾았습니다 (%1) — 인스타가 페이지 모양을 바꿨거나 "
+                        "로그인이 풀린 것입니다.").arg(igLsd.isEmpty() ? (igDtsg.isEmpty() ? "lsd·fb_dtsg 둘 다" : "lsd")
+                                                                      : "fb_dtsg"),
+                "error", "instagram");
+            return false;
+        }
+        return true;
     };
     auto igGraphql = [&](const QString &friendly, const QString &docId, const QJsonObject &vars) -> QJsonObject {
         QMap<QString, QString> h = baseHeaders;
@@ -9038,35 +9081,132 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
              << "variables=" + enc(QString::fromUtf8(QJsonDocument(vars).toJson(QJsonDocument::Compact)))
              << "server_timestamps=true" << "doc_id=" + enc(docId);
         HttpResponse r = http.post("https://www.instagram.com/graphql/query", form.join('&').toUtf8(), h);
-        if (!r.isOk()) {
-            log(QString("%1 실패 (HTTP %2, %3바이트)").arg(friendly).arg(r.statusCode).arg(r.data.size()),
-                "error", "instagram");
-            return QJsonObject();
-        }
+        // ★ 실패를 '상태 코드' 로 가르면 안 된다. 실측(2026-09-24):
+        //     doc_id 가 낡음      → HTTP 400 + 108바이트 "execution error"
+        //     제공자 깃발이 낡음  → HTTP 200 + 194바이트 "execution error"
+        //     로그인이 풀림       → 302, 또는 JSON 이 아닌 HTML
+        //   예전 코드는 !isOk() 에서 먼저 돌아서서, 정작 가장 흔할 'doc_id 가 바뀜' 을 영영 못 알아봤다.
+        const QString bodyTxt = QString::fromUtf8(r.data.left(4000));
         const QJsonObject j = r.json();
-        if (j.contains("errors")) {
-            // 200 인데 errors — 대개 doc_id 나 제공자 깃발이 낡은 것이다. 무엇이 틀렸는지 적어 준다.
-            log(QString("%1 이 거절됐습니다 — 인스타가 질의를 바꾼 듯합니다(doc_id %2). "
-                        "docs_instagram_2026-09.md 의 방법으로 새 값을 떠야 합니다.").arg(friendly, docId),
-                "error", "instagram");
+        const bool looksJson = !r.data.isEmpty() && (r.data.trimmed().startsWith('{') || r.data.trimmed().startsWith('['));
+        if (r.statusCode == 302 || !looksJson) {
+            igFail = IgFail::SessionDead;
+            log("인스타 로그인이 풀렸습니다 — Chrome 에서 instagram.com 에 다시 로그인한 뒤 다시 시작하세요. "
+                "그때까지 인스타 수집은 멈춥니다.", "error", "instagram");
             return QJsonObject();
         }
+        if (bodyTxt.contains("execution error")) {
+            const QJsonArray errs = j["errors"].toArray();
+            const QString desc = errs.isEmpty() ? QString() : errs.first().toObject()["description"].toString();
+            if (!desc.isEmpty()) {
+                igFail = IgFail::UserUnavailable;
+                log(QString("@%1 을 볼 수 없습니다(없는 계정이거나 비공개·차단) — 이 대상만 건너뜁니다.")
+                        .arg(username), "warning", "instagram");
+            } else {
+                igFail = IgFail::QueryStale;   // 부르는 쪽이 토큰 새로받기 → 질의 새로뜨기 순서로 되살린다
+            }
+            return QJsonObject();
+        }
+        if (!r.isOk()) {
+            igFail = IgFail::Transient;
+            log(QString("인스타가 응답하지 않습니다 (HTTP %1, %2바이트) — 잠시 뒤 다시 시도합니다.")
+                    .arg(r.statusCode).arg(r.data.size()), "warning", "instagram");
+            return QJsonObject();
+        }
+        igFail = IgFail::None;
         return j["data"].toObject();
     };
+    // ★ 질의가 낡았을 때 스스로 되살린다 — 사람 없이 1년을 버텨야 하므로.
+    //   ① 토큰만 만료된 것일 수 있다(같은 오류 모양이다) → 토큰을 새로 받아 한 번 더.
+    //   ② 그래도면 메타가 doc_id 를 바꾼 것이다 → 번들 파이썬으로 새 값을 떠 와서 한 번 더.
+    //     (뜨는 데 브라우저도 로그인도 필요 없다 — 인스타 JS 꾸러미에 적혀 있다. 실측 5.5초)
+    int igHarvests = 0;
+    bool igTokenRefreshed = false;   // 토큰 새로받기는 한 판에 한 번 — 그 뒤에도 거절되면 질의 번호가 바뀐 것이다
+    // 깃발 이름도 바뀔 수 있다. 떠 온 것이 있으면 그것을, 없으면 오늘 실측한 것을 쓴다.
+    auto igProviders = [](const QString &key, const QStringList &builtin) -> QStringList {
+        const QString saved = Common::apiOverride(key, QString());
+        const QStringList got = saved.split(',', Qt::SkipEmptyParts);
+        return got.isEmpty() ? builtin : got;
+    };
+    auto igAddProviders = [](QJsonObject &v, const QStringList &names) {
+        for (const QString &n : names) v[n] = false;
+    };
+    auto igRecover = [&](const QString &what) -> bool {
+        if (igFail != IgFail::QueryStale) return false;
+        // ★ 사다리의 첫 칸은 토큰 새로받기다. 하지만 토큰을 받는 데 성공했다고
+        //   질의가 살아난 것은 아니다. 한 번 받아 보고도 또 거절되면 다음 칸(질의 번호)으로 간다.
+        if (!igTokenRefreshed) {
+            igTokenRefreshed = true;
+            log(QString("%1가 거절됐습니다 — 먼저 토큰을 새로 받아 봅니다.").arg(what), "warning", "instagram");
+            if (igEnsureTokens(username, true)) {
+                log("토큰을 다시 받았습니다 — 한 번 더 물어봅니다.", "info", "instagram");
+                return true;
+            }
+        }
+        if (igHarvests++ >= 1) return false;     // 한 판에 한 번만 — 인스타가 죽었을 때 떼로 두드리지 않게
+        log("인스타가 질의를 바꾼 듯합니다 — 새 질의 번호를 떠 옵니다(브라우저 없이, 몇 초).", "warning", "instagram");
+        QProcess hv;
+        hv.setProcessEnvironment(Common::bundledProcessEnv());
+        hv.start(Common::bundledPythonPath(), {Common::bundledToolsDir() + "/ig_docids.py"});
+        if (!hv.waitForFinished(90000)) { hv.kill(); hv.waitForFinished(2000); }
+        const QJsonObject got = QJsonDocument::fromJson(hv.readAllStandardOutput()).object();
+        if (got.isEmpty()) {
+            log("새 질의 번호를 뜨지 못했습니다 — 인스타가 더 깊이 바뀌었거나 인터넷이 막혔습니다. "
+                "docs_instagram_2026-09.md 에 손으로 뜨는 방법이 적혀 있습니다.", "error", "instagram");
+            return false;
+        }
+        int n = 0;
+        for (auto it = got.constBegin(); it != got.constEnd(); ++it) {
+            const QString v = it.value().toObject()["doc_id"].toString();
+            if (v.isEmpty()) continue;
+            QStringList provs;
+            for (const auto &pv : it.value().toObject()["providers"].toArray()) provs << pv.toString();
+            if (it.key() == "PolarisProfilePostsQuery") {
+                Common::setApiOverride("instagram.profilePostsDocId", v); ++n;
+                igDocPosts = v;          // ★ 이번 판부터 바로 쓴다(예전엔 다음 판까지 헛돌았다)
+                if (!provs.isEmpty()) Common::setApiOverride("instagram.profilePostsProviders", provs.join(','));
+            } else if (it.key() == "PolarisProfilePageContentQuery") {
+                Common::setApiOverride("instagram.profilePageDocId", v); ++n;
+                igDocProfile = v;
+                if (!provs.isEmpty()) Common::setApiOverride("instagram.profilePageProviders", provs.join(','));
+            } else if (it.key() == "PolarisProfileReelsTabContentQuery") {
+                Common::setApiOverride("instagram.profileReelsDocId", v); ++n;
+                igDocReels = v;
+                if (!provs.isEmpty()) Common::setApiOverride("instagram.profileReelsProviders", provs.join(','));
+            }
+        }
+        log(QString("새 질의 번호 %1개를 받아 저장했습니다 — 이번 판부터 바로 씁니다.").arg(n),
+            n ? "success" : "warning", "instagram");
+        return n > 0;
+    };
+
     // 게시물 한 쪽 — 옛 REST 의 items 와 같은 모양(node)이 나오므로 아래 파서를 그대로 쓴다.
-    auto igPostsPage = [&](const QString &after) -> QJsonObject {
+    auto igPostsPageOnce = [&](const QString &after) -> QJsonObject {
         QJsonObject data{{"count", 12}, {"include_reel_media_seen_timestamp", true},
                          {"include_relationship_info", true}, {"latest_besties_reel_media", true},
                          {"latest_reel_media", true}};
         QJsonObject v{{"data", data}, {"username", username}, {"first", 12},
                       {"before", QJsonValue::Null}, {"last", QJsonValue::Null},
-                      {"after", after.isEmpty() ? QJsonValue::Null : QJsonValue(after)},
-                      {"__relay_internal__pv__PolarisMultiCaptionCarouselEnabledrelayprovider", false},
-                      {"__relay_internal__pv__PolarisShortDramaEnabledrelayprovider", false},
-                      {"__relay_internal__pv__PolarisReelsRecoDebugOverlayEnabledrelayprovider", false}};
+                      {"after", after.isEmpty() ? QJsonValue::Null : QJsonValue(after)}};
+        igAddProviders(v, igProviders("instagram.profilePostsProviders",
+            {"__relay_internal__pv__PolarisMultiCaptionCarouselEnabledrelayprovider",
+             "__relay_internal__pv__PolarisShortDramaEnabledrelayprovider",
+             "__relay_internal__pv__PolarisReelsRecoDebugOverlayEnabledrelayprovider"}));
         // ★ 커서는 variables 최상위 after 에 넣는다. data 안에 넣으면 같은 쪽이 다시 온다(실측).
-        const QJsonObject d = igGraphql("PolarisProfilePostsQuery", "28379418928391013", v);
+        const QJsonObject d = igGraphql("PolarisProfilePostsQuery", Common::apiOverride("instagram.profilePostsDocId", igDocPosts), v);
         return d["xdt_api__v1__feed__user_timeline_graphql_connection"].toObject();
+    };
+    // 사다리를 끝까지 오른다: 한 번 실패 → 토큰 새로 → 또 실패 → 질의 번호 뜨기 → 마지막으로 한 번 더.
+    auto igTry = [&](const QString &what, auto once) -> QJsonObject {
+        QJsonObject r = once();
+        for (int i = 0; r.isEmpty() && i < 2; ++i) {
+            if (!igRecover(what)) break;
+            r = once();
+        }
+        return r;
+    };
+    auto igPostsPage = [&](const QString &after) -> QJsonObject {
+        return igTry("게시물 질의", [&] { return igPostsPageOnce(after); });
     };
 
     if (!igEnsureTokens(username)) { updateStats(0, 0, "오류", "instagram"); return; }
@@ -9097,13 +9237,28 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     // 프로필 정보 — 옛 web_profile_info 와 같은 모양으로 맞춰 아래 코드를 건드리지 않는다.
     QJsonObject userData;
     {
-        QJsonObject v{{"enable_integrity_filters", true}, {"id", igUserId},
-                      {"__relay_internal__pv__PolarisCannesGuardianExperienceEnabledrelayprovider", true},
-                      {"__relay_internal__pv__PolarisCASB976ProfileEnabledrelayprovider", false},
-                      {"__relay_internal__pv__PolarisWebSchoolsEnabledrelayprovider", false},
-                      {"__relay_internal__pv__PolarisRepostsConsumptionEnabledrelayprovider", true},
-                      {"__relay_internal__pv__PolarisShortDramaEnabledrelayprovider", false}};
-        const QJsonObject u = igGraphql("PolarisProfilePageContentQuery", "28036671149327607", v)["user"].toObject();
+        QJsonObject v{{"enable_integrity_filters", true}, {"id", igUserId}};
+        igAddProviders(v, igProviders("instagram.profilePageProviders",
+            {"__relay_internal__pv__PolarisCannesGuardianExperienceEnabledrelayprovider",
+             "__relay_internal__pv__PolarisCASB976ProfileEnabledrelayprovider",
+             "__relay_internal__pv__PolarisWebSchoolsEnabledrelayprovider",
+             "__relay_internal__pv__PolarisRepostsConsumptionEnabledrelayprovider",
+             "__relay_internal__pv__PolarisShortDramaEnabledrelayprovider"}));
+        QJsonObject u = igTry("프로필 질의", [&] {
+            return igGraphql("PolarisProfilePageContentQuery",
+                             Common::apiOverride("instagram.profilePageDocId", igDocProfile), v)["user"].toObject();
+        });
+        if (u.isEmpty())
+            log("프로필 정보를 받지 못했습니다 — 지난 번 profile.json 을 그대로 둡니다. 게시물 수집은 계속합니다.",
+                "warning", "instagram");
+        // ★ 번호가 대상과 맞는지 본다. 글이 없는 계정에서 페이지 HTML 을 훑을 때 '내 번호' 를 집을 수 있다.
+        if (!u.isEmpty() && !u["username"].toString().isEmpty()
+            && u["username"].toString().compare(username, Qt::CaseInsensitive) != 0) {
+            log(QString("사용자 번호가 대상과 맞지 않습니다(@%1 ≠ @%2) — 안전을 위해 이 대상을 건너뜁니다.")
+                    .arg(u["username"].toString(), username), "error", "instagram");
+            updateStats(0, 0, "오류", "instagram");
+            return;
+        }
         userData = u;
         userData["id"] = igUserId;
         userData["edge_owner_to_timeline_media"] = QJsonObject{{"count", u["media_count"].toInt()}};
@@ -9231,86 +9386,44 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     // ★ 옛 /api/v1/feed/user/<id>/ 는 302 로 죽었다(실측 2026-09-24). GraphQL 로 받는다.
     //   첫 쪽은 위에서 사용자 번호를 얻느라 이미 받아 두었으니 그대로 쓴다(한 번 덜 묻는다).
     bool igUsedFirstPage = false;
+    QString prevCursor;
+    if (!igWantPosts) hasMore = false;   // 게시물을 고르지 않았으면 한 쪽도 훑지 않는다
     while (hasMore && platformRunning("instagram")) {
         QJsonObject conn;
         if (!igUsedFirstPage) { conn = igFirstConn; igUsedFirstPage = true; }
         else                  { conn = igPostsPage(nextMaxId); }
-        HttpResponse mediaResp;
-        mediaResp.statusCode = conn.isEmpty() ? 0 : 200;
-        if (!mediaResp.isOk()) {
-            if (mediaResp.statusCode == 429) {
+        if (conn.isEmpty()) {
+            // 실패의 까닭은 igGraphql 이 이미 한글로 적었다. 여기서는 어떻게 할지만 정한다.
+            if (igFail == IgFail::SessionDead || igFail == IgFail::UserUnavailable) break;
+            if (igFail == IgFail::Transient) {
                 igRateLimitHits++;
-                igConsecutiveOk = 0;
                 igDelay = qMin(igDelay * 2.0, 30.0);
-                int waitSecs = qMin(60 + (igRateLimitHits - 1) * 30, 180);
-                log(QString("⚠️ Rate Limit (%1回) - %2秒 대기 (適応ﾃﾞｨﾚｲ: %3秒)")
-                    .arg(igRateLimitHits).arg(waitSecs).arg(igDelay, 0, 'f', 1), "warning", "instagram");
+                const int waitSecs = qMin(60 + (igRateLimitHits - 1) * 30, 180);
+                log(QString("%1초 쉬었다 이어 받습니다 (%2번째)").arg(waitSecs).arg(igRateLimitHits),
+                    "warning", "instagram");
                 for (int r = waitSecs; r > 0 && platformRunning("instagram"); --r) {
                     updateStats(allMedia.count(), mediaDownloaded, QString("대기 %1s").arg(r), "instagram");
                     QThread::sleep(1);
                 }
+                if (igRateLimitHits > 5) { log("계속 막힙니다 — 여기서 멈춥니다(받은 것은 저장됩니다).", "error", "instagram"); break; }
                 continue;
             }
-            // 401: 세션 만료 → Chrome에서 자동 갱신 시도
-            if (mediaResp.statusCode == 401) {
-                log("세션 만료 (401) → Chrome에서 세션 자동 갱신 중...", "warning", "instagram");
-                // ★ 반환값이 이제 전체 Cookie header (sessionid+csrftoken+ds_user_id+ig_did 등)
-                QString fullCookie = extractInstagramSessionSync();
-                if (!fullCookie.isEmpty()) {
-                    // sessionid 부분 따로 추출 (UI 표시용)
-                    QString sid;
-                    for (const QString &part : fullCookie.split(';', Qt::SkipEmptyParts)) {
-                        QString p = part.trimmed();
-                        if (p.startsWith("sessionid=")) { sid = p.mid(10); break; }
-                    }
-                    // 두 번째 시도면서 같은 sessionid 라면 정말 실패 — 케이스별로 정확히 안내.
-                    if (sid.isEmpty()) {
-                        log("세션 자동 갱신 실패 — Chrome 에 instagram.com 로그인이 없습니다. "
-                            "Chrome 에서 Instagram 에 로그인한 뒤 다시 시도하세요.", "error", "instagram");
-                        log("  대안: 인스타 탭 → 'sessionid + 추가 cookie' 직접 입력 (capture cookie 필드)",
-                            "info", "instagram");
-                        break;
-                    }
-                    if (sid == sessionId) {
-                        // Chrome 쿠키 == 앱이 쓰던 그 세션 → 같은 세션이 서버에서 만료(401)된 것.
-                        //   쿠키 만료(browser expiry)가 아니라 IG 서버측 무효화라 '갱신'으로는 못 살림.
-                        log("세션 자동 갱신 실패 — Chrome 의 세션이 앱과 동일하고 Instagram 서버에서 만료(401)되었습니다.",
-                            "error", "instagram");
-                        log("  해결: Instagram 에서 한 번 로그아웃 → 다시 로그인해 '새 sessionid' 를 발급받은 뒤 재시도하세요.",
-                            "info", "instagram");
-                        log("  또는: 인스타 탭 → 'sessionid + 추가 cookie' 필드에 새 세션을 직접 붙여넣기.",
-                            "info", "instagram");
-                        break;
-                    }
-                    sessionId = sid;
-                    baseHeaders["Cookie"] = fullCookie;  // ★ 전체 Cookie header (모든 인스타 쿠키)
-                    log(QString("✅ 세션 갱신 성공! (쿠키 %1개) 이어서 수집...")
-                        .arg(fullCookie.count(';') + 1), "success", "instagram");
-                    // UI 업데이트 — JS-safe 인코딩
-                    QString safeSid = Common::jsStringLiteral(sessionId);
-                    // ★ instagram-session-id 는 지금 화면에 없는 id 다(이름이 바뀌었다).
-                    //   널 검사 없이 .value 를 건드리면 그 자리에서 TypeError 가 나고,
-                    //   바로 뒷줄의 계정 갱신과 saveConfig() 가 통째로 안 돈다.
-                    //   즉 애써 갱신한 세션을 그대로 버리고 있었다.
-                    //   같은 일을 하는 15351 줄에는 진작 널 검사가 있었다.
-                    runJs(QString("var _sid=document.getElementById('instagram-session-id');"
-                                  "if(_sid) _sid.value=%1;"
-                                  "var _ck=document.getElementById('instagram-cookie');"
-                                  "if(_ck && !_ck.value) _ck.value=%1;"
-                                  "if(accounts.instagram && accounts.instagram.length>0) accounts.instagram[0].session_id=%1;"
-                                  "saveConfig();").arg(safeSid));
-                    continue;  // 갱신된 세션으로 재시도
-                }
-                log("세션 자동 갱신 실패. Chrome에서 Instagram에 로그인 후 다시 시도하세요.", "error", "instagram");
-            } else {
-                log(QString("API error: %1").arg(mediaResp.statusCode), "error", "instagram");
-            }
+            // QueryStale — igPostsPage 가 사다리를 다 올라 보고도 안 된 것이다. 조용히 0개로 끝내지 않는다.
+            log("인스타가 게시물 질의를 받지 않습니다 — 토큰도 새로 받아 보고 질의 번호도 떠 봤습니다. "
+                "잠시 뒤에 다시 해 보십시오. 계속 같으면 docs_instagram_2026-09.md 에 손으로 고치는 법이 적혀 있습니다.",
+                "error", "instagram");
             break;
         }
-
+        igRateLimitHits = 0;
         const QJsonObject pageInfo = conn["page_info"].toObject();
-        hasMore = pageInfo["has_next_page"].toBool(false);
         nextMaxId = pageInfo["end_cursor"].toString();
+        // ★ '다음 쪽 있음' 인데 커서가 비면 첫 쪽을 영원히 다시 받는다(=디스크를 채운다). 둘 다 본다.
+        hasMore = pageInfo["has_next_page"].toBool(false) && !nextMaxId.isEmpty();
+        if (!nextMaxId.isEmpty() && nextMaxId == prevCursor) {
+            log("같은 쪽이 반복됩니다 — 여기서 멈춥니다(지금까지 받은 것은 저장됩니다).", "warning", "instagram");
+            break;
+        }
+        prevCursor = nextMaxId;
 
         // GraphQL 의 node 는 옛 REST item 과 같은 모양이라 아래 파서를 그대로 쓴다.
         QJsonArray items;
@@ -9611,10 +9724,10 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             tmpWriter.save(tmpExcelPath);
         }
 
-        igConsecutiveOk++; if (igConsecutiveOk > 5) { igDelay = qMax(igDelay * 0.9, 1.0); igRateLimitHits = 0; } QThread::msleep(static_cast<unsigned long>(igDelay * 1000));
+        igConsecutiveOk++; if (igConsecutiveOk > 5) { igDelay = qMax(igDelay * 0.9, igBaseDelay); igRateLimitHits = 0; } QThread::msleep(static_cast<unsigned long>(igDelay * 1000));
     }
 
-    {
+    if (igWantPosts) {
         QStringList finalTypes;
         if (imgCount > 0) finalTypes << QString("画像%1").arg(imgCount);
         if (vidCount > 0) finalTypes << QString("動画%1").arg(vidCount);
@@ -9630,31 +9743,71 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
         log("릴스 수집 중...", "info", "instagram");
         // ★ 옛 POST /api/v1/clips/user/ 도 302 로 죽었다(실측 2026-09-24). 게시물과 같이 GraphQL 로.
         int reelsCount = 0;
-        QString reelsMaxId;
+        int reelsSeen = 0;          // 고른 '개수' 는 릴스에도 걸린다(예전엔 게시물에만 걸렸다)
+        int reelsNoUrl = 0;         // 영상 주소를 끝내 못 찾은 것
+        QString reelsMaxId, prevReelsCursor;
+        int reelsPages = 0;
 
         while (platformRunning("instagram")) {
+            if (++reelsPages > 200) { log("릴스가 200쪽을 넘었습니다 — 여기서 멈춥니다.", "warning", "instagram"); break; }
             QJsonObject rd{{"include_feed_video", true}, {"page_size", 12}, {"target_user_id", userId}};
-            QJsonObject rv{{"data", rd}, {"user_id", userId},
-                           {"__relay_internal__pv__PolarisShortDramaEnabledrelayprovider", false}};
+            QJsonObject rv{{"data", rd}, {"user_id", userId}};
+            igAddProviders(rv, igProviders("instagram.profileReelsProviders",
+                {"__relay_internal__pv__PolarisShortDramaEnabledrelayprovider"}));
             if (!reelsMaxId.isEmpty()) rv["after"] = reelsMaxId;
-            const QJsonObject reelsConn =
-                igGraphql("PolarisProfileReelsTabContentQuery", "29628758406714645", rv)
-                    ["fetch__XDTUserDict"].toObject()["clips_connection"].toObject();
+            auto reelsOnce = [&]() {
+                return igGraphql("PolarisProfileReelsTabContentQuery",
+                                 Common::apiOverride("instagram.profileReelsDocId", igDocReels), rv)
+                           ["fetch__XDTUserDict"].toObject()["clips_connection"].toObject();
+            };
+            QJsonObject reelsConn = igTry("릴스 질의", reelsOnce);
             if (reelsConn.isEmpty()) break;
             QJsonArray items;
             for (const auto &e : reelsConn["edges"].toArray()) items.append(e.toObject()["node"]);
             const QJsonObject reelsPage = reelsConn["page_info"].toObject();
-            QJsonObject reelsData{{"paging_info", QJsonObject{{"more_available", reelsPage["has_next_page"].toBool(false)}}}};
             reelsMaxId = reelsPage["end_cursor"].toString();
+            // ★ 릴스 커서의 자리는 실측으로 확인하지 못했다(브라우저가 첫 쪽만 부르고 멈췄다).
+            //   Relay 는 모르는 변수를 말없이 버리므로, 커서가 안 먹으면 같은 쪽이 영원히 온다.
+            //   그래서 같은 커서가 두 번 오면 그 자리에서 멈춘다 — 헛도는 것보다 덜 받는 편이 낫다.
+            if (!reelsMaxId.isEmpty() && reelsMaxId == prevReelsCursor) {
+                log("릴스에서 같은 쪽이 반복됩니다 — 릴스는 여기서 멈춥니다.", "warning", "instagram");
+                break;
+            }
+            prevReelsCursor = reelsMaxId;
+            const bool reelsMore = reelsPage["has_next_page"].toBool(false) && !reelsMaxId.isEmpty();
             if (items.isEmpty()) break;
 
+            bool reelsEnough = false;
             for (const auto &item : items) {
+                if (maxCount > 0 && reelsSeen >= maxCount) { reelsEnough = true; break; }
+                reelsSeen++;
                 QJsonObject media = item.toObject()["media"].toObject();
+                // ★ 릴스 탭 질의는 영상 주소도 찍은 날짜도 주지 않는다
+                //   (실측 2026-09-24: code·pk·썸네일만 온다).
+                //   그래서 예전에는 릴스가 한 장도 받아지지 않았고, 그런데도 '릴스: 0개' 라고만 적혀
+                //   왜 빈손인지 알 길이 없었다. 낱장 정보를 한 번 더 물어 채운다 — 이 끝점은 옵 REST 인데 살아 있다.
+                if (media["video_versions"].toArray().isEmpty()) {
+                    const QString reelPk = media["pk"].toVariant().toString();
+                    if (!reelPk.isEmpty()) {
+                        HttpResponse mi = http.get("https://www.instagram.com/api/v1/media/" + reelPk + "/info/", baseHeaders);
+                        const QJsonArray mits = mi.isOk() ? mi.json()["items"].toArray() : QJsonArray();
+                        if (!mits.isEmpty()) {
+                            const QJsonObject full = mits.first().toObject();
+                            for (auto fit = full.constBegin(); fit != full.constEnd(); ++fit)
+                                media[fit.key()] = fit.value();
+                        } else {
+                            log(QString("릴스 낱장 정보를 받지 못했습니다 (HTTP %1) — 이 하나는 건너뜁니다.")
+                                    .arg(mi.statusCode), "warning", "instagram");
+                        }
+                        QThread::msleep(static_cast<unsigned long>(igDelay * 1000));
+                    }
+                }
                 QString videoUrl;
                 QJsonArray videoVersions = media["video_versions"].toArray();
                 if (!videoVersions.isEmpty()) {
                     videoUrl = videoVersions[0].toObject()["url"].toString();
                 }
+                if (videoUrl.isEmpty()) reelsNoUrl++;
                 if (!videoUrl.isEmpty()) {
                     QString code = media["code"].toString();
                     qint64 reelTa = media["taken_at"].toVariant().toLongLong();
@@ -9685,12 +9838,93 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                 allMedia.append(media);
             }
 
-            // 커서는 위에서 page_info.end_cursor 로 이미 채웠다.
-            if (reelsMaxId.isEmpty() || !reelsData["paging_info"].toObject()["more_available"].toBool()) break;
+            if (reelsEnough || !reelsMore) break;
             updateStats(allMedia.count(), mediaDownloaded, "수집 중", "instagram");
-            igConsecutiveOk++; if (igConsecutiveOk > 5) { igDelay = qMax(igDelay * 0.9, 1.0); igRateLimitHits = 0; } QThread::msleep(static_cast<unsigned long>(igDelay * 1000));
+            igConsecutiveOk++; if (igConsecutiveOk > 5) { igDelay = qMax(igDelay * 0.9, igBaseDelay); igRateLimitHits = 0; } QThread::msleep(static_cast<unsigned long>(igDelay * 1000));
         }
         log(QString("릴스: %1개").arg(reelsCount), "success", "instagram");
+        if (reelsNoUrl > 0)
+            log(QString("릴스 %1개는 영상 주소를 받지 못해 빠졌습니다 — 잠시 뒤에 다시 해 보십시오.")
+                    .arg(reelsNoUrl), "warning", "instagram");
+    }
+
+    // ── 태그된 글 수집 ── (유형에서 '태그됨' 을 고른 때만)
+    //   이 주소는 옛 REST 인데 아직 살아 있다(실측 2026-09-24: 200, items 6, next_max_id 있음).
+    //   응답이 옛 모양이라 위 파서와 같은 방식으로 읽는다.
+    if (igType == "tagged" && platformRunning("instagram")) {
+        log("태그된 글 수집 중...", "info", "instagram");
+        const QString taggedDir = FileHelper::typeFolder(userDir, "tagged");
+        QDir().mkpath(taggedDir);
+        QString tagMaxId, prevTagCursor;
+        int tagCount = 0, tagPages = 0;
+        int tagSeen = 0;            // 고른 '개수' 는 태그된 글에도 걸린다
+        bool tagEnough = false;
+        while (platformRunning("instagram")) {
+            if (++tagPages > 200) { log("태그된 글이 200쪽을 넘었습니다 — 여기서 멈춥니다.", "warning", "instagram"); break; }
+            QString tagUrl = QString("https://www.instagram.com/api/v1/usertags/%1/feed/?count=12").arg(userId);
+            if (!tagMaxId.isEmpty()) tagUrl += "&max_id=" + tagMaxId;
+            HttpResponse tr = http.get(tagUrl, baseHeaders);
+            if (!tr.isOk()) {
+                log(QString("태그된 글을 받지 못했습니다 (HTTP %1) — 태그됨은 건너뜁니다.").arg(tr.statusCode),
+                    "warning", "instagram");
+                break;
+            }
+            const QJsonObject tj = tr.json();
+            const QJsonArray titems = tj["items"].toArray();
+            if (titems.isEmpty()) break;
+            for (const auto &iv : titems) {
+                if (!platformRunning("instagram")) break;
+                if (maxCount > 0 && tagSeen >= maxCount) { tagEnough = true; break; }
+                tagSeen++;
+                const QJsonObject it = iv.toObject();
+                const QString code = it["code"].toString();
+                if (code.isEmpty()) continue;
+                const qint64 ta = it["taken_at"].toVariant().toLongLong();
+                const QDateTime dt = ta > 0 ? QDateTime::fromSecsSinceEpoch(ta, QTimeZone::utc()) : QDateTime();
+                const QString stamp = dt.isValid() ? dt.toUTC().addSecs(9*3600).toString("yyyyMMdd_HHmm") : QString();
+                // 사진/영상 주소 모으기 — 캐러셀이면 여러 장
+                QJsonArray media;
+                if (it.contains("carousel_media")) media = it["carousel_media"].toArray();
+                else media.append(it);
+                int idx = 0;
+                for (const auto &mv : media) {
+                    if (!platformRunning("instagram")) break;
+                    const QJsonObject m = mv.toObject();
+                    QString url; QString ext = "jpg";
+                    if (m["media_type"].toInt() == 2) {
+                        const QJsonArray vv = m["video_versions"].toArray();
+                        if (!vv.isEmpty()) { url = vv[0].toObject()["url"].toString(); ext = "mp4"; }
+                    } else {
+                        const QJsonArray ic = m["image_versions2"].toObject()["candidates"].toArray();
+                        if (!ic.isEmpty()) url = ic[0].toObject()["url"].toString();
+                    }
+                    if (url.isEmpty()) continue;
+                    const QString name = sanitizeFilename(QString("%1%2_%3%4.%5")
+                        .arg(stamp.isEmpty() ? QString() : stamp + "_", code,
+                             QString("tagged"), media.size() > 1 ? QString("_%1").arg(++idx) : QString(), ext));
+                    const QString fp = taggedDir + "/" + name;
+                    if (!QFile::exists(fp) && http.downloadFile(url, fp)) {
+                        const QString postUrl = "https://www.instagram.com/p/" + code;
+                        Common::addExifMetadata(fp, "@" + username, "", "Instagram @" + username, postUrl,
+                                                dt.isValid() ? dt.toString(Qt::ISODate) : "");
+                        FileHelper::setFinderComment(fp, postUrl);
+                        mediaDownloaded++;
+                        tagCount++;
+                    }
+                }
+                QThread::msleep(static_cast<unsigned long>(igDelay * 1000));
+            }
+            if (tagEnough) break;
+            tagMaxId = tj["next_max_id"].toString();
+            if (!tagMaxId.isEmpty() && tagMaxId == prevTagCursor) {
+                log("태그된 글에서 같은 쪽이 반복됩니다 — 여기서 멈춥니다.", "warning", "instagram");
+                break;
+            }
+            prevTagCursor = tagMaxId;
+            updateStats(allMedia.count(), mediaDownloaded, "수집 중", "instagram");
+            if (tagMaxId.isEmpty() || !tj["more_available"].toBool(false)) break;
+        }
+        log(QString("태그된 글: %1개 내려받음").arg(tagCount), "success", "instagram");
     }
 
     // ── Stories 수집 ──
@@ -9702,8 +9936,10 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             QJsonArray reels = storiesResp.json()["reels_media"].toArray();
             int storiesCount = 0;
             for (const auto &reel : reels) {
+                if (!platformRunning("instagram")) break;
                 QJsonArray storyItems = reel.toObject()["items"].toArray();
                 for (const auto &storyItem : storyItems) {
+                    if (!platformRunning("instagram")) break;
                     QJsonObject story = storyItem.toObject();
                     QString storyUrl;
                     if (story["media_type"].toInt() == 2) {
@@ -9718,7 +9954,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                         qint64 storyTa = story["taken_at"].toVariant().toLongLong();
                         QDateTime storyDt = storyTa > 0 ? QDateTime::fromSecsSinceEpoch(storyTa, QTimeZone::utc()) : QDateTime();
                         QString storyDate = storyDt.isValid() ? storyDt.toUTC().addSecs(9*3600).toString("yyyyMMdd_HHmm") : "";
-                        QString storyName = sanitizeFilename(username + " (" + story["pk"].toString() + (storyDate.isEmpty() ? "" : "_" + storyDate) + "_story)." + ext, 200);
+                        QString storyName = sanitizeFilename(username + " (" + story["pk"].toVariant().toString() + (storyDate.isEmpty() ? "" : "_" + storyDate) + "_story)." + ext, 200);
                         QString storyPostUrl = QString("https://www.instagram.com/stories/%1/").arg(username);
                         QString filepath = storiesDir + "/" + storyName;
                         if (!QFile::exists(filepath) && http.downloadFile(storyUrl, filepath)) {
@@ -9758,8 +9994,13 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
         int highlightsMediaCount = 0;
 
         if (hlResp.isOk()) {
-            QJsonArray tray = hlResp.json()["tray"].toArray();
+            const QJsonObject hlBody = hlResp.json();
+            QJsonArray tray = hlBody["tray"].toArray();
             log(QString("하이라이트: %1개 발견").arg(tray.size()), "info", "instagram");
+            // ★ 서람은 한 쪽씩 온다. 더 있는데 말없이 끝내면 빠진 줄 모른다.
+            if (!hlBody["has_fetched_all_remaining_highlights"].toBool(true))
+                log("하이라이트가 이보다 더 있습니다 — 인스타가 한 번에 이만큼만 줍니다."
+                    " 나머지는 이번에 받지 못했습니다.", "warning", "instagram");
 
             for (int hi = 0; hi < tray.size() && platformRunning("instagram"); ++hi) {
                 QJsonObject highlight = tray[hi].toObject();
@@ -9809,7 +10050,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                             // 하이라이트 제목별 서브폴더
                             QString hlSubDir = highlightsDir + "/" + sanitizeFilename(highlightTitle, 80);
                             QDir().mkpath(hlSubDir);
-                            QString hlName = sanitizeFilename(story["pk"].toString() + (hlDate.isEmpty() ? "" : "_" + hlDate) + "." + ext, 200);
+                            QString hlName = sanitizeFilename(story["pk"].toVariant().toString() + (hlDate.isEmpty() ? "" : "_" + hlDate) + "." + ext, 200);
                             QString hlPostUrl = QString("https://www.instagram.com/stories/highlights/%1/")
                                 .arg(highlightId.contains(":") ? highlightId.split(":").last() : highlightId);
                             QString filepath = hlSubDir + "/" + hlName;
@@ -9836,7 +10077,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                 }
 
                 updateStats(allMedia.count(), mediaDownloaded, "수집 중", "instagram");
-                igConsecutiveOk++; if (igConsecutiveOk > 5) { igDelay = qMax(igDelay * 0.9, 1.0); igRateLimitHits = 0; } QThread::msleep(static_cast<unsigned long>(igDelay * 1000));
+                igConsecutiveOk++; if (igConsecutiveOk > 5) { igDelay = qMax(igDelay * 0.9, igBaseDelay); igRateLimitHits = 0; } QThread::msleep(static_cast<unsigned long>(igDelay * 1000));
             }
             log(QString("하이라이트: %1개 다운로드").arg(highlightsMediaCount), "success", "instagram");
         } else {

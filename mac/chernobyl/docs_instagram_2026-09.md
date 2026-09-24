@@ -60,3 +60,39 @@ TLS 지문 문제가 아니라 '끝점이 닫힌' 문제였다.
 - `doc_id` 와 깃발 이름은 인스타가 바꾼다. 틀어지면 위 방법대로 브라우저에서 다시 뜨면 된다
   (앱 번들 Chromium 을 `--remote-debugging-port` 로 띄우고 CDP `Network.requestWillBeSent` 의 postData 를 본다).
 - 사용자 번호는 게시물 질의 응답의 `node.user.id` 에서 얻을 수 있다 — web_profile_info 가 없어도 된다.
+
+## 릴스 — 탭 질의만으로는 못 받는다 (실측 2026-09-24)
+
+`PolarisProfileReelsTabContentQuery` 가 주는 `data.fetch__XDTUserDict.clips_connection.edges[].node.media`
+에는 **영상 주소도 찍은 날짜도 없다.** 실제로 오는 칸은 이뿐이다:
+
+```
+code, pk, image_versions2(썸네일), media_type(=2), like_count, comment_count,
+play_count, view_count, user, carousel_media, original_width/height, preview …
+video_versions: []     taken_at: 없음
+```
+
+그래서 `video_versions[0].url` 만 보던 예전 코드는 릴스를 한 장도 받지 못했고,
+그러고도 「릴스: 0개」 라고만 적어 *없는 것*과 *못 받은 것*을 구별할 수 없었다.
+
+낱장 정보는 옛 REST 끝점이 아직 준다:
+
+```
+GET https://www.instagram.com/api/v1/media/<pk>/info/
+→ 200, items[0] 에 video_versions(3종) · taken_at · caption · image_versions2
+```
+
+그러므로 릴스는 **두 걸음**이다: 탭 질의로 pk 목록을 받고, 주소가 비어 있으면 낱장 정보를
+한 번 더 물어 채운다. 요청이 릴스 하나당 하나 더 늘므로 사이에 delay 를 둔다.
+
+## 아직 살아 있는 옛 REST 끝점 (실측 2026-09-24)
+
+| 끝점 | 결과 |
+|---|---|
+| `GET /api/v1/usertags/<uid>/feed/?count=N&max_id=…` | 200 · items · next_max_id · more_available |
+| `GET /api/v1/media/<pk>/info/` | 200 · items[0] 에 video_versions·taken_at |
+| `GET /api/v1/feed/reels_media/?reel_ids=<uid>` | 200 · reels_media (스토리) |
+| `GET /api/v1/highlights/<uid>/highlights_tray/` | 200 · tray · cursor · has_fetched_all_remaining_highlights |
+
+`highlights_tray` 는 한 쪽씩 온다. `has_fetched_all_remaining_highlights` 가 false 면 더 있는 것이니
+그대로 끝내지 말고 적어도 사용자에게 알린다(이어받는 변수 이름은 아직 실측하지 못했다).
