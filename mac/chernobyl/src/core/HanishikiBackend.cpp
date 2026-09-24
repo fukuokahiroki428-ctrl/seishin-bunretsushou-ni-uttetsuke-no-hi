@@ -11,6 +11,7 @@
 #include "utils/ExcelWriter.h"
 #include "xlsxdocument.h"
 #include "utils/DiskJsonBuffer.h"
+#include "utils/JsonShape.h"
 #include "utils/FileHelper.h"
 #include "utils/SelfRepair.h"
 #include <QPointer>
@@ -4531,6 +4532,25 @@ static QProcessEnvironment bundledEnv()
 //     평소 경로는 전체 목록이 오고 accountIdx 가 없어 0번이 걸린다 — 수집기가
 //     0번부터 쓰기 시작하므로 시작 시점에는 맞고, 계정이 도는 순간부터는
 //     수집기 쪽(switchToAccount)에서 다시 건다.
+static QString proxyProblem(const QString &proxyHost, const QString &proxyUrlWithAuth, const QString &probeUrl);
+
+// 프록시를 쓰기로 해 두었으면, 받기 전에 한 번 나가 본다. 죽어 있으면 그 판을 멈춘다.
+//   ★ 예전엔 이 확인이 유튜브·니코니코에만 있었다. 다른 판은 VPN 이 죽어도
+//     "로그인 실패" 라고만 적어, 멀쩡한 사람은 멀쩡한 계정을 고치려 들어간다.
+//     1년을 무인으로 놓아두면 VPN 은 반드시 한 번은 끊긴다.
+static QString proxyProbeUrlFor(const QString &platform)
+{
+    if (platform == QLatin1String("twitter"))   return QStringLiteral("https://x.com/");
+    if (platform == QLatin1String("instagram")) return QStringLiteral("https://www.instagram.com/");
+    if (platform == QLatin1String("bluesky"))   return QStringLiteral("https://bsky.social/");
+    if (platform == QLatin1String("pixiv"))     return QStringLiteral("https://www.pixiv.net/");
+    if (platform == QLatin1String("fanbox"))    return QStringLiteral("https://www.fanbox.cc/");
+    if (platform == QLatin1String("tumblr"))    return QStringLiteral("https://www.tumblr.com/");
+    if (platform == QLatin1String("discord"))   return QStringLiteral("https://discord.com/");
+    if (platform == QLatin1String("niconico"))  return QStringLiteral("https://www.nicovideo.jp/");
+    return QStringLiteral("https://www.google.com/");
+}
+
 static bool applyAccountProxyToCurrentThread(const QJsonObject &config,
                                              QString *hostOut = nullptr,
                                              int *portOut = nullptr)
@@ -4686,13 +4706,36 @@ void HanishikiBackend::startCollection(const QString &configJson)
         // 스레드가 끝나면 반드시 지운다 — 남겨 두면 이 스레드를 재사용할 때 엉뚱한 IP 로 나간다.
         struct ProxyScope { ~ProxyScope() { Common::clearThreadProxy(); } } _proxyScope;
 
+        // ★ 프록시가 죽었으면 여기서 멈춘다. 그냥 받으러 가면 모든 판이 '로그인 실패' 로
+        //   보이고, 사용자는 멀쩡한 계정을 고치려 들어간다(실측 2026-09-24: 죽은 프록시로
+        //   Bluesky 를 돌리면 "Login failed: all accounts failed" 만 남았다).
+        bool proxyDead = false;
+        if (Common::proxyEnabled()) {
+            const QString pUrl = Common::proxyUrl();
+            const QString pHost = QUrl(pUrl).host();
+            const QString why = pHost.isEmpty() ? QString()
+                              : proxyProblem(pHost, pUrl, proxyProbeUrlFor(platformName));
+            if (!why.isEmpty()) {
+                log(QString("프록시(VPN)에 닿지 않습니다 — %1\n   주소: %2:%3\n"
+                            "   계정 문제가 아니니 계정을 건드리지 마십시오. 이 판은 멈추고 끝냅니다.")
+                        .arg(why, pHost).arg(QUrl(pUrl).port()), "error", platformName);
+                showSystemNotification(QString(APP_NAME_DISPLAY) + " — " + platformName,
+                                       QStringLiteral("프록시에 닿지 않아 수집을 멈췄습니다 — ") + why);
+                updateStats(0, 0, "오류", platformName);
+                ++m_collectionErrorCount;
+                proxyDead = true;   // ★ 여기서 return 하면 아래 뒷정리(버튼 복귀)를 건너뛴다
+            }
+        }
+
         QString safe = trackKey;
         QMetaObject::invokeMethod(this, [this, safe]() {
             runJs(QString("window.cppDbgLog && cppDbgLog('WORKER THREAD ENTERED','%1')").arg(safe));
         }, Qt::QueuedConnection);
         // ★ 사용자가 선택한 옵션 (체크박스/입력값) 모두 로그에 기록 — 디버깅/재현용
         logCollectionOptions(config, platformName);
-        if (platformName == "twitter") {
+        if (proxyDead) {
+            // 프록시가 죽었다 — 위에서 까닭을 적었다. 수집기는 부르지 않는다.
+        } else if (platformName == "twitter") {
             runTwitterCollection(config);
         } else if (platformName == "bluesky") {
             runBlueskyCollection(config);
@@ -11657,7 +11700,14 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                 }
 
                 QJsonObject bmBody = bmResp.json()["body"].toObject();
-                QJsonArray works = bmBody["works"].toArray();
+                QJsonArray works = JsonShape::pickArray(bmBody, {"works", "items", "bookmarks"});
+                if (works.isEmpty()) {
+                    QString foundAt;
+                    works = JsonShape::findArrayOfObjects(bmBody, &foundAt);
+                    if (!works.isEmpty())
+                        log(QString("Pixiv 북마크 모양이 바뀐 듯합니다 — '%1' 에서 %2개를 찾았습니다.")
+                                .arg(foundAt).arg(works.size()), "warning", "pixiv");
+                }
                 if (works.isEmpty()) break;
 
                 for (const auto &w : works) {
@@ -11732,19 +11782,25 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
             }
 
             QJsonObject profBody = profResp.json()["body"].toObject();
-            QJsonObject illusts = profBody["illusts"].toObject();
-            QJsonObject manga = profBody["manga"].toObject();
-            QJsonObject novels = profBody["novels"].toObject();
+            // ★ Pixiv 는 이것들을 '아이디를 열쇠로 쓴 묶음' 으로 준다. 언젠가 배열로 바꿔도
+            //   그대로 읽히게 해 둔다 — 한쪽만 읽다가 꼴이 바뀌면 그날로 '0개 완료' 다
+            //   (팬박스가 바로 그렇게 여덟 달을 비어 있었다).
+            const QStringList illustKeys = JsonShape::idsFromMapOrArray(JsonShape::pick(profBody, {"illusts", "illust"}));
+            const QStringList mangaKeys  = JsonShape::idsFromMapOrArray(JsonShape::pick(profBody, {"manga"}));
+            const QStringList novelKeys  = JsonShape::idsFromMapOrArray(JsonShape::pick(profBody, {"novels", "novel"}));
 
             // Collect all IDs (illusts + manga) — 소설 전용이면 건너뜀
             if (!novelsOnly) {
-                for (auto it = illusts.begin(); it != illusts.end(); ++it) {
-                    illustIds.append(it.key());
-                }
-                for (auto it = manga.begin(); it != manga.end(); ++it) {
-                    if (!illustIds.contains(it.key()))
-                        illustIds.append(it.key());
-                }
+                for (const QString &k : illustKeys) illustIds.append(k);
+                for (const QString &k : mangaKeys)
+                    if (!illustIds.contains(k)) illustIds.append(k);
+            }
+            if (illustKeys.isEmpty() && mangaKeys.isEmpty() && novelKeys.isEmpty()) {
+                log(QString("Pixiv 가 200 을 주면서 작품을 하나도 주지 않았습니다. 받은 칸: %1")
+                        .arg(JsonShape::describe(profBody)), "error", "pixiv");
+                log("작품이 정말 없는 계정이 아니라면 응답 모양이 바뀌었거나 로그인이 풀린 것입니다 — "
+                    "설정 → 토큰 자동 추출 → Pixiv 로 세션을 새로 받아 보십시오.", "error", "pixiv");
+                ++m_collectionErrorCount;
             }
 
             // Sort by ID descending (newest first)
@@ -11754,9 +11810,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
 
             // Collect novel IDs
             QList<QString> novelIds;
-            for (auto it = novels.begin(); it != novels.end(); ++it) {
-                novelIds.append(it.key());
-            }
+            for (const QString &k : novelKeys) novelIds.append(k);
             std::sort(novelIds.begin(), novelIds.end(), [](const QString &a, const QString &b) {
                 return a.toLongLong() > b.toLongLong();
             });
@@ -16250,8 +16304,19 @@ void HanishikiBackend::refreshInstagramSession()
             }
 
             log(QString("✅ Instagram 세션 추출 성공! [%1] 쿠키 %2개").arg(browser).arg(cookieCount), "success", "settings");
-            log(QString("  sessionid: %1...").arg(sessionId.left(10)), "info", "settings");
-            log(QString("  포함: %1").arg(fullCookie.left(120) + "..."), "info", "settings");
+            // ★ 기록에는 값을 적지 않는다. 이 기록은 진단서(system.log)로 묶여 남에게 보내지기도 한다.
+            //   예전에는 sessionid 앞 10자와 전체 쿠키 120자를 그대로 적었다 — sessionid 는
+            //   120자에 통째로 들어가므로 그것만으로 남의 계정에 들어갈 수 있었다.
+            log(QString("  sessionid: 있음 (%1자, 가려짐)").arg(sessionId.size()), "info", "settings");
+            {
+                QStringList names;
+                for (const QString &part : fullCookie.split(';', Qt::SkipEmptyParts)) {
+                    const QString t = part.trimmed();
+                    const int eq = t.indexOf('=');
+                    names << (eq > 0 ? t.left(eq) : t);
+                }
+                log(QString("  포함: %1").arg(names.join(", ")), "info", "settings");
+            }
 
             // ★ JS-safe 인코딩 — sessionid + 전체 cookie 모두 UI 에 반영
             QString jSid  = Common::jsStringLiteral(sessionId);
@@ -16388,7 +16453,7 @@ void HanishikiBackend::refreshPixivSession()
                 return;
             }
             log("✅ Pixiv 세션 추출 성공!", "success", "settings");
-            log(QString("  PHPSESSID: %1...").arg(phpsessid.left(10)), "info", "settings");
+            log(QString("  PHPSESSID: 있음 (%1자, 가려짐)").arg(phpsessid.size()), "info", "settings");
 
             QString js = QString(
                 "if (!accounts.pixiv) accounts.pixiv = [];"
@@ -16571,15 +16636,45 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
     headers["Cookie"] = cookie;
     headers["Origin"] = "https://www.fanbox.cc";
     headers["Referer"] = "https://www.fanbox.cc/";
+    // ★ UA 와 짝이 맞는 sec-ch-ua·Sec-Fetch-*. 이것이 없으면 Fanbox 쪽이 XHR 로 보지 않아
+    //   JSON 대신 큰 HTML 한 덩이와 403 을 준다(실측 2026-09-24: 민짜 헤더로 post.info → 403, 374KB HTML).
+    headers["Accept"] = "application/json, text/plain, */*";
+    headers["X-Requested-With"] = "XMLHttpRequest";
+    // ★ 반드시 지역 변수에 받아 놓고 돈다. browserClientHints() 는 값을 돌려주므로
+    //   begin() 과 end() 를 따로 부르면 서로 다른 임시 객체의 반복자가 되어 앱이 죽는다
+    //   (실측 2026-09-24: 팬박스 수집을 시작하자마자 조용히 종료됐다).
+    const QMap<QString, QString> hints = Common::browserClientHints();
+    for (auto it = hints.constBegin(); it != hints.constEnd(); ++it)
+        headers[it.key()] = it.value();
+    headers["Sec-Fetch-Site"] = "same-site";   // www.fanbox.cc → api.fanbox.cc
 
     log(QString("━━ Fanbox 수집 시작: @%1 ━━").arg(target), "info", "fanbox");
 
-    QString nextUrl = QString("https://api.fanbox.cc/post.listCreator?creatorId=%1&limit=10").arg(target);
+    // ★ 2026-09-24 실측: Fanbox 가 응답 모양을 바꿨다.
+    //     body.items  → body.posts
+    //     body.nextUrl 사라짐 → post.paginateCreator 가 쪽 주소를 통째로 준다(body.pageUrls)
+    //   예전 코드는 items 만 보고 0개를 읽고는 '완료' 라고 적었다. 여덟 달 동안 조용히 비어 있었다.
+    //   그래서 이제 이름을 여러 개 대고, 그래도 못 찾으면 모양을 훑고, 찾든 못 찾든 소리를 낸다.
+    QStringList pageUrls;
+    {
+        HttpResponse pr = http.get(QString("https://api.fanbox.cc/post.paginateCreator?creatorId=%1").arg(target), headers);
+        if (pr.isOk()) {
+            const QJsonObject pb = pr.json()["body"].toObject();
+            for (const auto &u : JsonShape::pickArray(pb, {"pageUrls", "urls", "items"}))
+                if (!u.toString().isEmpty()) pageUrls << u.toString();
+        }
+    }
+    if (pageUrls.isEmpty())   // 쪽 나누기를 못 받으면 첫 쪽만이라도 받는다
+        pageUrls << QString("https://api.fanbox.cc/post.listCreator?creatorId=%1&limit=10").arg(target);
+
     int postCount = 0;
     int mediaCount = 0;
     int page = 0;
+    bool shapeWarned = false;
+    bool reachedMax = false;
 
-    while (!nextUrl.isEmpty() && platformRunning("fanbox")) {
+    for (const QString &nextUrl : pageUrls) {
+        if (!platformRunning("fanbox")) break;
         HttpResponse resp = http.get(nextUrl, headers);
         if (!resp.isOk()) {
             if (resp.statusCode == 401 || resp.statusCode == 403) {
@@ -16590,10 +16685,27 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
             break;
         }
         QJsonObject body = resp.json()["body"].toObject();
-        QJsonArray items = body["items"].toArray();
-        nextUrl = body["nextUrl"].toString();
+        QJsonArray items = JsonShape::pickArray(body, {"posts", "items", "list"});
+        if (items.isEmpty()) {
+            QString foundAt;
+            items = JsonShape::findArrayOfObjects(body, &foundAt);
+            if (!items.isEmpty() && !shapeWarned) {
+                shapeWarned = true;
+                log(QString("Fanbox 응답 모양이 바뀐 듯합니다 — 아는 이름(posts·items)이 없어 '%1' 에서 %2개를 찾았습니다. "
+                            "받기는 계속합니다.").arg(foundAt).arg(items.size()), "warning", "fanbox");
+            }
+        }
+        if (items.isEmpty() && page == 0) {
+            // 200 인데 한 개도 없다 — 조용한 0개로 끝내지 않는다
+            log(QString("Fanbox 가 200 을 주면서 글을 하나도 주지 않았습니다. 받은 칸: %1")
+                    .arg(JsonShape::describe(body)), "error", "fanbox");
+            log("모양이 또 바뀌었거나(이름 변경), 후원 중이 아니거나, 세션이 반쪽입니다. "
+                "설정 → 토큰 자동 추출 → Fanbox 로 세션을 새로 받아 보십시오.", "error", "fanbox");
+            ++m_collectionErrorCount;
+            break;
+        }
         page++;
-        log(QString("페이지 %1 — 포스트 %2개").arg(page).arg(items.size()), "info", "fanbox");
+        log(QString("페이지 %1/%2 — 포스트 %3개").arg(page).arg(pageUrls.size()).arg(items.size()), "info", "fanbox");
 
         for (const auto &v : items) {
             if (!platformRunning("fanbox")) break;
@@ -16611,14 +16723,26 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
             }
 
             // post 상세 가져오기
-            QString detailUrl = QString("https://api.fanbox.cc/post.info?postId=%1").arg(postId);
-            HttpResponse detResp = http.get(detailUrl, headers);
-            if (!detResp.isOk()) {
-                log(QString("[%1] post.info 실패 (HTTP %2)").arg(postCount).arg(detResp.statusCode), "warning", "fanbox");
+            //   ★ 끝점 이름도 언젠가 바뀐다(실측 2026-09-24: post.info 는 살아 있지만
+            //     post.get 도 답한다). 아는 이름을 차례로 두드리고, 처음 성공한 것을 쓴다.
+            //     하나가 죽어도 그날로 빈손이 되지 않게 하는 값싼 보험이다.
+            static const QStringList kFanboxDetail = {"post.info", "post.get", "post.getInfo"};
+            QString detailUrl;
+            HttpResponse detResp;
+            for (const QString &ep : kFanboxDetail) {
+                detailUrl = QString("https://api.fanbox.cc/%1?postId=%2").arg(ep, postId);
+                detResp = http.get(detailUrl, headers);
+                if (detResp.isOk() && detResp.data.trimmed().startsWith('{')) break;
+            }
+            if (!detResp.isOk() || !detResp.data.trimmed().startsWith('{')) {
+                log(QString("[%1] 글 내용을 받지 못했습니다 (HTTP %2) — 아는 끝점 %3개를 모두 두드려 봤습니다.")
+                        .arg(postCount).arg(detResp.statusCode).arg(kFanboxDetail.size()), "warning", "fanbox");
                 continue;
             }
-            QJsonObject detBody = detResp.json()["body"].toObject();
-            QJsonObject content = detBody["body"].toObject();
+            // ★ 2026-09-24 실측: body.<내용> → body.post.<내용> 로 껍데기가 한 겹 늘었다.
+            //   벗길 이름을 여러 개 대 두면 또 한 겹 늘어도 따라간다.
+            QJsonObject detBody = JsonShape::unwrap(detResp.json()["body"].toObject(), {"post", "item", "data"});
+            QJsonObject content = JsonShape::pickObject(detBody, {"body", "content"});
 
             log(QString("[%1] %2 (₩%3)").arg(postCount).arg(title.left(40)).arg(fee), "info", "fanbox");
 
@@ -16626,12 +16750,27 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
             if (downloadMedia) {
                 QString postDir = mediaDir + "/" + postId;
                 QDir().mkpath(postDir);
-                // imageMap
-                QJsonObject imgMap = content["imageMap"].toObject();
+                // ★ 글 종류에 따라 사진이 '맵' 으로도 '목록' 으로도 온다(실측 2026-09-24:
+                //   파일 글은 body.files 가 목록이었다). 예전엔 맵만 봐서 목록형 글은
+                //   글만 받고 사진은 한 장도 안 받았다 — 이것도 조용한 0개였다.
+                //   두 꼴을 모두 한 자리에 모아 놓고 돈다.
+                QJsonObject imgMap = JsonShape::pickObject(content, {"imageMap"});
+                for (const auto &iv : JsonShape::pickArray(content, {"images"})) {
+                    const QJsonObject im = iv.toObject();
+                    const QString id = JsonShape::pickString(im, {"id", "imageId"});
+                    if (!id.isEmpty() && !imgMap.contains(id)) imgMap[id] = im;
+                }
+                QJsonObject fileMapAll = JsonShape::pickObject(content, {"fileMap"});
+                for (const auto &fv : JsonShape::pickArray(content, {"files"})) {
+                    const QJsonObject fo = fv.toObject();
+                    const QString id = JsonShape::pickString(fo, {"id", "fileId", "name"});
+                    if (!id.isEmpty() && !fileMapAll.contains(id)) fileMapAll[id] = fo;
+                }
                 for (auto it = imgMap.constBegin(); it != imgMap.constEnd(); ++it) {
                     QJsonObject img = it.value().toObject();
-                    QString origUrl = img["originalUrl"].toString();
-                    QString ext = img["extension"].toString();
+                    QString origUrl = JsonShape::pickString(img, {"originalUrl", "url", "largeUrl", "thumbnailUrl"});
+                    QString ext = JsonShape::pickString(img, {"extension", "ext"});
+                    if (ext.isEmpty()) ext = "jpg";
                     if (origUrl.isEmpty()) continue;
                     QString fname = QString("%1.%2").arg(it.key()).arg(ext);
                     QString out = postDir + "/" + fname;
@@ -16646,13 +16785,12 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
                         enqueueWebDavUpload(out);
                     }
                 }
-                // fileMap (zip/pdf 등)
-                QJsonObject fileMap = content["fileMap"].toObject();
-                for (auto it = fileMap.constBegin(); it != fileMap.constEnd(); ++it) {
+                // 파일(zip·pdf 등) — 맵과 목록을 위에서 이미 합쳐 두었다
+                for (auto it = fileMapAll.constBegin(); it != fileMapAll.constEnd(); ++it) {
                     QJsonObject f = it.value().toObject();
-                    QString url = f["url"].toString();
-                    QString name = f["name"].toString();
-                    QString ext = f["extension"].toString();
+                    QString url = JsonShape::pickString(f, {"url", "originalUrl", "downloadUrl"});
+                    QString name = JsonShape::pickString(f, {"name", "fileName"});
+                    QString ext = JsonShape::pickString(f, {"extension", "ext"});
                     if (url.isEmpty()) continue;
                     QString fname = name.isEmpty() ? QString("%1.%2").arg(it.key()).arg(ext) : (name + "." + ext);
                     QString out = postDir + "/" + fname;
@@ -16675,11 +16813,11 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
             row["title"] = title;
             row["fee"] = fee;
             row["url"] = QString("https://www.fanbox.cc/@%1/posts/%2").arg(target, postId);
-            row["published"] = post["publishedDatetime"].toString();
-            row["type"] = post["type"].toString();
+            row["published"] = JsonShape::pickString(post, {"publishedDatetime", "publishedAt", "updatedDatetime"});
+            row["type"] = JsonShape::pickString(post, {"type", "postType"});
             row["like_count"] = post["likeCount"].toInt(0);
             row["comment_count"] = post["commentCount"].toInt(0);
-            row["cover_image"] = post["coverImageUrl"].toString();
+            row["cover_image"] = JsonShape::pickString(post, {"coverImageUrl", "cover"});
             allPosts.append(row);
 
             // 포스트 JSON 저장 (post 자체 백업)
@@ -16690,8 +16828,9 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
             }
 
             QThread::msleep(500);  // rate limit 회피
-            if (maxPosts > 0 && postCount >= maxPosts) { nextUrl.clear(); break; }
+            if (maxPosts > 0 && postCount >= maxPosts) { reachedMax = true; break; }
         }
+        if (reachedMax) break;
     }
 
     // Excel 저장
@@ -17219,8 +17358,23 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
             break;
         }
 
-        QJsonArray posts = postsResp.json()["response"].toObject()["posts"].toArray();
-        if (posts.isEmpty()) break;
+        const QJsonObject tumblrResp = JsonShape::pickObject(postsResp.json(), {"response", "data", "body"});
+        QJsonArray posts = JsonShape::pickArray(tumblrResp, {"posts", "items", "entries"});
+        if (posts.isEmpty()) {
+            QString foundAt;
+            posts = JsonShape::findArrayOfObjects(tumblrResp, &foundAt);
+            if (!posts.isEmpty())
+                log(QString("Tumblr 응답 모양이 바뀐 듯합니다 — '%1' 에서 %2개를 찾았습니다.")
+                        .arg(foundAt).arg(posts.size()), "warning", "tumblr");
+        }
+        if (posts.isEmpty()) {
+            if (offset == 0) {
+                log(QString("Tumblr 가 200 을 주면서 글을 하나도 주지 않았습니다. 받은 칸: %1")
+                        .arg(JsonShape::describe(tumblrResp)), "error", "tumblr");
+                ++m_collectionErrorCount;
+            }
+            break;
+        }
 
         for (const auto &postVal : posts) {
             if (!platformRunning("tumblr")) break;
