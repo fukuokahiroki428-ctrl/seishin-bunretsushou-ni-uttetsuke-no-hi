@@ -8849,6 +8849,9 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
 .tab-content.fx .fx-run > .progress-bar,
 .tab-content.fx .fx-run > .trad-progress,
 .tab-content.fx .fx-run > .data-panel { flex: none; margin: 10px 14px 0 !important; }
+/* ★ 진행 막대의 기본 폭은 100% 라, 옆 여백 14px 가 더해져 오른쪽 끝이 실행 액자 밖으로 14px 나가 잘렸다
+     (다 차도 끝 14px 가 안 보인다 — 공작함 check_layout 이 잡음). 폭은 여백을 뺀 나머지로. */
+.tab-content.fx .fx-run > .progress-bar { width: auto; }
 .tab-content.fx .fx-run > .data-panel { max-height: 40%; overflow-y: auto; }
 .tab-content.fx .fx-run > .fx-log {
     flex: 1; min-height: 0; display: flex; flex-direction: column;
