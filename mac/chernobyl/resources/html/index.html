@@ -7038,28 +7038,43 @@
         var _formLoaded = false;
         var _formRestored = false;   // 폴백이 아니라 '진짜 복원' 을 받았는가
         setTimeout(function(){ _formLoaded = true; }, 8000);  // 폴백: 복원 콜백이 영영 안 와도 8초 뒤 저장 허용
+        // ★ 바뀐 칸만 보낸다 — 사용자: "팬박스 기능 창에서 계정 정보가 저장 안 된다".
+        //   창(본 창·기능 창)마다 폼을 따로 든다. 예전엔 창이 포커스를 잃을 때마다 '모든 칸' 을
+        //   통째로 보냈고 저장소도 통째로 바꿨다 — 기능 창에서 넣은 FANBOXSESSID 를, 옛 값을 든
+        //   본 창이 포커스를 잃는 순간 빈 값으로 덮었다.
+        //   이제 마지막으로 저장소와 맞춘 값(_formBase)과 달라진 칸만 보낸다. 가만있던 칸은
+        //   보내지 않으니 다른 창의 새 값을 덮지 못한다. 저장소는 합치고, 바뀐 칸을 모든 창에
+        //   알린다(applyFormPatch) — 창마다 든 값이 곧바로 같아진다.
+        var _formBase = {};      // id → 마지막으로 저장소와 맞춘 값
+        var _formDirty = {};     // 사람이 손댄 칸(복원을 못 받은 채 저장할 때만 쓴다)
+        function _readField(el) { return el.type === 'checkbox' ? el.checked : el.value; }
         function _doSaveForm() {
             if (!_formLoaded) return;   // 폼 로드 전엔 저장 금지 (빈 폼 wipe 방지)
-            var data = {};
+            var diff = {}, n = 0;
             _formFieldIds.forEach(function(id) {
                 var el = document.getElementById(id);
                 if (!el) return;
-                if (el.type === 'checkbox') data[id] = el.checked;
-                else data[id] = el.value;
+                var v = _readField(el);
+                // 복원을 못 받은 채(8초 폴백)라면 사람이 손댄 칸만 — 기본값이 저장된 값을 덮지 않게
+                if (!_formRestored && !_formDirty[id]) return;
+                if ((id in _formBase) && _formBase[id] === v) return;   // 바뀌지 않은 칸은 보내지 않는다
+                diff[id] = v; n++;
             });
-            // ★ 8초 폴백으로 가드가 풀린 경우 — 복원을 못 받은 채라면 '전부 빈 값' 은
-            //   절대 저장하지 않는다. 저장된 쿠키·세션 140여 개를 빈 값으로 덮는 것이
-            //   이 함수가 낼 수 있는 최악의 사고다. 사용자가 뭐라도 입력했으면
-            //   그건 진짜 뜻이므로 통과시킨다.
-            if (!_formRestored) {
-                var any = false;
-                for (var k in data) {
-                    var v = data[k];
-                    if (v !== '' && v !== false && v !== null && v !== undefined) { any = true; break; }
-                }
-                if (!any) return;
+            if (!n) return;
+            for (var k in diff) _formBase[k] = diff[k];
+            _formDirty = {};
+            if (backend && backend.saveFormData) backend.saveFormData(JSON.stringify(diff));
+        }
+        // C++ 에서 호출 — 어느 창이든 칸을 저장하면 모든 창에 그 칸이 온다
+        function applyFormPatch(jsonStr) {
+            var data; try { data = JSON.parse(jsonStr); } catch (e) { return; }
+            for (var id in data) {
+                _formBase[id] = data[id];
+                var el = document.getElementById(id);
+                if (!el) continue;
+                if (el === document.activeElement && _readField(el) !== data[id]) continue;   // 이 창에서 치는 중이면 두다
+                if (el.type === 'checkbox') el.checked = !!data[id]; else el.value = data[id];
             }
-            if (backend && backend.saveFormData) backend.saveFormData(JSON.stringify(data));
         }
         function saveFormDataToBackend() {
             // ★ 디바운스 100ms로 단축 (이전 500ms — 사용자가 입력 후 즉시 앱 닫으면 저장 누락)
@@ -7087,6 +7102,11 @@
                     if (!el) return;
                     if (el.type === 'checkbox') el.checked = data[id];
                     else el.value = data[id];
+                });
+                // 기준값 — 복원한 뒤의 화면 값. 이것과 달라진 칸만 나중에 보낸다
+                _formFieldIds.forEach(function(id) {
+                    var el = document.getElementById(id);
+                    if (el) _formBase[id] = _readField(el);
                 });
                 // 커스텀 select 텍스트 갱신
                 document.querySelectorAll('select.input').forEach(function(s){
@@ -7120,8 +7140,8 @@
                 _formFieldIds.forEach(function(id) {
                     var el = document.getElementById(id);
                     if (!el) return;
-                    el.addEventListener('input', saveFormDataToBackend);
-                    el.addEventListener('change', saveFormDataToBackend);
+                    el.addEventListener('input', function () { _formDirty[this.id] = true; saveFormDataToBackend(); });
+                    el.addEventListener('change', function () { _formDirty[this.id] = true; saveFormDataToBackend(); });
                 });
             }
             if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

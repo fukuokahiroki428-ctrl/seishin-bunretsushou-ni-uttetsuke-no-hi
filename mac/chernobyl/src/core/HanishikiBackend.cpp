@@ -4441,10 +4441,21 @@ void HanishikiBackend::saveConfig(const QString &configJson)
 
 void HanishikiBackend::saveFormData(const QString &formJson)
 {
+    // ★ 받은 칸만 합친다(통째로 바꾸지 않는다) — 사용자: "팬박스 기능 창에서 계정 정보가 저장 안 된다".
+    //   창(본 창·기능 창)마다 폼을 따로 들고 있어서, 예전엔 창이 포커스를 잃을 때마다 '자기 화면의
+    //   모든 칸' 을 통째로 보냈고 여기서 통째로 바꿨다. 기능 창에서 넣은 FANBOXSESSID 를, 옛 값을 든
+    //   본 창이 포커스를 잃는 순간 빈 값으로 덮었다. 이제 화면은 바뀐 칸만 보내고, 여기선 합치고,
+    //   바뀐 칸을 모든 창에 알려 창마다 든 값이 같아지게 한다.
     QJsonDocument doc = QJsonDocument::fromJson(formJson.toUtf8());
-    if (doc.isNull()) return;
-    m_config->setFormData(doc.object());
+    if (doc.isNull() || !doc.isObject()) return;
+    const QJsonObject patch = doc.object();
+    if (patch.isEmpty()) return;
+    QJsonObject cur = m_config->formData();
+    for (auto it = patch.constBegin(); it != patch.constEnd(); ++it) cur.insert(it.key(), it.value());
+    m_config->setFormData(cur);
     m_config->save();
+    const QString b64 = QString::fromUtf8(QJsonDocument(patch).toJson(QJsonDocument::Compact).toBase64());
+    runJsAll(QString("window.applyFormPatch && applyFormPatch(decodeURIComponent(escape(atob('%1'))))").arg(b64));
 }
 
 void HanishikiBackend::loadFormData()
