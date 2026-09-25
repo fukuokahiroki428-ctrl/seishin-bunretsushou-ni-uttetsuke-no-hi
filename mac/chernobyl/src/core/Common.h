@@ -6,6 +6,10 @@
 #include <QDateTime>
 #include <QProcessEnvironment>
 
+#include <QRegularExpression>
+#include <QJsonArray>
+#include <QJsonObject>
+
 namespace Common {
 
 // 날짜를 일본어 형식으로 변환
@@ -60,6 +64,20 @@ QString apiOverride(const QString &key, const QString &builtinDefault);
 bool setApiOverride(const QString &key, const QString &value);   // 빈 값이면 해당 키 삭제(기본값 복귀)
 QString apiOverridesPath();
 QString apiOverridesJson();                                       // 현재 오버라이드 전체(JSON 문자열)
+
+// ── 고침 꾸러미(1단계 — 데이터만) ─────────────────────────────────────────
+//   공개 저장소 hotfix-mac 브랜치에서 받은 값을 담는다. 실행되는 코드는 없다.
+//   받은 값은 모양을 검사해서 통과한 것만 쓴다 — 데이터로도 해칠 길이 있기 때문이다
+//   (끝점 주소를 딴 서버로 바꾸면 앱이 거기로 쿠키를 보낸다).
+struct HotfixRule { QRegularExpression re; QString cause; QString advice; QString action; };
+struct HotfixApplyResult { int overrides = 0, aliases = 0, rules = 0; QStringList rejected; };
+// 검사하고(dryRun 이면 담지 않고) 통과한 것만 담는다.
+HotfixApplyResult applyHotfix(const QJsonObject &overrides, const QJsonObject &aliases,
+                              const QJsonArray &rules, bool dryRun = false);
+QString remoteOverride(const QString &key);                         // 고침 꾸러미의 값(없으면 빈 문자열)
+QStringList shapeAliasesFor(const QStringList &keys);               // 응답 이름 후보에 꾸러미의 별명을 덧붙인다
+QList<HotfixRule> remoteRepairRules();                              // 수리 도우미가 먼저 볼 규칙
+QString hotfixDir();                                                // 받은 꾸러미를 두는 곳(앱 데이터 폴더/hotfix)
 
 // ★ macOS: 앱 번들 경로(.../Chernobyl.app). 번들이 아니면 빈 문자열.
 QString appBundlePath();

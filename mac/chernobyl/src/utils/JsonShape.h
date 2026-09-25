@@ -19,12 +19,15 @@
 #include <QString>
 #include <QStringList>
 
+// 고침 꾸러미의 별명 — 바깥이 이름을 또 바꾸면 새 판 없이 후보를 덧붙인다(Common.cpp).
+namespace Common { QStringList shapeAliasesFor(const QStringList &keys); }
+
 namespace JsonShape {
 
 // 여러 이름 중 먼저 '있는' 것을 준다(null 은 없는 것으로 본다).
 inline QJsonValue pick(const QJsonObject &o, const QStringList &keys)
 {
-    for (const QString &k : keys) {
+    for (const QString &k : Common::shapeAliasesFor(keys)) {
         const QJsonValue v = o.value(k);
         if (!v.isUndefined() && !v.isNull()) return v;
     }
@@ -33,7 +36,7 @@ inline QJsonValue pick(const QJsonObject &o, const QStringList &keys)
 
 inline QJsonArray pickArray(const QJsonObject &o, const QStringList &keys)
 {
-    for (const QString &k : keys) {
+    for (const QString &k : Common::shapeAliasesFor(keys)) {
         const QJsonValue v = o.value(k);
         if (v.isArray()) return v.toArray();
     }
@@ -42,7 +45,7 @@ inline QJsonArray pickArray(const QJsonObject &o, const QStringList &keys)
 
 inline QJsonObject pickObject(const QJsonObject &o, const QStringList &keys)
 {
-    for (const QString &k : keys) {
+    for (const QString &k : Common::shapeAliasesFor(keys)) {
         const QJsonValue v = o.value(k);
         if (v.isObject()) return v.toObject();
     }
@@ -51,7 +54,7 @@ inline QJsonObject pickObject(const QJsonObject &o, const QStringList &keys)
 
 inline QString pickString(const QJsonObject &o, const QStringList &keys)
 {
-    for (const QString &k : keys) {
+    for (const QString &k : Common::shapeAliasesFor(keys)) {
         const QJsonValue v = o.value(k);
         if (v.isString() && !v.toString().isEmpty()) return v.toString();
         if (v.isDouble()) return QString::number(static_cast<qint64>(v.toDouble()));
@@ -66,7 +69,7 @@ inline QJsonObject unwrap(const QJsonObject &o, const QStringList &wrappers, int
     QJsonObject cur = o;
     for (int d = 0; d < maxDepth; ++d) {
         bool moved = false;
-        for (const QString &w : wrappers) {
+        for (const QString &w : Common::shapeAliasesFor(wrappers)) {
             const QJsonValue v = cur.value(w);
             if (v.isObject()) { cur = v.toObject(); moved = true; break; }
         }

@@ -12,6 +12,7 @@
 #include "xlsxdocument.h"
 #include "utils/DiskJsonBuffer.h"
 #include "utils/JsonShape.h"
+#include <QVersionNumber>
 #include "utils/FileHelper.h"
 #include "utils/SelfRepair.h"
 #include <QPointer>
@@ -3559,6 +3560,12 @@ void HanishikiBackend::runJsAll(const QString &js)
 void HanishikiBackend::log(const QString &message, const QString &type, const QString &platform)
 {
     QString p = platform.isEmpty() ? m_currentPlatform : platform;
+    // 수리 도우미가 볼 수 있게 최근 오류·경고를 모아 둔다(작업 스레드에서도 불린다 — 잠근다)
+    if (type == QLatin1String("error") || type == QLatin1String("warning")) {
+        QMutexLocker lk(&m_recentMutex);
+        m_recentProblems.append({QDateTime::currentMSecsSinceEpoch(), p, type, message.left(400)});
+        if (m_recentProblems.size() > 120) m_recentProblems.remove(0, m_recentProblems.size() - 120);
+    }
     // JS log box는 platform 단위 (탭 하나에 모든 병렬 로그 표시)
     emit logSignal(message, type, p);
     // 터미널 파일 — platform 명시된 경우만 write (섞임 방지)
@@ -4111,6 +4118,15 @@ void HanishikiBackend::loadConfig()
 
     // 끄기 전에 돌던 감시를 이어 돌린다 — 아래 토큰 새로고침(1초 뒤)이 먼저 끝나도록 조금 늦게.
     QTimer::singleShot(5000, this, &HanishikiBackend::autoResumeWatchers);
+    // 고침 꾸러미 — 받아 둔 것은 곧장 쓰고, 20초 뒤와 12시간마다 새 판을 본다
+    loadHotfixFromDisk();
+    QTimer::singleShot(20000, this, [this]() { if (hotfixState().value("auto").toBool(true)) checkHotfix(false); });
+    {
+        auto *t = new QTimer(this);
+        t->setInterval(12 * 3600 * 1000);
+        connect(t, &QTimer::timeout, this, [this]() { if (hotfixState().value("auto").toBool(true)) checkHotfix(false); });
+        t->start();
+    }
 
     // 앱 시작 시 자동 유지보수
     QTimer::singleShot(1000, this, [this]() {
@@ -4133,6 +4149,164 @@ void HanishikiBackend::loadConfig()
 //   윈도우는 '설정이 차 있으면' 켠다. 여기서는 '끌 때 돌고 있었으면' 켠다 —
 //   사용자가 일부러 중지해 둔 것까지 되살리면 그건 사용자의 뜻을 거스르는 것이다.
 //   화면이 설정을 받은 뒤(loadConfig) 한 번만 — 그래야 화면의 '실행 중' 표시도 맞는다.
+// ═════════════════════════════════════════════════════════════════════════
+// 고침 꾸러미(1단계 — 데이터만)
+//   사용자(2026-09-25): "깃헙 저장소 브랜치에다 올려 두고, 개인정보 빼고, 업데이트로 받아서
+//   고치게 하면 안 되나". 바깥 서비스가 이름·번호를 바꿀 때마다 새 판을 굽고 깔 필요 없이
+//   공개 저장소 hotfix-mac 브랜치의 JSON 세 가지를 받아 쓴다.
+//     api_overrides.json — 질의 번호·해시(Common::apiOverride 가 로컬 값 다음으로 본다)
+//     shape_aliases.json — 응답 이름 별명(JsonShape 가 후보에 덧붙인다; 팬박스 items→posts 같은 일)
+//     repair_rules.json  — 수리 도우미 규칙(오류 글 → 원인 → 할 일)
+//   받은 것은 실행되지 않는다. 그래도 모양을 검사해 통과한 것만 쓴다(Common::applyHotfix).
+//   2단계(파이썬 도우미)는 서명을 붙인 뒤에 한다.
+static QString hotfixBase()
+{
+    const QString env = qEnvironmentVariable("HANISHIKI_HOTFIX_BASE");   // 시험용(개발 중에만)
+    if (!env.isEmpty()) return env.endsWith('/') ? env : env + '/';
+    return QStringLiteral("https://raw.githubusercontent.com/fukuokahiroki428-ctrl/"
+                          "seishin-bunretsushou-ni-uttetsuke-no-hi/hotfix-mac/hotfix/");
+}
+static const QStringList kHotfixFiles = {QStringLiteral("api_overrides.json"),
+                                         QStringLiteral("shape_aliases.json"),
+                                         QStringLiteral("repair_rules.json")};
+
+QJsonObject HanishikiBackend::hotfixState() const
+{
+    QFile f(Common::hotfixDir() + "/state.json");
+    if (!f.open(QIODevice::ReadOnly)) return QJsonObject();
+    return QJsonDocument::fromJson(f.readAll()).object();
+}
+
+void HanishikiBackend::saveHotfixState(const QJsonObject &st) const
+{
+    QDir().mkpath(Common::hotfixDir());
+    Common::writeFileAtomic(Common::hotfixDir() + "/state.json", QJsonDocument(st).toJson(QJsonDocument::Indented));
+}
+
+static QJsonDocument readJsonFile(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return QJsonDocument();
+    return QJsonDocument::fromJson(f.read(256 * 1024));
+}
+
+void HanishikiBackend::loadHotfixFromDisk()
+{
+    const QString d = Common::hotfixDir();
+    if (!QFile::exists(d + "/state.json")) return;
+    const auto res = Common::applyHotfix(readJsonFile(d + "/api_overrides.json").object(),
+                                         readJsonFile(d + "/shape_aliases.json").object(),
+                                         readJsonFile(d + "/repair_rules.json").array());
+    qInfo().noquote() << QString("[고침 꾸러미] v%1 을 씀 — 값 %2 · 별명 %3 · 수리 규칙 %4")
+                             .arg(hotfixState().value("version").toInt()).arg(res.overrides).arg(res.aliases).arg(res.rules);
+}
+
+void HanishikiBackend::getHotfixStatus()
+{
+    QJsonObject st = hotfixState();
+    if (!st.contains("auto")) st["auto"] = true;
+    runJs(QString("window.onHotfixStatus && onHotfixStatus(%1)")
+              .arg(QString::fromUtf8(QJsonDocument(st).toJson(QJsonDocument::Compact))));
+}
+
+void HanishikiBackend::setHotfixAuto(bool on)
+{
+    QJsonObject st = hotfixState();
+    st["auto"] = on;
+    saveHotfixState(st);
+    getHotfixStatus();
+}
+
+void HanishikiBackend::checkHotfixNow() { checkHotfix(true); }
+
+void HanishikiBackend::checkHotfix(bool manual)
+{
+    QThread *t = QThread::create([this, manual]() {
+        auto say = [this](const QString &m, const QString &type) {
+            QMetaObject::invokeMethod(this, [this, m, type]() { log(m, type, "settings"); }, Qt::QueuedConnection);
+        };
+        auto status = [this](const QString &line) {
+            QMetaObject::invokeMethod(this, [this, line]() {
+                QJsonObject st = hotfixState(); st["lastCheck"] = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm");
+                st["lastResult"] = line; saveHotfixState(st); getHotfixStatus();
+            }, Qt::QueuedConnection);
+        };
+        HttpClient http;
+        const QString base = hotfixBase();
+        HttpResponse mr = http.get(base + "manifest.json");
+        if (!mr.isOk() || mr.data.size() > 64 * 1024) {
+            const QString m = mr.statusCode == 404
+                ? QStringLiteral("고침 꾸러미가 아직 올라와 있지 않습니다")
+                : QStringLiteral("고침 꾸러미를 확인하지 못했습니다 (HTTP %1)").arg(mr.statusCode);
+            if (manual) say(m, "warning");
+            status(m);
+            return;
+        }
+        const QJsonObject man = mr.json();
+        const int ver = man.value("version").toInt(0);
+        const int have = hotfixState().value("version").toInt(0);
+        const QVersionNumber need = QVersionNumber::fromString(man.value("minApp").toString("0"));
+        if (need > QVersionNumber::fromString(QStringLiteral(PREDORMITION_VERSION_STR))) {
+            const QString m = QStringLiteral("고침 꾸러미 v%1 은 새 판(%2 이상)이 있어야 씁니다").arg(ver).arg(need.toString());
+            if (manual) say(m, "warning");
+            status(m);
+            return;
+        }
+        if (ver <= have) {
+            const QString m = QStringLiteral("고침 꾸러미가 최신입니다 (v%1)").arg(have);
+            if (manual) say(m, "info");
+            status(m);
+            return;
+        }
+        // 받고, 크기와 sha256 을 맞추고, 모양을 검사한다(아직 쓰지 않는다)
+        const QJsonObject files = man.value("files").toObject();
+        QHash<QString, QByteArray> got;
+        for (const QString &name : kHotfixFiles) {
+            const QJsonObject meta = files.value(name).toObject();
+            if (meta.isEmpty()) { got.insert(name, QByteArray()); continue; }     // 이 판엔 없는 파일
+            HttpResponse fr = http.get(base + name);
+            const QString want = meta.value("sha256").toString().toLower();
+            const QString sha = QString::fromLatin1(QCryptographicHash::hash(fr.data, QCryptographicHash::Sha256).toHex());
+            if (!fr.isOk() || fr.data.size() > 256 * 1024 || sha != want) {
+                const QString m = QStringLiteral("고침 꾸러미 v%1 — %2 을(를) 받지 못했거나 내용이 맞지 않습니다. 이번엔 쓰지 않습니다.").arg(ver).arg(name);
+                say(m, "warning"); status(m);
+                return;
+            }
+            got.insert(name, fr.data);
+        }
+        const QJsonObject ov = QJsonDocument::fromJson(got.value("api_overrides.json")).object();
+        const QJsonObject al = QJsonDocument::fromJson(got.value("shape_aliases.json")).object();
+        const QJsonArray  rl = QJsonDocument::fromJson(got.value("repair_rules.json")).array();
+        const auto dry = Common::applyHotfix(ov, al, rl, true);
+        // 모양을 통과한 것만 남겨 저장한다 — 다음에 켤 때도 같은 것을 쓴다
+        const QString d = Common::hotfixDir();
+        QDir().mkpath(d);
+        for (const QString &name : kHotfixFiles)
+            Common::writeFileAtomic(d + "/" + name, got.value(name).isEmpty() ? QByteArray("{}") : got.value(name));
+        if (got.value("repair_rules.json").isEmpty()) Common::writeFileAtomic(d + "/repair_rules.json", "[]");
+        const auto res = Common::applyHotfix(ov, al, rl);
+        Q_UNUSED(dry);
+        QString notes = man.value("notes").toString().left(200);
+        notes.remove(QRegularExpression(R"(\S+://\S+)"));             // 안내 글에 링크는 싣지 않는다
+        QJsonObject st = hotfixState();
+        st["version"] = ver;
+        st["appliedAt"] = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm");
+        st["notes"] = notes;
+        st["counts"] = QJsonObject{{"overrides", res.overrides}, {"aliases", res.aliases}, {"rules", res.rules}};
+        st["rejected"] = res.rejected.size();
+        QMetaObject::invokeMethod(this, [this, st]() { saveHotfixState(st); }, Qt::QueuedConnection);
+        say(QStringLiteral("🔧 고침 꾸러미 v%1 받음 — 값 %2 · 별명 %3 · 수리 규칙 %4%5")
+                .arg(ver).arg(res.overrides).arg(res.aliases).arg(res.rules)
+                .arg(notes.isEmpty() ? QString() : QStringLiteral(" · ") + notes), "success");
+        if (!res.rejected.isEmpty())
+            say(QStringLiteral("   모양이 맞지 않아 받지 않은 것 %1개: %2")
+                    .arg(res.rejected.size()).arg(res.rejected.mid(0, 4).join(QStringLiteral(" / "))), "warning");
+        status(QStringLiteral("v%1 을 쓰는 중").arg(ver));
+    });
+    connect(t, &QThread::finished, t, &QObject::deleteLater);
+    t->start(QThread::LowPriority);
+}
+
 void HanishikiBackend::autoResumeWatchers()
 {
     if (m_autoResumeDone || !m_config) return;
@@ -14753,6 +14927,128 @@ static QString webSearchSnippets(const QString &apiKey, const QString &query);  
 //   ("트위터가 안 돼요" → 토큰이 있나? 캡쳐가 켜져 있나? 저장 위치는?).
 //   그것을 모르면 AI 는 일반론만 답한다(실제로 "트위터 앱을 열어 권한을 허용하세요"
 //   같은, 이 앱과 상관없는 답이 나왔다).
+// ── 수리 도우미의 진단 ─────────────────────────────────────────────────────
+//   AI 의 말솜씨에 기대지 않는다. 모아 둔 오류를 알려진 원인에 맞춰 코드가 먼저 판단한다.
+//   (8GB 맥에서 도는 3B 모델은 '무엇이 고장 났는지' 를 스스로 짚기엔 작다.)
+// 글 속의 판 이름을 읽는다 — 토큰 추출처럼 '설정' 화면에서 여러 판을 한꺼번에 다루는 기록은
+//   판 이름이 'settings' 로 남는다. 그러면 "왜 인스타 안 돼?" 가 인스타 실패를 못 찾는다.
+static QString inferPlatformKey(const QString &text)
+{
+    static const QList<QPair<QRegularExpression, QString>> names = {
+        {QRegularExpression(QStringLiteral("트위터|twitter|\\bX\\b|x\\.com"), QRegularExpression::CaseInsensitiveOption), QStringLiteral("twitter")},
+        {QRegularExpression(QStringLiteral("인스타|instagram"), QRegularExpression::CaseInsensitiveOption), QStringLiteral("instagram")},
+        {QRegularExpression(QStringLiteral("블루스카이|블루|bluesky|bsky"), QRegularExpression::CaseInsensitiveOption), QStringLiteral("bluesky")},
+        {QRegularExpression(QStringLiteral("픽시브|pixiv"), QRegularExpression::CaseInsensitiveOption), QStringLiteral("pixiv")},
+        {QRegularExpression(QStringLiteral("팬박스|fanbox"), QRegularExpression::CaseInsensitiveOption), QStringLiteral("fanbox")},
+        {QRegularExpression(QStringLiteral("유튜브|youtube"), QRegularExpression::CaseInsensitiveOption), QStringLiteral("youtube")},
+        {QRegularExpression(QStringLiteral("니코|niconico"), QRegularExpression::CaseInsensitiveOption), QStringLiteral("niconico")},
+        {QRegularExpression(QStringLiteral("디스코드|discord"), QRegularExpression::CaseInsensitiveOption), QStringLiteral("discord")},
+        {QRegularExpression(QStringLiteral("텀블러|tumblr"), QRegularExpression::CaseInsensitiveOption), QStringLiteral("tumblr")},
+        {QRegularExpression(QStringLiteral("크롤|crawl"), QRegularExpression::CaseInsensitiveOption), QStringLiteral("crawl")},
+        {QRegularExpression(QStringLiteral("内閣会|내각|naikakukai"), QRegularExpression::CaseInsensitiveOption), QStringLiteral("naikakukai")},
+        {QRegularExpression(QStringLiteral("asked"), QRegularExpression::CaseInsensitiveOption), QStringLiteral("asked")},
+        {QRegularExpression(QStringLiteral("spinspin"), QRegularExpression::CaseInsensitiveOption), QStringLiteral("spinspin")},
+    };
+    for (const auto &n : names) if (n.first.match(text).hasMatch()) return n.second;
+    return QString();
+}
+
+static QString platformDisplayName(const QString &key)
+{
+    static const QHash<QString, QString> m = {
+        {"twitter", "트위터"}, {"instagram", "인스타"}, {"bluesky", "블루스카이"}, {"pixiv", "픽시브"},
+        {"fanbox", "팬박스"}, {"youtube", "유튜브"}, {"niconico", "니코니코"}, {"discord", "디스코드"},
+        {"tumblr", "텀블러"}, {"crawl", "크롤"}, {"naikakukai", "内閣会"}, {"asked", "Asked"},
+        {"spinspin", "SpinSpin"}, {"settings", "설정"}, {"trad", "trad"},
+    };
+    const QString base = key.section('#', 0, 0);            // 병렬 키 "fanbox#0" → fanbox
+    return m.value(base, base.isEmpty() ? QStringLiteral("앱") : base);
+}
+
+QList<HanishikiBackend::Finding> HanishikiBackend::diagnoseProblems(qint64 withinMs, const QString &onlyPlatform) const
+{
+    struct Rule { QRegularExpression re; QString cause; QString advice; QString action; };
+    static const QList<Rule> rules = {
+        // 순서가 곧 우선순위다 — VPN·디스크처럼 '다른 오류를 낳는 원인' 을 먼저 본다.
+        {QRegularExpression(R"(프록시\(VPN\)에 닿지|프록시 .*닿지 않|프록시를 찾을 수 없)"),
+         QStringLiteral("VPN(프록시)에 닿지 않음"),
+         QStringLiteral("VPN 앱이 켜져 있는지, 「프록시 (VPN)」 화면의 주소·포트가 맞는지 보십시오. 계정 문제가 아닙니다."), QString()},
+        {QRegularExpression(R"(디스크가 연결되어 있지 않|디스크 설정을 먼저)"),
+         QStringLiteral("저장 디스크가 안 보임"),
+         QStringLiteral("외장 디스크를 연결하거나 설정 → 디스크 설정에서 다시 고르십시오."), QString()},
+        {QRegularExpression(R"(모양이 바뀐 듯|200 을 주면서|모양바뀜|질의를 바꾼 듯|새 질의 번호를 뜨지 못)"),
+         QStringLiteral("서비스가 응답 형식을 바꿈"),
+         QStringLiteral("앱이 스스로 버티도록 되어 있지만, 계속되면 새 판이 필요합니다(개발 쪽에 알려 주십시오)."), QString()},
+        {QRegularExpression(R"(\b429\b|속도 제한|[Rr]ate ?limit|계속 막힙니다)"),
+         QStringLiteral("요청이 많아 잠시 막힘"),
+         QStringLiteral("10~30분 쉬었다가 다시 하십시오. 딜레이(초)를 조금 늘리면 덜 막힙니다."), QString()},
+        {QRegularExpression(R"(시간 초과|timed out|연결할 수 없|Host not found|Network is unreachable|인터넷)", QRegularExpression::CaseInsensitiveOption),
+         QStringLiteral("인터넷 연결 문제"),
+         QStringLiteral("인터넷이 되는지, 방화벽·VPN 이 막고 있지 않은지 보십시오."), QString()},
+        {QRegularExpression(R"(ModuleNotFoundError|No module named|ImportError|Traceback|데몬 실패|daemon start failed|파이썬 도우미)", QRegularExpression::CaseInsensitiveOption),
+         QStringLiteral("파이썬 도우미가 깨졌거나 모듈이 낡음"),
+         QStringLiteral("모듈을 새로 받습니다. 그래도 안 되면 「환경 복구」."), QStringLiteral("updateModules")},
+        {QRegularExpression(R"(Sign in to confirm|nsig|Unsupported URL|HTTP Error 403|yt-dlp)", QRegularExpression::CaseInsensitiveOption),
+         QStringLiteral("yt-dlp 가 낡았거나 사이트가 막음"),
+         QStringLiteral("yt-dlp 를 최신으로 받습니다(모듈 업데이트에 들어 있습니다)."), QStringLiteral("updateModules")},
+        {QRegularExpression(R"(토큰 추출 실패|세션 추출 실패|not found\. 브라우저|로그인이 풀렸|로그인 필요|인증 실패|HTTP 40[13]|만료|[Ll]ogin failed|Unauthorized|쿠키.*없)"),
+         QStringLiteral("로그인(세션)이 풀렸거나 브라우저에서 못 찾음"),
+         QStringLiteral("Chrome 에서 그 사이트에 로그인되어 있는지 보십시오. 토큰을 다시 뽑습니다."), QStringLiteral("refreshAllTokens")},
+    };
+    const qint64 since = QDateTime::currentMSecsSinceEpoch() - withinMs;
+    QList<RecentProblem> recent;
+    { QMutexLocker lk(&m_recentMutex); recent = m_recentProblems; }
+    const QList<Common::HotfixRule> remote = Common::remoteRepairRules();
+
+    QList<Finding> out;
+    auto find = [&out](const QString &pl, const QString &cause) -> Finding * {
+        for (Finding &f : out) if (f.platform == pl && f.cause == cause) return &f;
+        return nullptr;
+    };
+    for (const RecentProblem &p : recent) {
+        if (p.at < since) continue;
+        // 판 이름 — 병렬 키(fanbox#0)는 바탕 이름으로, '설정' 에서 여러 판을 다룬 기록은 글에서 읽는다
+        QString pl = p.platform.section('#', 0, 0);
+        if (pl.isEmpty() || pl == QLatin1String("settings")) {
+            const QString inferred = inferPlatformKey(p.msg);
+            if (!inferred.isEmpty()) pl = inferred;
+        }
+        if (!onlyPlatform.isEmpty() && pl != onlyPlatform) continue;
+        QString cause, advice, action;
+        // 고침 꾸러미의 규칙을 먼저 본다 — 새로 알게 된 고장을 새 판 없이 가르칠 수 있다
+        for (const Common::HotfixRule &r : remote) {
+            if (r.re.match(p.msg).hasMatch()) { cause = r.cause; advice = r.advice; action = r.action; break; }
+        }
+        if (cause.isEmpty())
+            for (const Rule &r : rules) {
+                if (r.re.match(p.msg).hasMatch()) { cause = r.cause; advice = r.advice; action = r.action; break; }
+            }
+        if (cause.isEmpty()) {
+            if (p.type != QLatin1String("error")) continue;          // 모르는 경고는 넘어간다 — 모르는 오류만 적는다
+            cause = QStringLiteral("알려진 원인에 없는 오류");
+            advice = QStringLiteral("아래 기록 한 줄을 그대로 보여 주시면 짚어 드리겠습니다.");
+        }
+        Finding *f = find(pl, cause);
+        if (!f) { out.append({pl, cause, advice, action, p.msg, 0, 0}); f = &out.last(); }
+        f->count++; f->last = p.at; f->sample = p.msg;
+    }
+    std::sort(out.begin(), out.end(), [](const Finding &a, const Finding &b) { return a.last > b.last; });
+    return out;
+}
+
+QString HanishikiBackend::problemsDigest(qint64 withinMs) const
+{
+    const QList<Finding> fs = diagnoseProblems(withinMs);
+    if (fs.isEmpty()) return QStringLiteral("(최근 기록에 실패 없음)");
+    QStringList lines;
+    for (const Finding &f : fs.mid(0, 8))
+        lines << QStringLiteral("- %1: %2 (%3회, 마지막 %4) — 기록: %5")
+                     .arg(platformDisplayName(f.platform), f.cause)
+                     .arg(f.count).arg(QDateTime::fromMSecsSinceEpoch(f.last).toString("HH:mm"))
+                     .arg(f.sample.left(140));
+    return lines.join('\n');
+}
+
 QString HanishikiBackend::appStateBrief() const
 {
     if (!m_config) return QString();
@@ -14820,6 +15116,88 @@ void HanishikiBackend::llmChat(const QString &historyJson)
                 has("자가수리") || has("자가 수리") || has("자동수리") || has("자동 수리") ||
                 has("알아서 고쳐") || has("스스로 고쳐") || has("직접 고쳐") || has("네가 고쳐")
                 || has("자체수리") || has("자체 수리");
+            // ★ 고장을 말하면(고쳐·안 돼·오류·에러·먹통·실패…) 코드가 먼저 진단한다.
+            //   예전엔 '코드'+'고쳐' 처럼 좁은 말만 수리로 봐서 "기능 고쳐" 가 잡담으로 흘러가,
+            //   AI 가 "도움이 필요하면 말씀해 주세요" 로만 답했다(사용자: "ai 가 너무 멍청합니다").
+            static const QRegularExpression reTrouble(
+                R"(고쳐|고치|수리|안\s*돼|안\s*됨|안\s*되|안되|오류|에러|문제|먹통|멈춰|멈췄|실패|이상해|이상하|왜\s*안|\bfix\b|repair|broken|\berror\b)",
+                QRegularExpression::CaseInsensitiveOption);
+            static const QRegularExpression reDoIt(R"(고쳐|고치|수리|해\s*줘|해\s*주|아직|여전히|또\s*안|\bfix\b|repair)", QRegularExpression::CaseInsensitiveOption);
+            if (!wantsRepair && reTrouble.match(lastUser).hasMatch()) {
+                // 말한 판이 있으면 그 판만 본다
+                const QString only = inferPlatformKey(lastUser);
+                const qint64 window = 6LL * 3600 * 1000;            // 최근 여섯 시간
+                const QList<Finding> fs = diagnoseProblems(window, only);
+                const bool doIt = reDoIt.match(lastUser).hasMatch();
+                QStringList msg;
+                QSet<QString> actions;
+                if (fs.isEmpty()) {
+                    msg << (only.isEmpty()
+                        ? QStringLiteral("최근 여섯 시간 기록에는 실패가 없습니다.")
+                        : QStringLiteral("최근 여섯 시간 %1 기록에는 실패가 없습니다.").arg(platformDisplayName(only)));
+                    msg << QStringLiteral("어느 화면에서 무엇이 안 되는지 한 줄로 알려 주시면(예: \"인스타 수집이 0개로 끝남\") "
+                                          "그 화면 기록을 보고 짚어 드리겠습니다.");
+                } else {
+                    msg << QStringLiteral("최근 기록에서 이런 문제가 보입니다:");
+                    for (const Finding &f : fs.mid(0, 6)) {
+                        msg << QStringLiteral("• %1 — %2 (%3회, 마지막 %4)")
+                                   .arg(platformDisplayName(f.platform), f.cause)
+                                   .arg(f.count).arg(QDateTime::fromMSecsSinceEpoch(f.last).toString("HH:mm"));
+                        msg << QStringLiteral("   └ \"%1\"").arg(f.sample.left(110));
+                        msg << QStringLiteral("   → %1").arg(f.advice);
+                        if (!f.action.isEmpty()) actions.insert(f.action);
+                    }
+                    if (!actions.isEmpty()) {
+                        auto label = [](const QString &a) {
+                            return a == QLatin1String("refreshAllTokens") ? QStringLiteral("토큰 다시 뽑기")
+                                 : a == QLatin1String("updateModules")    ? QStringLiteral("모듈·yt-dlp 업데이트")
+                                                                          : a;
+                        };
+                        if (doIt) {
+                            msg << QString();
+                            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+                            for (const QString &a : actions) {
+                                // 방금(30분 안) 한 수리인데 그 뒤에도 같은 문제가 또 났다 → 되풀이하지 않고 다음 단계로
+                                const qint64 ran = [&] { QMutexLocker l(&m_recentMutex); return m_repairRanAt.value(a, 0); }();
+                                bool recurred = false;
+                                for (const Finding &f : fs) if (f.action == a && f.last > ran) recurred = true;
+                                const bool escalate = ran > 0 && now - ran < 30LL * 60 * 1000 && recurred;
+                                if (escalate && a == QLatin1String("refreshAllTokens")) {
+                                    QStringList sites;
+                                    for (const Finding &f : fs) if (f.action == a) sites << platformDisplayName(f.platform);
+                                    msg << QStringLiteral("✋ 토큰을 방금 다시 뽑았는데도 같습니다 — 이건 제가 할 수 없는 일입니다.");
+                                    msg << QStringLiteral("   Chrome 에서 %1 에 로그아웃했다가 다시 로그인해 주십시오. "
+                                                          "로그인만 되어 있으면 앱이 알아서 가져옵니다. 그 뒤 \"고쳐\" 라고 하시면 다시 뽑겠습니다.")
+                                               .arg(sites.join(QStringLiteral(" · ")));
+                                    { QMutexLocker l(&m_recentMutex); m_repairRanAt.remove(a); }   // 사용자가 로그인한 뒤엔 다시 뽑을 수 있게
+                                    continue;
+                                }
+                                QString doAct = a;
+                                if (escalate && a == QLatin1String("updateModules")) doAct = QStringLiteral("repairPython");
+                                msg << (doAct == QLatin1String("repairPython")
+                                    ? QStringLiteral("▶ 환경 복구 — 모듈 업데이트로 안 돼서 한 단계 더 합니다. 결과는 아래 로그에 나옵니다.")
+                                    : QStringLiteral("▶ %1 — 시작했습니다. 결과는 아래 로그에 나옵니다.").arg(label(a)));
+                                { QMutexLocker l(&m_recentMutex); m_repairRanAt.insert(a, now); }
+                                QMetaObject::invokeMethod(this, [this, doAct]() {
+                                    if (doAct == QLatin1String("refreshAllTokens")) refreshAllTokens();
+                                    else if (doAct == QLatin1String("updateModules")) updateModules();
+                                    else if (doAct == QLatin1String("repairPython")) repairPython();
+                                }, Qt::QueuedConnection);
+                            }
+                            msg << QStringLiteral("끝나면 수집을 한 번 다시 돌려 보십시오. 그래도 같으면 \"아직 안 돼\" 라고 하시면 다음 수를 보겠습니다.");
+                        } else {
+                            QStringList ls; for (const QString &a : actions) ls << label(a);
+                            msg << QString() << QStringLiteral("\"고쳐\" 라고 하시면 바로 하겠습니다: %1").arg(ls.join(QStringLiteral(" · ")));
+                        }
+                    }
+                }
+                const QString reply = msg.join('\n');
+                QMetaObject::invokeMethod(this, [this, reply]() {
+                    runJs(QString("onLlmReply(%1)").arg(QString::fromUtf8(
+                        QJsonDocument(QJsonArray{reply}).toJson(QJsonDocument::Compact))));
+                }, Qt::QueuedConnection);
+                return;
+            }
             if (wantsRepair) {
                 QMetaObject::invokeMethod(this, [this]() { autoRepair(); }, Qt::QueuedConnection);
                 const QString ack = QStringLiteral(
@@ -14854,8 +15232,12 @@ void HanishikiBackend::llmChat(const QString &historyJson)
             "너는 마침 " + QStringLiteral(APP_NAME_DISPLAY) + "(소셜 미디어 아카이빙) 앱 안에 들어와 있어서 그 앱 문제도 도울 수 있어 — 수집이 "
             "안 되면 원인을 짚고 설정→환경 복구·모듈 업데이트·토큰 추출·yt-dlp 갱신·자가진단 같은 기능을 권해줘. "
             "하지만 앱 얘기만 하는 게 아니라, 사용자가 뭘 물어보든 편하게 응해. 답은 필요한 만큼만, 모르면 솔직히 "
-            "모른다고 해.\n\n(참고 — 물어보면 알려줄 앱 상태, 먼저 나열하진 마):\n%1\n%2")
-            .arg(report.isEmpty() ? QStringLiteral("(보고서 없음)") : report, appStateBrief());
+            "모른다고 해. 사용자가 짧게 시키면(예: '고쳐') 되묻기보다 아는 것으로 먼저 답해.\n\n"
+            "[최근 문제 — 사용자가 고장·오류·안 됨을 말하면 반드시 이것을 근거로 구체적으로 답해. "
+            "'무엇을 도와드릴까요' 처럼 막연히 되묻지 마]\n%3\n\n"
+            "(참고 — 앱 설정. 물어보면 알려줘):\n%1\n%2")
+            .arg(report.isEmpty() ? QStringLiteral("(보고서 없음)") : report, appStateBrief(),
+                 problemsDigest(6LL * 3600 * 1000));
 
         QJsonArray messages;
         messages.append(QJsonObject{{"role", "system"}, {"content", sys}});

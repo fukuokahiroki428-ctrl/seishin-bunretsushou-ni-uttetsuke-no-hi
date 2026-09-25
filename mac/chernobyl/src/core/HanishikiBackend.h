@@ -80,10 +80,23 @@ public slots:
     bool killLlmOnPort();   // 8737 을 문 llama-server 정리(고아 포함)                            // 우리가 띄운 서버 종료
     void getLlmStatus();                            // JS onLlmStatus(json) 로 상태·모델목록 통지
     QString appStateBrief() const;   // 대화에 넘길 앱 설정 요약(진단서엔 없는 것)
+public:   // ↓ 슬롯이 아니다(moc 가 구조체를 슬롯 구역에서 받지 않는다)
+    // ★ 최근 오류·경고를 모아 두고, 알려진 원인에 맞춰 진단한다(수리 도우미의 눈).
+    //   예전엔 AI 가 받는 상태에 '무엇이 실패했는지' 가 하나도 없었다 — "기능 고쳐" 에
+    //   "도움이 필요하면 말씀해 주세요" 로만 답할 수밖에 없었다.
+    struct RecentProblem { qint64 at; QString platform; QString type; QString msg; };
+    struct Finding { QString platform; QString cause; QString advice; QString action; QString sample; int count = 0; qint64 last = 0; };
+    QList<Finding> diagnoseProblems(qint64 withinMs, const QString &onlyPlatform = QString()) const;
+    QString problemsDigest(qint64 withinMs) const;
+public slots:
     void llmChat(const QString &historyJson);       // 로컬 AI 와 대화(수리 도우미) — JS onLlmReply(text)
     void openLlmTerminal();                          // ハニワ를 Terminal.app 대화형 REPL 로 띄움
     void winStartMove();                             // 상단 띠 드래그 → 창 이동(네이티브 스냅 유지)
     void setDragHover(bool on);                      // 마우스가 '끌 수 있는 곳' 위에 있나 — 누르는 순간 창 서버에 맡길지 정한다
+    // 고침 꾸러미(1단계 — 데이터만): 공개 저장소 hotfix-mac 브랜치에서 질의 번호·응답 이름 별명·수리 규칙을 받는다
+    void checkHotfixNow();                           // '지금 확인' — JS onHotfixStatus(json)
+    void setHotfixAuto(bool on);                     // 켤 때와 12시간마다 스스로 확인할지
+    void getHotfixStatus();                          // JS onHotfixStatus(json)
     void setDragRegions(const QString &key, const QString &json); // 끌 자리(사이드바·위쪽 띠)와 그 안 단추 자리 — CSS 픽셀 사각형
     void setUiScaleMode(const QString &mode);        // 설정 '창 크기를 바꿀 때' — "layout" / "both"(기본) / "scale"
     void setWindowChrome(bool dark);                 // 웹 테마 토글 → 네이티브 창 색/외관 동기화(타이틀바 띠 숨김)
@@ -293,6 +306,9 @@ private:
     QJsonObject proxyForAccount(const QJsonObject &account) const;
     MainWindow *m_window;
     Config *m_config;
+    mutable QMutex m_recentMutex;                 // 최근 오류·경고(수리 도우미용)
+    QList<RecentProblem> m_recentProblems;
+    QHash<QString, qint64> m_repairRanAt;          // 수리 도우미가 마지막으로 한 수리(되풀이 대신 다음 단계로)
     HttpClient *m_http;
     // ★ 중지 플래그 — 왜 이렇게 생겼나.
     //   예전에는 QMap<QString,bool> 하나였고, m_runningMutex 로 지킨다고 적혀 있었다.
@@ -421,6 +437,10 @@ public:
     bool m_naikakukaiDiskGoneLogged = false;   // 디스크 빠짐/돌아옴을 한 줄씩만 적으려고
     bool m_autoResumeDone = false;          // autoResumeWatchers 는 앱이 뜬 뒤 한 번만
     void autoResumeWatchers();
+    void loadHotfixFromDisk();                       // 켤 때 — 받아 둔 꾸러미를 곧장 쓴다(인터넷 없어도)
+    void checkHotfix(bool manual);                   // 새 판이 있으면 받아 검사하고 쓴다
+    QJsonObject hotfixState() const;
+    void saveHotfixState(const QJsonObject &st) const;
     std::atomic<bool> m_naikakukaiRunning{false};
     // 内閣会가 띄운 수집의 플랫폼. 중지 버튼이 '그것만' 멈추게 하려고 둔다.
     //   사용자가 직접 시작한 수집까지 멈추면 안 되므로 구별이 필요하다.

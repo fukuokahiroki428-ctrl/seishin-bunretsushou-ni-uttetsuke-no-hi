@@ -2696,7 +2696,7 @@
                         <button type="button" class="sf-chip" data-group="account" onclick="setSettingsGroup('account')">계정 · 연결 <span class="sf-n">2</span></button>
                         <button type="button" class="sf-chip" data-group="backup" onclick="setSettingsGroup('backup')">백업 <span class="sf-n">4</span></button>
                         <button type="button" class="sf-chip" data-group="ai" onclick="setSettingsGroup('ai')">AI · 보관함 <span class="sf-n">2</span></button>
-                        <button type="button" class="sf-chip" data-group="maint" onclick="setSettingsGroup('maint')">유지보수 <span class="sf-n">4</span></button>
+                        <button type="button" class="sf-chip" data-group="maint" onclick="setSettingsGroup('maint')">유지보수 <span class="sf-n">5</span></button>
                         <button type="button" class="sf-chip" data-group="look" onclick="setSettingsGroup('look')">화면 · 정보 <span class="sf-n">4</span></button>
                     </div>
                     <div class="settings-board" id="settings-board">
@@ -3131,6 +3131,19 @@
                         <div class="sg" data-group="maint">
                             <div class="sg-title">유지보수</div>
                             <div class="sg-body">
+                            <!-- ★ 고침 꾸러미(1단계 — 데이터만). 사용자(2026-09-25): "깃헙 브랜치에 올려 두고 업데이트로 받아서 고치게" -->
+                            <div class="section" data-group="maint">
+                                <div class="section-label">고침 꾸러미 — 재설치 없이 고치기</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                                    바깥 서비스가 이름·번호를 바꾸면 새 판을 기다리지 않고, 공개 저장소에 올라온 고친 값을 받아 씁니다.
+                                    받는 것은 <b>데이터</b>(질의 번호 · 응답 이름 별명 · 수리 규칙)뿐이고 실행되는 코드는 없습니다.
+                                    모양이 맞지 않는 값은 받지 않습니다.
+                                </p>
+                                <label class="option-item" style="margin-bottom:8px;"><input type="checkbox" id="hotfix-auto" checked onchange="setHotfixAuto(this.checked)"> 자동으로 받기 (켤 때와 12시간마다)</label>
+                                <div id="hotfix-status" style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">확인 전</div>
+                                <button class="btn btn-secondary btn-sm" onclick="checkHotfixNow()">지금 확인</button>
+                            </div>
+
                             <div class="section" data-group="maint">
                                 <div class="section-label">모듈 / 라이브러리 업데이트</div>
                                 <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
@@ -6629,6 +6642,33 @@
             }
             if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
             else init();
+        })();
+
+
+        // ── 고침 꾸러미 ─────────────────────────────────────────────────────
+        function checkHotfixNow() {
+            var el = document.getElementById('hotfix-status'); if (el) el.textContent = '확인 중…';
+            if (window.backend && backend.checkHotfixNow) backend.checkHotfixNow();
+        }
+        function setHotfixAuto(on) { if (window.backend && backend.setHotfixAuto) backend.setHotfixAuto(!!on); }
+        function onHotfixStatus(a) {
+            var st = Array.isArray(a) ? a[0] : a; if (typeof st === 'string') { try { st = JSON.parse(st); } catch (e) { st = {}; } }
+            st = st || {};
+            var cb = document.getElementById('hotfix-auto'); if (cb) cb.checked = st.auto !== false;
+            var el = document.getElementById('hotfix-status'); if (!el) return;
+            var parts = [];
+            if (st.version) {
+                var c = st.counts || {};
+                parts.push('v' + st.version + ' 쓰는 중 — 값 ' + (c.overrides || 0) + ' · 별명 ' + (c.aliases || 0) + ' · 수리 규칙 ' + (c.rules || 0)
+                           + (st.appliedAt ? ' (' + st.appliedAt + ' 받음)' : ''));
+                if (st.notes) parts.push(st.notes);
+            } else parts.push('아직 받은 꾸러미가 없습니다');
+            if (st.lastCheck) parts.push('마지막 확인 ' + st.lastCheck + (st.lastResult ? ' — ' + st.lastResult : ''));
+            el.textContent = parts.join(' · ');
+        }
+        (function () {
+            function init() { if (window.backend && backend.getHotfixStatus) backend.getHotfixStatus(); else setTimeout(init, 800); }
+            setTimeout(init, 1500);
         })();
 
         // ── AI 방식 — 로컬(번들 엔진) / 온라인(OpenAI 호환 API) ──────────────

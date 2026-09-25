@@ -1,0 +1,20 @@
+[
+  {
+    "pattern": "Just a moment|cf_clearance|challenge-platform|Cloudflare",
+    "cause": "사이트가 봇 검사(Cloudflare)를 걸었음",
+    "advice": "Chrome 으로 그 사이트를 한 번 열어 사람 확인을 통과하십시오. 그 뒤 토큰을 다시 뽑습니다.",
+    "action": "refreshAllTokens"
+  },
+  {
+    "pattern": "No space left on device|디스크가 가득|남은 공간이 없",
+    "cause": "저장 디스크가 가득 참",
+    "advice": "디스크를 비우거나 설정 → 저장 · 다운로드 → 보조 저장 경로를 정하십시오.",
+    "action": ""
+  },
+  {
+    "pattern": "Operation not permitted|Permission denied|접근 권한이 없",
+    "cause": "macOS 가 폴더 접근을 막음",
+    "advice": "시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근에서 이 앱을 켜십시오.",
+    "action": ""
+  }
+]

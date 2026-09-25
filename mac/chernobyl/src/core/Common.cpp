@@ -1,4 +1,6 @@
 #include "Common.h"
+#include <atomic>
+#include <QReadWriteLock>
 #ifndef Q_OS_WIN
 #include <csignal>
 #include <sys/types.h>
@@ -581,9 +583,135 @@ static QJsonObject loadApiOverrides()
 
 QString apiOverride(const QString &key, const QString &builtinDefault)
 {
+    // 순서: 이 맥에서 손으로(또는 스스로 되살리며) 넣은 값 > 고침 꾸러미 > 코드에 박힌 기본값
     const QJsonObject o = loadApiOverrides();
     const QString v = o.value(key).toString();
-    return v.isEmpty() ? builtinDefault : v;
+    if (!v.isEmpty()) return v;
+    const QString r = remoteOverride(key);
+    return r.isEmpty() ? builtinDefault : r;
+}
+
+// ── 고침 꾸러미 ────────────────────────────────────────────────────────────
+namespace {
+QReadWriteLock g_hotfixLock;
+QHash<QString, QString> g_remoteOverrides;
+QHash<QString, QStringList> g_shapeAliases;
+QList<HotfixRule> g_remoteRules;
+std::atomic<bool> g_hasAliases{false};
+
+// 열쇠마다 받아도 되는 값의 모양. 여기 없는 열쇠는 받지 않는다.
+bool overrideValueOk(const QString &key, const QString &v, QString *why)
+{
+    static const QRegularExpression twPath(R"(^/i/api/graphql/[A-Za-z0-9_-]{10,40}/[A-Za-z]{3,40}$)");
+    static const QRegularExpression bearer(R"(^[A-Za-z0-9%_=-]{40,300}$)");
+    static const QRegularExpression docId(R"(^\d{8,25}$)");
+    static const QRegularExpression providers(R"(^__relay_internal__pv__[A-Za-z0-9_]+relayprovider(,__relay_internal__pv__[A-Za-z0-9_]+relayprovider){0,30}$)");
+    if (key == QLatin1String("twitter.bearer")) {
+        if (bearer.match(v).hasMatch()) return true;
+        *why = QStringLiteral("bearer 모양이 아님"); return false;
+    }
+    if (key.startsWith(QLatin1String("twitter."))) {
+        // 경로만 받는다 — 주소를 통째로 받으면 요청(과 쿠키)을 딴 곳으로 돌릴 수 있다
+        if (twPath.match(v).hasMatch()) return true;
+        *why = QStringLiteral("x.com GraphQL 경로 모양이 아님"); return false;
+    }
+    if (key.startsWith(QLatin1String("instagram.")) && key.endsWith(QLatin1String("DocId"))) {
+        if (docId.match(v).hasMatch()) return true;
+        *why = QStringLiteral("doc_id 는 숫자여야 함"); return false;
+    }
+    if (key.startsWith(QLatin1String("instagram.")) && key.endsWith(QLatin1String("Providers"))) {
+        if (providers.match(v).hasMatch()) return true;
+        *why = QStringLiteral("provider 이름 목록 모양이 아님"); return false;
+    }
+    *why = QStringLiteral("모르는 열쇠");
+    return false;
+}
+
+// 수리 규칙의 글 — 링크·연락처·비밀을 달라는 글이 끼면 받지 않는다(낚시 막기)
+bool ruleTextOk(const QString &s)
+{
+    static const QRegularExpression bad(R"(://|www\.|https?|@|토큰\s*값|비밀번호|password|cookie\s*값|붙여넣)",
+                                        QRegularExpression::CaseInsensitiveOption);
+    return !s.isEmpty() && s.size() <= 220 && !bad.match(s).hasMatch();
+}
+} // namespace
+
+HotfixApplyResult applyHotfix(const QJsonObject &overrides, const QJsonObject &aliases,
+                              const QJsonArray &rules, bool dryRun)
+{
+    HotfixApplyResult res;
+    QHash<QString, QString> ov;
+    for (auto it = overrides.constBegin(); it != overrides.constEnd(); ++it) {
+        const QString v = it.value().toString();
+        QString why;
+        if (overrideValueOk(it.key(), v, &why)) ov.insert(it.key(), v);
+        else res.rejected << QStringLiteral("값 %1 — %2").arg(it.key(), why);
+    }
+    static const QRegularExpression name(R"(^[A-Za-z0-9_]{1,64}$)");
+    QHash<QString, QStringList> al;
+    for (auto it = aliases.constBegin(); it != aliases.constEnd() && al.size() < 500; ++it) {
+        if (!name.match(it.key()).hasMatch()) { res.rejected << QStringLiteral("별명 열쇠 %1").arg(it.key().left(40)); continue; }
+        QStringList vs;
+        for (const auto &v : it.value().toArray()) {
+            const QString s = v.toString();
+            if (name.match(s).hasMatch() && !vs.contains(s) && vs.size() < 40) vs << s;
+            else res.rejected << QStringLiteral("별명 %1→%2").arg(it.key(), s.left(40));
+        }
+        if (!vs.isEmpty()) al.insert(it.key(), vs);
+    }
+    // 무늬는 글자 그대로의 대안(가|나|다)만 — 겹친 반복 같은 복잡한 정규식은 앱을 멈추게 할 수 있다
+    static const QRegularExpression literalAlts(R"(^[^()*+?{}\[\]\\|]{2,80}(\|[^()*+?{}\[\]\\|]{2,80}){0,20}$)");
+    static const QStringList okActions = {QString(), QStringLiteral("refreshAllTokens"),
+                                          QStringLiteral("updateModules"), QStringLiteral("repairPython")};
+    QList<HotfixRule> rl;
+    for (const auto &v : rules) {
+        const QJsonObject o = v.toObject();
+        const QString pat = o.value("pattern").toString();
+        const QString cause = o.value("cause").toString(), advice = o.value("advice").toString();
+        const QString action = o.value("action").toString();
+        if (!literalAlts.match(pat).hasMatch()) { res.rejected << QStringLiteral("규칙 무늬 %1").arg(pat.left(40)); continue; }
+        if (!okActions.contains(action)) { res.rejected << QStringLiteral("규칙 할 일 %1").arg(action.left(40)); continue; }
+        if (!ruleTextOk(cause) || !ruleTextOk(advice)) { res.rejected << QStringLiteral("규칙 글 %1").arg(cause.left(40)); continue; }
+        QRegularExpression re(pat, QRegularExpression::CaseInsensitiveOption);
+        if (!re.isValid()) { res.rejected << QStringLiteral("규칙 무늬 %1").arg(pat.left(40)); continue; }
+        rl.append({re, cause, advice, action});
+        if (rl.size() >= 200) break;
+    }
+    res.overrides = ov.size(); res.aliases = al.size(); res.rules = rl.size();
+    if (!dryRun) {
+        QWriteLocker lk(&g_hotfixLock);
+        g_remoteOverrides = ov; g_shapeAliases = al; g_remoteRules = rl;
+        g_hasAliases.store(!al.isEmpty());
+    }
+    return res;
+}
+
+QString remoteOverride(const QString &key)
+{
+    QReadLocker lk(&g_hotfixLock);
+    return g_remoteOverrides.value(key);
+}
+
+QStringList shapeAliasesFor(const QStringList &keys)
+{
+    if (!g_hasAliases.load(std::memory_order_relaxed)) return keys;   // 대개 여기서 끝난다(빠른 길)
+    QStringList out = keys;
+    QReadLocker lk(&g_hotfixLock);
+    for (const QString &k : keys)
+        for (const QString &a : g_shapeAliases.value(k))
+            if (!out.contains(a)) out << a;
+    return out;
+}
+
+QList<HotfixRule> remoteRepairRules()
+{
+    QReadLocker lk(&g_hotfixLock);
+    return g_remoteRules;
+}
+
+QString hotfixDir()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/hotfix";
 }
 
 // ── 프록시(VPN) ────────────────────────────────────────────────────────────
