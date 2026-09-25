@@ -4309,6 +4309,7 @@
                 checkNewBtn.disabled = !running;
                 checkNewBtn.style.opacity = running ? '1' : '0.5';
             }
+            if (window.fxRunState) fxRunState(platform, running);   // 좁은 창이면 실행 화면으로(자동 배치)
         }
 
         // ── 수집 종료 통지 (백엔드 CollectionGuard 소멸자) — 시작/정지 버튼 동기화 보장 ──
@@ -6432,7 +6433,7 @@
                     if (ev.clientX > r.right - 16) return false;
                 }
                 if (t.closest('.sidebar-header, .toolbar, .sidebar')) return true;
-                return t.matches('.scroll-area, .tab-content, .main, .app, .settings-board, .sg, .settings-filter, .fx-board');
+                return t.matches('.scroll-area, .tab-content, .main, .app, .settings-board, .sg, .settings-filter, .fx-board, .fx-bar');   // 위 띠도 제목 띠처럼 끌린다
             }
             function dragStart(ev) {
                 if (ev.button !== 0) return;
@@ -6677,26 +6678,10 @@
                     f.style.gridRowEnd = 'span ' + Math.max(1, Math.ceil((h + GAP) / UNIT));
                 });
             }
-            function all() { placeRuns(); document.querySelectorAll('.settings-board, .fx-board').forEach(layout); }
+            function all() { document.querySelectorAll('.settings-board, .fx-board').forEach(layout); }
             window.layoutFrames = all;
-            // ★ 좁은 창(기능 창 900px 등)에선 실행 액자(시작·중지·로그)가 판 아래로 내려가
-            //   스크롤해야 「시작」 이 보였고, 옆 열 밑은 텅 비었다. 좁을 땐 실행 액자도 벽돌에 넣어
-            //   가장 짧은 열 밑 — 대개 첫 화면 — 에 오게 한다. 넓어지면 오른쪽 기둥으로 되돌린다.
-            var narrowMq = window.matchMedia('(max-width: 1099px)');
+            // (예전 placeRuns — 좁은 창에서 실행 액자를 벽돌에 넣던 것 — 은 fxAdapt 의 세 단계 배치가 대신한다)
             var ro = null;
-            function watch(el) { if (ro && el) ro.observe(el); }
-            function placeRuns() {
-                document.querySelectorAll('.tab-content.fx').forEach(function (t) {
-                    var run = t.querySelector('.fx-run'), board = t.querySelector('.fx-board');
-                    if (!run || !board) return;
-                    if (narrowMq.matches && run.parentElement !== board) {
-                        board.appendChild(run); watch(run);
-                    } else if (!narrowMq.matches && run.parentElement === board) {
-                        run.style.gridRowEnd = '';
-                        t.appendChild(run);
-                    }
-                });
-            }
             function init() {
                 if (window.ResizeObserver) {
                     ro = new ResizeObserver(function (ents) {
@@ -6715,9 +6700,194 @@
                 } else {
                     window.addEventListener('resize', all);
                 }
-                if (narrowMq.addEventListener) narrowMq.addEventListener('change', function () { requestAnimationFrame(all); });
                 all();
                 setTimeout(all, 600);          // 글꼴이 늦게 붙어 키가 바뀌는 경우
+            }
+            if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+            else init();
+        })();
+
+        // ── 기능 화면 자동 배치 — 폭에 따라 세 단계, 수집을 시작하면 저절로 실행 쪽으로 ──────
+        //   사용자 2026-09-25: "다른 앱들 하는것좀 보고 와라 자동으로 창 바꿔주고 하는것들 많은데".
+        //   Slack·텔레그램은 좁으면 목록/본문을 하나씩, VS Code 는 넓으면 옆 기둥·좁으면 아래 패널,
+        //   다운로드 관리자는 시작하면 진행 화면으로 넘어간다. 그 셋을 옮겼다(CSS 는 #fx-layout).
+        //   폭은 창이 아니라 스크롤 영역의 실제 폭이다 — 배율·사이드바·기능 창과 상관없이 맞다.
+        //   스크롤 막대가 생겼다 없어져도 흔들리지 않게 막대를 뺀 폭은 쓰지 않는다.
+        (function () {
+            var WIDE = 860, NARROW = 560, COL = 300, GAP = 14;
+            var K_DOCK = 'hanishiki.fxDockRatio', K_DOCK_MIN = 'hanishiki.fxDockMin';
+            function ls(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) {} return null; }
+            // 패널 높이는 화면 높이에 대한 비율로 기억한다 — 창 높이를 바꿔도 같은 몫을 차지한다
+            var dockRatio = parseFloat(ls(K_DOCK)) || 0.38;
+            var dockMin = ls(K_DOCK_MIN) === '1';
+            var viewH = 480, areaH = 700;
+            var scrollMemo = {};
+
+            function sa() { return document.querySelector('.scroll-area'); }
+            // how: 없음 = 화면 크기에 맞출 뿐(기억한 비율은 그대로) · 'drag' = 끄는 중 · 'save' = 손을 뗌
+            function setDock(px, how) {
+                var h = Math.round(Math.max(140, Math.min(areaH * 0.75, px)));
+                if (how) dockRatio = h / areaH;
+                document.querySelectorAll('.tab-content.fx').forEach(function (t) { t.style.setProperty('--fx-dock-h', h + 'px'); });
+                if (how === 'save') ls(K_DOCK, dockRatio.toFixed(3));
+            }
+            function setDockMin(on) {
+                dockMin = !!on; ls(K_DOCK_MIN, dockMin ? '1' : '0');
+                document.querySelectorAll('.tab-content.fx').forEach(function (t) { t.classList.toggle('fx-dock-min', dockMin); });
+                if (!dockMin) seen(document.querySelector('.tab-content.fx.active'));
+            }
+            function seen(t) { if (t) t.classList.remove('fx-done'); }
+            function setView(t, v) {
+                if (!t || t.dataset.fxview === v) return;
+                var s = sa();
+                if (s && t.classList.contains('active')) scrollMemo[t.id + ':' + t.dataset.fxview] = s.scrollTop;
+                t.dataset.fxview = v;
+                if (v === 'run') seen(t);
+                if (s && t.classList.contains('active')) s.scrollTop = scrollMemo[t.id + ':' + v] || 0;
+                if (v === 'set' && window.layoutFrames) requestAnimationFrame(window.layoutFrames);
+            }
+            window.fxSetView = setView;
+
+            function lastLine(log) {
+                var l = log && log.lastElementChild;
+                return l ? l.innerHTML : '';
+            }
+            function build(t) {
+                if (t.querySelector(':scope > .fx-bar')) return;
+                var run = t.querySelector(':scope > .fx-run');
+                if (!run) return;
+                var bar = document.createElement('div');
+                bar.className = 'fx-bar';
+                bar.innerHTML = '<div class="fx-seg"><button type="button" data-v="set">설정</button>'
+                              + '<button type="button" data-v="run">실행<i class="fx-badge"></i></button></div>'
+                              + '<div class="fx-status"></div><div class="fx-bar-btns"></div>';
+                bar.querySelector('.fx-seg').addEventListener('click', function (e) {
+                    var b = e.target.closest('button'); if (b) setView(t, b.getAttribute('data-v'));
+                });
+                t.insertBefore(bar, t.firstChild);
+                // 아래 패널의 손잡이 — 끌면 높이, 두 번 누르면 접기/펴기
+                var grip = document.createElement('div');
+                grip.className = 'fx-grip';
+                grip.title = '끌어서 높이 조절 · 두 번 눌러 접기/펴기';
+                run.insertBefore(grip, run.firstChild);
+                grip.addEventListener('pointerdown', function (e) {
+                    if (t.dataset.fxmode !== 'mid' || e.button !== 0) return;
+                    e.preventDefault();
+                    if (dockMin) setDockMin(false);
+                    var y0 = e.clientY, h0 = run.getBoundingClientRect().height;
+                    grip.setPointerCapture(e.pointerId);
+                    function mv(ev) { setDock(h0 + (y0 - ev.clientY), 'drag'); }
+                    function up() {
+                        grip.removeEventListener('pointermove', mv); grip.removeEventListener('pointerup', up);
+                        grip.removeEventListener('pointercancel', up);
+                        setDock(dockRatio * areaH, 'save');
+                    }
+                    grip.addEventListener('pointermove', mv); grip.addEventListener('pointerup', up);
+                    grip.addEventListener('pointercancel', up);
+                });
+                grip.addEventListener('dblclick', function () { setDockMin(!dockMin); });
+                // 로그 이름표를 누르면 접기/펴기(보통)
+                var lbl = run.querySelector(':scope > .fx-log > .section-label');
+                if (lbl) lbl.addEventListener('click', function () { if (t.dataset.fxmode === 'mid') setDockMin(!dockMin); });
+                // 위 띠에 로그 마지막 한 줄 — 어디까지 스크롤했든, 패널을 접었든 진행이 보인다
+                var log = run.querySelector('.log-box');
+                var st = bar.querySelector('.fx-status');
+                var sync = function () { st.innerHTML = lastLine(log); };
+                if (log) new MutationObserver(sync).observe(log, { childList: true });
+                sync();
+                if (!t.dataset.fxview) t.dataset.fxview = 'set';
+                t.classList.toggle('fx-dock-min', dockMin);
+            }
+            // 단추 줄은 넓을 땐 실행 기둥 맨 위, 그 밖엔 위 띠로 — 옮겨도 단추(id·onclick)는 그대로다
+            function placeButtons(t, m) {
+                var run = t.querySelector(':scope > .fx-run'), slot = t.querySelector(':scope > .fx-bar .fx-bar-btns');
+                if (!run || !slot) return;
+                var row = run.querySelector(':scope > .btn-row') || slot.querySelector(':scope > .btn-row');
+                if (!row) return;
+                if (m === 'wide') {
+                    if (row.parentElement !== run) run.insertBefore(row, run.querySelector(':scope > .fx-grip').nextSibling);
+                } else if (row.parentElement !== slot) {
+                    slot.appendChild(row);
+                }
+            }
+            var curMode = '';
+            function adapt() {
+                var s = sa();
+                if (!s) return;
+                var cs = getComputedStyle(s);
+                var padL = parseFloat(cs.paddingLeft) || 0, padR = parseFloat(cs.paddingRight) || 0;
+                var W = s.getBoundingClientRect().width - padL - padR;
+                if (W <= 0) return;                       // 숨어 있다(탭 전환 중 등)
+                var H = s.clientHeight - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+                var m = W >= WIDE ? 'wide' : W >= NARROW ? 'mid' : 'narrow';
+                var runW = Math.round(Math.min(400, Math.max(300, W * 0.3)));
+                var boardW = m === 'wide' ? W - runW - GAP : W;
+                var cols = m === 'narrow' ? 1 : Math.max(1, Math.min(3, Math.floor((boardW + GAP) / (COL + GAP))));
+                areaH = Math.max(200, H);
+                document.querySelectorAll('.tab-content.fx').forEach(function (t) {
+                    build(t);
+                    t.dataset.fxmode = m;
+                    t.style.setProperty('--fx-pad', padL + 'px');
+                    t.style.setProperty('--fx-run-w', runW + 'px');
+                    t.style.setProperty('--fx-cols', String(cols));
+                    var b = t.querySelector(':scope > .fx-board');
+                    if (b && b.dataset.cols !== String(cols)) b.dataset.cols = String(cols);
+                    placeButtons(t, m);
+                });
+                setDock(dockRatio * areaH);
+                // 좁음의 실행 화면 — 위 띠를 뺀 나머지를 로그가 다 쓴다
+                var at = document.querySelector('.tab-content.fx.active');
+                var bar = at && at.querySelector(':scope > .fx-bar');
+                viewH = Math.max(260, Math.round(H - (bar && bar.offsetHeight ? bar.offsetHeight - (parseFloat(cs.paddingTop) || 0) + 14 : 0)));
+                document.querySelectorAll('.tab-content.fx').forEach(function (t) { t.style.setProperty('--fx-view-h', viewH + 'px'); });
+                if (m !== curMode) {
+                    curMode = m;
+                    document.body.setAttribute('data-fxmode', m);
+                    if (window.fitFxBoard) window.fitFxBoard();
+                    if (window.layoutFrames) requestAnimationFrame(window.layoutFrames);
+                }
+            }
+            window.fxAdapt = adapt;
+
+            // 수집이 시작·끝날 때(setRunning) — 보고 있지 않은 쪽이면 저절로 넘기거나 표시를 붙인다
+            window.fxRunState = function (platform, running) {
+                var btn = document.getElementById(platform + '-start-btn');
+                var t = (btn && btn.closest('.tab-content.fx')) || document.getElementById('tab-' + platform);
+                if (!t || !t.classList.contains('fx')) return;
+                var was = t.classList.contains('fx-running');
+                t.classList.toggle('fx-running', !!running);
+                var m = t.dataset.fxmode;
+                if (running) {
+                    t.classList.remove('fx-done');
+                    if (m === 'narrow') setView(t, 'run');
+                    else if (m === 'mid' && dockMin) setDockMin(false);
+                } else if (was) {
+                    var watching = m === 'wide' || (m === 'narrow' && t.dataset.fxview === 'run') || (m === 'mid' && !dockMin);
+                    if (!watching || !t.classList.contains('active')) t.classList.add('fx-done');
+                }
+            };
+
+            function init() {
+                adapt();
+                var s = sa();
+                if (window.ResizeObserver && s) {
+                    var pending = false;
+                    new ResizeObserver(function () {
+                        if (pending) return; pending = true;
+                        requestAnimationFrame(function () { pending = false; adapt(); });
+                    }).observe(s);
+                } else {
+                    window.addEventListener('resize', adapt);
+                }
+                // 탭을 바꾸면 그 탭의 '완료' 표시는 본 것으로 친다(넓음·보통)
+                document.addEventListener('click', function (e) {
+                    if (!e.target.closest('.nav-item')) return;
+                    setTimeout(function () {
+                        var t = document.querySelector('.tab-content.fx.active');
+                        if (t && t.dataset.fxmode !== 'narrow' && !(t.dataset.fxmode === 'mid' && dockMin)) seen(t);
+                        adapt();
+                    }, 0);
+                }, true);
             }
             if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
             else init();
@@ -8688,32 +8858,117 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
 }
 .tab-content.fx .fx-run > .fx-log > .log-box { flex: 1; min-height: 120px; max-height: none; }
 
-/* ── 넓은 창(≥1100px): [내용 두 열 | 실행 한 열] — 한 화면에 ── */
-@media (min-width: 1100px) {
-    body .tab-content.fx.active {
-        display: grid !important;
-        grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
-        column-gap: 14px; row-gap: 0; align-items: start;
-    }
-    body .tab-content.fx.active > .fx-board { grid-column: 1; grid-row: 1; }
-    body .tab-content.fx.active > .fx-run {
-        grid-column: 2; grid-row: 1; position: sticky; top: 0;
-        height: var(--fx-avail, 760px);
-    }
+/* ── 자동 배치 — 창이 아니라 '탭에 실제로 남은 폭'으로 세 단계를 고른다(화면 JS: fxAdapt) ──
+   사용자 2026-09-25: "다른 앱들 하는것좀 보고 와라 자동으로 창 바꿔주고 하는것들 많은데".
+   예전엔 화면 폭(@media 1100px) 하나로만 갈랐다. 배율(zoomForWidth)·사이드바·기능 창에 따라
+   실제로 남는 폭이 달라 세 열이 억지로 끼거나, 「시작」이 2000px 아래로 밀렸다.
+   · 넓음(≥860)  [내용 1~3열 | 실행 기둥] — 기둥은 늘 보인다(sticky)
+   · 보통(560~)  위 띠에 단추, 실행·로그는 아래 패널 — 위쪽 손잡이를 끌어 높이를 바꾸고, 두 번 눌러 접는다
+   · 좁음(<560)  위 띠에 [설정][실행] — 한 번에 하나. 수집을 시작하면 실행 쪽으로 저절로 넘어간다 */
+.tab-content.fx .fx-board { grid-template-columns: repeat(var(--fx-cols, 2), minmax(0, 1fr)); }
+.tab-content.fx .fx-board[data-cols="1"] { grid-auto-rows: auto; }
+.tab-content.fx .fx-board[data-cols="1"] > * { grid-row-end: auto !important; }
+
+body .tab-content.fx.active[data-fxmode="wide"] {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) var(--fx-run-w, 320px);
+    column-gap: 14px; row-gap: 0; align-items: start;
 }
-/* ── 그보다 좁은 창: 내용 두 열, 실행 액자는 아래로 ── */
-@media (max-width: 1099px) {
-    body .tab-content.fx.active { display: block !important; }
-    .tab-content.fx .fx-run { margin-top: 14px; height: max(340px, calc(var(--fx-avail, 760px) * .6)); }
+body .tab-content.fx.active[data-fxmode="wide"] > .fx-board { grid-column: 1; grid-row: 1; }
+body .tab-content.fx.active[data-fxmode="wide"] > .fx-run {
+    grid-column: 2; grid-row: 1; position: sticky; top: 0;
+    height: var(--fx-avail, 760px);
 }
-/* ── 폰 폭: 한 줄로, 액자는 제 키대로 ── */
-@media (max-width: 639px) {
-    .tab-content.fx .fx-board { grid-template-columns: 1fr; grid-auto-rows: auto; }
-    .tab-content.fx .fx-board > .fx-frame { grid-row-end: auto !important; }
-    .tab-content.fx .fx-body { overflow: visible; }
-    .tab-content.fx .fx-run { height: auto; }
-    .tab-content.fx .fx-run > .fx-log > .log-box { max-height: 320px; min-height: 160px; }
+body .tab-content.fx.active[data-fxmode="mid"],
+body .tab-content.fx.active[data-fxmode="narrow"] { display: block !important; }
+
+/* 위 띠 — 보통·좁음에서만. 단추가 여기로 옮겨 와 어디까지 스크롤해도 보인다(VS Code 의 실행 단추처럼).
+   스크롤 영역의 여백(24px)까지 덮어 맨 위에 붙인다. */
+.tab-content.fx > .fx-bar { display: none; }
+.tab-content.fx[data-fxmode="mid"] > .fx-bar,
+.tab-content.fx[data-fxmode="narrow"] > .fx-bar {
+    display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap;
+    position: sticky; top: calc(-1 * var(--fx-pad, 24px)); z-index: 7;
+    margin: calc(-1 * var(--fx-pad, 24px)) calc(-1 * var(--fx-pad, 24px)) 14px;
+    padding: 9px var(--fx-pad, 24px);
+    background: color-mix(in srgb, var(--bg) 90%, transparent);
+    -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--border-light);
 }
+.fx-bar .fx-seg { display: none; }
+.tab-content.fx[data-fxmode="narrow"] .fx-bar .fx-seg { display: inline-flex; }
+.fx-seg { flex: none; gap: 2px; padding: 2px; border-radius: 9px; background: var(--bg-secondary); border: 1px solid var(--border-light); }
+.fx-seg button {
+    position: relative; border: 0; background: transparent; cursor: pointer;
+    font: inherit; font-size: 12.5px; font-weight: 600; color: var(--text-secondary);
+    padding: 5px 16px; border-radius: 7px;
+}
+.tab-content.fx[data-fxview="set"] .fx-seg [data-v="set"],
+.tab-content.fx[data-fxview="run"] .fx-seg [data-v="run"] { background: var(--card); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.14); }
+.fx-badge { display: none; position: absolute; top: 3px; right: 5px; width: 7px; height: 7px; border-radius: 50%; }
+.tab-content.fx.fx-running .fx-badge { display: block; background: var(--accent); animation: fxPulse 1.2s ease-in-out infinite; }
+.tab-content.fx.fx-done .fx-badge { display: block; background: var(--success); animation: none; }
+@keyframes fxPulse { 50% { opacity: .25; } }
+.fx-status {
+    flex: 1 1 0; min-width: 0; font-size: 12px; color: var(--text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 좁을 땐 마지막 한 줄을 띠 아래 줄에 따로 — 단추와 다투지 않게. 아직 기록이 없으면 비운다 */
+.tab-content.fx[data-fxmode="narrow"] .fx-status { order: 3; flex-basis: 100%; }
+.tab-content.fx[data-fxmode="narrow"] .fx-status:empty { display: none; }
+.fx-status .log-time { display: none; }
+.fx-bar-btns { flex: none; margin-left: auto; }
+.fx-bar-btns > .btn-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 !important; padding: 0 !important; border: 0 !important; }
+.fx-bar-btns > .btn-row > .btn { flex: none; min-width: 0; height: 32px; padding: 0 14px; font-size: 12.5px; }
+
+/* 아래 패널(보통) — 위쪽 손잡이로 높이, 「로그」 이름표나 손잡이 두 번 누르기로 접기/펴기.
+   마지막 한 줄은 위 띠가 늘 보여 주므로 패널 머리엔 되풀이하지 않는다 */
+.fx-grip { display: none; }
+.tab-content.fx[data-fxmode="mid"] > .fx-run {
+    position: sticky; bottom: calc(-1 * var(--fx-pad, 24px)); z-index: 6;
+    margin-top: 14px; height: var(--fx-dock-h, 300px);
+    box-shadow: 0 -10px 28px rgba(0,0,0,.10), var(--shadow);
+}
+.tab-content.fx[data-fxmode="mid"] > .fx-run > .fx-grip {
+    display: block; flex: none; height: 12px; margin-bottom: -6px; cursor: ns-resize; position: relative; touch-action: none;
+}
+.tab-content.fx[data-fxmode="mid"] > .fx-run > .fx-grip::after {
+    content: ''; position: absolute; left: 50%; top: 5px; width: 38px; height: 4px; margin-left: -19px;
+    border-radius: 2px; background: var(--border);
+}
+.tab-content.fx[data-fxmode="mid"] > .fx-run > .fx-grip:hover::after { background: var(--text-tertiary); }
+.tab-content.fx[data-fxmode="mid"] > .fx-run > .fx-log > .section-label { cursor: pointer; user-select: none; }
+.tab-content.fx[data-fxmode="mid"] > .fx-run > .fx-log > .section-label::after {
+    content: '접기 ▾'; margin-left: auto; font-size: 11px; font-weight: 500; color: var(--text-tertiary);
+}
+.tab-content.fx[data-fxmode="mid"].fx-dock-min > .fx-run { height: auto; }
+.tab-content.fx[data-fxmode="mid"].fx-dock-min > .fx-run > .fx-log { padding-bottom: 10px !important; }
+.tab-content.fx[data-fxmode="mid"].fx-dock-min > .fx-run > .fx-log > .log-box,
+.tab-content.fx[data-fxmode="mid"].fx-dock-min > .fx-run > .data-panel { display: none; }
+.tab-content.fx[data-fxmode="mid"].fx-dock-min > .fx-run > .fx-log > .section-label { margin-bottom: 0 !important; }
+.tab-content.fx[data-fxmode="mid"].fx-dock-min > .fx-run > .fx-log > .section-label::after { content: '펴기 ▴'; }
+
+/* 좁음 — 한 번에 하나 */
+.tab-content.fx[data-fxmode="narrow"][data-fxview="set"] > .fx-run { display: none !important; }
+.tab-content.fx[data-fxmode="narrow"][data-fxview="run"] > .fx-board { display: none !important; }
+.tab-content.fx[data-fxmode="narrow"] > .fx-run { height: var(--fx-view-h, 480px); }
+.tab-content.fx[data-fxmode="narrow"][data-fxview="run"] .fx-status { display: none; }   /* 로그가 바로 아래 있다 */
+
+/* ── 대상 목록 — 한 사람 한 줄(메일 목록처럼). 줄 폭은 목록 폭으로 잰다(@container) ──
+   예전엔 체크·번호·아이디·별명·계정·▸·× 일곱 칸이 290px 에 안 들어가 두 줄(67px)로 접혔다.
+   17명이면 대상 액자만 1380px. 칸을 줄여 한 줄(33px)에 넣는다 — 17명 ≈ 700px. */
+.account-list { container-type: inline-size; }
+@container (min-width: 240px) {
+    .batch-target-item .bti-main { flex-wrap: nowrap; column-gap: 4px; padding: 2px 8px; }
+    .batch-target-item .bti-enable-cb { margin-right: 2px; flex: none; }
+    .batch-target-item .input { height: 28px !important; }
+    .batch-target-item .batch-target-input { flex: 1 1 0; min-width: 72px; padding: 0 6px; }   /* 아이디가 먼저다 — 남는 폭은 여기로 */
+    .batch-target-item .batch-target-nick { flex: 0 1 18%; min-width: 44px; max-width: 140px; padding: 0 6px; }
+    .batch-target-item .select-wrap { flex: 0 1 22%; min-width: 60px; max-width: 160px; }
+    .batch-target-item .select-wrap > select { width: 100%; min-width: 0 !important; max-width: none; padding: 0 18px 0 6px !important; background-position: right 4px center !important; }
+    .batch-target-item .bti-expand, .batch-target-item .batch-target-del { padding: 2px 3px; }
+}
+@container (max-width: 399px) { .batch-target-item .batch-target-num { display: none; } }   /* 번호는 폭이 넉넉할 때만 */
 </style>
 
 
