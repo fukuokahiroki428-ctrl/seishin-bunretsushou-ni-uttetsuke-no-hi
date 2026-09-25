@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""고침 꾸러미 올리기 (1단계 — 데이터만).
+"""고침 꾸러미 올리기 (1단계 데이터 + 2단계 서명한 파이썬 도우미).
 
 mac/chernobyl/hotfix/ 의 원본을
   1) 앱과 같은 규칙으로 모양 검사하고(통과 못 하면 멈춘다)
@@ -9,6 +9,12 @@ mac/chernobyl/hotfix/ 의 원본을
 
   python3 tools/hotfix_publish.py              # 검사 + 커밋
   python3 tools/hotfix_publish.py --out DIR    # 검사 + DIR/hotfix/ 에 쓰기만(시험용, 커밋 없음)
+  python3 tools/hotfix_publish.py --genkey     # 서명 열쇠 만들기(한 번만) — 공개 열쇠를 앱에 넣는다
+
+서명 — manifest.json 을 ECDSA P-256(SHA-256)으로 서명해 manifest.sig 로 둔다. 앱은 컴파일해 둔
+공개 열쇠로 검증하고, 맞지 않으면 꾸러미를 통째로 버린다. 비밀 열쇠는 저장소 밖
+~/.config/hanishiki/hotfix_signing_key.pem 에 이 맥 사용자만 읽게 둔다(깃헙에 올라가면 안 된다).
+열쇠를 잃으면 새 공개 열쇠를 넣은 새 판을 내야 한다 — 백업해 두라.
 
 앱 쪽 검사: src/core/Common.cpp 의 applyHotfix. 두 곳의 규칙은 같아야 한다.
 """
@@ -20,6 +26,9 @@ REPO = subprocess.run(["git", "-C", HERE, "rev-parse", "--show-toplevel"],
                       capture_output=True, text=True).stdout.strip()
 BRANCH = "hotfix-mac"
 FILES = ["api_overrides.json", "shape_aliases.json", "repair_rules.json"]
+KEY = os.path.expanduser("~/.config/hanishiki/hotfix_signing_key.pem")
+BUNDLED_TOOLS = os.path.normpath(os.path.join(HERE, "..", "resources", "tools"))
+TOOL_MAX = 512 * 1024
 
 # ── 앱과 같은 모양 규칙(Common::applyHotfix) ───────────────────────────────
 TW_PATH = re.compile(r"^/i/api/graphql/[A-Za-z0-9_-]{10,40}/[A-Za-z]{3,40}$")
@@ -65,6 +74,28 @@ def validate(data):
     return errs
 
 
+def allowed_tool(name):
+    """번들에 이미 있는 파이썬 도우미만 갈아 끼울 수 있다(새 파일을 들이지 못한다)."""
+    return (re.match(r"^[a-z0-9_]{2,40}\.py$", name) is not None and
+            (os.path.exists(os.path.join(BUNDLED_TOOLS, name)) or
+             os.path.exists(os.path.join(BUNDLED_TOOLS, "archive", name))))
+
+
+def check_tools(tools):
+    errs = []
+    for name, path in tools.items():
+        if not allowed_tool(name):
+            errs.append(f"tools/{name}: 번들에 없는 도우미는 들일 수 없음")
+            continue
+        if os.path.getsize(path) > TOOL_MAX:
+            errs.append(f"tools/{name}: {TOOL_MAX // 1024}KB 넘음")
+        try:
+            compile(open(path, encoding="utf-8").read(), path, "exec")   # 문법만 본다(파일을 쓰지 않는다)
+        except SyntaxError as e:
+            errs.append(f"tools/{name}: 문법 오류 — {e.msg} (줄 {e.lineno})")
+    return errs
+
+
 # ── 개인정보 훑기 ─────────────────────────────────────────────────────────
 #   이 저장소는 공개다. 올라간 것은 누구나 읽고, 지워도 기록에 남는다.
 PRIVATE = [
@@ -91,6 +122,29 @@ def local_identities():
     return {i for i in ids if len(i) >= 3}
 
 
+CODE_PRIVATE = [
+    (re.compile(r"/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+", re.I), "개인 경로"),
+    (re.compile(r"[A-Za-z0-9._%+-]+@(?!example\.)[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "이메일 주소"),
+]
+
+
+def privacy_scan_code(tools):
+    hits = []
+    me = local_identities()
+    me_rx = re.compile("|".join(re.escape(i) for i in me), re.I) if me else None
+    for name, path in tools.items():
+        text = open(path, encoding="utf-8", errors="replace").read()
+        if me_rx and me_rx.search(text):
+            hits.append(f"tools/{name}: 이 맥의 사용자 이름")
+        for rx, what in CODE_PRIVATE:
+            for m in rx.finditer(text):
+                if "noreply" in m.group(0) or m.group(0).startswith("/Users/Shared"):
+                    continue
+                hits.append(f"tools/{name}: {what}")
+                break
+    return hits
+
+
 def privacy_scan(data, notes):
     hits = []
     texts = [("hotfix.json notes", notes)]
@@ -114,21 +168,60 @@ def privacy_scan(data, notes):
     return hits
 
 
+
+def genkey():
+    if os.path.exists(KEY):
+        print(f"= 열쇠가 이미 있습니다: {KEY} — 새로 만들지 않습니다(바꾸면 앱에 든 공개 열쇠도 바꿔야 한다)")
+    else:
+        os.makedirs(os.path.dirname(KEY), mode=0o700, exist_ok=True)
+        old = os.umask(0o077)
+        try:
+            subprocess.run(["/usr/bin/openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", KEY],
+                           check=True, capture_output=True)
+        finally:
+            os.umask(old)
+        os.chmod(KEY, 0o600)
+        print(f"✓ 서명 열쇠를 만들었습니다: {KEY} (이 맥 사용자만 읽음) — 백업해 두십시오")
+    print("공개 열쇠(앱의 HotfixSig.cpp 에 넣는다):", public_key_hex())
+
+
+def public_key_hex():
+    der = subprocess.run(["/usr/bin/openssl", "ec", "-in", KEY, "-pubout", "-outform", "DER"],
+                         check=True, capture_output=True).stdout
+    return der[-65:].hex()          # SPKI 끝 65바이트 = 04||X||Y (X9.63)
+
+
+def sign(path):
+    if not os.path.exists(KEY):
+        print(f"✗ 서명 열쇠가 없습니다: {KEY} — 먼저 --genkey"); sys.exit(1)
+    if os.path.commonpath([os.path.realpath(KEY), os.path.realpath(REPO)]) == os.path.realpath(REPO):
+        print("✗ 서명 열쇠가 저장소 안에 있습니다 — 공개로 새어 나갑니다. 멈춥니다."); sys.exit(1)
+    return subprocess.run(["/usr/bin/openssl", "dgst", "-sha256", "-sign", KEY, path],
+                          check=True, capture_output=True).stdout
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", help="커밋하지 않고 이 폴더/hotfix 에 쓰기만(시험용)")
+    ap.add_argument("--genkey", action="store_true", help="서명 열쇠 만들기(한 번만)")
     a = ap.parse_args()
+    if a.genkey:
+        genkey(); return
 
     meta = json.load(open(os.path.join(SRC, "hotfix.json"), encoding="utf-8"))
     data = {n: json.load(open(os.path.join(SRC, n), encoding="utf-8")) for n in FILES}
 
-    errs = validate(data)
+    tdir = os.path.join(SRC, "tools")
+    tools = {n: os.path.join(tdir, n) for n in sorted(os.listdir(tdir))
+             if n.endswith(".py")} if os.path.isdir(tdir) else {}
+
+    errs = validate(data) + check_tools(tools)
     if errs:
         print("✗ 모양 검사에서 멈춤 — 앱이 받지 않을 값입니다:")
         for e in errs:
             print("   ", e)
         sys.exit(1)
-    hits = privacy_scan(data, meta.get("notes", ""))
+    hits = privacy_scan(data, meta.get("notes", "")) + privacy_scan_code(tools)
     if hits:
         print("✗ 개인정보 훑기에서 멈춤 — 공개 저장소에 올라가면 안 됩니다:")
         for h in hits:
@@ -142,18 +235,28 @@ def main():
         "notes": meta.get("notes", "")[:200],
         "files": {n: {"sha256": hashlib.sha256(b).hexdigest(), "size": len(b)} for n, b in raw.items()},
     }
+    traw = {n: open(p, "rb").read() for n, p in tools.items()}
+    if traw:
+        manifest["tools"] = {n: {"sha256": hashlib.sha256(b).hexdigest(), "size": len(b)} for n, b in traw.items()}
 
     def write_to(dirpath):
         os.makedirs(dirpath, exist_ok=True)
         for n, b in raw.items():
             open(os.path.join(dirpath, n), "wb").write(b)
-        open(os.path.join(dirpath, "manifest.json"), "w", encoding="utf-8").write(
-            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+        shutil.rmtree(os.path.join(dirpath, "tools"), ignore_errors=True)
+        if traw:
+            os.makedirs(os.path.join(dirpath, "tools"), exist_ok=True)
+            for n, b in traw.items():
+                open(os.path.join(dirpath, "tools", n), "wb").write(b)
+        mpath = os.path.join(dirpath, "manifest.json")
+        open(mpath, "w", encoding="utf-8").write(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+        # 앱은 받은 manifest.json 바이트 그대로를 검증한다 — 쓴 뒤의 파일에 서명한다
+        open(os.path.join(dirpath, "manifest.sig"), "wb").write(sign(mpath))
         shutil.copy(os.path.join(SRC, "README.md"), os.path.join(dirpath, "README.md"))
 
     if a.out:
         write_to(os.path.join(a.out, "hotfix"))
-        print(f"✓ 검사 통과 · v{manifest['version']} → {a.out}/hotfix (커밋 안 함)")
+        print(f"✓ 검사 통과 · 서명함 · v{manifest['version']} (도우미 {len(traw)}개) → {a.out}/hotfix (커밋 안 함)")
         return
 
     # hotfix-mac 브랜치(꾸러미만 든 외톨이 가지)에 커밋 — 임시 작업본에서

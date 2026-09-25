@@ -57,7 +57,7 @@ bool BlueskyCollector::startDaemon(const QString &handle, const QString &passwor
 {
     stopDaemon();
 
-    QString scriptPath = Common::bundledToolsDir() + "/bluesky_daemon.py";
+    QString scriptPath = Common::activeToolScriptPath(QStringLiteral("bluesky_daemon.py"));
     if (!QFile::exists(scriptPath))
         scriptPath = QCoreApplication::applicationDirPath() + "/../../resources/tools/bluesky_daemon.py";
     if (!QFile::exists(scriptPath)) {

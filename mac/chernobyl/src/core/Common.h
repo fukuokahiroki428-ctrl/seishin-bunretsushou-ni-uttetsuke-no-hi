@@ -7,6 +7,7 @@
 #include <QProcessEnvironment>
 
 #include <QRegularExpression>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
 
@@ -78,6 +79,10 @@ QString remoteOverride(const QString &key);                         // 고침 �
 QStringList shapeAliasesFor(const QStringList &keys);               // 응답 이름 후보에 꾸러미의 별명을 덧붙인다
 QList<HotfixRule> remoteRepairRules();                              // 수리 도우미가 먼저 볼 규칙
 QString hotfixDir();                                                // 받은 꾸러미를 두는 곳(앱 데이터 폴더/hotfix)
+// 2단계 — 서명이 맞은 파이썬 도우미. 이 폴더에는 검증을 통과한 파일만 둔다(다른 것은 지운다).
+QString hotfixToolsDir();
+void setHotfixTools(const QHash<QString, QString> &nameToSha256);    // 쓸 도우미(이름 → sha256)
+QHash<QString, QString> hotfixTools();
 
 // ★ macOS: 앱 번들 경로(.../Chernobyl.app). 번들이 아니면 빈 문자열.
 QString appBundlePath();

@@ -3136,12 +3136,13 @@
                                 <div class="section-label">고침 꾸러미 — 재설치 없이 고치기</div>
                                 <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
                                     바깥 서비스가 이름·번호를 바꾸면 새 판을 기다리지 않고, 공개 저장소에 올라온 고친 값을 받아 씁니다.
-                                    받는 것은 <b>데이터</b>(질의 번호 · 응답 이름 별명 · 수리 규칙)뿐이고 실행되는 코드는 없습니다.
-                                    모양이 맞지 않는 값은 받지 않습니다.
+                                    받는 것은 질의 번호 · 응답 이름 별명 · 수리 규칙, 그리고 <b>서명이 맞는</b> 파이썬 도우미입니다.
+                                    서명이 맞지 않거나 모양이 맞지 않는 것은 받지 않습니다.
                                 </p>
                                 <label class="option-item" style="margin-bottom:8px;"><input type="checkbox" id="hotfix-auto" checked onchange="setHotfixAuto(this.checked)"> 자동으로 받기 (켤 때와 12시간마다)</label>
                                 <div id="hotfix-status" style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">확인 전</div>
                                 <button class="btn btn-secondary btn-sm" onclick="checkHotfixNow()">지금 확인</button>
+                                <button class="btn btn-secondary btn-sm" id="hotfix-reset-tools" onclick="resetHotfixTools()" style="display:none;" title="받은 파이썬 도우미를 버리고 앱에 든 것으로">파이썬 도우미 되돌리기</button>
                             </div>
 
                             <div class="section" data-group="maint">
@@ -6651,15 +6652,22 @@
             if (window.backend && backend.checkHotfixNow) backend.checkHotfixNow();
         }
         function setHotfixAuto(on) { if (window.backend && backend.setHotfixAuto) backend.setHotfixAuto(!!on); }
+        function resetHotfixTools() {
+            if (!confirm('받은 파이썬 도우미를 버리고 앱에 든 것으로 되돌립니까?')) return;
+            if (window.backend && backend.resetHotfixTools) backend.resetHotfixTools();
+        }
         function onHotfixStatus(a) {
             var st = Array.isArray(a) ? a[0] : a; if (typeof st === 'string') { try { st = JSON.parse(st); } catch (e) { st = {}; } }
             st = st || {};
             var cb = document.getElementById('hotfix-auto'); if (cb) cb.checked = st.auto !== false;
+            var rb = document.getElementById('hotfix-reset-tools'); if (rb) rb.style.display = Object.keys(st.tools || {}).length ? '' : 'none';
             var el = document.getElementById('hotfix-status'); if (!el) return;
             var parts = [];
             if (st.version) {
                 var c = st.counts || {};
+                var tools = Object.keys(st.tools || {});
                 parts.push('v' + st.version + ' 쓰는 중 — 값 ' + (c.overrides || 0) + ' · 별명 ' + (c.aliases || 0) + ' · 수리 규칙 ' + (c.rules || 0)
+                           + ' · 파이썬 도우미 ' + tools.length + (tools.length ? ' (' + tools.join(', ') + ')' : '')
                            + (st.appliedAt ? ' (' + st.appliedAt + ' 받음)' : ''));
                 if (st.notes) parts.push(st.notes);
             } else parts.push('아직 받은 꾸러미가 없습니다');

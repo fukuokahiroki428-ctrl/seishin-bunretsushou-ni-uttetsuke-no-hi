@@ -533,6 +533,11 @@ QString scriptOverrideDir()
 }
 QString activeToolScriptPath(const QString &name)
 {
+    // 쓰는 순서: 서명이 맞은 고침 꾸러미 > 이 맥의 자가수리가 고친 것 > 번들 원본
+    if (hotfixTools().contains(name)) {
+        const QString hf = hotfixToolsDir() + "/" + name;
+        if (QFileInfo::exists(hf)) return hf;
+    }
     const QString ov = scriptOverrideDir() + "/" + name;
     if (QFileInfo::exists(ov)) return ov;
 
@@ -713,6 +718,11 @@ QString hotfixDir()
 {
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/hotfix";
 }
+
+namespace { QHash<QString, QString> g_hotfixTools; }
+QString hotfixToolsDir() { return hotfixDir() + "/tools"; }
+void setHotfixTools(const QHash<QString, QString> &m) { QWriteLocker lk(&g_hotfixLock); g_hotfixTools = m; }
+QHash<QString, QString> hotfixTools() { QReadLocker lk(&g_hotfixLock); return g_hotfixTools; }
 
 // ── 프록시(VPN) ────────────────────────────────────────────────────────────
 namespace {
@@ -1362,13 +1372,21 @@ QProcessEnvironment bundledProcessEnv()
             const QString py = bundledPythonPath();
             if (!py.isEmpty() && QFileInfo(py).isExecutable()) env.insert("HANISHIKI_PYTHON", py);
         }
-        // 덧씌운 꾸러미를 번들보다 먼저 읽게 한다 — 낡은 것을 새것이 가린다.
+        // 파이썬 경로 — 앞에 있을수록 먼저 읽는다.
+        //   덧씌운 꾸러미(새 모듈) > 고침 꾸러미 도우미 > 자가수리가 고친 도우미 > 번들 도우미.
+        //   ★ 도우미가 옆 파일을 부른다(twitter_daemon→x_session, bluesky_daemon→exif_tags).
+        //     도우미를 번들 밖(고침 꾸러미·자가수리 폴더)에서 돌리면 파이썬은 그 폴더만 먼저 보므로
+        //     옆 파일을 못 찾았다. 번들 도우미 폴더까지 뒤에 붙여 둔다 — 쓰는 순서는 activeToolScriptPath 와 같다.
         {
+            QStringList parts;
             const QString ov = userPyOverlayDir();
-            if (QDir(ov).exists()) {
-                const QString cur = env.value("PYTHONPATH");
-                env.insert("PYTHONPATH", cur.isEmpty() ? ov : (ov + ":" + cur));
-            }
+            if (QDir(ov).exists()) parts << ov;
+            if (!hotfixTools().isEmpty() && QDir(hotfixToolsDir()).exists()) parts << hotfixToolsDir();
+            if (QDir(scriptOverrideDir()).exists()) parts << scriptOverrideDir();
+            parts << bundledToolsDir();
+            const QString cur = env.value("PYTHONPATH");
+            if (!cur.isEmpty()) parts << cur;
+            env.insert("PYTHONPATH", parts.join(':'));
         }
 
         const QString pu = proxyUrl();

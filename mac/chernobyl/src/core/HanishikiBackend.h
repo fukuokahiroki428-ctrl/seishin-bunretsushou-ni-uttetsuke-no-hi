@@ -97,6 +97,7 @@ public slots:
     void checkHotfixNow();                           // '지금 확인' — JS onHotfixStatus(json)
     void setHotfixAuto(bool on);                     // 켤 때와 12시간마다 스스로 확인할지
     void getHotfixStatus();                          // JS onHotfixStatus(json)
+    void resetHotfixTools();                         // 받은 파이썬 도우미를 버리고 앱에 든 것으로 되돌린다
     void setDragRegions(const QString &key, const QString &json); // 끌 자리(사이드바·위쪽 띠)와 그 안 단추 자리 — CSS 픽셀 사각형
     void setUiScaleMode(const QString &mode);        // 설정 '창 크기를 바꿀 때' — "layout" / "both"(기본) / "scale"
     void setWindowChrome(bool dark);                 // 웹 테마 토글 → 네이티브 창 색/외관 동기화(타이틀바 띠 숨김)

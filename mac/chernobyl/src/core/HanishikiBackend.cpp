@@ -12,6 +12,7 @@
 #include "xlsxdocument.h"
 #include "utils/DiskJsonBuffer.h"
 #include "utils/JsonShape.h"
+#include "HotfixSig.h"
 #include <QVersionNumber>
 #include "utils/FileHelper.h"
 #include "utils/SelfRepair.h"
@@ -4170,6 +4171,22 @@ static const QStringList kHotfixFiles = {QStringLiteral("api_overrides.json"),
                                          QStringLiteral("shape_aliases.json"),
                                          QStringLiteral("repair_rules.json")};
 
+static bool bundledToolExists(const QString &name)
+{
+    static const QRegularExpression ok(R"(^[a-z0-9_]{2,40}\.py$)");
+    if (!ok.match(name).hasMatch()) return false;
+    const QString t = Common::bundledToolsDir();
+    return QFileInfo::exists(t + "/" + name) || QFileInfo::exists(t + "/archive/" + name);
+}
+static QString fileSha256(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return QString();
+    QCryptographicHash h(QCryptographicHash::Sha256);
+    h.addData(&f);
+    return QString::fromLatin1(h.result().toHex());
+}
+
 QJsonObject HanishikiBackend::hotfixState() const
 {
     QFile f(Common::hotfixDir() + "/state.json");
@@ -4197,8 +4214,21 @@ void HanishikiBackend::loadHotfixFromDisk()
     const auto res = Common::applyHotfix(readJsonFile(d + "/api_overrides.json").object(),
                                          readJsonFile(d + "/shape_aliases.json").object(),
                                          readJsonFile(d + "/repair_rules.json").array());
-    qInfo().noquote() << QString("[고침 꾸러미] v%1 을 씀 — 값 %2 · 별명 %3 · 수리 규칙 %4")
-                             .arg(hotfixState().value("version").toInt()).arg(res.overrides).arg(res.aliases).arg(res.rules);
+    // 서명을 통과해 받아 둔 도우미 — 이 폴더엔 검증된 것만 있어야 한다. 켤 때마다 다시 대 본다.
+    QHash<QString, QString> keep;
+    const QJsonObject want = hotfixState().value("tools").toObject();
+    const QString td = Common::hotfixToolsDir();
+    for (const QFileInfo &fi : QDir(td).entryInfoList(QDir::Files)) {
+        const QString sha = want.value(fi.fileName()).toString();
+        if (!sha.isEmpty() && bundledToolExists(fi.fileName()) && fileSha256(fi.absoluteFilePath()) == sha)
+            keep.insert(fi.fileName(), sha);
+        else
+            QFile::remove(fi.absoluteFilePath());             // 모르는 것·어긋난 것은 쓰지 않는다
+    }
+    Common::setHotfixTools(keep);
+    qInfo().noquote() << QString("[고침 꾸러미] v%1 을 씀 — 값 %2 · 별명 %3 · 수리 규칙 %4 · 파이썬 도우미 %5")
+                             .arg(hotfixState().value("version").toInt()).arg(res.overrides).arg(res.aliases)
+                             .arg(res.rules).arg(keep.size());
 }
 
 void HanishikiBackend::getHotfixStatus()
@@ -4218,6 +4248,17 @@ void HanishikiBackend::setHotfixAuto(bool on)
 }
 
 void HanishikiBackend::checkHotfixNow() { checkHotfix(true); }
+
+void HanishikiBackend::resetHotfixTools()
+{
+    QDir(Common::hotfixToolsDir()).removeRecursively();
+    Common::setHotfixTools({});
+    QJsonObject st = hotfixState();
+    st["tools"] = QJsonObject();
+    saveHotfixState(st);
+    log(QStringLiteral("파이썬 도우미를 앱에 든 것으로 되돌렸습니다 — 다음에 도우미를 켤 때부터"), "info", "settings");
+    getHotfixStatus();
+}
 
 void HanishikiBackend::checkHotfix(bool manual)
 {
@@ -4240,6 +4281,15 @@ void HanishikiBackend::checkHotfix(bool manual)
                 : QStringLiteral("고침 꾸러미를 확인하지 못했습니다 (HTTP %1)").arg(mr.statusCode);
             if (manual) say(m, "warning");
             status(m);
+            return;
+        }
+        // ★ 2단계 — 서명이 맞지 않으면 통째로 버린다. manifest 에 모든 파일의 sha256 이 있으니
+        //   manifest 서명 하나로 전부가 묶인다. 저장소를 빼앗겨도 이 맥의 열쇠 없이는 못 바꾼다.
+        HttpResponse sr = http.get(base + "manifest.sig");
+        if (!sr.isOk() || !HotfixSig::verify(mr.data, sr.data)) {
+            const QString m = QStringLiteral("고침 꾸러미의 서명이 맞지 않아 쓰지 않습니다 (서명 %1)")
+                                  .arg(sr.isOk() ? QStringLiteral("틀림") : QStringLiteral("없음 · HTTP %1").arg(sr.statusCode));
+            say(m, "warning"); status(m);
             return;
         }
         const QJsonObject man = mr.json();
@@ -4274,6 +4324,29 @@ void HanishikiBackend::checkHotfix(bool manual)
             }
             got.insert(name, fr.data);
         }
+        // 파이썬 도우미 — 번들에 이미 있는 이름만, sha256 이 하나라도 어긋나면 이번 판은 통째로 버린다.
+        //   대기 폴더에 모았다가 한꺼번에 옮긴다(반쯤 바뀐 채로 남지 않게).
+        const QJsonObject toolsMeta = man.value("tools").toObject();
+        const QString stage = Common::hotfixDir() + "/tools.staging";
+        QDir(stage).removeRecursively();
+        QDir().mkpath(stage);
+        QHash<QString, QString> newTools;
+        QStringList toolRejected;
+        for (auto it = toolsMeta.constBegin(); it != toolsMeta.constEnd(); ++it) {
+            const QString name = it.key();
+            if (!bundledToolExists(name)) { toolRejected << name; continue; }
+            const QString want = it.value().toObject().value("sha256").toString().toLower();
+            HttpResponse tr = http.get(base + "tools/" + name);
+            const QString sha = QString::fromLatin1(QCryptographicHash::hash(tr.data, QCryptographicHash::Sha256).toHex());
+            if (!tr.isOk() || tr.data.size() > 512 * 1024 || sha != want) {
+                QDir(stage).removeRecursively();
+                const QString m = QStringLiteral("고침 꾸러미 v%1 — 도우미 %2 의 내용이 맞지 않습니다. 이번엔 쓰지 않습니다.").arg(ver).arg(name);
+                say(m, "warning"); status(m);
+                return;
+            }
+            if (!Common::writeFileAtomic(stage + "/" + name, tr.data)) { QDir(stage).removeRecursively(); return; }
+            newTools.insert(name, sha);
+        }
         const QJsonObject ov = QJsonDocument::fromJson(got.value("api_overrides.json")).object();
         const QJsonObject al = QJsonDocument::fromJson(got.value("shape_aliases.json")).object();
         const QJsonArray  rl = QJsonDocument::fromJson(got.value("repair_rules.json")).array();
@@ -4286,6 +4359,13 @@ void HanishikiBackend::checkHotfix(bool manual)
         if (got.value("repair_rules.json").isEmpty()) Common::writeFileAtomic(d + "/repair_rules.json", "[]");
         const auto res = Common::applyHotfix(ov, al, rl);
         Q_UNUSED(dry);
+        // 도우미 옮기기 — 옛것을 치우고 대기 폴더를 그 자리로
+        const QString td = Common::hotfixToolsDir();
+        QDir(td).removeRecursively();
+        if (!newTools.isEmpty()) QDir().rename(stage, td); else QDir(stage).removeRecursively();
+        Common::setHotfixTools(newTools);
+        QJsonObject toolsState;
+        for (auto it = newTools.constBegin(); it != newTools.constEnd(); ++it) toolsState.insert(it.key(), it.value());
         QString notes = man.value("notes").toString().left(200);
         notes.remove(QRegularExpression(R"(\S+://\S+)"));             // 안내 글에 링크는 싣지 않는다
         QJsonObject st = hotfixState();
@@ -4293,11 +4373,18 @@ void HanishikiBackend::checkHotfix(bool manual)
         st["appliedAt"] = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm");
         st["notes"] = notes;
         st["counts"] = QJsonObject{{"overrides", res.overrides}, {"aliases", res.aliases}, {"rules", res.rules}};
-        st["rejected"] = res.rejected.size();
+        st["rejected"] = res.rejected.size() + toolRejected.size();
+        st["tools"] = toolsState;
+        st["signed"] = true;
         QMetaObject::invokeMethod(this, [this, st]() { saveHotfixState(st); }, Qt::QueuedConnection);
-        say(QStringLiteral("🔧 고침 꾸러미 v%1 받음 — 값 %2 · 별명 %3 · 수리 규칙 %4%5")
-                .arg(ver).arg(res.overrides).arg(res.aliases).arg(res.rules)
+        say(QStringLiteral("🔧 고침 꾸러미 v%1 받음(서명 맞음) — 값 %2 · 별명 %3 · 수리 규칙 %4 · 파이썬 도우미 %5%6")
+                .arg(ver).arg(res.overrides).arg(res.aliases).arg(res.rules).arg(newTools.size())
                 .arg(notes.isEmpty() ? QString() : QStringLiteral(" · ") + notes), "success");
+        if (!newTools.isEmpty())
+            say(QStringLiteral("   도우미 %1 — 다음에 그 도우미를 켤 때부터 씁니다")
+                    .arg(QStringList(newTools.keys()).join(QStringLiteral(", "))), "info");
+        if (!toolRejected.isEmpty())
+            say(QStringLiteral("   앱에 없는 도우미라 받지 않은 것: %1").arg(toolRejected.join(QStringLiteral(", "))), "warning");
         if (!res.rejected.isEmpty())
             say(QStringLiteral("   모양이 맞지 않아 받지 않은 것 %1개: %2")
                     .arg(res.rejected.size()).arg(res.rejected.mid(0, 4).join(QStringLiteral(" / "))), "warning");
@@ -9382,7 +9469,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
         log("인스타가 질의를 바꾼 듯합니다 — 새 질의 번호를 떠 옵니다(브라우저 없이, 몇 초).", "warning", "instagram");
         QProcess hv;
         hv.setProcessEnvironment(Common::bundledProcessEnv());
-        hv.start(Common::bundledPythonPath(), {Common::bundledToolsDir() + "/ig_docids.py"});
+        hv.start(Common::bundledPythonPath(), {Common::activeToolScriptPath(QStringLiteral("ig_docids.py"))});
         if (!hv.waitForFinished(90000)) { hv.kill(); hv.waitForFinished(2000); }
         const QJsonObject got = QJsonDocument::fromJson(hv.readAllStandardOutput()).object();
         if (got.isEmpty()) {
@@ -15125,7 +15212,18 @@ void HanishikiBackend::llmChat(const QString &historyJson)
             static const QRegularExpression reDoIt(R"(고쳐|고치|수리|해\s*줘|해\s*주|아직|여전히|또\s*안|\bfix\b|repair)", QRegularExpression::CaseInsensitiveOption);
             if (!wantsRepair && reTrouble.match(lastUser).hasMatch()) {
                 // 말한 판이 있으면 그 판만 본다
-                const QString only = inferPlatformKey(lastUser);
+                QString only = inferPlatformKey(lastUser);
+                // "아직 안 돼" 처럼 판 이름 없이 이어 말하면 앞에서 말한 판을 이어받는다
+                static const QRegularExpression reFollow(R"(아직|여전히|또\s*안|그래도|계속)");
+                if (only.isEmpty() && reFollow.match(lastUser).hasMatch()) {
+                    bool skippedLast = false;
+                    for (int i = history.size() - 1; i >= 0 && only.isEmpty(); --i) {
+                        const QJsonObject m = history.at(i).toObject();
+                        if (m.value("role").toString() != QLatin1String("user")) continue;
+                        if (!skippedLast) { skippedLast = true; continue; }   // 방금 한 말은 빼고
+                        only = inferPlatformKey(messageText(m.value("content")));
+                    }
+                }
                 const qint64 window = 6LL * 3600 * 1000;            // 최근 여섯 시간
                 const QList<Finding> fs = diagnoseProblems(window, only);
                 const bool doIt = reDoIt.match(lastUser).hasMatch();
@@ -15156,6 +15254,7 @@ void HanishikiBackend::llmChat(const QString &historyJson)
                         if (doIt) {
                             msg << QString();
                             const qint64 now = QDateTime::currentMSecsSinceEpoch();
+                            bool started = false;
                             for (const QString &a : actions) {
                                 // 방금(30분 안) 한 수리인데 그 뒤에도 같은 문제가 또 났다 → 되풀이하지 않고 다음 단계로
                                 const qint64 ran = [&] { QMutexLocker l(&m_recentMutex); return m_repairRanAt.value(a, 0); }();
@@ -15178,13 +15277,15 @@ void HanishikiBackend::llmChat(const QString &historyJson)
                                     ? QStringLiteral("▶ 환경 복구 — 모듈 업데이트로 안 돼서 한 단계 더 합니다. 결과는 아래 로그에 나옵니다.")
                                     : QStringLiteral("▶ %1 — 시작했습니다. 결과는 아래 로그에 나옵니다.").arg(label(a)));
                                 { QMutexLocker l(&m_recentMutex); m_repairRanAt.insert(a, now); }
+                                started = true;
                                 QMetaObject::invokeMethod(this, [this, doAct]() {
                                     if (doAct == QLatin1String("refreshAllTokens")) refreshAllTokens();
                                     else if (doAct == QLatin1String("updateModules")) updateModules();
                                     else if (doAct == QLatin1String("repairPython")) repairPython();
                                 }, Qt::QueuedConnection);
                             }
-                            msg << QStringLiteral("끝나면 수집을 한 번 다시 돌려 보십시오. 그래도 같으면 \"아직 안 돼\" 라고 하시면 다음 수를 보겠습니다.");
+                            if (started)   // 안내만 했을 땐 붙이지 않는다
+                                msg << QStringLiteral("끝나면 수집을 한 번 다시 돌려 보십시오. 그래도 같으면 \"아직 안 돼\" 라고 하시면 다음 수를 보겠습니다.");
                         } else {
                             QStringList ls; for (const QString &a : actions) ls << label(a);
                             msg << QString() << QStringLiteral("\"고쳐\" 라고 하시면 바로 하겠습니다: %1").arg(ls.join(QStringLiteral(" · ")));

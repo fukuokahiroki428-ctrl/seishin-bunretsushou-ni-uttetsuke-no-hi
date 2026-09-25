@@ -77,6 +77,7 @@ set(CORE_SOURCES
     src/core/PenBackend.cpp
     src/core/Common.cpp
     src/core/Config.cpp
+    src/core/HotfixSig.cpp
 )
 
 set(CORE_HEADERS
@@ -86,6 +87,7 @@ set(CORE_HEADERS
     src/core/WorkerSignals.h
     src/core/Common.h
     src/core/Config.h
+    src/core/HotfixSig.h
 )
 
 set(UTILS_SOURCES
@@ -196,6 +198,8 @@ target_link_libraries(Hanishiki PRIVATE
 
 if(APPLE)
     target_link_libraries(Hanishiki PRIVATE "-framework IOKit")
+    # 고침 꾸러미 서명 검증(SecKeyVerifySignature) — src/core/HotfixSig.cpp
+    target_link_libraries(Hanishiki PRIVATE "-framework Security" "-framework CoreFoundation")
 elseif(WIN32)
     target_link_libraries(Hanishiki PRIVATE dwmapi)
 endif()

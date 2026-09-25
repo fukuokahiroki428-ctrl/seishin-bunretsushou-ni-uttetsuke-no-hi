@@ -240,7 +240,7 @@ bool TwitterCollector::startDaemon()
     stopDaemon(); // Clean up any previous
 
     // Find daemon script: bundled tools dir → dev fallback
-    QString scriptPath = Common::bundledToolsDir() + "/twitter_daemon.py";
+    QString scriptPath = Common::activeToolScriptPath(QStringLiteral("twitter_daemon.py"));
     if (!QFile::exists(scriptPath)) {
         scriptPath = QCoreApplication::applicationDirPath() + "/../../resources/tools/twitter_daemon.py";
     }
@@ -544,7 +544,7 @@ bool TwitterCollector::initTransactionIds()
     m_transactionIds.clear();
 
     // Find the Python helper script
-    QString scriptPath = Common::bundledToolsDir() + "/twitter_tid.py";
+    QString scriptPath = Common::activeToolScriptPath(QStringLiteral("twitter_tid.py"));
     if (!QFile::exists(scriptPath)) {
         scriptPath = QCoreApplication::applicationDirPath() + "/../../resources/tools/twitter_tid.py";
     }
@@ -658,7 +658,7 @@ QMap<QString, QString> TwitterCollector::getHeadersWithTid(const QString &urlPat
 QJsonObject TwitterCollector::callTwikitApi(const QJsonObject &args)
 {
     // Find the Python API proxy script
-    QString scriptPath = Common::bundledToolsDir() + "/twitter_api.py";
+    QString scriptPath = Common::activeToolScriptPath(QStringLiteral("twitter_api.py"));
     if (!QFile::exists(scriptPath)) {
         scriptPath = QCoreApplication::applicationDirPath() + "/../../resources/tools/twitter_api.py";
     }
