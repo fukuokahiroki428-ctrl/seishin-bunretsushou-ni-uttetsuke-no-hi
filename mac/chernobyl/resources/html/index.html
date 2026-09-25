@@ -6490,7 +6490,10 @@
                         holes.push([Math.round(r.right - 16), Math.round(r.top), 16, Math.round(r.height)]);
                     }
                 });
-                var key = new URLSearchParams(location.search).get('window') || 'main';
+                // 기능 창은 #window=<탭> 으로 열린다(주소 조각). ?window= 만 보면 모든 기능 창이
+                // 자기를 'main' 이라 알려 본 창의 끌 자리를 덮어쓴다.
+                var wm = (location.hash || '').match(/window=([a-z]+)/);
+                var key = (wm && wm[1]) || new URLSearchParams(location.search).get('window') || 'main';
                 var json = JSON.stringify({ z: zones.map(rectOf), h: holes });
                 if (json === __lastRegions) return;       // 바뀐 게 없으면 보내지 않는다
                 __lastRegions = json;
@@ -6668,17 +6671,35 @@
                 if (!board || !board.offsetParent) return;
                 var cols = getComputedStyle(board).gridTemplateColumns.split(' ').filter(Boolean).length;
                 [].forEach.call(board.children, function (f) {
-                    if (!(f.classList.contains('sg') || f.classList.contains('fx-frame')) || f.hidden) return;
+                    if (!(f.classList.contains('sg') || f.classList.contains('fx-frame') || f.classList.contains('fx-run')) || f.hidden) return;
                     if (cols <= 1) { f.style.gridRowEnd = ''; return; }
                     var h = f.getBoundingClientRect().height;
                     f.style.gridRowEnd = 'span ' + Math.max(1, Math.ceil((h + GAP) / UNIT));
                 });
             }
-            function all() { document.querySelectorAll('.settings-board, .fx-board').forEach(layout); }
+            function all() { placeRuns(); document.querySelectorAll('.settings-board, .fx-board').forEach(layout); }
             window.layoutFrames = all;
+            // ★ 좁은 창(기능 창 900px 등)에선 실행 액자(시작·중지·로그)가 판 아래로 내려가
+            //   스크롤해야 「시작」 이 보였고, 옆 열 밑은 텅 비었다. 좁을 땐 실행 액자도 벽돌에 넣어
+            //   가장 짧은 열 밑 — 대개 첫 화면 — 에 오게 한다. 넓어지면 오른쪽 기둥으로 되돌린다.
+            var narrowMq = window.matchMedia('(max-width: 1099px)');
+            var ro = null;
+            function watch(el) { if (ro && el) ro.observe(el); }
+            function placeRuns() {
+                document.querySelectorAll('.tab-content.fx').forEach(function (t) {
+                    var run = t.querySelector('.fx-run'), board = t.querySelector('.fx-board');
+                    if (!run || !board) return;
+                    if (narrowMq.matches && run.parentElement !== board) {
+                        board.appendChild(run); watch(run);
+                    } else if (!narrowMq.matches && run.parentElement === board) {
+                        run.style.gridRowEnd = '';
+                        t.appendChild(run);
+                    }
+                });
+            }
             function init() {
                 if (window.ResizeObserver) {
-                    var ro = new ResizeObserver(function (ents) {
+                    ro = new ResizeObserver(function (ents) {
                         var boards = new Set();
                         ents.forEach(function (e) {
                             var b = e.target.classList.contains('settings-board') || e.target.classList.contains('fx-board')
@@ -6694,6 +6715,7 @@
                 } else {
                     window.addEventListener('resize', all);
                 }
+                if (narrowMq.addEventListener) narrowMq.addEventListener('change', function () { requestAnimationFrame(all); });
                 all();
                 setTimeout(all, 600);          // 글꼴이 늦게 붙어 키가 바뀌는 경우
             }
@@ -8594,6 +8616,7 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
     grid-auto-rows: 4px; grid-auto-flow: row dense;   /* 벽돌 쌓기 — 설정 판과 같다(layoutFrames) */
 }
 .tab-content.fx .fx-board > .fx-frame { margin-bottom: 14px; align-self: start; }
+.tab-content.fx .fx-board > .fx-run { margin: 0 0 14px !important; align-self: start; }   /* 좁은 창에서 벽돌로 들어온 실행 액자 */
 .tab-content.fx .fx-frame,
 .tab-content.fx .fx-run {
     display: flex; flex-direction: column; min-width: 0; min-height: 0;

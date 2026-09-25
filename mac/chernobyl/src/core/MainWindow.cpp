@@ -718,7 +718,9 @@ static bool pointInDragZone()
     for (QWidget *p = QApplication::widgetAt(gp); p; p = p->parentWidget())
         if ((v = qobject_cast<QWebEngineView *>(p))) break;
     if (!v) return false;
-    QString key = QUrlQuery(v->url()).queryItemValue(QStringLiteral("window"));
+    // 기능 창은 #window=<탭>(주소 조각)으로 열린다 — 조각을 먼저, 없으면 ?window= 를 본다
+    QString key = QUrlQuery(v->url().fragment()).queryItemValue(QStringLiteral("window"));
+    if (key.isEmpty()) key = QUrlQuery(v->url()).queryItemValue(QStringLiteral("window"));
     if (key.isEmpty()) key = QStringLiteral("main");
     const auto it = g_dragRegions.constFind(key);
     if (it == g_dragRegions.constEnd()) return false;
