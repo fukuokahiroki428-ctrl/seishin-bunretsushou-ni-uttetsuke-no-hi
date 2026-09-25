@@ -1,5 +1,11 @@
 #include "MainWindow.h"
 #include <QCursor>   // 창 끌기 — 커서를 따라 옮긴다
+#include <QAbstractNativeEventFilter>
+#include <QRectF>
+#include <QSet>
+#include <QUrlQuery>
+#include <QDateTime>
+#include <atomic>
 #include "Config.h"
 #include <QResizeEvent>
 #include "HanishikiBackend.h"
@@ -77,6 +83,7 @@ static QWebEngineProfile *uiProfile()
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
+    installWindowDragFilter();   // 창 끌기 — 누르는 순간 창 서버에 맡긴다(아래 설명)
     // 판 이름을 제목에 함께 보인다 — 숫자 버전은 기계용이라 사용자에게 안 보인다.
     //   (CODENAME 이 비어 있으면 이름만 — 빌드 설정이 없어도 깨지지 않게)
     {
@@ -670,14 +677,158 @@ static bool leftMouseDown()
 #endif
 }
 
+#ifdef Q_OS_MACOS
+// ★ 창 끌기를 macOS 창 서버에 맡긴다 — 클로드 창(Electron)과 같은 길.
+//   사용자(2026-09-25): "클로드 창은 렉 없이 부드러운데 한이시키는 딜레이·렉".
+//   아래 8ms 타이머는 앱이 직접 창을 옮기므로 화면 갱신과 박자가 맞지 않고, 수집 중엔
+//   메인 스레드가 바빠 틱이 밀렸다.
+//
+//   첫 시도(같은 날)는 실패했다: 누름이 끝난 뒤 '가짜 누름' 을 만들어 performWindowDrag 에
+//   건넸더니 창 서버가 받아 주지 않았다(기록: "창 서버 끌기가 먹지 않아" 두 번). 창 서버는
+//   '지금 막 처리 중인 진짜 누름' 에만 끌기를 허락한다.
+//
+//   그래서 Electron 처럼 한다. 화면(JS)은 마우스가 '끌 수 있는 곳' 위에 있는지를 미리
+//   알려 두고(setDragHover), 누르는 그 순간 Qt 가 NSEvent 를 나눠 주기 전에 여기서 잡아
+//   진짜 누름을 그대로 창 서버에 넘긴다. 다리(WebChannel) 왕복도, 3px 문턱도 없다.
+//   이 누름은 화면으로 보내지 않는다(끄는 자리는 원래 누를 것이 없는 빈 바탕이다).
+struct NsPt { double x, y; };            // CGPoint 와 같은 모양
+struct NsRect { double x, y, w, h; };    // CGRect 와 같은 모양
+
+static std::atomic<bool> g_dragHover{false};
+
+template <typename R, typename... A>
+static inline R msg(id obj, const char *sel, A... a)
+{
+    return reinterpret_cast<R (*)(id, SEL, A...)>(objc_msgSend)(obj, sel_registerName(sel), a...);
+}
+
+// ★ 끌 자리를 좌표로도 받아 둔다(Electron 의 drag region 과 같은 생각).
+//   마우스 움직임 신호(g_dragHover)만 믿으면, 창이 뒤에 있다 앞으로 오는 첫 누름이나
+//   재빨리 잡는 경우에 신호가 늦어 옛 타이머로 빠졌다(사용자: "부드럽네요가 아니죠" —
+//   같은 창을 '어디든 끌림' 시험 상태로 두자 "우왕 부드럽다". 길은 맞고 타이밍이 문제였다).
+//   화면이 사이드바·위쪽 띠의 자리와 그 안의 단추 자리를 CSS 픽셀로 넘긴다. 누르는 순간
+//   커서가 끌 자리 안이고 단추 자리 밖이면 끈다 — 움직임과 상관없다.
+struct DragRegions { QList<QRectF> zones, holes; };
+static QHash<QString, DragRegions> g_dragRegions;   // 창 열쇠("main" 또는 ?window= 값) → 자리
+
+static bool pointInDragZone()
+{
+    const QPoint gp = QCursor::pos();
+    QWebEngineView *v = nullptr;
+    for (QWidget *p = QApplication::widgetAt(gp); p; p = p->parentWidget())
+        if ((v = qobject_cast<QWebEngineView *>(p))) break;
+    if (!v) return false;
+    QString key = QUrlQuery(v->url()).queryItemValue(QStringLiteral("window"));
+    if (key.isEmpty()) key = QStringLiteral("main");
+    const auto it = g_dragRegions.constFind(key);
+    if (it == g_dragRegions.constEnd()) return false;
+    const double z = v->zoomFactor() > 0 ? v->zoomFactor() : 1.0;
+    const QPointF local = v->mapFromGlobal(gp);
+    const QPointF css(local.x() / z, local.y() / z);
+    for (const QRectF &h : it->holes) if (h.contains(css)) return false;
+    for (const QRectF &r : it->zones) if (r.contains(css)) return true;
+    return false;
+}
+
+class WindowDragFilter : public QAbstractNativeEventFilter
+{
+public:
+    bool nativeEventFilter(const QByteArray &type, void *message, qintptr *) override
+    {
+        if (type != QByteArrayLiteral("mac_generic_NSEvent")) return false;
+        id ev = static_cast<id>(message);
+        if (!ev) return false;
+        if (msg<unsigned long>(ev, "type") != 1ul) return false;          // NSEventTypeLeftMouseDown
+        // 좌표로 본 끌 자리(사이드바·위쪽 띠) — 움직임 신호가 늦어도 된다.
+        // 그 밖(본문의 빈 바탕)은 화면이 보낸 움직임 신호로 판단한다.
+        if (!pointInDragZone() && !g_dragHover.load(std::memory_order_relaxed)) return false;
+        if (msg<long>(ev, "clickCount") != 1) return false;               // 두 번 누름은 건드리지 않는다
+        id win = msg<id>(ev, "window");
+        if (!win) return false;
+        // 전체 화면 창은 옮기지 않는다(OS 와 같다)
+        if (msg<unsigned long>(win, "styleMask") & (1ul << 14)) return false;
+        const NsPt p = msg<NsPt>(ev, "locationInWindow");
+        const NsRect f = msg<NsRect>(win, "frame");
+        // 창 가장자리는 크기 조절 자리다 — 끌기로 가로채지 않는다
+        constexpr double edge = 6.0;
+        if (p.x < edge || p.y < edge || p.x > f.w - edge || p.y > f.h - edge) return false;
+        // 신호등(닫기·최소화·확대) 같은 네이티브 단추 위면 건드리지 않는다.
+        //   화면의 '끌 수 있는 곳' 신호는 그 단추 밑의 웹 바탕에서 온 것이라 참일 수 있다.
+        id content = msg<id>(win, "contentView");
+        id root = content ? msg<id>(content, "superview") : nullptr;
+        id hit = msg<id>(root ? root : content, "hitTest:", p);
+        if (hit && msg<bool>(hit, "isKindOfClass:", reinterpret_cast<id>(objc_getClass("NSButton"))))
+            return false;
+        msg<void>(win, "performWindowDragWithEvent:", ev);
+        MainWindow::noteNativeDrag();
+        return true;                                                       // 화면으로는 보내지 않는다
+    }
+};
+#endif
+
+void MainWindow::setDragHover(bool on)
+{
+#ifdef Q_OS_MACOS
+    g_dragHover.store(on, std::memory_order_relaxed);
+#else
+    Q_UNUSED(on);
+#endif
+}
+
+void MainWindow::setDragRegions(const QString &key, const QString &json)
+{
+    DragRegions r;
+    const QJsonObject o = QJsonDocument::fromJson(json.toUtf8()).object();
+    auto read = [](const QJsonArray &a, QList<QRectF> &out) {
+        for (const auto &v : a) {
+            const QJsonArray q = v.toArray();
+            if (q.size() == 4) out << QRectF(q[0].toDouble(), q[1].toDouble(), q[2].toDouble(), q[3].toDouble());
+        }
+    };
+    read(o.value("z").toArray(), r.zones);
+    read(o.value("h").toArray(), r.holes);
+    const QString k = key.isEmpty() ? QStringLiteral("main") : key;
+    static QSet<QString> logged;
+    if (!logged.contains(k)) {
+        logged.insert(k);
+        qInfo().noquote() << QString("[창 끌기] 끌 자리 %1곳 · 단추 자리 %2곳 받음 (%3)")
+                                 .arg(r.zones.size()).arg(r.holes.size()).arg(k);
+    }
+    g_dragRegions.insert(k, r);
+}
+
+qint64 MainWindow::s_nativeDragAt = 0;
+void MainWindow::noteNativeDrag()
+{
+    s_nativeDragAt = QDateTime::currentMSecsSinceEpoch();
+    static int logged = 0;
+    if (logged < 3) { ++logged; qInfo() << "[창 끌기] 창 서버에 맡김"; }
+}
+
+void MainWindow::installWindowDragFilter()
+{
+#ifdef Q_OS_MACOS
+    static WindowDragFilter *f = nullptr;
+    if (!f) { f = new WindowDragFilter; qApp->installNativeEventFilter(f); }
+#endif
+}
+
 void MainWindow::armWindowMove()
 {
+    // 창 서버가 방금 이 누름을 가져갔다면 옛 방식이 끼어들 까닭이 없다(둘이 싸운다).
+    if (QDateTime::currentMSecsSinceEpoch() - s_nativeDragAt < 1500) return;
     if (!leftMouseDown()) return;                  // 이미 뗐다 — 늦게 온 요청은 버린다
     QWidget *w = QApplication::widgetAt(QCursor::pos());
     w = w ? w->window() : QApplication::activeWindow();
     if (!w || w->isFullScreen()) return;          // 전체 화면 창은 옮기지 않는다(OS 와 같다)
+    // 여기까지 왔다면 화면이 '끌 수 있는 곳' 신호를 못 보낸 드문 경우다 — 옛 방식으로 옮긴다.
     m_dragWin = w;
     m_dragOffset = QCursor::pos() - w->pos();
+    startDragTimer();
+}
+
+void MainWindow::startDragTimer()
+{
     if (!m_dragTimer) {
         m_dragTimer = new QTimer(this);
         m_dragTimer->setInterval(8);

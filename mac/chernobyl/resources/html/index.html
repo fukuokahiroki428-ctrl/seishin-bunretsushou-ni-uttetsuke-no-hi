@@ -2387,525 +2387,570 @@
 
                 <!-- ━━ Settings ━━ -->
                 <div class="tab-content" id="tab-settings">
-                    <div class="section">
-                        <div class="section-label">테마 (외관)</div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">라이트 · 다크 · 자동(시스템 설정 따름) 중 선택.</p>
-                        <div class="theme-seg" id="themeSeg">
-                            <button type="button" class="theme-seg-btn" data-theme-mode="auto">자동</button>
-                            <button type="button" class="theme-seg-btn" data-theme-mode="light">라이트</button>
-                            <button type="button" class="theme-seg-btn" data-theme-mode="dark">다크</button>
-                        </div>
+                    <!-- ★ 설정 판 — 사용자(2026-09-25): "스크롤 부분이 옛날 폰 크기 때 것 그대로라 비효율적.
+                         조각조각 4분할이든 뭐든, 폰·타블렛·데스크톱 크기에 따라 변하게."
+                         열아홉 칸이 700px 한 줄로 흘러내리던 것을 여섯 묶음으로 나누고, 창 폭에 따라
+                         1~4 열로 흐르게 한다(CSS 는 #settings-board 아래). 묶음 단추로 한 묶음만 볼 수도 있다. -->
+                    <div class="settings-filter" role="tablist" aria-label="설정 묶음">
+                        <button type="button" class="sf-chip active" data-group="all" onclick="setSettingsGroup('all')">전체</button>
+                        <button type="button" class="sf-chip" data-group="storage" onclick="setSettingsGroup('storage')">저장 · 다운로드 <span class="sf-n">3</span></button>
+                        <button type="button" class="sf-chip" data-group="account" onclick="setSettingsGroup('account')">계정 · 연결 <span class="sf-n">2</span></button>
+                        <button type="button" class="sf-chip" data-group="backup" onclick="setSettingsGroup('backup')">백업 <span class="sf-n">4</span></button>
+                        <button type="button" class="sf-chip" data-group="ai" onclick="setSettingsGroup('ai')">AI · 보관함 <span class="sf-n">2</span></button>
+                        <button type="button" class="sf-chip" data-group="maint" onclick="setSettingsGroup('maint')">유지보수 <span class="sf-n">4</span></button>
+                        <button type="button" class="sf-chip" data-group="look" onclick="setSettingsGroup('look')">화면 · 정보 <span class="sf-n">4</span></button>
                     </div>
-                    <!-- ★ 창 크기를 바꿀 때 — 사용자: "A·B 둘 다 되게 하라"(2026-09-15) -->
-                    <div class="section">
-                        <div class="section-label">창 크기를 바꿀 때</div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
-                            둘 다 — 창 크기에 비례해 커지고 작아지다가(80%까지), 더 좁으면 배치가 바뀝니다.<br>
-                            배치 바꾸기 — 글자·버튼 크기는 그대로, 좁아지면 칸이 세로로 쌓이고 사이드바가 접힙니다.<br>
-                            통째로 크기 조절 — 배치는 그대로, 화면 전체가 창 크기에 비례해 커지고 작아집니다(50~160%).
-                        </p>
-                        <div class="theme-seg" id="scaleSeg" style="max-width:420px">
-                            <button type="button" class="theme-seg-btn" data-scale-mode="layout">배치 바꾸기</button>
-                            <button type="button" class="theme-seg-btn" data-scale-mode="both">둘 다</button>
-                            <button type="button" class="theme-seg-btn" data-scale-mode="scale">통째로 크기 조절</button>
-                        </div>
-                    </div>
-                    <!-- ★ 사용자 정보 내보내기 / 불러오기 — 계정 + 경로 + 폼 + 토큰 통째 백업/복원 -->
-                    <div class="section">
-                        <div class="section-label">사용자 정보 백업 / 복원</div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
-                            계정 토큰 / 저장 경로 / 폼 입력값 / WebDAV 자격증명 / 백업 설정 등 모든 사용자 입력 정보를 JSON 파일 1개로 통째 백업.
-                            다른 PC 로 이동 / 재설치 시 복원 가능.
-                        </p>
-                        <div class="btn-row" style="gap:8px;">
-                            <button class="btn btn-primary btn-sm" onclick="exportConfigUi()">내보내기 (JSON)</button>
-                            <button class="btn btn-secondary btn-sm" onclick="importConfigUi()">불러오기 (JSON)</button>
-                        </div>
-                        <p style="font-size:11px;color:var(--text-tertiary);margin-top:6px;line-height:1.4;background:rgba(220,38,38,0.08);padding:6px;border-radius:4px;border-left:3px solid #dc2626;">
-                            <strong>주의:</strong> 내보낸 파일에 계정 토큰 / 비밀번호 / 쿠키 포함 — 안전한 곳에 보관, 공유 절대 X.
-                        </p>
-                    </div>
-                    <div class="section">
-                        <div class="section-label">디스크 설정</div>
-                        <div class="input-row">
-                            <div class="field" style="flex:3;">
-                                <input type="text" class="input" id="settings-disk-path" placeholder="(미설정)" readonly>
+                    <div class="settings-board" id="settings-board">
+                        <div class="sg" data-group="storage">
+                            <div class="sg-title">저장 · 다운로드</div>
+                            <div class="sg-body">
+                            <div class="section" data-group="storage">
+                                <div class="section-label">디스크 설정</div>
+                                <div class="input-row">
+                                    <div class="field" style="flex:3;">
+                                        <input type="text" class="input" id="settings-disk-path" placeholder="(미설정)" readonly>
+                                    </div>
+                                    <button class="btn btn-primary btn-sm" onclick="browseTempDir()">디스크 선택</button>
+                                </div>
+                                <div id="settings-disk-info" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;"></div>
                             </div>
-                            <button class="btn btn-primary btn-sm" onclick="browseTempDir()">디스크 선택</button>
-                        </div>
-                        <div id="settings-disk-info" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;"></div>
-                    </div>
 
-                    <div class="section">
-                        <div class="section-label">보조 저장 경로 (대용량 다운 자동 분산)</div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
-                            각 플랫폼의 1번 저장 경로(예: 외장 SSD)가 가득 차면 자동으로 이 경로로 전환합니다.
-                            남은 공간 10GB 미만이면 보조 경로 사용. 비워두면 비활성.
-                        </p>
-                        <div class="input-row">
-                            <div class="field" style="flex:3;">
-                                <input type="text" class="input" id="settings-secondary-path" placeholder="(미설정)" onchange="onSecondaryPathChange(this.value)">
+                            <div class="section" data-group="storage">
+                                <div class="section-label">보조 저장 경로 (대용량 다운 자동 분산)</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                                    각 플랫폼의 1번 저장 경로(예: 외장 SSD)가 가득 차면 자동으로 이 경로로 전환합니다.
+                                    남은 공간 10GB 미만이면 보조 경로 사용. 비워두면 비활성.
+                                </p>
+                                <div class="input-row">
+                                    <div class="field" style="flex:3;">
+                                        <input type="text" class="input" id="settings-secondary-path" placeholder="(미설정)" onchange="onSecondaryPathChange(this.value)">
+                                    </div>
+                                    <button class="btn btn-secondary btn-sm" onclick="browseSecondaryPath()">찾아보기</button>
+                                </div>
+                                <div id="settings-secondary-info" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;"></div>
                             </div>
-                            <button class="btn btn-secondary btn-sm" onclick="browseSecondaryPath()">찾아보기</button>
-                        </div>
-                        <div id="settings-secondary-info" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;"></div>
-                    </div>
 
-                    <div class="section">
-                        <div class="section-label">동시 다운로드 개수</div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
-                            한 번에 동시에 받는 작업(여러 유저/대상) 수. '자동'은 플랫폼별 기본값(1~3).
-                            숫자가 클수록 빠르지만 메모리·대역폭·속도제한(rate limit) 부담이 커집니다. 다음 수집부터 적용.
-                        </p>
-                        <div class="field" style="max-width:240px;">
-                            <select class="input" id="settings-max-concurrent" onchange="onMaxConcurrentChange(this.value)">
-                                <option value="0">자동 (플랫폼 기본)</option>
-                                <option value="1">1개</option>
-                                <option value="2">2개</option>
-                                <option value="3">3개</option>
-                                <option value="4">4개</option>
-                                <option value="5">5개</option>
-                                <option value="6">6개</option>
-                                <option value="8">8개</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <div class="section">
-                        <div class="section-label">계정 토큰 자동 추출</div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">
-                            로그인된 쿠키/토큰을 자동 추출합니다. Bluesky는 앱 비밀번호 필요 → 수동 입력만 가능.
-                        </p>
-                        <p style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px;line-height:1.5;background:var(--accent-bg);padding:8px;border-radius:6px;border-left:3px solid var(--accent);">
-                            <strong>macOS 사용자</strong>: Chrome / Firefox / LibreWolf / Edge / Brave / Arc / Vivaldi 모두 시도합니다.<br>
-                            ★ <strong>Chrome 키체인 prompt</strong> 뜨면 <strong>"항상 허용"</strong> 누르세요 — 다음부터는 자동.<br>
-                            ★ 거부했으면 다시 ⌘ 스페이스 → <code>키체인 접근</code> → <code>login</code> → <code>Chrome Safe Storage</code> 항목 권한 변경.
-                        </p>
-                        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">
-                            <button class="btn btn-primary btn-sm" id="all-token-refresh-btn" onclick="refreshAllTokens()">전체 자동 추출</button>
-                            <button class="btn btn-secondary btn-sm" id="token-refresh-btn" onclick="refreshTwitterTokens()">Twitter</button>
-                            <button class="btn btn-secondary btn-sm" id="ig-session-refresh-btn" onclick="refreshInstagramSession()">Instagram</button>
-                            <button class="btn btn-secondary btn-sm" id="pixiv-session-refresh-btn" onclick="refreshPixivSession()">Pixiv</button>
-                            <button class="btn btn-secondary btn-sm" id="fanbox-session-refresh-btn" onclick="refreshFanboxSession()">Fanbox</button>
-                            <button class="btn btn-secondary btn-sm" id="discord-token-refresh-btn" onclick="refreshDiscordToken()">Discord</button>
-                            <button class="btn btn-secondary btn-sm" id="spinspin-cookie-refresh-btn" onclick="refreshSpinSpinCookie()">SpinSpin</button>
-                            <button class="btn btn-secondary btn-sm" id="asked-cookie-refresh-btn" onclick="refreshAskedCookie()">Asked</button>
-                            <button class="btn btn-secondary btn-sm" id="tumblr-cookie-refresh-btn" onclick="refreshTumblrCookie()">Tumblr</button>
-                        </div>
-                        <span id="token-refresh-status" style="font-size:11px;color:var(--text-tertiary);"></span>
-                    </div>
-
-                    <div class="section">
-                        <div class="section-label">로컬 AI · ハニワ</div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
-                            이 컴퓨터 안에서만 도는 로컬 AI(오프라인·인터넷 안 씀). 잡담·질문·글쓰기·번역 등 <b>무엇이든 자유롭게 대화</b>할 수 있고,
-                            수집이 안 될 땐 원인 진단·수리도 도와줍니다. 외부 서버 없이 앱 안(127.0.0.1)에서 실행됩니다.
-                        </p>
-                        <!-- ★ 방식 선택 — 로컬(번들 엔진) / 온라인(OpenAI 호환 API) -->
-                        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-                            <span style="font-size:12px;color:var(--text-secondary);">방식</span>
-                            <select class="input" id="ai-mode" onchange="setAiMode(this.value)" style="max-width:190px;height:34px;">
-                                <option value="local">로컬 (이 컴퓨터)</option>
-                                <option value="online">온라인 (API 키)</option>
-                            </select>
-                            <span id="llm-status-pill" style="font-size:11.5px;font-weight:700;padding:4px 11px;border-radius:20px;background:var(--bg-tertiary);color:var(--text-secondary);">확인 중…</span>
-                        </div>
-
-                        <!-- 온라인 설정 — 제공자별 코드 없이 OpenAI 호환이면 무엇이든 붙는다 -->
-                        <div id="ai-online-box" style="display:none;margin-top:9px;">
-                            <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                                <input type="text" class="input" id="ai-base-url" placeholder="기준 URL — 예: https://api.openai.com" style="flex:1;min-width:230px;">
-                                <input type="text" class="input" id="ai-model-name" placeholder="모델 — 예: gpt-4o-mini" style="flex:0 0 200px;">
+                            <div class="section" data-group="storage">
+                                <div class="section-label">동시 다운로드 개수</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                                    한 번에 동시에 받는 작업(여러 유저/대상) 수. '자동'은 플랫폼별 기본값(1~3).
+                                    숫자가 클수록 빠르지만 메모리·대역폭·속도제한(rate limit) 부담이 커집니다. 다음 수집부터 적용.
+                                </p>
+                                <div class="field" style="max-width:240px;">
+                                    <select class="input" id="settings-max-concurrent" onchange="onMaxConcurrentChange(this.value)">
+                                        <option value="0">자동 (플랫폼 기본)</option>
+                                        <option value="1">1개</option>
+                                        <option value="2">2개</option>
+                                        <option value="3">3개</option>
+                                        <option value="4">4개</option>
+                                        <option value="5">5개</option>
+                                        <option value="6">6개</option>
+                                        <option value="8">8개</option>
+                                    </select>
+                                </div>
                             </div>
-                            <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
-                                <input type="password" class="input" id="ai-api-key" placeholder="API 키 (저장 후에는 표시되지 않습니다)" style="flex:1;min-width:230px;">
-                                <button class="btn btn-primary btn-sm" onclick="saveAiOnline()">저장</button>
-                                <button class="btn btn-secondary btn-sm" onclick="testAiOnline()">연결 시험</button>
-                            </div>
-                            <p style="font-size:10.5px;color:var(--text-tertiary);margin-top:7px;line-height:1.45;">
-                                OpenAI 호환 API 면 무엇이든 됩니다 — OpenAI · OpenRouter · Groq · DeepSeek · 사내 게이트웨이.
-                                키는 이 컴퓨터의 설정 파일에만 저장되고 화면에 다시 표시되지 않습니다.
-                            </p>
-                        </div>
 
-                        <!-- 로컬 전용 조작 -->
-                        <div id="ai-local-box" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:9px;">
-                            <select class="input" id="llm-model" onchange="setLlmModel(this.value)" title="수리·대화에 쓸 AI 두뇌. coder(7B) 가 가장 똑똑하지만 느리고 메모리를 많이 씁니다." style="max-width:210px;height:34px;"></select>
-                            <button class="btn btn-primary btn-sm" id="llm-start-btn" onclick="startLocalLlm()">AI 켜기</button>
-                            <button class="btn btn-secondary btn-sm" id="llm-stop-btn" onclick="stopLocalLlm()" style="display:none;">끄기</button>
-                            <button class="btn btn-secondary btn-sm" id="llm-term-btn" onclick="openLlmTerminal()" title="ハニワ를 터미널 창에서 대화형으로 엽니다">터미널로 열기</button>
-                        </div>
-                        <p style="font-size:11px;color:var(--text-tertiary);margin-top:7px;">
-                            엔드포인트 127.0.0.1:8737 · 첫 기동은 모델 로딩에 수 초 걸립니다. 터미널 수동 기동도 가능(README).
-                        </p>
-
-                        <!-- ★ AI 와 대화하며 수리 -->
-                        <div style="margin-top:14px;font-size:12px;font-weight:600;color:var(--text-secondary);">ハニワ와 자유롭게 대화</div>
-                        <div id="ai-chat" style="margin-top:7px;border:1px solid var(--border-light);border-radius:10px;overflow:hidden;">
-                            <div id="ai-chat-log" style="height:230px;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:9px;background:var(--bg-secondary);"></div>
-                            <div style="display:flex;gap:6px;flex-wrap:wrap;padding:8px 10px;border-top:1px solid var(--border-light);">
-                                <button class="btn btn-primary btn-sm" id="auto-repair-btn" onclick="startAutoRepair()" title="ハニワ가 스스로 점검·수리: 스크립트 코드 문법 오류를 자동으로 고치고(검증·실패시 원복) 환경·모듈·토큰 문제도 진단해 수리. 대화창에 '코드 고쳐줘'라고 해도 발동합니다.">AI 자동 수리</button>
-                                <span style="font-size:11px;color:var(--text-tertiary);align-self:center;">· 수동:</span>
-                                <button class="btn btn-secondary btn-sm" onclick="aiRepair('repairPython','환경 복구')">환경 복구</button>
-                                <button class="btn btn-secondary btn-sm" onclick="aiRepair('updateModules','모듈 업데이트')">모듈 업데이트</button>
-                                <button class="btn btn-secondary btn-sm" onclick="aiRepair('refreshAllTokens','토큰 추출')">토큰 추출</button>
-                            </div>
-                            <div style="display:flex;gap:8px;align-items:center;padding:10px;border-top:1px solid var(--border-light);">
-                                <label id="web-toggle-wrap" title="켜면 답변 시 웹을 읽기전용으로 검색해 참고합니다 (검색 키 필요)" style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary);cursor:pointer;white-space:nowrap;">
-                                    <input type="checkbox" id="ai-web-toggle" onchange="setLlmUseWeb(this.checked)" style="accent-color:var(--accent);">웹</label>
-                                <input type="text" class="input" id="ai-chat-input" placeholder="무엇이든 물어보세요 — 잡담도, 질문도, 수리도" onkeydown="if(event.key==='Enter')sendAiChat()" style="flex:1;">
-                                <input type="file" id="ai-image-file" accept="image/*" style="display:none" onchange="attachAiImage(this)">
-                                <button class="btn btn-secondary btn-sm" id="ai-image-btn" onclick="document.getElementById('ai-image-file').click()" title="그림을 붙여서 물어봅니다 (그림 읽는 모델이 켜져 있어야 합니다)">🖼 그림</button>
-                                <button class="btn btn-primary btn-sm" id="ai-chat-send" onclick="sendAiChat()">보내기</button>
-                            </div>
-                            <!-- 붙인 그림 미리보기 -->
-                            <div id="ai-image-strip" style="display:none;gap:8px;align-items:center;padding:0 10px 8px;font-size:11px;color:var(--text-secondary);">
-                                <img id="ai-image-thumb" style="height:38px;border-radius:6px;border:1px solid var(--border-light);">
-                                <span id="ai-image-name"></span>
-                                <button class="btn btn-secondary btn-sm" onclick="clearAiImage()" style="height:24px;padding:0 8px;">떼기</button>
-                            </div>
-                            <div style="display:flex;gap:6px;align-items:center;padding:0 10px 10px;">
-                                <input type="password" class="input" id="ai-search-key" placeholder="Brave Search API 키 (무료·읽기전용 웹검색용)" onchange="setSearchKey(this.value)" style="flex:1;font-size:11px;height:30px;">
-                                <a href="https://brave.com/search/api/" onclick="return false;" title="brave.com/search/api 에서 무료 키 발급 (월 2000회)" style="font-size:10px;color:var(--text-tertiary);white-space:nowrap;">무료 키 발급 ↗</a>
                             </div>
                         </div>
-                        <div style="margin-top:14px;font-size:12px;font-weight:600;color:var(--text-secondary);">AI 스크립트 자가수리 <span style="font-weight:400;color:var(--text-tertiary);">· 백업·문법검증·자동원복(안전)</span></div>
-                        <div style="display:flex;gap:6px;align-items:center;margin-top:7px;flex-wrap:wrap;">
-                            <select class="input" id="fix-script-sel" onchange="loadScriptState()" style="max-width:180px;height:32px;font-size:12px;">
-                                <option value="twitter_api.py">twitter_api.py</option>
-                                <option value="twitter_tid.py">twitter_tid.py</option>
-                                <option value="twitter_daemon.py">twitter_daemon.py</option>
-                                <option value="bluesky_daemon.py">bluesky_daemon.py</option>
-                                <option value="email_watch.py">email_watch.py</option>
-                            </select>
-                            <span id="fix-script-badge" style="font-size:11px;color:var(--text-tertiary);white-space:nowrap;">○ 번들 원본</span>
-                        </div>
-                        <div style="display:flex;gap:6px;align-items:center;margin-top:6px;">
-                            <input type="text" class="input" id="fix-script-problem" placeholder="문제 설명(선택) — 예: 트위터 API 변경으로 수집 오류" style="flex:1;height:32px;font-size:12px;">
-                            <button class="btn btn-primary btn-sm" onclick="aiFixScript()" title="ハニワ가 이 스크립트를 읽고 고쳐서 적용합니다(문법 통과 시에만, 실패하면 자동 원복)">AI 고치기</button>
-                            <button class="btn btn-secondary btn-sm" onclick="revertScriptUi()" title="AI 수정본을 지우고 번들 원본으로">↺ 초기화</button>
-                        </div>
-                        <p style="font-size:10.5px;color:var(--text-tertiary);margin-top:6px;line-height:1.4;">
-                            로컬 작은 모델은 코드를 완벽히 고치지 못할 수 있습니다. 잘못돼도 문법검증에서 막고 자동 원복되며, 언제든 <b>초기화</b>로 원본 복구됩니다.
-                        </p>
-                    </div>
+                        <div class="sg" data-group="account">
+                            <div class="sg-title">계정 · 연결</div>
+                            <div class="sg-body">
+                            <div class="section" data-group="account">
+                                <div class="section-label">계정 토큰 자동 추출</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">
+                                    로그인된 쿠키/토큰을 자동 추출합니다. Bluesky는 앱 비밀번호 필요 → 수동 입력만 가능.
+                                </p>
+                                <p style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px;line-height:1.5;background:var(--accent-bg);padding:8px;border-radius:6px;border-left:3px solid var(--accent);">
+                                    <strong>macOS 사용자</strong>: Chrome / Firefox / LibreWolf / Edge / Brave / Arc / Vivaldi 모두 시도합니다.<br>
+                                    ★ <strong>Chrome 키체인 prompt</strong> 뜨면 <strong>"항상 허용"</strong> 누르세요 — 다음부터는 자동.<br>
+                                    ★ 거부했으면 다시 ⌘ 스페이스 → <code>키체인 접근</code> → <code>login</code> → <code>Chrome Safe Storage</code> 항목 권한 변경.
+                                </p>
+                                <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">
+                                    <button class="btn btn-primary btn-sm" id="all-token-refresh-btn" onclick="refreshAllTokens()">전체 자동 추출</button>
+                                    <button class="btn btn-secondary btn-sm" id="token-refresh-btn" onclick="refreshTwitterTokens()">Twitter</button>
+                                    <button class="btn btn-secondary btn-sm" id="ig-session-refresh-btn" onclick="refreshInstagramSession()">Instagram</button>
+                                    <button class="btn btn-secondary btn-sm" id="pixiv-session-refresh-btn" onclick="refreshPixivSession()">Pixiv</button>
+                                    <button class="btn btn-secondary btn-sm" id="fanbox-session-refresh-btn" onclick="refreshFanboxSession()">Fanbox</button>
+                                    <button class="btn btn-secondary btn-sm" id="discord-token-refresh-btn" onclick="refreshDiscordToken()">Discord</button>
+                                    <button class="btn btn-secondary btn-sm" id="spinspin-cookie-refresh-btn" onclick="refreshSpinSpinCookie()">SpinSpin</button>
+                                    <button class="btn btn-secondary btn-sm" id="asked-cookie-refresh-btn" onclick="refreshAskedCookie()">Asked</button>
+                                    <button class="btn btn-secondary btn-sm" id="tumblr-cookie-refresh-btn" onclick="refreshTumblrCookie()">Tumblr</button>
+                                </div>
+                                <span id="token-refresh-status" style="font-size:11px;color:var(--text-tertiary);"></span>
+                            </div>
 
-                    <div class="section">
-                        <div class="section-label">산출물 보관함 — 모아둔 자료에 물어보기</div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:9px;">
-                            수집해 둔 파일(이미지 EXIF의 작가·제목·원본 URL, 엑셀 목록, 설명글)을 한 번 색인해 두면,
-                            <b>"vivoさん 그림 뭐 있어?"</b> 처럼 물어볼 수 있습니다. 답에는 <b>근거 파일</b>이 함께 나옵니다.
-                        </p>
-                        <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">
-                            <span id="arc-pill" style="font-size:11.5px;font-weight:700;padding:4px 11px;border-radius:20px;background:var(--bg-tertiary);color:var(--text-secondary);">확인 중…</span>
-                            <input type="text" class="input" id="arc-root" placeholder="산출물 폴더 경로" style="flex:1;min-width:200px;height:34px;font-size:12px;">
-                            <button class="btn btn-primary btn-sm" id="arc-index-btn" onclick="archiveIndex()">색인 만들기</button>
-                            <button class="btn btn-secondary btn-sm" id="arc-cancel-btn" onclick="archiveCancel()" style="display:none;">중단</button>
-                            <button class="btn btn-secondary btn-sm" id="arc-verify-btn" onclick="archiveVerify(false)" title="예전에 남긴 기록과 지금을 견줍니다">보관물 대조</button>
-                            <button class="btn btn-secondary btn-sm" id="arc-hash-btn" onclick="archiveVerify(true)" title="파일별 해시를 남깁니다. 남긴 뒤부터 내용 손상을 잡을 수 있습니다">해시 남기기</button>
-                        </div>
-                        <div id="arc-progress" style="display:none;margin-top:8px;font-size:11px;color:var(--text-tertiary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;max-height:76px;overflow-y:auto;background:var(--bg-secondary);border-radius:8px;padding:8px 10px;"></div>
-                        <p style="font-size:10.5px;color:var(--text-tertiary);margin-top:7px;line-height:1.45;">
-                            처음 한 번은 오래 걸립니다(수만 건이면 수십 분). 두 번째부터는 <b>바뀐 것만</b> 합니다.
-                            중단해도 거기까지는 남고, 다시 시작하면 이어서 합니다.
-                        </p>
+                            <div class="section" data-group="account">
+                                <div class="section-label">API 주소 교체 <span style="font-weight:400;color:var(--text-tertiary);">· 재빌드 없이 고치기</span></div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                                    트위터 같은 곳은 예고 없이 내부 API 주소(GraphQL ID)를 바꿉니다. 그러면 수집이 갑자기 안 됩니다.
+                                    예전엔 앱을 새로 빌드해야만 고칠 수 있었는데, 여기서 값을 넣으면 <b>다음 수집부터 바로</b> 적용됩니다.
+                                    비워서 저장하면 코드 기본값으로 돌아갑니다.
+                                </p>
+                                <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+                                    <input type="text" class="input" id="api-ov-key" placeholder="키 — 예: twitter.userTweets" style="flex:0 0 250px;font-size:12px;height:32px;" list="api-ov-keys">
+                                    <datalist id="api-ov-keys">
+                                        <option value="twitter.searchTimeline"></option>
+                                        <option value="twitter.userByScreenName"></option>
+                                        <option value="twitter.userTweets"></option>
+                                    </datalist>
+                                    <input type="text" class="input" id="api-ov-val" placeholder="새 주소 (비우면 기본값으로 되돌림)" style="flex:1;min-width:200px;font-size:12px;height:32px;">
+                                    <button class="btn btn-primary btn-sm" onclick="saveApiOverride()">저장</button>
+                                    <button class="btn btn-secondary btn-sm" onclick="if(backend&&backend.openApiOverridesFile)backend.openApiOverridesFile()" title="파일을 직접 편집하려면">파일 열기</button>
+                                </div>
+                                <div id="api-ov-list" style="margin-top:9px;font-size:11.5px;color:var(--text-secondary);"></div>
+                                <p style="font-size:10.5px;color:var(--text-tertiary);margin-top:7px;line-height:1.45;">
+                                    새 주소는 브라우저 개발자도구(F12) → 네트워크에서 해당 요청의 URL 을 그대로 복사해 넣으면 됩니다.
+                                </p>
+                            </div>
 
-                        <div style="margin-top:13px;border:1px solid var(--border-light);border-radius:10px;overflow:hidden;">
-                            <div id="arc-log" style="height:210px;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:9px;background:var(--bg-secondary);"></div>
-                            <div style="display:flex;gap:8px;align-items:center;padding:10px;border-top:1px solid var(--border-light);">
-                                <input type="text" class="input" id="arc-q" placeholder="예) vivoさん 그림 뭐 있어?  /  先生虐待 관련 자료 찾아줘" onkeydown="if(event.key==='Enter')archiveAsk()" style="flex:1;">
-                                <button class="btn btn-primary btn-sm" id="arc-ask-btn" onclick="archiveAsk()">묻기</button>
                             </div>
                         </div>
-                        <p style="font-size:10.5px;color:var(--text-tertiary);margin-top:7px;line-height:1.45;">
-                            그림 <b>내용</b>은 못 봅니다 — 번들 AI 가 글자만 읽습니다. 파일명·EXIF·엑셀처럼
-                            <b>글자로 남은 것</b>이 근거가 됩니다. ("빨간 옷 입은 사람" 같은 질문은 아직 안 됩니다)
-                        </p>
-                    </div>
-
-                    <div class="section">
-                        <div class="section-label">API 주소 교체 <span style="font-weight:400;color:var(--text-tertiary);">· 재빌드 없이 고치기</span></div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
-                            트위터 같은 곳은 예고 없이 내부 API 주소(GraphQL ID)를 바꿉니다. 그러면 수집이 갑자기 안 됩니다.
-                            예전엔 앱을 새로 빌드해야만 고칠 수 있었는데, 여기서 값을 넣으면 <b>다음 수집부터 바로</b> 적용됩니다.
-                            비워서 저장하면 코드 기본값으로 돌아갑니다.
-                        </p>
-                        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
-                            <input type="text" class="input" id="api-ov-key" placeholder="키 — 예: twitter.userTweets" style="flex:0 0 250px;font-size:12px;height:32px;" list="api-ov-keys">
-                            <datalist id="api-ov-keys">
-                                <option value="twitter.searchTimeline"></option>
-                                <option value="twitter.userByScreenName"></option>
-                                <option value="twitter.userTweets"></option>
-                            </datalist>
-                            <input type="text" class="input" id="api-ov-val" placeholder="새 주소 (비우면 기본값으로 되돌림)" style="flex:1;min-width:200px;font-size:12px;height:32px;">
-                            <button class="btn btn-primary btn-sm" onclick="saveApiOverride()">저장</button>
-                            <button class="btn btn-secondary btn-sm" onclick="if(backend&&backend.openApiOverridesFile)backend.openApiOverridesFile()" title="파일을 직접 편집하려면">파일 열기</button>
-                        </div>
-                        <div id="api-ov-list" style="margin-top:9px;font-size:11.5px;color:var(--text-secondary);"></div>
-                        <p style="font-size:10.5px;color:var(--text-tertiary);margin-top:7px;line-height:1.45;">
-                            새 주소는 브라우저 개발자도구(F12) → 네트워크에서 해당 요청의 URL 을 그대로 복사해 넣으면 됩니다.
-                        </p>
-                    </div>
-
-                    <div class="section">
-                        <div class="section-label">모듈 / 라이브러리 업데이트</div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
-                            번들 Python 패키지를 최신 버전으로 업데이트합니다 (twikit, httpx, atproto, yt-dlp 등).
-                        </p>
-                        <button class="btn btn-primary btn-sm" id="module-update-btn" onclick="updateModules()">모듈 업데이트</button>
-                        <span id="module-update-status" style="font-size:11px;color:var(--text-tertiary);margin-left:8px;"></span>
-                    </div>
-
-                    <div class="section">
-                        <div class="section-label">Python 환경 관리</div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
-                            Python 버전 업그레이드 또는 환경이 깨졌을 때 자동 복구합니다.
-                        </p>
-                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                            <button class="btn btn-primary btn-sm" id="python-upgrade-btn" onclick="upgradePython()">Python 업그레이드</button>
-                            <button class="btn btn-secondary btn-sm" id="python-repair-btn" onclick="repairPython()">환경 복구</button>
-                            <span id="python-env-status" style="font-size:11px;color:var(--text-tertiary);"></span>
-                        </div>
-                    </div>
-
-                    <!-- ★ 앱 정보 — 이름·판·만든 곳. 값을 여기에 적지 않는다.
-                         백엔드 getAppInfo() 가 빌드 때 박힌 매크로를 그대로 넘겨준다
-                         (CODENAME·APP_VENDOR·APP_NAME_DISPLAY 단일 출처).
-                         손으로 적어 두면 이름이 바뀔 때 이 화면만 옛 이름으로 남는다. -->
-
-                    <div class="section">
-                        <div class="section-label">앱 정보</div>
-                        <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
-                            <span id="about-name" style="font-size:20px;font-weight:700;letter-spacing:.5px;">—</span>
-                            <span id="about-edition" title="이 판의 이름입니다"
-                                  style="font-size:15px;font-weight:700;color:var(--accent);
-                                         border:1px solid var(--accent);border-radius:6px;padding:1px 8px;">—</span>
-                        </div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin:8px 0 0;">
-                            13개 소셜 플랫폼의 글·그림·영상을 내 컴퓨터에 모아 두는 보관 도구입니다.
-                            수집·정리·백업이 전부 이 컴퓨터 안에서 끝나며, 만든 곳으로 자료가 나가지 않습니다.
-                        </p>
-                        <div style="font-size:12px;color:var(--text-secondary);margin-top:8px;">
-                            만든 곳 · <b id="about-vendor" style="color:var(--text-primary);">—</b>
-                        </div>
-                    </div>
-
-                    <div class="section">
-                        <div class="section-label">시스템 정보</div>
-                        <button class="btn btn-secondary btn-sm" onclick="loadSystemInfo()" style="margin-bottom:8px;">새로고침</button>
-                        <div id="system-info-box" style="background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:var(--radius);padding:10px;font-family:'SF Mono','Menlo',monospace;font-size:11px;line-height:1.7;white-space:pre-wrap;max-height:300px;overflow-y:auto;color:var(--text-secondary);">
-                            로딩 중...
-                        </div>
-                    </div>
-
-                    <!-- ★ yt-dlp 자동 업데이트 — 보안 위험 경고 -->
-                    <div class="section" style="padding:12px; background:rgba(255,180,0,0.06); border:1px solid #ffaa0055; border-radius:8px;">
-                        <div class="section-label">yt-dlp 자동 업데이트 (장기지원 · 기본 ON)</div>
-                        <p style="font-size:12px; color:var(--text-secondary); margin-bottom:8px;">
-                            <strong>YouTube/Twitter 등은 포맷·서명을 수시로 바꿉니다.</strong> 이 옵션이 켜져 있으면
-                            앱 시작 시 yt-dlp 를 stable 최신으로 자동 갱신해 <strong>다운로드가 계속 동작</strong>합니다
-                            (yt-dlp 자체 SHA256 검증 + 갱신 후 <code>--version</code> sanity check + 실패 시 번들본 자동 복원).<br>
-                            <span style="color:var(--text-tertiary)">끄면 앱과 함께 출하된 yt-dlp 만 사용 — 최대 보안이지만
-                            사이트 포맷이 바뀌면 다운로드가 깨지고 새 빌드를 받아야 합니다.</span>
-                        </p>
-                        <label class="option-item">
-                            <input type="checkbox" id="ytdlp-auto-update" checked onchange="onYtDlpToggle(this)">
-                            <span><strong>yt-dlp 자동 업데이트</strong> — 장기 사용 권장 (끄면 최대 보안)</span>
-                        </label>
-                    </div>
-
-                    <!-- ★ NAS 자동 백업 — 로컬 → NAS 마운트 폴더로 cp -->
-                    <div class="section">
-                        <div class="section-label">NAS 자동 백업 (로컬 → NAS 폴더 복사)</div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">
-                            다운로드/캡쳐 완료된 파일을 백그라운드로 NAS 마운트 폴더에 자동 cp.
-                        </p>
-                        <p style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px;line-height:1.5;background:var(--accent-bg);padding:8px;border-radius:6px;border-left:3px solid var(--accent);">
-                            <strong>속도 자동 최적화</strong>:<br>
-                            • Apple WebDAV mount + WebDAV 자격증명 → <strong>rclone</strong> 자동 사용 (5-50배 빠름)<br>
-                            • Mountain Duck mount → 8 워커 + cache 활용 (background sync)<br>
-                            • SMB / AFP / NFS / 외장 SSD → 4 워커 병렬 cp<br>
-                            ★ NAS 가 본인 소유 아니면 <strong>Mountain Duck</strong> (mountainduck.io) 권장
-                        </p>
-                        <label class="option-item" style="margin-bottom:8px;">
-                            <input type="checkbox" id="backup-enabled" onchange="onBackupToggle(this)">
-                            <span><strong>백업 활성화</strong> — 모든 다운로드 자동 백업</span>
-                        </label>
-                        <label class="option-item" style="margin-bottom:8px;">
-                            <input type="checkbox" id="nas-auto-reconnect" checked onchange="onNasAutoReconnectToggle(this)">
-                            <span><strong>NAS 자동 재연결</strong> — 마운트 끊기면 30초 안 자동 remount</span>
-                        </label>
-                        <!-- ★ 백업 진행률 -->
-                        <div id="backup-progress-wrap" style="margin:10px 0;display:none;">
-                            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">
-                                <span id="backup-progress-text">대기 중</span>
-                                <span id="backup-progress-pct">0%</span>
+                        <div class="sg" data-group="backup">
+                            <div class="sg-title">백업</div>
+                            <div class="sg-body">
+                            <!-- ★ 사용자 정보 내보내기 / 불러오기 — 계정 + 경로 + 폼 + 토큰 통째 백업/복원 -->
+                            <div class="section" data-group="backup">
+                                <div class="section-label">사용자 정보 백업 / 복원</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                                    계정 토큰 / 저장 경로 / 폼 입력값 / WebDAV 자격증명 / 백업 설정 등 모든 사용자 입력 정보를 JSON 파일 1개로 통째 백업.
+                                    다른 PC 로 이동 / 재설치 시 복원 가능.
+                                </p>
+                                <div class="btn-row" style="gap:8px;">
+                                    <button class="btn btn-primary btn-sm" onclick="exportConfigUi()">내보내기 (JSON)</button>
+                                    <button class="btn btn-secondary btn-sm" onclick="importConfigUi()">불러오기 (JSON)</button>
+                                </div>
+                                <p style="font-size:11px;color:var(--text-tertiary);margin-top:6px;line-height:1.4;background:rgba(220,38,38,0.08);padding:6px;border-radius:4px;border-left:3px solid #dc2626;">
+                                    <strong>주의:</strong> 내보낸 파일에 계정 토큰 / 비밀번호 / 쿠키 포함 — 안전한 곳에 보관, 공유 절대 X.
+                                </p>
                             </div>
-                            <div style="background:var(--bg-tertiary);height:8px;border-radius:4px;overflow:hidden;">
-                                <div id="backup-progress-bar" style="height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-hover));width:0%;transition:width 0.3s;"></div>
+                            <!-- ★ NAS 자동 백업 — 로컬 → NAS 마운트 폴더로 cp -->
+                            <div class="section" data-group="backup">
+                                <div class="section-label">NAS 자동 백업 (로컬 → NAS 폴더 복사)</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">
+                                    다운로드/캡쳐 완료된 파일을 백그라운드로 NAS 마운트 폴더에 자동 cp.
+                                </p>
+                                <p style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px;line-height:1.5;background:var(--accent-bg);padding:8px;border-radius:6px;border-left:3px solid var(--accent);">
+                                    <strong>속도 자동 최적화</strong>:<br>
+                                    • Apple WebDAV mount + WebDAV 자격증명 → <strong>rclone</strong> 자동 사용 (5-50배 빠름)<br>
+                                    • Mountain Duck mount → 8 워커 + cache 활용 (background sync)<br>
+                                    • SMB / AFP / NFS / 외장 SSD → 4 워커 병렬 cp<br>
+                                    ★ NAS 가 본인 소유 아니면 <strong>Mountain Duck</strong> (mountainduck.io) 권장
+                                </p>
+                                <label class="option-item" style="margin-bottom:8px;">
+                                    <input type="checkbox" id="backup-enabled" onchange="onBackupToggle(this)">
+                                    <span><strong>백업 활성화</strong> — 모든 다운로드 자동 백업</span>
+                                </label>
+                                <label class="option-item" style="margin-bottom:8px;">
+                                    <input type="checkbox" id="nas-auto-reconnect" checked onchange="onNasAutoReconnectToggle(this)">
+                                    <span><strong>NAS 자동 재연결</strong> — 마운트 끊기면 30초 안 자동 remount</span>
+                                </label>
+                                <!-- ★ 백업 진행률 -->
+                                <div id="backup-progress-wrap" style="margin:10px 0;display:none;">
+                                    <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">
+                                        <span id="backup-progress-text">대기 중</span>
+                                        <span id="backup-progress-pct">0%</span>
+                                    </div>
+                                    <div style="background:var(--bg-tertiary);height:8px;border-radius:4px;overflow:hidden;">
+                                        <div id="backup-progress-bar" style="height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-hover));width:0%;transition:width 0.3s;"></div>
+                                    </div>
+                                </div>
+                                <div class="input-row" style="margin-bottom:6px;">
+                                    <div class="field" style="flex:3;">
+                                        <label class="field-label">백업 경로</label>
+                                        <input type="text" class="input" id="backup-path" placeholder="(미설정 — 아래 [경로 선택] 클릭)" readonly>
+                                    </div>
+                                    <button class="btn btn-primary btn-sm" onclick="pickBackupPathUi()">경로 선택</button>
+                                    <button class="btn btn-secondary btn-sm" onclick="testBackupUi()">테스트</button>
+                                    <button class="btn btn-primary btn-sm" id="backup-now-btn" onclick="backupNowUi()" title="백업 토글 OFF 여도 지금 1회 강제 백업 실행 (이미 복사된 파일 자동 skip)">지금 백업</button>
+                                    <button class="btn btn-secondary btn-sm" onclick="resyncAllUi()" title="수집 끝난 후 모든 폴더 통째 NAS 로 재sync (idempotent — 누락된 파일만 추가 cp)">전체 재sync</button>
+                                    <button class="btn btn-secondary btn-sm" id="backup-stop-btn" onclick="stopBackupUi()" title="진행 중인 백업 즉시 중지 (활성 cp 강제 종료)" style="background:#dc2626;color:#fff;border-color:#dc2626;">중지</button>
+                                </div>
                             </div>
-                        </div>
-                        <div class="input-row" style="margin-bottom:6px;">
-                            <div class="field" style="flex:3;">
-                                <label class="field-label">백업 경로</label>
-                                <input type="text" class="input" id="backup-path" placeholder="(미설정 — 아래 [경로 선택] 클릭)" readonly>
-                            </div>
-                            <button class="btn btn-primary btn-sm" onclick="pickBackupPathUi()">경로 선택</button>
-                            <button class="btn btn-secondary btn-sm" onclick="testBackupUi()">테스트</button>
-                            <button class="btn btn-primary btn-sm" id="backup-now-btn" onclick="backupNowUi()" title="백업 토글 OFF 여도 지금 1회 강제 백업 실행 (이미 복사된 파일 자동 skip)">지금 백업</button>
-                            <button class="btn btn-secondary btn-sm" onclick="resyncAllUi()" title="수집 끝난 후 모든 폴더 통째 NAS 로 재sync (idempotent — 누락된 파일만 추가 cp)">전체 재sync</button>
-                            <button class="btn btn-secondary btn-sm" id="backup-stop-btn" onclick="stopBackupUi()" title="진행 중인 백업 즉시 중지 (활성 cp 강제 종료)" style="background:#dc2626;color:#fff;border-color:#dc2626;">중지</button>
-                        </div>
-                    </div>
 
-                    <div class="section">
-                        <div class="section-label">원격 백업 — 마운트 없이 바로 올리기</div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:9px;">
-                            NAS 를 마운트하지 않고 <b>주소로 바로 업로드</b>합니다 — WebDAV(HTTPS) · FTP · SFTP · S3.
-                            <b>이어올리기</b>: 이미 올라간 같은 파일은 건너뛰고, 끊긴 전송은 이어서 보냅니다.
-                        </p>
-                        <div class="field" style="margin-bottom:6px;">
-                            <label class="field-label">종류</label>
-                            <select class="input" id="rbk-type" onchange="onRemoteBackupTypeChange()" style="max-width:220px;height:34px;">
-                                <option value="webdav">WebDAV / HTTPS</option>
-                                <option value="ftp">FTP</option>
-                                <option value="sftp">SFTP (SSH)</option>
-                                <option value="s3">S3 (AWS / 호환)</option>
-                            </select>
-                        </div>
-                        <div class="field rbk-f rbk-webdav" style="margin-bottom:6px;">
-                            <label class="field-label">주소</label>
-                            <input type="text" class="input" id="rbk-url" placeholder="https://nas.example.com/dav">
-                        </div>
-                        <div class="input-row rbk-f rbk-host" style="margin-bottom:6px;display:none;">
-                            <div class="field" style="flex:2;"><label class="field-label">호스트</label>
-                                <input type="text" class="input" id="rbk-host" placeholder="ftp.example.com"></div>
-                            <div class="field" style="flex:1;"><label class="field-label">포트</label>
-                                <input type="text" class="input" id="rbk-port" placeholder="21 / 22"></div>
-                        </div>
-                        <div class="input-row rbk-f rbk-cred" style="margin-bottom:6px;">
-                            <div class="field" style="flex:1;"><label class="field-label">사용자</label>
-                                <input type="text" class="input" id="rbk-user" placeholder="username"></div>
-                            <div class="field" style="flex:1;"><label class="field-label">비밀번호</label>
-                                <input type="password" class="input" id="rbk-pass" placeholder="password"></div>
-                        </div>
-                        <div class="rbk-f rbk-s3" style="display:none;margin-bottom:6px;">
-                            <div class="input-row" style="margin-bottom:6px;">
-                                <div class="field" style="flex:1;"><label class="field-label">버킷</label>
-                                    <input type="text" class="input" id="rbk-bucket" placeholder="my-bucket"></div>
-                                <div class="field" style="flex:1;"><label class="field-label">리전</label>
-                                    <input type="text" class="input" id="rbk-region" placeholder="us-east-1"></div>
+                            <div class="section" data-group="backup">
+                                <div class="section-label">원격 백업 — 마운트 없이 바로 올리기</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:9px;">
+                                    NAS 를 마운트하지 않고 <b>주소로 바로 업로드</b>합니다 — WebDAV(HTTPS) · FTP · SFTP · S3.
+                                    <b>이어올리기</b>: 이미 올라간 같은 파일은 건너뛰고, 끊긴 전송은 이어서 보냅니다.
+                                </p>
+                                <div class="field" style="margin-bottom:6px;">
+                                    <label class="field-label">종류</label>
+                                    <select class="input" id="rbk-type" onchange="onRemoteBackupTypeChange()" style="max-width:220px;height:34px;">
+                                        <option value="webdav">WebDAV / HTTPS</option>
+                                        <option value="ftp">FTP</option>
+                                        <option value="sftp">SFTP (SSH)</option>
+                                        <option value="s3">S3 (AWS / 호환)</option>
+                                    </select>
+                                </div>
+                                <div class="field rbk-f rbk-webdav" style="margin-bottom:6px;">
+                                    <label class="field-label">주소</label>
+                                    <input type="text" class="input" id="rbk-url" placeholder="https://nas.example.com/dav">
+                                </div>
+                                <div class="input-row rbk-f rbk-host" style="margin-bottom:6px;display:none;">
+                                    <div class="field" style="flex:2;"><label class="field-label">호스트</label>
+                                        <input type="text" class="input" id="rbk-host" placeholder="ftp.example.com"></div>
+                                    <div class="field" style="flex:1;"><label class="field-label">포트</label>
+                                        <input type="text" class="input" id="rbk-port" placeholder="21 / 22"></div>
+                                </div>
+                                <div class="input-row rbk-f rbk-cred" style="margin-bottom:6px;">
+                                    <div class="field" style="flex:1;"><label class="field-label">사용자</label>
+                                        <input type="text" class="input" id="rbk-user" placeholder="username"></div>
+                                    <div class="field" style="flex:1;"><label class="field-label">비밀번호</label>
+                                        <input type="password" class="input" id="rbk-pass" placeholder="password"></div>
+                                </div>
+                                <div class="rbk-f rbk-s3" style="display:none;margin-bottom:6px;">
+                                    <div class="input-row" style="margin-bottom:6px;">
+                                        <div class="field" style="flex:1;"><label class="field-label">버킷</label>
+                                            <input type="text" class="input" id="rbk-bucket" placeholder="my-bucket"></div>
+                                        <div class="field" style="flex:1;"><label class="field-label">리전</label>
+                                            <input type="text" class="input" id="rbk-region" placeholder="us-east-1"></div>
+                                    </div>
+                                    <div class="input-row" style="margin-bottom:6px;">
+                                        <div class="field" style="flex:1;"><label class="field-label">Access Key</label>
+                                            <input type="text" class="input" id="rbk-akey" placeholder="AKIA..."></div>
+                                        <div class="field" style="flex:1;"><label class="field-label">Secret Key</label>
+                                            <input type="password" class="input" id="rbk-secret" placeholder="secret"></div>
+                                    </div>
+                                    <div class="field"><label class="field-label">Endpoint <span style="font-weight:400;color:var(--text-tertiary);">· S3 호환 — 비우면 AWS</span></label>
+                                        <input type="text" class="input" id="rbk-endpoint" placeholder="https://s3.wasabisys.com (선택)"></div>
+                                </div>
+                                <div class="field" style="margin-bottom:6px;">
+                                    <label class="field-label">소스 폴더 <span style="font-weight:400;color:var(--text-tertiary);">· 업로드할 로컬 폴더</span></label>
+                                    <div style="display:flex;gap:8px;">
+                                        <input type="text" class="input" id="rbk-src" placeholder="(미설정 — [폴더 선택])" readonly style="flex:1;">
+                                        <button class="btn btn-secondary btn-sm" onclick="pickRemoteBackupSrcUi()">폴더 선택</button>
+                                    </div>
+                                </div>
+                                <div class="field" style="margin-bottom:8px;">
+                                    <label class="field-label">원격 경로 <span style="font-weight:400;color:var(--text-tertiary);">· 비우면 루트</span></label>
+                                    <input type="text" class="input" id="rbk-dest" placeholder="backup/camera">
+                                </div>
+                                <div style="display:flex;gap:8px;">
+                                    <button class="btn btn-primary btn-sm" id="rbk-go-btn" onclick="startRemoteBackupUi()">지금 업로드</button>
+                                    <button class="btn btn-secondary btn-sm" onclick="stopRemoteBackupUi()">중지</button>
+                                </div>
                             </div>
-                            <div class="input-row" style="margin-bottom:6px;">
-                                <div class="field" style="flex:1;"><label class="field-label">Access Key</label>
-                                    <input type="text" class="input" id="rbk-akey" placeholder="AKIA..."></div>
-                                <div class="field" style="flex:1;"><label class="field-label">Secret Key</label>
-                                    <input type="password" class="input" id="rbk-secret" placeholder="secret"></div>
+
+                            <div class="section" data-group="backup">
+                                <div class="section-label">NAS 자동 업로드 — WebDAV / SFTP (Synology 등)</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                                    캡쳐/다운로드 완료된 파일을 자동으로 NAS 로 업로드합니다. 로컬 + NAS 양쪽 보관.
+                                    <br><b>주소 앞부분이 방식을 정합니다</b> — <code>https://</code> 면 WebDAV, <code>sftp://</code> 면 SFTP.
+                                    <br>SFTP 예) <code>sftp://내나스:22/volume1/공유폴더</code> · NAS 제어판에서 SSH/SFTP 를 먼저 켜 두세요.
+                                </p>
+                                <div class="field" style="margin-bottom:6px;">
+                                    <label class="field-label">주소 (WebDAV https:// 또는 SFTP sftp://)</label>
+                                    <input type="text" class="input" id="settings-webdav-url" placeholder="https://나스:5006/공유폴더  또는  sftp://나스:22/volume1/공유폴더">
+                                </div>
+                                <div class="field" style="margin-bottom:6px;">
+                                    <label class="field-label">SSH 개인키 파일 <span style="font-weight:400;color:var(--text-tertiary);">· SFTP 전용 · 선택</span></label>
+                                    <input type="text" class="input" id="settings-sftp-key" placeholder="~/.ssh/id_ed25519 — 채우면 비밀번호 대신 이 키로 접속">
+                                </div>
+                                <div class="input-row" style="margin-bottom:6px;">
+                                    <div class="field" style="flex:1;">
+                                        <label class="field-label">사용자명</label>
+                                        <input type="text" class="input" id="settings-webdav-user" placeholder="username">
+                                    </div>
+                                    <div class="field" style="flex:1;">
+                                        <label class="field-label">비밀번호</label>
+                                        <input type="password" class="input" id="settings-webdav-pass" placeholder="password">
+                                    </div>
+                                </div>
+                                <label class="option-item" style="margin-bottom:8px;">
+                                    <input type="checkbox" id="settings-webdav-enabled" onchange="onWebDavEnabledToggle(this)"> 자동 업로드 활성화
+                                </label>
+                                <div class="btn-row" style="margin-top:6px;">
+                                    <button class="btn btn-primary btn-sm" onclick="saveWebDavConfig()">저장</button>
+                                    <button class="btn btn-secondary btn-sm" onclick="testWebDavConn()">연결 테스트</button>
+                                    <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);width:100%;">
+                                        <label style="display:flex;align-items:flex-start;gap:7px;font-size:12px;color:var(--text-secondary);cursor:pointer;">
+                                            <input type="checkbox" id="unix-filenames" onchange="setUnixFilenames(this.checked)" style="margin-top:2px;accent-color:var(--accent);">
+                                            <span>NAS 가 유닉스 파일시스템(ext4 · Btrfs)입니다 — 특수문자를 원문 그대로 저장
+                                            <br><span style="color:var(--text-tertiary);font-size:10.5px;">끄면(기본) 윈도우 호환 — <code>: * ? " &lt; &gt; |</code> 를 모양이 같은 전각 문자로 바꿔 저장합니다. NTFS · exFAT · 윈도우 기반 NAS · SMB 공유에서도 안전합니다.</span></span>
+                                        </label>
+                                    </div>
+                            
+                                    <button class="btn btn-secondary btn-sm" onclick="mountWebDavFinder()" title="Mac Finder에 마운트 — 권한 문제 우회">Finder에 마운트</button>
+                                    <button class="btn btn-secondary btn-sm" onclick="openSecurityPrefs()" title="권한 거부 시 시스템 설정 열기">권한 설정</button>
+                                </div>
+                                <div style="margin-top:10px; padding-top:10px; border-top:1px solid #2a2a30;">
+                                    <div class="section-label" style="margin-bottom:6px;">저장 위치 모드</div>
+                                    <label class="option-item" style="margin-bottom:4px;">
+                                        <input type="checkbox" id="storage-mode-nas" onchange="onStorageModeToggle(this,'nas')">
+                                        <span>NAS 로 자동 저장 (모든 플랫폼 일괄)</span>
+                                    </label>
+                                    <label class="option-item" style="margin-bottom:4px;">
+                                        <input type="checkbox" id="storage-mode-external" onchange="onStorageModeToggle(this,'external')">
+                                        <span>외장 디스크로 자동 저장 (모든 플랫폼 일괄)</span>
+                                    </label>
+                                    <p id="storage-mode-info" style="font-size:11px; color:var(--text-secondary); margin-top:6px;">
+                                        둘 다 꺼두면 각 플랫폼 탭에서 개별 경로 지정. 체크하면 모든 플랫폼 input 자동 숨김.
+                                    </p>
+                                </div>
+                                <p style="font-size:11px;color:var(--text-secondary);margin-top:6px;">
+                                    <strong>Finder에 마운트:</strong> macOS가 OS 차원에서 인증 처리 → 권한 거부 우회.
+                                    마운트되면 <code>/Volumes/&lt;공유폴더&gt;</code> 가 생기고 Finder 사이드바에 표시.
+                                    저장 경로를 그 폴더로 바꾸면 다운로드가 NAS로 직행.
+                                </p>
                             </div>
-                            <div class="field"><label class="field-label">Endpoint <span style="font-weight:400;color:var(--text-tertiary);">· S3 호환 — 비우면 AWS</span></label>
-                                <input type="text" class="input" id="rbk-endpoint" placeholder="https://s3.wasabisys.com (선택)"></div>
-                        </div>
-                        <div class="field" style="margin-bottom:6px;">
-                            <label class="field-label">소스 폴더 <span style="font-weight:400;color:var(--text-tertiary);">· 업로드할 로컬 폴더</span></label>
-                            <div style="display:flex;gap:8px;">
-                                <input type="text" class="input" id="rbk-src" placeholder="(미설정 — [폴더 선택])" readonly style="flex:1;">
-                                <button class="btn btn-secondary btn-sm" onclick="pickRemoteBackupSrcUi()">폴더 선택</button>
+
                             </div>
                         </div>
-                        <div class="field" style="margin-bottom:8px;">
-                            <label class="field-label">원격 경로 <span style="font-weight:400;color:var(--text-tertiary);">· 비우면 루트</span></label>
-                            <input type="text" class="input" id="rbk-dest" placeholder="backup/camera">
-                        </div>
-                        <div style="display:flex;gap:8px;">
-                            <button class="btn btn-primary btn-sm" id="rbk-go-btn" onclick="startRemoteBackupUi()">지금 업로드</button>
-                            <button class="btn btn-secondary btn-sm" onclick="stopRemoteBackupUi()">중지</button>
-                        </div>
-                    </div>
+                        <div class="sg" data-group="ai">
+                            <div class="sg-title">AI · 보관함</div>
+                            <div class="sg-body">
+                            <div class="section" data-group="ai">
+                                <div class="section-label">로컬 AI · ハニワ</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                                    이 컴퓨터 안에서만 도는 로컬 AI(오프라인·인터넷 안 씀). 잡담·질문·글쓰기·번역 등 <b>무엇이든 자유롭게 대화</b>할 수 있고,
+                                    수집이 안 될 땐 원인 진단·수리도 도와줍니다. 외부 서버 없이 앱 안(127.0.0.1)에서 실행됩니다.
+                                </p>
+                                <!-- ★ 방식 선택 — 로컬(번들 엔진) / 온라인(OpenAI 호환 API) -->
+                                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                                    <span style="font-size:12px;color:var(--text-secondary);">방식</span>
+                                    <select class="input" id="ai-mode" onchange="setAiMode(this.value)" style="max-width:190px;height:34px;">
+                                        <option value="local">로컬 (이 컴퓨터)</option>
+                                        <option value="online">온라인 (API 키)</option>
+                                    </select>
+                                    <span id="llm-status-pill" style="font-size:11.5px;font-weight:700;padding:4px 11px;border-radius:20px;background:var(--bg-tertiary);color:var(--text-secondary);">확인 중…</span>
+                                </div>
 
-                    <div class="section">
-                        <div class="section-label">NAS 자동 업로드 — WebDAV / SFTP (Synology 등)</div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
-                            캡쳐/다운로드 완료된 파일을 자동으로 NAS 로 업로드합니다. 로컬 + NAS 양쪽 보관.
-                            <br><b>주소 앞부분이 방식을 정합니다</b> — <code>https://</code> 면 WebDAV, <code>sftp://</code> 면 SFTP.
-                            <br>SFTP 예) <code>sftp://내나스:22/volume1/공유폴더</code> · NAS 제어판에서 SSH/SFTP 를 먼저 켜 두세요.
-                        </p>
-                        <div class="field" style="margin-bottom:6px;">
-                            <label class="field-label">주소 (WebDAV https:// 또는 SFTP sftp://)</label>
-                            <input type="text" class="input" id="settings-webdav-url" placeholder="https://나스:5006/공유폴더  또는  sftp://나스:22/volume1/공유폴더">
-                        </div>
-                        <div class="field" style="margin-bottom:6px;">
-                            <label class="field-label">SSH 개인키 파일 <span style="font-weight:400;color:var(--text-tertiary);">· SFTP 전용 · 선택</span></label>
-                            <input type="text" class="input" id="settings-sftp-key" placeholder="~/.ssh/id_ed25519 — 채우면 비밀번호 대신 이 키로 접속">
-                        </div>
-                        <div class="input-row" style="margin-bottom:6px;">
-                            <div class="field" style="flex:1;">
-                                <label class="field-label">사용자명</label>
-                                <input type="text" class="input" id="settings-webdav-user" placeholder="username">
+                                <!-- 온라인 설정 — 제공자별 코드 없이 OpenAI 호환이면 무엇이든 붙는다 -->
+                                <div id="ai-online-box" style="display:none;margin-top:9px;">
+                                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                                        <input type="text" class="input" id="ai-base-url" placeholder="기준 URL — 예: https://api.openai.com" style="flex:1;min-width:230px;">
+                                        <input type="text" class="input" id="ai-model-name" placeholder="모델 — 예: gpt-4o-mini" style="flex:0 0 200px;">
+                                    </div>
+                                    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
+                                        <input type="password" class="input" id="ai-api-key" placeholder="API 키 (저장 후에는 표시되지 않습니다)" style="flex:1;min-width:230px;">
+                                        <button class="btn btn-primary btn-sm" onclick="saveAiOnline()">저장</button>
+                                        <button class="btn btn-secondary btn-sm" onclick="testAiOnline()">연결 시험</button>
+                                    </div>
+                                    <p style="font-size:10.5px;color:var(--text-tertiary);margin-top:7px;line-height:1.45;">
+                                        OpenAI 호환 API 면 무엇이든 됩니다 — OpenAI · OpenRouter · Groq · DeepSeek · 사내 게이트웨이.
+                                        키는 이 컴퓨터의 설정 파일에만 저장되고 화면에 다시 표시되지 않습니다.
+                                    </p>
+                                </div>
+
+                                <!-- 로컬 전용 조작 -->
+                                <div id="ai-local-box" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:9px;">
+                                    <select class="input" id="llm-model" onchange="setLlmModel(this.value)" title="수리·대화에 쓸 AI 두뇌. coder(7B) 가 가장 똑똑하지만 느리고 메모리를 많이 씁니다." style="max-width:210px;height:34px;"></select>
+                                    <button class="btn btn-primary btn-sm" id="llm-start-btn" onclick="startLocalLlm()">AI 켜기</button>
+                                    <button class="btn btn-secondary btn-sm" id="llm-stop-btn" onclick="stopLocalLlm()" style="display:none;">끄기</button>
+                                    <button class="btn btn-secondary btn-sm" id="llm-term-btn" onclick="openLlmTerminal()" title="ハニワ를 터미널 창에서 대화형으로 엽니다">터미널로 열기</button>
+                                </div>
+                                <p style="font-size:11px;color:var(--text-tertiary);margin-top:7px;">
+                                    엔드포인트 127.0.0.1:8737 · 첫 기동은 모델 로딩에 수 초 걸립니다. 터미널 수동 기동도 가능(README).
+                                </p>
+
+                                <!-- ★ AI 와 대화하며 수리 -->
+                                <div style="margin-top:14px;font-size:12px;font-weight:600;color:var(--text-secondary);">ハニワ와 자유롭게 대화</div>
+                                <div id="ai-chat" style="margin-top:7px;border:1px solid var(--border-light);border-radius:10px;overflow:hidden;">
+                                    <div id="ai-chat-log" style="height:230px;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:9px;background:var(--bg-secondary);"></div>
+                                    <div style="display:flex;gap:6px;flex-wrap:wrap;padding:8px 10px;border-top:1px solid var(--border-light);">
+                                        <button class="btn btn-primary btn-sm" id="auto-repair-btn" onclick="startAutoRepair()" title="ハニワ가 스스로 점검·수리: 스크립트 코드 문법 오류를 자동으로 고치고(검증·실패시 원복) 환경·모듈·토큰 문제도 진단해 수리. 대화창에 '코드 고쳐줘'라고 해도 발동합니다.">AI 자동 수리</button>
+                                        <span style="font-size:11px;color:var(--text-tertiary);align-self:center;">· 수동:</span>
+                                        <button class="btn btn-secondary btn-sm" onclick="aiRepair('repairPython','환경 복구')">환경 복구</button>
+                                        <button class="btn btn-secondary btn-sm" onclick="aiRepair('updateModules','모듈 업데이트')">모듈 업데이트</button>
+                                        <button class="btn btn-secondary btn-sm" onclick="aiRepair('refreshAllTokens','토큰 추출')">토큰 추출</button>
+                                    </div>
+                                    <div style="display:flex;gap:8px;align-items:center;padding:10px;border-top:1px solid var(--border-light);">
+                                        <label id="web-toggle-wrap" title="켜면 답변 시 웹을 읽기전용으로 검색해 참고합니다 (검색 키 필요)" style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary);cursor:pointer;white-space:nowrap;">
+                                            <input type="checkbox" id="ai-web-toggle" onchange="setLlmUseWeb(this.checked)" style="accent-color:var(--accent);">웹</label>
+                                        <input type="text" class="input" id="ai-chat-input" placeholder="무엇이든 물어보세요 — 잡담도, 질문도, 수리도" onkeydown="if(event.key==='Enter')sendAiChat()" style="flex:1;">
+                                        <input type="file" id="ai-image-file" accept="image/*" style="display:none" onchange="attachAiImage(this)">
+                                        <button class="btn btn-secondary btn-sm" id="ai-image-btn" onclick="document.getElementById('ai-image-file').click()" title="그림을 붙여서 물어봅니다 (그림 읽는 모델이 켜져 있어야 합니다)">🖼 그림</button>
+                                        <button class="btn btn-primary btn-sm" id="ai-chat-send" onclick="sendAiChat()">보내기</button>
+                                    </div>
+                                    <!-- 붙인 그림 미리보기 -->
+                                    <div id="ai-image-strip" style="display:none;gap:8px;align-items:center;padding:0 10px 8px;font-size:11px;color:var(--text-secondary);">
+                                        <img id="ai-image-thumb" style="height:38px;border-radius:6px;border:1px solid var(--border-light);">
+                                        <span id="ai-image-name"></span>
+                                        <button class="btn btn-secondary btn-sm" onclick="clearAiImage()" style="height:24px;padding:0 8px;">떼기</button>
+                                    </div>
+                                    <div style="display:flex;gap:6px;align-items:center;padding:0 10px 10px;">
+                                        <input type="password" class="input" id="ai-search-key" placeholder="Brave Search API 키 (무료·읽기전용 웹검색용)" onchange="setSearchKey(this.value)" style="flex:1;font-size:11px;height:30px;">
+                                        <a href="https://brave.com/search/api/" onclick="return false;" title="brave.com/search/api 에서 무료 키 발급 (월 2000회)" style="font-size:10px;color:var(--text-tertiary);white-space:nowrap;">무료 키 발급 ↗</a>
+                                    </div>
+                                </div>
+                                <div style="margin-top:14px;font-size:12px;font-weight:600;color:var(--text-secondary);">AI 스크립트 자가수리 <span style="font-weight:400;color:var(--text-tertiary);">· 백업·문법검증·자동원복(안전)</span></div>
+                                <div style="display:flex;gap:6px;align-items:center;margin-top:7px;flex-wrap:wrap;">
+                                    <select class="input" id="fix-script-sel" onchange="loadScriptState()" style="max-width:180px;height:32px;font-size:12px;">
+                                        <option value="twitter_api.py">twitter_api.py</option>
+                                        <option value="twitter_tid.py">twitter_tid.py</option>
+                                        <option value="twitter_daemon.py">twitter_daemon.py</option>
+                                        <option value="bluesky_daemon.py">bluesky_daemon.py</option>
+                                        <option value="email_watch.py">email_watch.py</option>
+                                    </select>
+                                    <span id="fix-script-badge" style="font-size:11px;color:var(--text-tertiary);white-space:nowrap;">○ 번들 원본</span>
+                                </div>
+                                <div style="display:flex;gap:6px;align-items:center;margin-top:6px;">
+                                    <input type="text" class="input" id="fix-script-problem" placeholder="문제 설명(선택) — 예: 트위터 API 변경으로 수집 오류" style="flex:1;height:32px;font-size:12px;">
+                                    <button class="btn btn-primary btn-sm" onclick="aiFixScript()" title="ハニワ가 이 스크립트를 읽고 고쳐서 적용합니다(문법 통과 시에만, 실패하면 자동 원복)">AI 고치기</button>
+                                    <button class="btn btn-secondary btn-sm" onclick="revertScriptUi()" title="AI 수정본을 지우고 번들 원본으로">↺ 초기화</button>
+                                </div>
+                                <p style="font-size:10.5px;color:var(--text-tertiary);margin-top:6px;line-height:1.4;">
+                                    로컬 작은 모델은 코드를 완벽히 고치지 못할 수 있습니다. 잘못돼도 문법검증에서 막고 자동 원복되며, 언제든 <b>초기화</b>로 원본 복구됩니다.
+                                </p>
                             </div>
-                            <div class="field" style="flex:1;">
-                                <label class="field-label">비밀번호</label>
-                                <input type="password" class="input" id="settings-webdav-pass" placeholder="password">
+
+                            <div class="section" data-group="ai">
+                                <div class="section-label">산출물 보관함 — 모아둔 자료에 물어보기</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:9px;">
+                                    수집해 둔 파일(이미지 EXIF의 작가·제목·원본 URL, 엑셀 목록, 설명글)을 한 번 색인해 두면,
+                                    <b>"vivoさん 그림 뭐 있어?"</b> 처럼 물어볼 수 있습니다. 답에는 <b>근거 파일</b>이 함께 나옵니다.
+                                </p>
+                                <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">
+                                    <span id="arc-pill" style="font-size:11.5px;font-weight:700;padding:4px 11px;border-radius:20px;background:var(--bg-tertiary);color:var(--text-secondary);">확인 중…</span>
+                                    <input type="text" class="input" id="arc-root" placeholder="산출물 폴더 경로" style="flex:1;min-width:200px;height:34px;font-size:12px;">
+                                    <button class="btn btn-primary btn-sm" id="arc-index-btn" onclick="archiveIndex()">색인 만들기</button>
+                                    <button class="btn btn-secondary btn-sm" id="arc-cancel-btn" onclick="archiveCancel()" style="display:none;">중단</button>
+                                    <button class="btn btn-secondary btn-sm" id="arc-verify-btn" onclick="archiveVerify(false)" title="예전에 남긴 기록과 지금을 견줍니다">보관물 대조</button>
+                                    <button class="btn btn-secondary btn-sm" id="arc-hash-btn" onclick="archiveVerify(true)" title="파일별 해시를 남깁니다. 남긴 뒤부터 내용 손상을 잡을 수 있습니다">해시 남기기</button>
+                                </div>
+                                <div id="arc-progress" style="display:none;margin-top:8px;font-size:11px;color:var(--text-tertiary);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;max-height:76px;overflow-y:auto;background:var(--bg-secondary);border-radius:8px;padding:8px 10px;"></div>
+                                <p style="font-size:10.5px;color:var(--text-tertiary);margin-top:7px;line-height:1.45;">
+                                    처음 한 번은 오래 걸립니다(수만 건이면 수십 분). 두 번째부터는 <b>바뀐 것만</b> 합니다.
+                                    중단해도 거기까지는 남고, 다시 시작하면 이어서 합니다.
+                                </p>
+
+                                <div style="margin-top:13px;border:1px solid var(--border-light);border-radius:10px;overflow:hidden;">
+                                    <div id="arc-log" style="height:210px;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:9px;background:var(--bg-secondary);"></div>
+                                    <div style="display:flex;gap:8px;align-items:center;padding:10px;border-top:1px solid var(--border-light);">
+                                        <input type="text" class="input" id="arc-q" placeholder="예) vivoさん 그림 뭐 있어?  /  先生虐待 관련 자료 찾아줘" onkeydown="if(event.key==='Enter')archiveAsk()" style="flex:1;">
+                                        <button class="btn btn-primary btn-sm" id="arc-ask-btn" onclick="archiveAsk()">묻기</button>
+                                    </div>
+                                </div>
+                                <p style="font-size:10.5px;color:var(--text-tertiary);margin-top:7px;line-height:1.45;">
+                                    그림 <b>내용</b>은 못 봅니다 — 번들 AI 가 글자만 읽습니다. 파일명·EXIF·엑셀처럼
+                                    <b>글자로 남은 것</b>이 근거가 됩니다. ("빨간 옷 입은 사람" 같은 질문은 아직 안 됩니다)
+                                </p>
+                            </div>
+
                             </div>
                         </div>
-                        <label class="option-item" style="margin-bottom:8px;">
-                            <input type="checkbox" id="settings-webdav-enabled" onchange="onWebDavEnabledToggle(this)"> 자동 업로드 활성화
-                        </label>
-                        <div class="btn-row" style="margin-top:6px;">
-                            <button class="btn btn-primary btn-sm" onclick="saveWebDavConfig()">저장</button>
-                            <button class="btn btn-secondary btn-sm" onclick="testWebDavConn()">연결 테스트</button>
-                            <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);width:100%;">
-                                <label style="display:flex;align-items:flex-start;gap:7px;font-size:12px;color:var(--text-secondary);cursor:pointer;">
-                                    <input type="checkbox" id="unix-filenames" onchange="setUnixFilenames(this.checked)" style="margin-top:2px;accent-color:var(--accent);">
-                                    <span>NAS 가 유닉스 파일시스템(ext4 · Btrfs)입니다 — 특수문자를 원문 그대로 저장
-                                    <br><span style="color:var(--text-tertiary);font-size:10.5px;">끄면(기본) 윈도우 호환 — <code>: * ? " &lt; &gt; |</code> 를 모양이 같은 전각 문자로 바꿔 저장합니다. NTFS · exFAT · 윈도우 기반 NAS · SMB 공유에서도 안전합니다.</span></span>
+                        <div class="sg" data-group="maint">
+                            <div class="sg-title">유지보수</div>
+                            <div class="sg-body">
+                            <div class="section" data-group="maint">
+                                <div class="section-label">모듈 / 라이브러리 업데이트</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                                    번들 Python 패키지를 최신 버전으로 업데이트합니다 (twikit, httpx, atproto, yt-dlp 등).
+                                </p>
+                                <button class="btn btn-primary btn-sm" id="module-update-btn" onclick="updateModules()">모듈 업데이트</button>
+                                <span id="module-update-status" style="font-size:11px;color:var(--text-tertiary);margin-left:8px;"></span>
+                            </div>
+
+                            <div class="section" data-group="maint">
+                                <div class="section-label">Python 환경 관리</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                                    Python 버전 업그레이드 또는 환경이 깨졌을 때 자동 복구합니다.
+                                </p>
+                                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                                    <button class="btn btn-primary btn-sm" id="python-upgrade-btn" onclick="upgradePython()">Python 업그레이드</button>
+                                    <button class="btn btn-secondary btn-sm" id="python-repair-btn" onclick="repairPython()">환경 복구</button>
+                                    <span id="python-env-status" style="font-size:11px;color:var(--text-tertiary);"></span>
+                                </div>
+                            </div>
+
+                            <!-- ★ yt-dlp 자동 업데이트 — 보안 위험 경고 -->
+                            <div class="section" data-group="maint" style="padding:12px; background:rgba(255,180,0,0.06); border:1px solid #ffaa0055; border-radius:8px;">
+                                <div class="section-label">yt-dlp 자동 업데이트 (장기지원 · 기본 ON)</div>
+                                <p style="font-size:12px; color:var(--text-secondary); margin-bottom:8px;">
+                                    <strong>YouTube/Twitter 등은 포맷·서명을 수시로 바꿉니다.</strong> 이 옵션이 켜져 있으면
+                                    앱 시작 시 yt-dlp 를 stable 최신으로 자동 갱신해 <strong>다운로드가 계속 동작</strong>합니다
+                                    (yt-dlp 자체 SHA256 검증 + 갱신 후 <code>--version</code> sanity check + 실패 시 번들본 자동 복원).<br>
+                                    <span style="color:var(--text-tertiary)">끄면 앱과 함께 출하된 yt-dlp 만 사용 — 최대 보안이지만
+                                    사이트 포맷이 바뀌면 다운로드가 깨지고 새 빌드를 받아야 합니다.</span>
+                                </p>
+                                <label class="option-item">
+                                    <input type="checkbox" id="ytdlp-auto-update" checked onchange="onYtDlpToggle(this)">
+                                    <span><strong>yt-dlp 자동 업데이트</strong> — 장기 사용 권장 (끄면 최대 보안)</span>
                                 </label>
                             </div>
-                            
-                            <button class="btn btn-secondary btn-sm" onclick="mountWebDavFinder()" title="Mac Finder에 마운트 — 권한 문제 우회">Finder에 마운트</button>
-                            <button class="btn btn-secondary btn-sm" onclick="openSecurityPrefs()" title="권한 거부 시 시스템 설정 열기">권한 설정</button>
-                        </div>
-                        <div style="margin-top:10px; padding-top:10px; border-top:1px solid #2a2a30;">
-                            <div class="section-label" style="margin-bottom:6px;">저장 위치 모드</div>
-                            <label class="option-item" style="margin-bottom:4px;">
-                                <input type="checkbox" id="storage-mode-nas" onchange="onStorageModeToggle(this,'nas')">
-                                <span>NAS 로 자동 저장 (모든 플랫폼 일괄)</span>
-                            </label>
-                            <label class="option-item" style="margin-bottom:4px;">
-                                <input type="checkbox" id="storage-mode-external" onchange="onStorageModeToggle(this,'external')">
-                                <span>외장 디스크로 자동 저장 (모든 플랫폼 일괄)</span>
-                            </label>
-                            <p id="storage-mode-info" style="font-size:11px; color:var(--text-secondary); margin-top:6px;">
-                                둘 다 꺼두면 각 플랫폼 탭에서 개별 경로 지정. 체크하면 모든 플랫폼 input 자동 숨김.
-                            </p>
-                        </div>
-                        <p style="font-size:11px;color:var(--text-secondary);margin-top:6px;">
-                            <strong>Finder에 마운트:</strong> macOS가 OS 차원에서 인증 처리 → 권한 거부 우회.
-                            마운트되면 <code>/Volumes/&lt;공유폴더&gt;</code> 가 생기고 Finder 사이드바에 표시.
-                            저장 경로를 그 폴더로 바꾸면 다운로드가 NAS로 직행.
-                        </p>
-                    </div>
 
-                    <div class="section">
-                        <div class="section-label">디버그</div>
-                        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
-                            앱에 문제 있을 때 켜면 JS↔C++ 브릿지, 워커 스레드, buildBatchConfig 등 내부 단계 로그가 출력됩니다.
-                            튕김/멈춤 진단에 도움.
-                        </p>
-                        <label class="option-item" style="margin-bottom:8px;">
-                            <input type="checkbox" id="settings-debug-logs" onchange="toggleDebugLogs(this.checked)"> 디버그 로그 표시 ([JS]/[CPP] 라인)
-                        </label>
-                        <label class="option-item" style="margin-bottom:8px;">
-                            <input type="checkbox" id="settings-verbose-capture" onchange="toggleVerboseCapture(this.checked)"> 캡쳐 단계별 상세 로그 (각 SingleFile/cookie/scroll 진행 표시)
-                        </label>
-                        <div class="btn-row" style="margin-top:8px;">
-                            <button class="btn btn-secondary btn-sm" onclick="diagSystemInfo()">시스템 진단</button>
-                            <button class="btn btn-secondary btn-sm" onclick="diagKillZombies()">좀비 Chrome 정리</button>
-                            <button class="btn btn-secondary btn-sm" onclick="diagOpenCrashLog()">crash 로그 폴더 열기</button>
-                        </div>
-                        <p id="settings-diag-output" style="margin-top:8px;font-size:11px;color:var(--text-secondary);font-family:'SF Mono',Menlo,monospace;white-space:pre-wrap;"></p>
-                    </div>
+                            <div class="section" data-group="maint">
+                                <div class="section-label">디버그</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                                    앱에 문제 있을 때 켜면 JS↔C++ 브릿지, 워커 스레드, buildBatchConfig 등 내부 단계 로그가 출력됩니다.
+                                    튕김/멈춤 진단에 도움.
+                                </p>
+                                <label class="option-item" style="margin-bottom:8px;">
+                                    <input type="checkbox" id="settings-debug-logs" onchange="toggleDebugLogs(this.checked)"> 디버그 로그 표시 ([JS]/[CPP] 라인)
+                                </label>
+                                <label class="option-item" style="margin-bottom:8px;">
+                                    <input type="checkbox" id="settings-verbose-capture" onchange="toggleVerboseCapture(this.checked)"> 캡쳐 단계별 상세 로그 (각 SingleFile/cookie/scroll 진행 표시)
+                                </label>
+                                <div class="btn-row" style="margin-top:8px;">
+                                    <button class="btn btn-secondary btn-sm" onclick="diagSystemInfo()">시스템 진단</button>
+                                    <button class="btn btn-secondary btn-sm" onclick="diagKillZombies()">좀비 Chrome 정리</button>
+                                    <button class="btn btn-secondary btn-sm" onclick="diagOpenCrashLog()">crash 로그 폴더 열기</button>
+                                </div>
+                                <p id="settings-diag-output" style="margin-top:8px;font-size:11px;color:var(--text-secondary);font-family:'SF Mono',Menlo,monospace;white-space:pre-wrap;"></p>
+                            </div>
 
-                    <div class="section" style="margin-top:20px;">
+                            </div>
+                        </div>
+                        <div class="sg" data-group="look">
+                            <div class="sg-title">화면 · 정보</div>
+                            <div class="sg-body">
+                            <div class="section" data-group="look">
+                                <div class="section-label">테마 (외관)</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">라이트 · 다크 · 자동(시스템 설정 따름) 중 선택.</p>
+                                <div class="theme-seg" id="themeSeg">
+                                    <button type="button" class="theme-seg-btn" data-theme-mode="auto">자동</button>
+                                    <button type="button" class="theme-seg-btn" data-theme-mode="light">라이트</button>
+                                    <button type="button" class="theme-seg-btn" data-theme-mode="dark">다크</button>
+                                </div>
+                            </div>
+                            <!-- ★ 창 크기를 바꿀 때 — 사용자: "A·B 둘 다 되게 하라"(2026-09-15) -->
+                            <div class="section" data-group="look">
+                                <div class="section-label">창 크기를 바꿀 때</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                                    둘 다 — 창 크기에 비례해 커지고 작아지다가(80%까지), 더 좁으면 배치가 바뀝니다.<br>
+                                    배치 바꾸기 — 글자·버튼 크기는 그대로, 좁아지면 칸이 세로로 쌓이고 사이드바가 접힙니다.<br>
+                                    통째로 크기 조절 — 배치는 그대로, 화면 전체가 창 크기에 비례해 커지고 작아집니다(50~160%).
+                                </p>
+                                <div class="theme-seg" id="scaleSeg" style="max-width:420px">
+                                    <button type="button" class="theme-seg-btn" data-scale-mode="layout">배치 바꾸기</button>
+                                    <button type="button" class="theme-seg-btn" data-scale-mode="both">둘 다</button>
+                                    <button type="button" class="theme-seg-btn" data-scale-mode="scale">통째로 크기 조절</button>
+                                </div>
+                            </div>
+                            <!-- ★ 앱 정보 — 이름·판·만든 곳. 값을 여기에 적지 않는다.
+                                 백엔드 getAppInfo() 가 빌드 때 박힌 매크로를 그대로 넘겨준다
+                                 (CODENAME·APP_VENDOR·APP_NAME_DISPLAY 단일 출처).
+                                 손으로 적어 두면 이름이 바뀔 때 이 화면만 옛 이름으로 남는다. -->
+
+                            <div class="section" data-group="look">
+                                <div class="section-label">앱 정보</div>
+                                <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
+                                    <span id="about-name" style="font-size:20px;font-weight:700;letter-spacing:.5px;">—</span>
+                                    <span id="about-edition" title="이 판의 이름입니다"
+                                          style="font-size:15px;font-weight:700;color:var(--accent);
+                                                 border:1px solid var(--accent);border-radius:6px;padding:1px 8px;">—</span>
+                                </div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin:8px 0 0;">
+                                    13개 소셜 플랫폼의 글·그림·영상을 내 컴퓨터에 모아 두는 보관 도구입니다.
+                                    수집·정리·백업이 전부 이 컴퓨터 안에서 끝나며, 만든 곳으로 자료가 나가지 않습니다.
+                                </p>
+                                <div style="font-size:12px;color:var(--text-secondary);margin-top:8px;">
+                                    만든 곳 · <b id="about-vendor" style="color:var(--text-primary);">—</b>
+                                </div>
+                            </div>
+
+                            <div class="section" data-group="look">
+                                <div class="section-label">시스템 정보</div>
+                                <button class="btn btn-secondary btn-sm" onclick="loadSystemInfo()" style="margin-bottom:8px;">새로고침</button>
+                                <div id="system-info-box" style="background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:var(--radius);padding:10px;font-family:'SF Mono','Menlo',monospace;font-size:11px;line-height:1.7;white-space:pre-wrap;max-height:300px;overflow-y:auto;color:var(--text-secondary);">
+                                    로딩 중...
+                                </div>
+                            </div>
+
+                            </div>
+                        </div>
+                    </div>
+                    <div class="section settings-log">
                         <div class="section-label">로그</div>
                         <div class="log-box" id="settings-log"></div>
                     </div>
@@ -6096,7 +6141,7 @@
                     if (ev.clientX > r.right - 16) return false;
                 }
                 if (t.closest('.sidebar-header, .toolbar, .sidebar')) return true;
-                return t.matches('.scroll-area, .tab-content, .main, .app');
+                return t.matches('.scroll-area, .tab-content, .main, .app, .settings-board, .sg, .settings-filter');
             }
             function dragStart(ev) {
                 if (ev.button !== 0) return;
@@ -6108,14 +6153,152 @@
                 if (!__drag) return;
                 if (!ev.buttons) { __drag = null; return; }
                 var dx = ev.clientX - __drag.x, dy = ev.clientY - __drag.y;
-                if (dx * dx + dy * dy > 25) {          // 5px 이상 = 진짜 드래그(짧은 클릭·더블클릭은 그대로)
+                // 3px 이상 = 진짜 드래그(짧은 클릭·더블클릭은 그대로). 예전 5px 은 끌기 시작이
+                //   굼떠 보였다 — 이제 창 서버가 끄니 문턱만 넘으면 곧바로 따라온다.
+                if (dx * dx + dy * dy > 9) {
                     __drag = null;
                     if (window.backend && backend.winStartMove) backend.winStartMove();
                 }
             });
             document.addEventListener('mouseup', function () { __drag = null; });
+            // ★ 마우스가 '끌 수 있는 곳' 위에 있는지 미리 알려 둔다. 누르는 순간 네이티브 쪽이
+            //   이 값을 보고 진짜 누름을 창 서버에 곧장 넘긴다(클로드 창과 같은 길 — 렉·딜레이 없음).
+            //   바뀔 때만 보낸다.
+            var __hover = false;
+            function setHover(v) {
+                if (v === __hover) return;
+                __hover = v;
+                if (window.backend && backend.setDragHover) backend.setDragHover(v);
+            }
+            document.addEventListener('mousemove', function (ev) {
+                if (ev.buttons) return;                  // 누른 채 움직이는 동안은 판단을 바꾸지 않는다
+                setHover(!isInteractive(ev.target) && isDragSurface(ev));
+            }, true);
+            document.addEventListener('mouseout', function (ev) { if (!ev.relatedTarget) setHover(false); });
+            window.addEventListener('blur', function () { setHover(false); });
+            // ★ 끌 자리를 좌표로도 넘겨 둔다 — 사이드바·위쪽 띠(와 그 안의 단추 자리).
+            //   창이 뒤에 있다 앞으로 오는 첫 누름엔 위의 움직임 신호가 아직 없다. 좌표가 있으면
+            //   네이티브 쪽이 누르는 순간 스스로 판단한다(클로드 창 = Electron 과 같은 방식).
+            var ZONE_SEL = '.sidebar, .sidebar-header, .toolbar';
+            var HOLE_SEL = 'button, input, select, textarea, a, [onclick], [contenteditable], .nav-item, label';
+            function rectOf(e) {
+                var r = e.getBoundingClientRect();
+                return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)];
+            }
+            function visible(e) { var r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; }
+            var __lastRegions = '';
+            function publishDragRegions() {
+                if (!window.backend || !backend.setDragRegions) return;
+                var zones = [].slice.call(document.querySelectorAll(ZONE_SEL)).filter(visible);
+                var holes = [];
+                zones.forEach(function (z) {
+                    [].slice.call(z.querySelectorAll(HOLE_SEL)).filter(visible).forEach(function (h) { holes.push(rectOf(h)); });
+                    // 스크롤 막대(오른쪽 16px)는 끄는 자리가 아니다
+                    if (z.scrollHeight > z.clientHeight + 1) {
+                        var r = z.getBoundingClientRect();
+                        holes.push([Math.round(r.right - 16), Math.round(r.top), 16, Math.round(r.height)]);
+                    }
+                });
+                var key = new URLSearchParams(location.search).get('window') || 'main';
+                var json = JSON.stringify({ z: zones.map(rectOf), h: holes });
+                if (json === __lastRegions) return;       // 바뀐 게 없으면 보내지 않는다
+                __lastRegions = json;
+                backend.setDragRegions(key, json);
+            }
+            var __regTimer = 0;
+            function scheduleRegions() { clearTimeout(__regTimer); __regTimer = setTimeout(publishDragRegions, 120); }
+            window.addEventListener('resize', scheduleRegions);
+            document.addEventListener('DOMContentLoaded', scheduleRegions);
+            // 사이드바 접기·탭 바꾸기·단추가 생기고 사라지는 것까지 — 위쪽 띠와 사이드바만 본다
+            (function watch() {
+                var targets = [].slice.call(document.querySelectorAll(ZONE_SEL));
+                if (!targets.length) { setTimeout(watch, 500); return; }
+                var mo = new MutationObserver(scheduleRegions);
+                targets.forEach(function (t) { mo.observe(t, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] }); });
+                var app = document.querySelector('.app');
+                if (app) mo.observe(app, { attributes: true, attributeFilter: ['class', 'style'] });
+                if (window.ResizeObserver) { var ro = new ResizeObserver(scheduleRegions); targets.forEach(function (t) { ro.observe(t); }); }
+                scheduleRegions();
+            })();
+            // 다리(backend)가 늦게 붙는 경우를 위해 몇 번 더 보낸다
+            [800, 2500, 6000].forEach(function (ms) { setTimeout(function () { __lastRegions = ''; publishDragRegions(); }, ms); });
             // 문서 전체에 한 번 — 요소마다 붙이면 나중에 그려진 곳(기능 창·탭)이 빠진다
             document.addEventListener('mousedown', dragStart, true);
+        })();
+
+
+        // ── 설정 판: 묶음 단추 ─────────────────────────────────────────────
+        //   한 묶음만 골라 보면 스크롤이 거의 없다. 마지막 고른 것을 기억한다(이 창에서만).
+        function setSettingsGroup(g) {
+            var board = document.getElementById('settings-board');
+            if (!board) return;
+            if (!document.querySelector('#tab-settings .sf-chip[data-group="' + g + '"]')) g = 'all';
+            board.querySelectorAll('.sg').forEach(function (el) {
+                el.hidden = (g !== 'all' && el.getAttribute('data-group') !== g);
+            });
+            document.querySelectorAll('#tab-settings .sf-chip').forEach(function (c) {
+                var on = c.getAttribute('data-group') === g;
+                c.classList.toggle('active', on);
+                c.setAttribute('aria-selected', on ? 'true' : 'false');
+            });
+            board.classList.toggle('single', g !== 'all');
+            try { localStorage.setItem('hanishiki.settingsGroup', g); } catch (e) {}
+            if (window.fitSettingsBoard) window.fitSettingsBoard();
+        }
+        (function () {
+            // 액자 높이 = 남은 화면 높이의 반. 판이 스크롤 칸 안 어디서 시작하는지 재서 넘긴다.
+            function fitBoard() {
+                var b = document.getElementById('settings-board');
+                var sa = b && b.closest('.scroll-area');
+                if (!b || !sa || !b.offsetParent) return;
+                var top = b.getBoundingClientRect().top - sa.getBoundingClientRect().top + sa.scrollTop;
+                var lg = document.querySelector('#tab-settings > .settings-log');
+                var dock = (lg && getComputedStyle(lg).position === 'sticky' && getComputedStyle(lg).bottom === '0px')
+                           ? lg.getBoundingClientRect().height + 12 : 0;
+                var avail = sa.clientHeight - top - 24 - dock;
+                b.style.setProperty('--sb-avail', Math.max(avail, 360) + 'px');
+            }
+            window.fitSettingsBoard = fitBoard;
+            function init() {
+                var g = 'all';
+                try { g = localStorage.getItem('hanishiki.settingsGroup') || 'all'; } catch (e) {}
+                setSettingsGroup(g);
+                var lg = document.querySelector('#tab-settings > .settings-log');
+                var lb = lg && lg.querySelector('.section-label');
+                if (lb) {
+                    // 접었을 때도 마지막 한 줄은 보이게 — 단추를 누른 결과를 놓치지 않는다
+                    var last = document.createElement('span');
+                    last.className = 'sl-last';
+                    lb.appendChild(last);
+                    var box = document.getElementById('settings-log');
+                    var sync = function () {
+                        var l = box && box.lastElementChild;
+                        last.textContent = l ? l.textContent.trim() : '';
+                    };
+                    if (box) new MutationObserver(sync).observe(box, { childList: true });
+                    sync();
+                    var open = false;
+                    try { open = localStorage.getItem('hanishiki.settingsLogOpen') === '1'; } catch (e) {}
+                    lg.classList.toggle('collapsed', !open);
+                    lb.addEventListener('click', function () {
+                        var c = lg.classList.toggle('collapsed');
+                        try { localStorage.setItem('hanishiki.settingsLogOpen', c ? '0' : '1'); } catch (e) {}
+                        fitBoard();
+                    });
+                }
+                var sa = document.querySelector('.scroll-area');
+                if (window.ResizeObserver) {
+                    var ro = new ResizeObserver(function () { requestAnimationFrame(fitBoard); });
+                    if (sa) ro.observe(sa);
+                    var b = document.getElementById('settings-board');
+                    if (b) ro.observe(b);
+                } else {
+                    window.addEventListener('resize', fitBoard);
+                }
+                fitBoard();
+            }
+            if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+            else init();
         })();
 
         // ── AI 방식 — 로컬(번들 엔진) / 온라인(OpenAI 호환 API) ──────────────
@@ -7864,5 +8047,140 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
 }
 
 </style>
+<!-- ★ 설정 판 — 여섯 묶음을 창 폭에 따라 1~4 열로(사용자 2026-09-25).
+     배치만 다룬다. 색은 그래프트 층의 토큰(var(--…))만 쓴다 — 새 색을 여기에 적지 않는다. -->
+<style id="settings-board-layout">
+/* 사용자(2026-09-25) 두 번째 말: "안에 것이 액자식 구성인데, 액자들이 작고 커지는 것까지
+   전과 달라진 게 없다." — 칸을 열로 옮겨 놓기만 했지 안은 그대로였다.
+   그래서: 묶음 하나 = 액자 하나. 안의 칸은 액자가 아니라 가는 줄로만 나눈다.
+   액자는 모두 같은 크기로, 넓은 창에선 3×2 로 한 화면에 들어오고 넘치는 것은 액자 안에서만 민다.
+   배치만 다룬다 — 색은 그래프트 층 토큰만 쓴다. */
+
+/* 묶음 단추 줄 */
+#tab-settings .settings-filter {
+    position: sticky; top: 0; z-index: 6;
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 0 0 12px; margin: 0;
+    background: var(--bg);
+}
+#tab-settings .sf-chip {
+    height: 30px; padding: 0 12px; border-radius: 15px;
+    border: 1px solid var(--border-light); background: var(--card);
+    color: var(--text-secondary); font-size: 12px; font-weight: 600;
+    cursor: pointer; white-space: nowrap;
+}
+#tab-settings .sf-chip:hover { border-color: var(--text-tertiary); color: var(--text); }
+#tab-settings .sf-chip.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink, #fff); }
+#tab-settings .sf-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#tab-settings .sf-n { opacity: .6; font-weight: 500; margin-left: 2px; }
+
+/* 판 — 같은 크기의 액자 격자. 많아도 3열(액자가 여섯이라 3×2 가 딱 맞는다).
+   행 높이는 남은 화면 높이의 반(--sb-avail 는 화면 쪽 JS 가 잰다). */
+#tab-settings .settings-board {
+    display: grid; gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(max(290px, calc((100% - 28px) / 3)), 1fr));
+    grid-auto-rows: max(340px, calc((var(--sb-avail, 760px) - 14px) / 2));
+}
+/* 액자 */
+#tab-settings .sg {
+    display: flex; flex-direction: column; min-width: 0; min-height: 0;
+    background: var(--card); border: 1px solid var(--border-light);
+    border-radius: 14px; box-shadow: var(--shadow); overflow: hidden;
+}
+#tab-settings .sg[hidden] { display: none; }
+#tab-settings .sg-title {
+    flex: none; margin: 0; padding: 11px 16px;
+    font-size: 13px; font-weight: 700; letter-spacing: 0; color: var(--text);
+    border-bottom: 1px solid var(--border-light);
+}
+#tab-settings .sg-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+#tab-settings .sg-body::-webkit-scrollbar { width: 6px; }
+#tab-settings .sg-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* 안의 칸 — 액자가 아니다. 가는 줄로만 나눈다. */
+#tab-settings .sg-body > .section,
+#tab-settings .sg-body > .section[style] {
+    background: transparent !important; border: 0 !important; border-radius: 0 !important;
+    box-shadow: none !important; padding: 14px 16px !important; margin: 0 !important;
+}
+#tab-settings .sg-body > .section + .section { border-top: 1px solid var(--border-light) !important; }
+/* 경고 칸(yt-dlp)은 상자 대신 왼쪽 띠로만 표시 */
+#tab-settings .sg-body > .section[style*="255,180,0"] { box-shadow: inset 3px 0 0 var(--orange) !important; }
+#tab-settings .sg-body .section-label { margin-bottom: 10px; }
+#tab-settings .sg-body .input-row { flex-wrap: wrap; }
+#tab-settings .sg-body .input,
+#tab-settings .sg-body select,
+#tab-settings .sg-body textarea { max-width: 100%; min-width: 0; }
+
+/* 액자 안의 안내 글 상자도 벗긴다(액자 속 액자) — 왼쪽 띠만 남긴다.
+   대화창·진행 막대·진단 글처럼 쓰임이 있는 상자는 그대로 둔다. */
+#tab-settings .sg-body [style*="border-left:3px solid var(--accent)"],
+#tab-settings .sg-body [style*="border-left:3px solid #dc2626"] {
+    background: transparent !important; border-radius: 0 !important;
+    padding: 2px 0 2px 10px !important;
+}
+
+/* 묶음 하나만 볼 때 — 그 액자가 판 전체를 차지하고, 안의 칸이 옆으로 펼쳐진다 */
+#tab-settings .settings-board.single {
+    grid-template-columns: 1fr;
+    grid-auto-rows: max(420px, var(--sb-avail, 760px));
+}
+#tab-settings .settings-board.single .sg-body {
+    display: grid; align-content: start;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+#tab-settings .settings-board.single .sg-body > .section,
+#tab-settings .settings-board.single .sg-body > .section + .section {
+    border-top: 0 !important;
+    box-shadow: inset -1px -1px 0 var(--border-light) !important;
+}
+#tab-settings .settings-board.single .sg-body > .section[style*="255,180,0"] {
+    box-shadow: inset 3px 0 0 var(--orange), inset -1px -1px 0 var(--border-light) !important;
+}
+
+/* ── 아주 넓은 창(≥1600px): 판 | 로그 기둥 ── (예전엔 폼 칸을 700px 로 묶어 두었다)
+   기둥은 한 열을 먹는다. 노트북 창(1440 안팎)에서 기둥을 두면 판이 2×3 으로 넘쳐서,
+   그 폭에선 로그를 한 줄짜리 서랍으로 내리고 판을 3×2 로 한 화면에 담는다. */
+@media (min-width: 1600px) {
+    body #tab-settings.tab-content.active {
+        grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+    }
+}
+/* ── 그보다 좁은 창(<1600px): 로그는 아래에 붙는 서랍 — 기본으로 접혀 마지막 한 줄만 ── */
+#tab-settings .sl-last { display: none; }
+@media (max-width: 1599px) {
+    body #tab-settings.tab-content.active { display: block !important; }
+    body #tab-settings.tab-content.active > .section.settings-log {
+        position: sticky; top: auto; bottom: 0; z-index: 5;
+        max-height: none; margin: 12px 0 0;
+        background: var(--card); border: 1px solid var(--border-light);
+        border-radius: 12px; padding: 8px 14px; box-shadow: var(--shadow-lg, var(--shadow));
+    }
+    #tab-settings > .settings-log > .section-label {
+        cursor: pointer; user-select: none; margin: 2px 0 6px;
+        display: flex; align-items: center; gap: 10px; white-space: nowrap;
+    }
+    #tab-settings > .settings-log > .section-label::after { content: '▾ 접기'; margin-left: auto; font-weight: 500; opacity: .6; }
+    #tab-settings > .settings-log.collapsed > .section-label { margin: 2px 0; }
+    #tab-settings > .settings-log.collapsed > .section-label::after { content: '▸ 펴기'; }
+    #tab-settings > .settings-log.collapsed .sl-last {
+        display: block; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+        font-family: ui-monospace, Menlo, monospace; font-weight: 400; letter-spacing: 0;
+        color: var(--text-secondary); text-transform: none;
+    }
+    #tab-settings > .settings-log > .log-box { max-height: 180px; }
+    #tab-settings > .settings-log.collapsed > .log-box { display: none; }
+}
+/* ── 폰 폭(<640px): 한 줄로 쌓고, 액자는 제 키대로(안에서 밀지 않는다) ── */
+@media (max-width: 639px) {
+    #tab-settings .settings-filter { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+    #tab-settings .settings-filter::-webkit-scrollbar { display: none; }
+    #tab-settings .settings-board,
+    #tab-settings .settings-board.single { grid-template-columns: 1fr; grid-auto-rows: auto; }
+    #tab-settings .sg-body { overflow: visible; }
+    #tab-settings .settings-board.single .sg-body { display: block; }
+}
+</style>
+
 </body>
 </html>

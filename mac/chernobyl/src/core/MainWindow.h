@@ -105,6 +105,16 @@ public:
     void armWindowMove();
 private:
     void dragTick();
+    void startDragTimer();                 // 옛 방식(8ms 타이머) — 창 서버 끌기가 안 먹을 때만
+public:
+    // 화면(JS)이 '마우스가 끌 수 있는 곳 위에 있다/없다' 를 알린다. 누르는 순간 이 값으로 판단한다.
+    static void setDragHover(bool on);
+    // 화면이 끌 자리(사이드바·위쪽 띠)와 그 안 단추 자리를 CSS 픽셀 사각형으로 넘긴다.
+    static void setDragRegions(const QString &key, const QString &json);
+    static void noteNativeDrag();
+    static void installWindowDragFilter();
+private:
+    static qint64 s_nativeDragAt;
     QPointer<QWidget> m_dragWin;           // 지금 끌고 있는 창(본 창 또는 기능 창)
     QPoint m_dragOffset;                   // 커서 - 창 왼쪽 위
     class QTimer *m_dragTimer = nullptr;   // 끄는 동안 8ms 마다 따라간다

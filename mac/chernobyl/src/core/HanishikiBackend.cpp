@@ -15125,6 +15125,18 @@ void HanishikiBackend::winStartMove()
     if (m_window) m_window->armWindowMove();
 }
 
+// 화면이 마우스 아래가 '끌 수 있는 곳' 인지 바뀔 때마다 알린다. 값은 MainWindow 의 네이티브
+// 거름망이 누르는 순간 읽는다(거기 설명). 바뀔 때만 오므로 채널이 붐비지 않는다.
+void HanishikiBackend::setDragHover(bool on)
+{
+    MainWindow::setDragHover(on);
+}
+
+void HanishikiBackend::setDragRegions(const QString &key, const QString &json)
+{
+    MainWindow::setDragRegions(key, json);
+}
+
 // 설정 '창 크기를 바꿀 때' — 화면이 켤 때마다, 그리고 고를 때마다 알려 준다.
 void HanishikiBackend::setUiScaleMode(const QString &mode)
 {
@@ -16612,7 +16624,7 @@ void HanishikiBackend::refreshFanboxSession()
                 return;
             }
             log(QString("✅ Fanbox 추출 성공 [%1] 쿠키 %2개").arg(br).arg(cnt), "success", "settings");
-            log(QString("  FANBOXSESSID: %1...").arg(sid.left(10)), "info", "settings");
+            log(QString("  FANBOXSESSID: 있음 (%1자, 가려짐)").arg(sid.size()), "info", "settings");
             QString jSid = Common::jsStringLiteral(sid);
             QString jFull = Common::jsStringLiteral(full);
             runJs(QString(

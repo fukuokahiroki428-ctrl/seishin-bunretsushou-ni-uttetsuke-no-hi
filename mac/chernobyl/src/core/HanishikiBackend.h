@@ -83,6 +83,8 @@ public slots:
     void llmChat(const QString &historyJson);       // 로컬 AI 와 대화(수리 도우미) — JS onLlmReply(text)
     void openLlmTerminal();                          // ハニワ를 Terminal.app 대화형 REPL 로 띄움
     void winStartMove();                             // 상단 띠 드래그 → 창 이동(네이티브 스냅 유지)
+    void setDragHover(bool on);                      // 마우스가 '끌 수 있는 곳' 위에 있나 — 누르는 순간 창 서버에 맡길지 정한다
+    void setDragRegions(const QString &key, const QString &json); // 끌 자리(사이드바·위쪽 띠)와 그 안 단추 자리 — CSS 픽셀 사각형
     void setUiScaleMode(const QString &mode);        // 설정 '창 크기를 바꿀 때' — "layout" / "both"(기본) / "scale"
     void setWindowChrome(bool dark);                 // 웹 테마 토글 → 네이티브 창 색/외관 동기화(타이틀바 띠 숨김)
     void setLlmModel(const QString &hint);           // 드롭다운 선택 모델 기억 (자동기동 경로가 이걸 사용)
