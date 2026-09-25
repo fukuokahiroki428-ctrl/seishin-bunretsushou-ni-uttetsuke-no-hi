@@ -1,7 +1,7 @@
 {
-  "version": 1,
+  "version": 2,
   "minApp": "4.0.0",
-  "notes": "첫 꾸러미 — 수리 도우미가 Cloudflare 검사·디스크 가득·폴더 권한을 알아봅니다",
+  "notes": "서명한 꾸러미 — 수리 도우미가 Cloudflare 검사·디스크 가득·폴더 권한을 알아봅니다",
   "files": {
     "api_overrides.json": {
       "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
