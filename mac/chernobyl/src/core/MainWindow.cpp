@@ -899,27 +899,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
         m_backend->closeAllTerminalLogs();
     }
 
-    // macOS: 이 앱이 띄운 Terminal.app 탭/창 닫기.
-    //   ★ 제목으로 찾으므로 '지금 이름' 이 반드시 목록에 있어야 한다.
-    //     앱 이름이 カメラ → Chernobyl → Predormition → ハンイシキ 로 바뀌는 동안
-    //     여기가 옛 이름에 멈춰 있으면, 정작 지금 띄운 터미널을 못 닫는다.
-    //     옛 이름도 함께 둔다 — 예전 판이 남긴 창까지 정리하려면 필요하다.
-#ifdef Q_OS_MACOS
-    QProcess::startDetached("/usr/bin/osascript", {"-e",
-        "tell application \"Terminal\"\n"
-        "  repeat with w in windows\n"
-        "    repeat with t in tabs of w\n"
-        "      if name of t contains \"miyo_\" or name of t contains \"ABIWA\""
-        "         or name of t contains \"" APP_NAME_DISPLAY "\""
-        "         or name of t contains \"" APP_NAME_ASCII "\""
-        "         or name of t contains \"カメラ\" or name of t contains \"Predormition\" then\n"
-        "        do script \"exit\" in t\n"
-        "      end if\n"
-        "    end repeat\n"
-        "  end repeat\n"
-        "end tell"
-    });
-#endif
+    // ★ 앱 안 터미널 창도 같이 닫는다(기능 창과 같은 이유 — 본 창이 사라지면 빈 창이다).
+    //   예전엔 Terminal.app 을 osascript 로 부려 제목으로 탭을 찾아 닫았다. 그 길은 '자동화'
+    //   허락을 물었고, 앱 이름이 바뀔 때마다 찾을 제목 목록이 낡았다. 이제 터미널 앱을 쓰지 않는다.
+    if (m_backend) m_backend->closeAllTerminalWindows();
 
     event->accept();
 }

@@ -195,8 +195,34 @@ QString TwitterCollector::displayNameOf(const QJsonObject &userResult)
 TwitterCollector::TwitterCollector(HanishikiBackend *backend, QObject *parent)
     : QObject(parent)
     , m_backend(backend)
-    , m_http(new HttpClient(this))
+    // ★ 부모(this)를 주지 않는다. collector 는 메인 스레드 소속인데(HanishikiBackend::
+    //   runTwitterCollection 이 메인에서 만든다) m_http 는 collect()/checkNewPosts() 가 도는
+    //   워커 스레드에서 다시 만들어진다(adoptHttpToCurrentThread). 그때 부모를 주면 Qt 가
+    //     QObject: Cannot create children for a parent that is in a different thread.
+    //   라며 거절하고, 부모가 안 붙은 채로 남아 정리도 안 된다(윈도우 쪽에서 실측한 경고).
+    //   수명은 adoptHttpToCurrentThread() 와 소멸자가 직접 책임진다.
+    , m_http(new HttpClient())
 {
+    m_http->setTimeout(30000);
+}
+
+// ★ QNetworkAccessManager 는 자기를 만든 스레드에서만 써야 한다(Qt 규칙).
+//
+//   이 객체는 메인 스레드에서 만들어지지만 collect() 는 수집 워커에서, checkNewPosts() 는
+//   또 다른 워커('새 트윗 확인' 의 QThread::create)에서 돈다. 앞서 만든 HttpClient 를
+//   그대로 쓰면 그 안의 NAM 은 엉뚱한 스레드, 혹은 이미 사라진 스레드(nam->thread() == 0)에
+//   묶여 있다. 소켓 알림이 죽은 이벤트 디스패처에 걸리면 응답이 영영 안 오고 30초
+//   타임아웃으로만 드러난다 — '새 트윗 확인이 느리다' 로 보일 자리다.
+//
+//   그래서 진입할 때마다 지금 도는 스레드 것으로 새로 만든다.
+//   ※ 맥에서는 이것이 계정별 프록시도 맞춘다. HttpClient 생성자의 applyGlobalProxy() 가
+//     '이 스레드' 의 프록시(Common::setThreadProxy)를 읽기 때문이다. 메인에서 만든 것은
+//     전역 설정만 보므로, 이 줄이 없으면 미디어 다운로드만 계정 프록시를 벗어나
+//     '한 세션 두 IP' 가 된다.
+void TwitterCollector::adoptHttpToCurrentThread()
+{
+    delete m_http;                       // 옛것 정리 — ~HttpClient 가 다른/사라진 스레드의 NAM 도 처리한다
+    m_http = new HttpClient();           // 부모 없음 — 생성자의 설명 참고
     m_http->setTimeout(30000);
 }
 
@@ -213,6 +239,11 @@ TwitterCollector::~TwitterCollector()
     //   DiskJsonBuffer 소멸자가 닫고 지운다 — 불러 주기만 하면 된다.
     delete m_profileBuffer;
     m_profileBuffer = nullptr;
+    // ★ m_http 는 부모가 없다(위 생성자 설명) — 여기서 직접 지운다.
+    //   메인에서 지우든(멤버 collector) 워커에서 지우든(병렬 모드의 지역 collector)
+    //   ~HttpClient 가 NAM 을 맞는 스레드로 넘겨 정리한다.
+    delete m_http;
+    m_http = nullptr;
 }
 
 void TwitterCollector::setupClient(const QString &authToken, const QString &ct0)
@@ -2575,6 +2606,12 @@ void TwitterCollector::collectThreadsAuto(const QJsonObject &config, const QStri
 
 void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool> &isRunning)
 {
+    // ★ 이 워커의 HttpClient 로 갈아 끼운다 — adoptHttpToCurrentThread 설명 참고.
+    //   collect() 가 자기를 다시 부르는 경우(전체 모드의 하위 수집, 스레드 자동탐지)에도
+    //   같은 워커라 그대로 맞다. m_http 는 downloadMedia() 에서만 꺼내 쓰므로 옛 포인터를
+    //   쥐고 있는 곳이 없다.
+    adoptHttpToCurrentThread();
+
     // 중지 시 진행 중인 미디어 다운로드를 즉시 끊기 위해 HttpClient에 '진행 플래그' 연결
     if (m_http) m_http->setRunFlag(&isRunning);
 
@@ -2674,19 +2711,28 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         // ★ 앞선 판이 남긴 고아 임시 파일을 치운다.
         //   소멸자가 지우게 고쳤지만, 전원이 나가거나 앱이 강제 종료되면 소멸자가
         //   돌지 않는다. 1년을 무인으로 돌 앱에서는 그쪽이 오히려 흔하다.
-        //   한 시간 넘게 손대지 않은 것만 지운다 — 지금 다른 수집이 쓰고 있는
-        //   파일을 건드리지 않기 위해서다(같은 대상을 병렬로 돌리는 경우).
+        //
+        //   ★★ 지우는 것은 '빈 파일' 뿐이다. 내용이 한 줄이라도 있으면 손대지 않는다.
+        //     보통은 그 내용이 프로필 엑셀에도 들어가 있어 사본에 불과하다
+        //     (실측: 남아 있던 22개가 전부 엑셀에도 있었다). 하지만 엑셀을 쓰기 전에
+        //     끊긴 판이라면 그 파일에만 있는 자료가 된다. 그 경우를 파일 하나 크기로
+        //     구별할 수 없으므로, 구별이 안 되면 지우지 않는다.
+        //     빈 파일은 어느 경우에도 잃을 것이 없다.
+        //
+        //   한 시간 넘게 손대지 않은 것만 본다 — 지금 다른 수집이 막 만든 파일도
+        //   아직 비어 있을 수 있어서다(같은 대상을 병렬로 돌리는 경우).
         {
             const QDir ptd(profTempDir);
             const QDateTime cutoff = QDateTime::currentDateTime().addSecs(-3600);
-            int swept = 0;
+            int swept = 0, kept = 0;
             for (const QFileInfo &fi : ptd.entryInfoList({"tw_profiles_*.jsonl"}, QDir::Files)) {
                 if (fi.lastModified() > cutoff) continue;
+                if (fi.size() > 0) { ++kept; continue; }        // 내용이 있으면 그대로 둔다
                 if (QFile::remove(fi.absoluteFilePath())) ++swept;
             }
-            if (swept > 0)
-                m_backend->log(QString("이전에 남은 임시 파일 %1개를 치웠습니다").arg(swept),
-                               "info", "twitter");
+            if (swept > 0 || kept > 0)
+                m_backend->log(QString("이전에 남은 임시 파일 — 빈 것 %1개 치움, 내용 있는 것 %2개 그대로 둠")
+                                   .arg(swept).arg(kept), "info", "twitter");
         }
 
         m_profileBuffer = new DiskJsonBuffer(profTempDir, "tw_profiles");
@@ -5467,6 +5513,13 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
 void TwitterCollector::checkNewPosts(const QJsonObject &config, const std::atomic<bool> &isRunning)
 {
+    // ★ 여기가 문제의 자리다 — 이 함수는 collect() 를 돌린 워커와 '다른' 워커에서 온다
+    //   (HanishikiBackend::checkNewPosts 의 QThread::create). 앞서 만든 것을 그대로 쓰면
+    //   죽은 스레드의 NAM 이다. 새로 만들었으니 중지 플래그도 다시 단다
+    //   (안 달면 '새 트윗 확인' 중 중지를 눌러도 미디어 다운로드가 안 끊긴다).
+    adoptHttpToCurrentThread();
+    if (m_http) m_http->setRunFlag(&isRunning);
+
     if (m_newestTweetId.isEmpty()) {
         m_backend->log("아직 수집된 트윗이 없습니다", "warning", "twitter");
         return;

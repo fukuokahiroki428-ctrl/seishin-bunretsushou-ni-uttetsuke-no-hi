@@ -78,6 +78,7 @@ set(CORE_SOURCES
     src/core/Common.cpp
     src/core/Config.cpp
     src/core/HotfixSig.cpp
+    src/core/TerminalWindow.cpp
 )
 
 set(CORE_HEADERS
@@ -88,6 +89,7 @@ set(CORE_HEADERS
     src/core/Common.h
     src/core/Config.h
     src/core/HotfixSig.h
+    src/core/TerminalWindow.h
 )
 
 set(UTILS_SOURCES

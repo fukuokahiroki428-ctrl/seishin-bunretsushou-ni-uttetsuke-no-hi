@@ -12,6 +12,7 @@
 #include "core/MainWindow.h"
 #include "core/Common.h"
 #include "utils/SelfRepair.h"   // ★ 자가진단·자가복구 + 로컬 LLM 진단
+#include <QThread>                 // 스레드 친화성 경고에 '낸 스레드' 이름을 붙이려고
 
 #ifdef Q_OS_MACOS
 #include <objc/objc.h>
@@ -39,8 +40,45 @@ static BOOL appShouldHandleReopen(id self, SEL _cmd, id app, BOOL hasVisibleWind
 }
 #endif
 
+// ── 로그 줄 모양: 날짜 + (스레드 경고면) 낸 스레드 이름 ──
+//   ★ 맥에는 로그 처리기가 없어서 Qt 기본 모양(날짜 없음)으로 stderr/통합 로그에 나갔다.
+//     이 앱은 30분마다 폴링하며 몇 달을 내리 도는 물건이라, 표준출력을 파일로 받아 볼 때
+//     어제 22:56 줄과 오늘 22:56 줄을 구분할 수 없다(윈도우 판에서 실제로 헷갈렸다 — 5a38a2c).
+//     줄 모양은 qSetMessagePattern 으로 정하고, 내보내기는 Qt 기본 처리기에 그대로 맡긴다
+//     (통합 로그·stderr 갈래를 우리가 다시 만들면 한쪽이 빠진다).
+//   ★ 스레드 친화성 경고는 "누가 냈는지" 를 모르면 쫓을 수가 없다. Qt 는 주소만 찍어 주고,
+//     주소는 매번 달라서 아무것도 알려주지 않는다(윈도우에서 30분마다 NAM 이 새던 것을
+//     이걸로 쫓았다 — e0f1b3d). 그래서 이름을 붙여 둔 스레드면 이름을 같이 적는다.
+static QtMessageHandler g_prevLogHandler = nullptr;
+static void hanishikiLogHandler(QtMsgType type, const QMessageLogContext &ctx, const QString &msg)
+{
+    QString extra;
+    if (msg.startsWith(QLatin1String("QObject::moveToThread"))
+        || msg.startsWith(QLatin1String("QObject::setParent"))
+        || msg.startsWith(QLatin1String("QObject::~QObject"))
+        || msg.startsWith(QLatin1String("QObject::killTimer"))
+        || msg.startsWith(QLatin1String("QObject::startTimer"))) {
+        QThread *cur = QThread::currentThread();
+        const QString nm = cur ? cur->objectName() : QString();
+        extra = QStringLiteral("  [낸 스레드: %1]")
+                    .arg(nm.isEmpty() ? QStringLiteral("(이름없음)") : nm);
+    }
+    if (g_prevLogHandler) g_prevLogHandler(type, ctx, extra.isEmpty() ? msg : msg + extra);
+}
+
 int main(int argc, char *argv[])
 {
+    // ★ 로그 줄 모양부터 정한다 — 이 아래에서 나는 첫 줄(플러그인 적재 경고 등)부터 날짜가 붙게.
+    //   한 줄에 날짜 11자가 늘지만, 날짜 없는 로그보다는 낫다.
+    //   QT_MESSAGE_PATTERN 환경변수가 있으면 Qt 가 그쪽을 우선한다(시험할 때 바꿔 볼 수 있다).
+    qSetMessagePattern(QStringLiteral(
+        "%{time yyyy-MM-dd HH:mm:ss.zzz} "
+        "[%{if-debug}D%{endif}%{if-info}I%{endif}%{if-warning}W%{endif}"
+        "%{if-critical}C%{endif}%{if-fatal}F%{endif}] "
+        "%{if-category}%{category}: %{endif}%{message}"));
+    // 앞 처리기(=Qt 기본)를 받아 두고 끝에 그대로 넘긴다 — 출력 갈래는 Qt 가 고른다.
+    g_prevLogHandler = qInstallMessageHandler(hanishikiLogHandler);
+
     // ★ WebEngine — 메모리 절약 + Site isolation 유지 (보안)
     qputenv("QTWEBENGINE_CHROMIUM_FLAGS",
         "--disable-gpu "
@@ -95,6 +133,9 @@ int main(int argc, char *argv[])
 #endif
 
     QApplication app(argc, argv);
+    // ★ 본 스레드에도 이름을 단다 — 스레드 경고에 '(이름없음)' 이 찍히면 본 스레드인지
+    //   이름 안 단 작업 스레드인지 가를 수가 없다.
+    app.thread()->setObjectName(QStringLiteral("main"));
     // ★ 이름은 빌드에서 온다(APP_NAME_ASCII). 여기 박아 두면 CMake 의 이름과
     //   어긋나 데이터 폴더가 갈라진다 — 실제로 그렇게 갈라진 적이 있다.
     //   폴더 이름은 ASCII 로 둔다. 일본어 폴더는 NAS·백업 경로에서 NFC/NFD 로

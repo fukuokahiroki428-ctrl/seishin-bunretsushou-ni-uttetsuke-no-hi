@@ -10,6 +10,7 @@
 #include <QNetworkCookie>
 #include <QHash>
 #include <QThread>
+#include <QPointer>
 #include <atomic>
 #include <memory>
 
@@ -23,6 +24,7 @@ class HttpClient;
 class QTimer;
 class QProcess;
 class WebDavUploader;
+class TerminalWindow;
 
 class HanishikiBackend : public QObject
 {
@@ -42,6 +44,8 @@ public:
     void updateStats(int posts, int media, const QString &status, const QString &platform = QString());
     // 수집 종료 후 로그 꼬리에서 오류 다발 감지 시 로컬 LLM 진단 (SelfRepair 연동)
     void llmDiagnoseIfBroken(const QString &platformName, const QString &trackKey);
+    // 자가진단 보고서 전문을 화면(설정 → 유지보수 → 자가진단)으로 — JSON 으로 감싸서 넘긴다
+    void pushSelfDiagnosisReport(const QString &report);
     // 수집 종료 시 UI 시작/정지 버튼 동기화 통지 (CollectionGuard 소멸자에서 호출)
     void notifyCollectionEnded(const QString &platform);
 
@@ -219,6 +223,12 @@ public slots:
     Q_INVOKABLE void getAppInfo();                   // JS onAppInfo(json) — 이름/판/만든 곳
     Q_INVOKABLE void getDiagnosticInfo();
     Q_INVOKABLE void killZombieChromes();
+    // ★ crash 로그 폴더 — 경로는 백엔드가 OS 에 맞춰 정한다(index.html 에 경로를 박지 않는다)
+    Q_INVOKABLE void openDiagnosticsFolder();
+    // ★ 자가진단 (설정 → 유지보수) — SelfRepair 보고서를 화면으로 끌어낸다
+    Q_INVOKABLE void runSelfDiagnosis();         // 지금 검사 (백그라운드 1~2분, 끝나면 onSelfDiagnosisReport)
+    Q_INVOKABLE void loadLastSelfDiagnosis();    // 마지막 보고서를 다시 띄운다 (창이 붙을 때)
+    Q_INVOKABLE void openSelfDiagnosisFolder();  // AppData/selfrepair 폴더 열기
 
     // ★ WebDAV NAS 업로드 (Synology 등)
     Q_INVOKABLE void setWebDavConfig(const QString &url, const QString &user, const QString &pass, bool enabled);
@@ -404,14 +414,28 @@ private:
     }
     QString m_currentPlatform;
 
-    // Terminal log window
+    // Terminal log window — 앱 안 창(TerminalWindow). 예전엔 Terminal.app 이었다.
     void openTerminalLog(const QString &platform, const QString &savePath = QString());
-    // 백업 전용 — 컬러 + 스피너 애니메이션 (clear + tail -n 30 + spinner refresh 200ms)
+    // 백업 전용 창 — 중지 단추가 백업 워치독의 STOP 표식을 쓴다
     void openBackupTerminalLog();
     void writeTerminalLog(const QString &message, const QString &platform = QString());
     void closeTerminalLog(const QString &platform = QString());
+    // ★ 앱 안 터미널 창 — 키(플랫폼·트랙)마다 하나. 메인 스레드에서만 만들고 만진다.
+    QHash<QString, QPointer<TerminalWindow>> m_terminalWindows;
+    // 메인 스레드 전용 — 없으면 만들고, 새 판을 시작하고(begin), 앞으로 띄운다.
+    TerminalWindow *openTerminalWindow(const QString &key, const QString &savePath, bool interactive = false);
+    void terminalWindowLive(const QString &key, const QString &line);       // \r 진행률 줄(어느 스레드든)
+    void terminalWindowDone(const QString &key, const QString &label = QString(),
+                            bool stopped = false);                          // 어느 스레드든
+    void onTerminalStop(const QString &key);
+    // 유튜브·니코동 배치 스크립트(bash) — 예전엔 Terminal.app 이 돌렸다. 이제 앱의 자식이다.
+    QHash<QString, QPointer<QProcess>> m_batchProcs;
+    void killBatchGroup(const QString &platform);
+    // ハニワ 대화(REPL) — 앱 안 대화형 창에 붙은 파이썬
+    QPointer<QProcess> m_haniwaProc;
 public:
     void closeAllTerminalLogs();
+    void closeAllTerminalWindows();   // 본 창을 닫을 때 — 앱 안 터미널 창도 같이 닫는다
     QString m_terminalLogPath;
     QMap<QString, QString> m_terminalLogPaths;
     QMap<QString, qint64> m_lastStatsUpdate;

@@ -33,9 +33,10 @@ HttpClient::~HttpClient()
     if (QThread::currentThread() != mainThread) {
         // ★ 만든 스레드가 이미 사라진 NAM 이 온다.
         //
-        //   HanishikiBackend::runTwitterCollection 은 수집 워커 스레드에서
+        //   (예전엔) HanishikiBackend::runTwitterCollection 이 수집 워커 스레드에서
         //     delete m_twitterCollector; m_twitterCollector = new TwitterCollector(this);
-        //   를 한다. 그러면 TwitterCollector 의 HttpClient 와 그 안의 NAM 이 그 워커
+        //   를 했다 — 지금은 메인에서 만든다(윈도우 9271c57 을 옮김). 병렬 모드의 지역
+        //   collector 와 adoptHttpToCurrentThread 가 만든 것은 여전히 워커 소속이다. 그러면 TwitterCollector 의 HttpClient 와 그 안의 NAM 이 그 워커
         //   스레드 소속으로 태어난다. 워커가 끝나면 스레드는 사라지는데 객체는
         //   멤버라 살아남는다 — 그때부터 nam->thread() 가 0 이다.
         //   다음 수집 때 '다른' 워커가 이 소멸자를 부르면, Qt 는 "스레드 없는 객체는
@@ -53,6 +54,15 @@ HttpClient::~HttpClient()
         m_nam->moveToThread(mainThread);
         QMetaObject::invokeMethod(m_nam, &QObject::deleteLater);
     } else {
+        // ★ 메인에서 지울 때도, 만든 스레드가 이미 사라진 NAM 이 올 수 있다.
+        //   TwitterCollector 가 메인 소속이 되면서 그 소멸자(=m_http 정리)가 메인에서 도는데,
+        //   그때의 m_http 는 마지막 collect()/checkNewPosts() 워커가 만든 것이고 그 워커는
+        //   이미 끝났다. 그대로 delete 하면 QObject 소멸자가 '다른 스레드의 타이머' 를 두고
+        //   경고를 낸다. 스레드 없는 객체는 현재 스레드로 데려올 수 있으므로(Qt 가 허용하는
+        //   유일한 경우) 메인으로 먼저 옮기고 지운다. (메인에서 지우는 것이라 위의 SIGBUS
+        //   규칙과도 어긋나지 않는다)
+        if (!m_nam->thread())
+            m_nam->moveToThread(mainThread);
         delete m_nam;
     }
     m_nam = nullptr;

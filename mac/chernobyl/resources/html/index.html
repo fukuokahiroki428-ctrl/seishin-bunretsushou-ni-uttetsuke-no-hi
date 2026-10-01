@@ -1478,6 +1478,17 @@
                                                 <option value="thumbnail">썸네일만</option>
                                             </select>
                                         </div>
+                                        <!-- ★ 영상 사이 대기 — 짧을수록 빠르지만 유튜브가 막을 위험이 커진다.
+                                             시간은 윈도우 판에서 같은 채널 3개씩 받아 재서 정한 값(백엔드 runYoutubeDownload 주석). -->
+                                        <div class="field">
+                                            <label class="field-label">속도</label>
+                                            <select class="input" id="youtube-pace"
+                                                    title="영상 사이에 두는 대기 시간입니다. 짧을수록 빠르지만 유튜브가 막을 위험이 커집니다.">
+                                                <option value="fast">빠름 — 700개 약 1시간 25분</option>
+                                                <option value="normal" selected>보통 — 700개 약 1시간 55분</option>
+                                                <option value="safe">안전 — 700개 약 2시간 55분</option>
+                                            </select>
+                                        </div>
                                     </div>
                                     <div class="option-row">
                                         <label class="option-item"><input type="checkbox" id="youtube-subs"> 자막</label>
@@ -2603,7 +2614,7 @@
                                         <button class="btn btn-secondary btn-sm" onclick="browseFolder('naikakukai')">찾아보기</button>
                                         <div class="field" style="margin:0;">
                                             <label class="field-label">주기 (분)</label>
-                                            <input type="number" class="input" id="naikakukai-interval" value="30" min="5" max="1440">
+                                            <input type="number" class="input" id="naikakukai-interval" value="30" min="5" max="1440" onchange="saveConfig()">
                                         </div>
                                     </div>
                                 </div>
@@ -2696,7 +2707,7 @@
                         <button type="button" class="sf-chip" data-group="remote" onclick="setSettingsGroup('remote')">원격 · NAS 업로드 <span class="sf-n">2</span></button>
                         <button type="button" class="sf-chip" data-group="ai" onclick="setSettingsGroup('ai')">AI · 보관함 <span class="sf-n">2</span></button>
                         <button type="button" class="sf-chip" data-group="account" onclick="setSettingsGroup('account')">계정 · 연결 <span class="sf-n">2</span></button>
-                        <button type="button" class="sf-chip" data-group="maint" onclick="setSettingsGroup('maint')">유지보수 <span class="sf-n">5</span></button>
+                        <button type="button" class="sf-chip" data-group="maint" onclick="setSettingsGroup('maint')">유지보수 <span class="sf-n">6</span></button>
                         <button type="button" class="sf-chip" data-group="look" onclick="setSettingsGroup('look')">화면 · 정보 <span class="sf-n">4</span></button>
                     </div>
                     <div class="settings-board" id="settings-board">
@@ -3168,6 +3179,22 @@
                                     <span><strong>yt-dlp 자동 업데이트</strong> — 장기 사용 권장 (끄면 최대 보안)</span>
                                 </label>
                             </div>
+                            <!-- ★ 자가진단 — 켤 때 도는 SelfRepair 보고서를 화면으로 끌어낸다(윈도우 판에서 옮김).
+                                 전에는 AppData/selfrepair/last_report.txt 와 표준출력에만 남아 아무도 안 봤다. -->
+                            <div class="section" data-group="maint">
+                                <div class="section-label">자가진단</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                                    앱이 쓰는 도구(yt-dlp · ffmpeg · exiftool · python)를 <strong>실제로 시켜 보고</strong> 결과를 확인합니다.
+                                    버전만 확인하면 &ldquo;버전은 찍히는데 실제로는 안 되는&rdquo; 고장을 못 잡습니다 —
+                                    유튜브를 통째로 세운 낡은 yt-dlp 도 버전 확인은 통과했습니다.
+                                    앱을 켤 때 자동으로 한 번 돌고, 코드 서명 봉인이 깨져 있으면 그때 다시 서명합니다.
+                                </p>
+                                <div class="btn-row">
+                                    <button class="btn btn-secondary btn-sm" id="selfrepair-run" onclick="runSelfDiagnosis()">지금 검사</button>
+                                    <button class="btn btn-secondary btn-sm" onclick="openSelfDiagnosisFolder()">보고서 폴더 열기</button>
+                                </div>
+                                <pre id="selfrepair-output" style="margin-top:8px;max-height:320px;overflow:auto;font-size:11px;line-height:1.55;color:var(--text-secondary);font-family:'SF Mono',Menlo,monospace;white-space:pre-wrap;word-break:break-all;"></pre>
+                            </div>
                             <div class="section" data-group="maint">
                                 <div class="section-label">디버그</div>
                                 <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
@@ -3301,6 +3328,21 @@
 
             </div>
         </div>
+    </div>
+
+    <!-- ★ 자가진단 알림 띠 — 문제를 찾았을 때만 뜬다.
+         파일에만 적어 두면 아무도 안 본다는 것이 이 앱에서 이미 증명됐다(윈도우 판, EXIF 1668건). -->
+    <div id="selfrepair-banner" role="alert" style="display:none;position:fixed;left:50%;bottom:18px;transform:translateX(-50%);
+         z-index:9998;max-width:min(720px,92vw);padding:10px 14px;border-radius:10px;
+         font-size:12.5px;line-height:1.5;box-shadow:0 6px 24px rgba(0,0,0,.28);
+         background:#3b1d1d;color:#ffd9d9;border:1px solid #7a3a3a;">
+        <span id="selfrepair-banner-text"></span>
+        <button onclick="showSelfDiagnosisSettings()"
+                style="margin-left:10px;padding:3px 9px;border-radius:6px;border:1px solid currentColor;
+                       background:transparent;color:inherit;cursor:pointer;font-size:11.5px;">보기</button>
+        <button onclick="hideSelfDiagnosisBanner()"
+                style="margin-left:4px;padding:3px 9px;border-radius:6px;border:1px solid transparent;
+                       background:transparent;color:inherit;cursor:pointer;opacity:.7;font-size:11.5px;">닫기</button>
     </div>
 
     <!-- Disk Selection Modal -->
@@ -4213,6 +4255,9 @@
             // 저장된 웹 검색 키 복원
             try{ var _bk=localStorage.getItem('braveKey')||''; if(_bk){ var _el=document.getElementById('ai-search-key'); if(_el)_el.value=_bk; if(backend.setSearchKey) backend.setSearchKey(_bk); } }catch(e){}
             if (backend) backend.loadConfig();
+            // ★ 지난 자가진단 결과를 설정 탭에 미리 채워 둔다 (탭을 열자마자 보이게).
+            //   켤 때 도는 이번 점검이 끝나면 onSelfDiagnosisSummary 가 다시 채운다.
+            try { if (backend && backend.loadLastSelfDiagnosis) backend.loadLastSelfDiagnosis(); } catch(e) {}
             // NAS/외장 버튼 자동 삽입
             const _tryAttachNas = () => {
                 try { if (typeof _attachNasButtonsOnce === 'function') _attachNasButtonsOnce(); } catch(e) {}
@@ -4226,7 +4271,7 @@
 
         // ── 캡처 콘솔 홈: 현황 대시보드 (platformStats/platformTargets 기반, 클릭 시 해당 탭으로) ──
         var DASH_PLATS=[['twitter','T','Twitter'],['bluesky','B','Bluesky'],['youtube','Y','YouTube'],['niconico','ニ','ニコニコ'],['discord','D','Discord'],['instagram','I','Instagram'],['pixiv','P','Pixiv'],['fanbox','F','Fanbox'],['tumblr','T','Tumblr'],['spinspin','S','SpinSpin'],['asked','A','Asked'],['trad','F','trad']];
-        function dashLed(s){ s=String(s||''); return /오류|error|fail/i.test(s)?'err':((/수집|다운로드|진행|중/.test(s)&&!/완료|대기/.test(s))?'live':'idle'); }
+        function dashLed(s){ s=String(s||''); return /오류|error|fail/i.test(s)?'err':(window.isDoneStatus(s)?'idle':'live'); }
         function renderDashboard(){
             var K=document.getElementById('dash-kpis'), G=document.getElementById('dash-grid'); if(!K||!G) return;
             function num(v){ try{return (v||0).toLocaleString();}catch(e){return String(v||0);} }
@@ -4292,13 +4337,23 @@
             document.getElementById('stat-media').textContent = s.media;
             const el = document.getElementById('stat-status');
             el.textContent = s.status;
-            const done = s.status==='대기'||s.status==='완료'||s.status==='Ready'||s.status==='Done';
+            const done = s.status==='대기'||s.status==='완료'||s.status==='Ready'||s.status==='Done'||s.status==='중단됨'||s.status==='중지됨'||s.status==='Stopped';
             const err = s.status==='오류'||s.status==='Error';
             el.className = 'badge ' + (done?'badge-ready':err?'badge-error':'badge-active');
             // Crawl 탭이 아닌 곳으로 전환 시 브라우저 창 숨기지 않음 (별도 창이므로)
         }
 
         // ── Button State ──
+        // ★ 상태 문구가 '끝난 것' 인지 한 곳에서 판정한다(윈도우 02c4dcc 에서 옮김).
+        //   예전에는 자리마다 제각각이었고, LED·전역 게이지는 /중/ 한 글자로 봤다 —
+        //   그런데 '중지됨'·'중단됨' 에도 '중' 이 들어 있어서 멈춘 뒤에도 계속
+        //   '돌고 있음' 으로 잡혔다(윈도우 실측: 프로세스가 다 죽고 배지가 '중지됨' 인데 LED 는 켜진 채).
+        window.isDoneStatus = function(s){
+            s = String(s || '');
+            return s==='대기' || s==='완료' || s==='Ready' || s==='Done'
+                || s==='중단됨' || s==='중지됨' || s==='Stopped' || s==='';
+        };
+
         function setRunning(platform, running) {
             const startBtn = document.getElementById(platform + '-start-btn');
             const stopBtn = document.getElementById(platform + '-stop-btn');
@@ -4334,7 +4389,7 @@
             platformStats[p].status = status;
             if (window.setNavLed) setNavLed(p, status);   // 스테이션 레일 LED 동기화
             try { var _act=0; for (var _k in platformStats){ var _s=String((platformStats[_k]||{}).status||'');
-                if(!/오류|error|fail/i.test(_s) && /수집|다운로드|진행|중/.test(_s) && !/완료|대기/.test(_s)) _act++; }
+                if(!/오류|error|fail/i.test(_s) && !window.isDoneStatus(_s)) _act++; }
                 var _ga=document.getElementById('global-active'); if(_ga)_ga.textContent=_act;
                 var _tg=document.getElementById('tb-global'); if(_tg)_tg.setAttribute('data-on', _act>0?'1':'0'); } catch(e){}   // 상단바 전역 활성 게이지
             if (currentTab === 'dashboard' && window.renderDashboard) renderDashboard();   // 대시보드 실시간 갱신
@@ -4344,12 +4399,12 @@
                 document.getElementById('stat-media').textContent = media;
                 const el = document.getElementById('stat-status');
                 el.textContent = status;
-                const done = status==='대기'||status==='완료'||status==='Ready'||status==='Done'||status==='중단됨'||status==='Stopped';
+                const done = status==='대기'||status==='완료'||status==='Ready'||status==='Done'||status==='중단됨'||status==='중지됨'||status==='Stopped';
                 const err = status==='오류'||status==='Error';
                 const stopped = status==='중단됨'||status==='Stopped';
                 el.className = 'badge ' + (stopped?'badge-warning':done?'badge-ready':err?'badge-error':'badge-active');
             }
-            const done = status==='대기'||status==='완료'||status==='Ready'||status==='Done'||status==='중단됨'||status==='Stopped';
+            const done = status==='대기'||status==='완료'||status==='Ready'||status==='Done'||status==='중단됨'||status==='중지됨'||status==='Stopped';
             const err = status==='오류'||status==='Error';
             // ★ 다중 수집 중에는 한 항목 완료/오류 시 setRunning(false) 하지 않음.
             //   _multis 가 살아있고 아직 running 상태인 항목이 있으면 정지 버튼 유지.
@@ -4637,10 +4692,65 @@
             }
         }
         function diagOpenCrashLog() {
-            if (backend && backend.openFolder) {
+            // ★ 어느 폴더인지는 백엔드가 운영체제에 맞춰 정한다(openDiagnosticsFolder).
+            //   여기에 경로를 박아 두면 같은 화면을 쓰는 한쪽 판에서 반드시 틀린다
+            //   (윈도우 판이 이 맥 경로를 그대로 받아 빈 가짜 폴더를 만들었다).
+            //   openDiagnosticsFolder 가 없는 옛 백엔드와 섞여도 열리게 옛 길을 남긴다.
+            if (backend && backend.openDiagnosticsFolder) {
+                backend.openDiagnosticsFolder();
+            } else if (backend && backend.openFolder) {
                 backend.openFolder('~/Library/Logs/DiagnosticReports');
             }
         }
+        // ── 자가진단 ────────────────────────────────────────────────
+        //   결과를 화면에 띄우는 쪽. 백엔드(SelfRepair)가 검사하고 여기로 넘겨준다.
+        function runSelfDiagnosis() {
+            if (!backend || !backend.runSelfDiagnosis) {
+                const el = document.getElementById('selfrepair-output');
+                if (el) el.textContent = '이 버전은 자가진단 API 를 지원하지 않습니다.';
+                return;
+            }
+            backend.runSelfDiagnosis();
+        }
+        function openSelfDiagnosisFolder() {
+            if (backend && backend.openSelfDiagnosisFolder) backend.openSelfDiagnosisFolder();
+        }
+        function hideSelfDiagnosisBanner() {
+            const b = document.getElementById('selfrepair-banner');
+            if (b) b.style.display = 'none';
+        }
+        // 띠의 [보기] — 설정 → 유지보수 묶음으로 데려가 보고서를 보여 준다
+        function showSelfDiagnosisSettings() {
+            hideSelfDiagnosisBanner();
+            switchTab('settings');
+            try { if (typeof setSettingsGroup === 'function') setSettingsGroup('maint'); } catch(e) {}
+            const el = document.getElementById('selfrepair-output');
+            if (el && el.scrollIntoView) el.scrollIntoView({block:'center'});
+        }
+        // ★ 검사 중에는 단추를 잠근다 — 여러 번 눌러 유튜브를 여러 번 두드리지 않게.
+        window.onSelfDiagnosisBusy = function(busy) {
+            const b = document.getElementById('selfrepair-run');
+            if (!b) return;
+            b.disabled = !!busy;
+            b.textContent = busy ? '검사 중… (1~2분)' : '지금 검사';
+        };
+        // 보고서 전문
+        window.onSelfDiagnosisReport = function(o) {
+            const el = document.getElementById('selfrepair-output');
+            if (el && o && typeof o.report === 'string') el.textContent = o.report;
+        };
+        // ★ 한 줄 요약 — 문제가 있을 때만 띠를 띄운다.
+        //   이상 없을 때도 띄우면 사람은 곧 띠를 안 보게 된다. 그러면 진짜일 때도 못 본다.
+        window.onSelfDiagnosisSummary = function(o) {
+            if (!o) return;
+            try { if (backend && backend.loadLastSelfDiagnosis) backend.loadLastSelfDiagnosis(); } catch(e) {}
+            if (o.level !== 'error') return;
+            const b = document.getElementById('selfrepair-banner');
+            const t = document.getElementById('selfrepair-banner-text');
+            if (!b || !t) return;
+            t.textContent = '🩺 ' + o.line;
+            b.style.display = 'block';
+        };
         // backend → JS callback for diagnostic info
         window.onDiagInfo = function(info) {
             const el = document.getElementById('settings-diag-output');
@@ -5191,7 +5301,9 @@
                 playlist:document.getElementById('youtube-playlist').checked,
                 sponsor:document.getElementById('youtube-sponsor').checked,
                 comments:document.getElementById('youtube-comments').checked,
-                realCapture:!!(document.getElementById('youtube-real-capture')||{}).checked
+                realCapture:!!(document.getElementById('youtube-real-capture')||{}).checked,
+                // ★ 영상 사이 대기(빠름/보통/안전) — 백엔드 runYoutubeDownload 가 yt-dlp --sleep-* 값으로 바꾼다
+                ytPace:(document.getElementById('youtube-pace')||{}).value || 'normal'
             };
             setRunning('youtube', true);
             clearLog('youtube'); setYoutubeProgress(0);
@@ -5645,7 +5757,10 @@
             if (/^https?:\/\//i.test(t)) return /nicovideo\.jp|nico\.ms/i.test(t);
             if (/^(www\.|sp\.|ch\.)?nicovideo\.jp\//i.test(t)) return true;
             if (t.charAt(0) === '@') t = t.slice(1);
-            if (/^(user|mylist|series|watch|channel)\//i.test(t)) return true;
+            // 니코동 ID 는 전부 숫자다 — 백엔드(niconicoWatchUrl)와 같은 모양으로 좁힌다(윈도우 4be7d42).
+            if (/^user\/\d+(\/video)?$/i.test(t)) return true;
+            if (/^(mylist|series)\/\d+$/i.test(t)) return true;
+            if (/^watch\/(sm|so|nm)?\d+$/i.test(t)) return true;
             if (/^(sm|so|nm)\d+$/i.test(t)) return true;
             return /^\d+$/.test(t);
         }
@@ -7176,11 +7291,15 @@
             'bsky-target','bsky-path','bsky-type','bsky-mode','bsky-since','bsky-until',
             'bsky-query','bsky-count','bsky-media','bsky-excel','bsky-replies','bsky-reposts','bsky-comments','bsky-real-capture',
             'bsky-method','bsky-ratelimit-mins','bsky-ratelimit-wait','bsky-cookie',
-            'youtube-path','youtube-quality','youtube-type','youtube-subs','youtube-thumb','youtube-metadata','youtube-playlist','youtube-sponsor','youtube-comments','youtube-real-capture',
+            'youtube-path','youtube-quality','youtube-type','youtube-subs','youtube-thumb','youtube-metadata','youtube-playlist','youtube-sponsor','youtube-comments','youtube-pace','youtube-real-capture',
+            // ★ 니코동이 통째로 빠져 있었다 — 바꿔도 다시 켜면 기본값으로 돌아갔고, 内閣会 니코동
+            //   감시도 늘 기본 화질 · 기본 경로로 돌았다(윈도우는 1bf9056 에서 먼저 고쳤다).
+            'niconico-path','niconico-quality','niconico-type','niconico-thumb','niconico-metadata','niconico-comments','niconico-cookies','niconico-real-capture','niconico-proxy',
             'discord-server','discord-channel','discord-type','discord-count','discord-delay','discord-media','discord-excel','discord-profiles','discord-path',
             'discord-method',
             'instagram-target','instagram-count','instagram-delay',
-            'instagram-posts','instagram-reels','instagram-stories','instagram-highlights','instagram-tagged','instagram-excel','instagram-path',
+            // (instagram-posts/reels/stories/highlights/tagged 는 instagram-type 셀렉트로 대체돼 화면에 없다)
+            'instagram-excel','instagram-path',
             'instagram-type','instagram-mode','instagram-media-quality','instagram-real-capture',
             'instagram-media','instagram-method','instagram-since','instagram-until','instagram-cookie',
             'pixiv-target','pixiv-path','pixiv-type','pixiv-count','pixiv-delay','pixiv-method',
@@ -7190,7 +7309,7 @@
             'spinspin-cookie','spinspin-target','spinspin-method','spinspin-media','spinspin-excel','spinspin-exif','spinspin-path','spinspin-real-capture',
             'asked-cookie','asked-target','asked-method','asked-media','asked-excel','asked-exif','asked-path','asked-real-capture',
             'crawl-url','crawl-depth','crawl-maxpages','crawl-delay','crawl-same-domain','crawl-deep-scroll','crawl-security','crawl-exif','crawl-wait-login','crawl-path',
-            'crawl-method','crawl-real-chrome','crawl-login-check','crawl-login-cookie',
+            'crawl-real-chrome','crawl-login-check','crawl-login-cookie',
             // ★ 内閣会 저장 경로와 이메일 감시 설정 — 여기 없어서 앱을 다시 켜면 빈칸으로 돌아갔다.
             //   그러면 '끄기 전에 돌던 이메일 감시를 이어 돌리기' 도 할 수 없다. 1년을 켜 두는 물건이다.
             //   ※ email-pass 는 앱 비밀번호다. 다른 자격증명(쿠키·블스카이 비밀번호)과 같은
@@ -8364,7 +8483,7 @@
       window.setNavLed=function(plat,status){
         var it=document.querySelector('.sidebar-nav .nav-item[data-plat="'+plat+'"]'); if(!it) return;
         var s=String(status||'');
-        var v=/오류|error|fail/i.test(s)?'err':((/수집|다운로드|진행|중/.test(s)&&!/완료|대기/.test(s))?'live':'idle');
+        var v=/오류|error|fail/i.test(s)?'err':(window.isDoneStatus(s)?'idle':'live');
         it.setAttribute('data-led', v);
       };
       function _boot(){ tag(); [200,900,2000].forEach(function(ms){ setTimeout(function(){ try{ if(window.renderDashboard) renderDashboard(); }catch(e){} }, ms); }); }

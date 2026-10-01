@@ -32,6 +32,8 @@
 // ═════════════════════════════════════════════════════════════════════════
 
 #include <QAtomicInt>
+#include <QMutex>
+#include <functional>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QElapsedTimer>
@@ -1116,16 +1118,82 @@ inline QString checkEnvironment()
     return out;
 }
 
+// ── 결과를 바깥(화면)으로 내보내는 통로 ─────────────────────────────────
+//
+// ★ 예전에는 AppData/selfrepair/last_report.txt 와 표준출력에만 남겼다. 그러면 아무도 안 본다.
+//   윈도우 판에서 EXIF 가 1668건 전부 실패하는 동안 앱은 화면에 한 마디도 하지 않았고,
+//   사람은 잘 되고 있다고 믿었다. 파일에만 적는 진단은 진단이 아니라 기록이다.
+//   그래서 한 줄짜리 요약을 앱에 넘길 통로를 둔다. 넘기는 쪽은 백그라운드 스레드이므로,
+//   받는 쪽(HanishikiBackend)이 메인 스레드로 넘겨서 화면을 건드린다.
+// ─────────────────────────────────────────────────────────────────────────
+
+inline QMutex &stateMutex()     { static QMutex m;  return m; }
+inline QString &lastReportRef() { static QString s; return s; }
+
+using Notifier = std::function<void(QString, QString)>;   // (한 줄, 등급: success/error)
+inline Notifier &notifierRef()  { static Notifier f; return f; }
+
+inline void setNotifier(Notifier f)
+{
+    QMutexLocker lk(&stateMutex());
+    notifierRef() = std::move(f);
+}
+
+inline void notify(const QString &line, const QString &level)
+{
+    Notifier f;
+    { QMutexLocker lk(&stateMutex()); f = notifierRef(); }
+    if (f) f(line, level);
+}
+
+inline QString reportPath()
+{
+    const QString d = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                      + "/selfrepair";
+    QDir().mkpath(d);
+    return d + "/last_report.txt";
+}
+
+// 마지막 보고서 — 메모리에 있으면 그것, 없으면 지난 실행이 남긴 파일.
+// (앱을 막 켠 직후 화면이 물어보면 이번 점검이 아직 안 끝났다. 그때는 지난 것이라도 보여 준다.)
+inline QString lastReport()
+{
+    { QMutexLocker lk(&stateMutex());
+      if (!lastReportRef().isEmpty()) return lastReportRef(); }
+    QFile f(reportPath());
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return QString::fromUtf8(f.readAll());
+    return QString();
+}
+
+// ★ 한 번에 하나만 돈다.
+//   설정 탭에 [지금 검사] 단추가 생기면서, 켤 때 도는 점검이 끝나기 전에 또 누를 수 있게 됐다.
+//   겹쳐 돌면 같은 도구를 두 스레드가 동시에 실행하고 보고서도 뒤섞인다.
+//   맥에서는 더 나쁘다 — 아래 서명 봉인 복구(resealAppBundle)는 1분쯤 걸리는데 그 자체엔
+//   겹침 막이가 없다. 둘이 같은 번들을 동시에 다시 서명하면 봉인이 무효로 남을 수 있다.
+inline QAtomicInt &maintenanceRunning() { static QAtomicInt v{0}; return v; }
+
 // ── 오케스트레이터 ───────────────────────────────────────────────────────
 
 inline QString runStartupMaintenance()
 {
+    // 이미 돌고 있으면 그냥 돌아간다. 빈 문자열은 '이번엔 안 했다' 는 뜻이다
+    //   (부르는 쪽은 lastReport() 로 앞선 결과를 보여 주면 되고, 돌던 점검이 끝나면 notify 가 온다).
+    if (!maintenanceRunning().testAndSetOrdered(0, 1)) {
+        qInfo().noquote() << "[SelfRepair] 이미 점검 중이라 이번 요청은 건너뜁니다";
+        return QString();
+    }
+    struct Guard {
+        ~Guard() { maintenanceRunning().storeRelease(0); }
+    } guard;
+
     QString report;
     report += "═ SelfRepair 자가진단 " + QDateTime::currentDateTime().toString(Qt::ISODate) + " ═\n";
     report += "appDir: " + appDir() + "\n";
 
     const QStringList tools = {"yt-dlp", "ffmpeg", "python", "exiftool", "rclone"};
-    int broken = 0;
+    int broken = 0, repaired = 0, smokeBad = 0;
+    QStringList badNames;   // ★ 화면 한 줄 요약에 '무엇이' 고장인지 적으려고 모은다
     for (const QString &t : tools) {
         ToolStatus st = checkTool(t);
         if (!st.runs) {
@@ -1133,9 +1201,11 @@ inline QString runStartupMaintenance()
             if (st.runs) {
                 report += QString("[OK*]  %1 — %2 (자동 복구됨: %3)\n")
                               .arg(t, st.version, st.path);
+                ++repaired;
             } else {
                 report += QString("[FAIL] %1 — %2\n").arg(t, st.error);
                 ++broken;
+                badNames << t;
             }
         } else {
             report += QString("[OK]   %1 — %2 (%3)\n").arg(t, st.version, st.path);
@@ -1169,6 +1239,8 @@ inline QString runStartupMaintenance()
                               : (r.verdict == SmokeFail) ? QStringLiteral("[실패]")
                                                          : QStringLiteral("[건너뜀]");
             report += QString("%1 %2 — %3\n").arg(tag, tool, r.detail);
+            // ★ 실기능 실패도 고장이다 — 버전은 찍히는데 실제로 안 되는 것이 진짜 사고였다.
+            if (r.verdict == SmokeFail) { ++smokeBad; if (!badNames.contains(tool)) badNames << tool; }
         }
         {
             const QString py = Common::bundledPythonPath();
@@ -1178,12 +1250,18 @@ inline QString runStartupMaintenance()
                                   : (r.verdict == SmokeFail) ? QStringLiteral("[실패]")
                                                              : QStringLiteral("[건너뜀]");
                 report += QString("%1 python — %2\n").arg(tag, r.detail);
+                if (r.verdict == SmokeFail) {
+                    ++smokeBad;
+                    if (!badNames.contains(QStringLiteral("python"))) badNames << QStringLiteral("python");
+                }
 
                 const SmokeResult ck = smokeBrowserCookies(py);
                 const QString ctag = (ck.verdict == SmokePass) ? QStringLiteral("[실행]")
                                    : (ck.verdict == SmokeFail) ? QStringLiteral("[실패]")
                                                                : QStringLiteral("[건너뜀]");
                 report += QString("%1 브라우저 쿠키 — %2\n").arg(ctag, ck.detail);
+                // ★ 쿠키는 '복호화가 터질 때' 만 실패다(없거나 로그아웃은 건너뜀) — 그건 진짜 신호다.
+                if (ck.verdict == SmokeFail) { ++smokeBad; badNames << QStringLiteral("브라우저 쿠키"); }
             }
         }
     }
@@ -1268,20 +1346,44 @@ inline QString runStartupMaintenance()
             : "┌ LLM 진단 ┐\n" + diag + "\n└──────────┘\n";
     }
 
-    // 보고서 저장
-    const QString outDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-                           + "/selfrepair";
-    QDir().mkpath(outDir);
-    QFile f(outDir + "/last_report.txt");
+    // ★ 한 줄 요약 — 이게 화면에 뜨는 문장이다. 길면 안 읽는다.
+    //   고장이 하나라도 있으면 error — 화면은 error 일 때만 빨간 띠를 띄운다.
+    QString summary, level;
+    if (broken == 0 && smokeBad == 0) {
+        summary = QString("자가진단 이상 없음 — 도구 %1개가 실제로 동작합니다").arg(tools.size());
+        if (repaired > 0) summary += QString(" (%1개는 자동 복구했습니다)").arg(repaired);
+        level = QStringLiteral("success");
+    } else {
+        summary = QString("자가진단에서 문제를 찾았습니다 — %1 (설정 → 유지보수 → 자가진단에서 자세히)")
+                      .arg(badNames.join(", "));
+        level = QStringLiteral("error");
+    }
+    report += "\n" + summary + "\n";
+
+    // 보고서 저장 — 메모리(화면이 곧바로 물어볼 때)와 파일(다음 실행·AI 수리 도우미가 읽는다) 둘 다.
+    { QMutexLocker lk(&stateMutex()); lastReportRef() = report; }
+    QFile f(reportPath());
     if (f.open(QIODevice::WriteOnly | QIODevice::Text))
         f.write(report.toUtf8());
     qInfo().noquote() << report;
+
+    notify(summary, level);
     return report;
 }
 
-inline void runStartupMaintenanceAsync()
+// ★ onDone 은 점검이 끝난 뒤 '그 작업 스레드에서' 불린다 — 화면을 만지려면 받는 쪽이 메인으로 넘겨야 한다.
+//   설정 탭의 [지금 검사] 도 이 함수를 쓴다(threadName = "selfrepair-manual").
+//   스레드를 따로 만들면 아래 '끌 때 재서명이 도는 중이면 기다리는' 장치가 빠진다.
+// ★ 스레드에 이름을 단다 — 스레드 친화성 경고에 '낸 스레드' 가 찍히게(main.cpp 로그 처리기).
+//   윈도우에서 30분마다 나던 moveToThread 경고를 쫓을 때, 이 이름으로 SelfRepair 를 빨리 지웠다(e0f1b3d).
+inline void runStartupMaintenanceAsync(std::function<void(QString)> onDone = {},
+                                       const QString &threadName = QStringLiteral("selfrepair-startup"))
 {
-    QThread *t = QThread::create([] { runStartupMaintenance(); });
+    QThread *t = QThread::create([onDone] {
+        const QString rep = runStartupMaintenance();
+        if (onDone) onDone(rep);
+    });
+    t->setObjectName(threadName);
     QObject::connect(t, &QThread::finished, t, &QObject::deleteLater);
 
     // ★ 종료할 때 이 스레드를 아무도 기다리지 않았다.

@@ -13,6 +13,8 @@
 #include "utils/DiskJsonBuffer.h"
 #include "utils/JsonShape.h"
 #include "HotfixSig.h"
+#include "TerminalWindow.h"
+#include <QStringDecoder>
 #include <QVersionNumber>
 #include "utils/FileHelper.h"
 #include "utils/SelfRepair.h"
@@ -51,6 +53,7 @@ using FileHelper::sanitizeFilename;
 #include <QCoreApplication>
 #ifndef Q_OS_WIN
 #include <signal.h>
+#include <unistd.h>
 #endif
 #include <QRegularExpression>
 
@@ -197,6 +200,27 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
     connect(m_webdav, &WebDavUploader::logMessage, this, [this](const QString &msg, const QString &type) {
         log(msg, type, "settings");
     });
+
+    // ★ 자가진단 결과를 화면으로 끌어낸다.
+    //   전에는 AppData/selfrepair/last_report.txt 와 표준출력에만 적었다. 그러면 아무도 안 본다 —
+    //   윈도우 판에서 EXIF 가 1668건 전부 실패하는 동안 앱은 화면에 한 마디도 하지 않았다.
+    //   안 보이는 진단은 없는 진단이다.
+    //   통보는 백그라운드 스레드에서 온다. this 를 거기서 만지면 안 되므로(log 의 writeTerminalLog 가
+    //   m_terminalLogPaths 를 읽는다) QPointer 로 살아있는지 확인하고 메인 스레드로 넘겨서 화면을 건드린다.
+    //   main.cpp 는 MainWindow(=이 백엔드)를 만든 뒤에 점검을 시작하므로 켤 때 점검의 통보도 여기로 온다.
+    {
+        QPointer<HanishikiBackend> self(this);
+        SelfRepair::setNotifier([self](QString line, QString level) {
+            QMetaObject::invokeMethod(qApp, [self, line, level]() {
+                if (!self) return;
+                self->log("🩺 " + line, level, "settings");
+                const QByteArray j = QJsonDocument(QJsonObject{
+                    {"line", line}, {"level", level}}).toJson(QJsonDocument::Compact);
+                self->runJs("if(window.onSelfDiagnosisSummary) onSelfDiagnosisSummary("
+                            + QString::fromUtf8(j) + ");");
+            }, Qt::QueuedConnection);
+        });
+    }
     // ★ 앱 시작 시 이전 세션의 좀비 capture Chrome 청소
     //   매치 패턴 3종 — 일반 Chrome 영향 없음:
     //     1) chrome_capture_profile (capture 전용 폴더)
@@ -376,6 +400,9 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
 
 HanishikiBackend::~HanishikiBackend()
 {
+    // ★ 자가진단 통보 통로부터 끊는다 — 종료 중에 점검 스레드가 죽은 객체를 부르지 않게
+    SelfRepair::setNotifier(nullptr);
+
     // 内閣会 타이머 정리
     m_naikakukaiRunning = false;
     if (m_naikakukaiTimer) { m_naikakukaiTimer->stop(); }
@@ -385,6 +412,17 @@ HanishikiBackend::~HanishikiBackend()
         m_llmProc->terminate();
         if (!m_llmProc->waitForFinished(2000)) m_llmProc->kill();
     }
+
+    // 앱 안 터미널에 붙은 자식들 — 유튜브·니코동 배치(bash·yt-dlp·ffmpeg 그룹)와 ハニワ 대화.
+    //   예전엔 Terminal.app 이 돌려 앱이 꺼져도 따로 받았다. 이제 앱의 자식이므로 함께 끝낸다.
+    for (const QString &k : m_batchProcs.keys()) killBatchGroup(k);
+    if (m_haniwaProc && m_haniwaProc->state() != QProcess::NotRunning) {
+        m_haniwaProc->terminate();
+        if (!m_haniwaProc->waitForFinished(1500)) m_haniwaProc->kill();
+    }
+    for (const QPointer<TerminalWindow> &tw : m_terminalWindows)
+        if (tw) delete tw.data();          // 부모 없는 최상위 창이라 직접 지운다
+    m_terminalWindows.clear();
 
     // 명시 정리 — 각 collector 소멸자가 자기 QProcess 데몬을 kill
     delete m_twitterCollector;  m_twitterCollector = nullptr;
@@ -631,11 +669,7 @@ void HanishikiBackend::stopNaikakukai()
             lf.write("\n\033[1;31m⏹ 사용자 중지\033[0m\n[DONE]\n"); lf.close();
         }
     }
-    QTimer::singleShot(1500, this, []() {
-#ifdef Q_OS_MACOS
-        QProcess::execute("/usr/bin/pkill", {"-f", "miyo_naikakukai_tail.command"});
-#endif
-    });
+    terminalWindowDone(QStringLiteral("naikakukai"), QStringLiteral("중지됨"), true);
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -3160,6 +3194,7 @@ void HanishikiBackend::emailWatchTick()
 //    적을 수 있는 형태가 여러 가지다. 받아들이는 것만 적는다:
 //      12345678            → 유저 페이지(그 사람이 올린 영상 목록)
 //      user/12345678       ·  mylist/123  ·  series/123  ·  watch/sm123
+//        (여기의 번호는 반드시 숫자다 — user/abc 같은 것은 받지 않는다)
 //      sm12345 · so12345 · nm12345   → 영상 하나
 //      https://…            → 적은 그대로
 //    알아볼 수 없으면 빈 문자열을 준다. 짐작해서 검색 같은 것으로 돌리지 않는다
@@ -3191,17 +3226,38 @@ static QString niconicoWatchUrl(const QString &raw)
 
     if (t.startsWith(QLatin1Char('@'))) t.remove(0, 1);   // @12345 로 적는 사람도 있다
 
-    // 경로만 적은 경우
-    static const QRegularExpression kPath(
-        QStringLiteral("^(user|mylist|series|watch|channel)/"),
-        QRegularExpression::CaseInsensitiveOption);
-    if (kPath.match(t).hasMatch()) {
-        QString u = QStringLiteral("https://www.nicovideo.jp/") + t;
+    // 경로만 적은 경우 — ID 를 숫자로 좁힌다.
+    //   니코동의 유저·마이리스트·시리즈는 전부 번호다. 좁히지 않으면 user/abc 같은 것을
+    //   받아 …/user/abc/video 를 만드는데, 그 주소는 404 라 감시가 조용히 아무것도
+    //   받지 않는다 — '알아볼 수 없으면 거부' 라는 이 함수의 뜻과 어긋난다.
+    //   (맥이 이 함수를 오려 16가지로 재 보고 잡아 주었다, 2026-09-19)
+    //   channel/ 은 ID 모양을 확신할 수 없어 뺐다. 주소를 통째로 붙이면 그대로 나간다.
+    {
+        static const QRegularExpression kUserPath(
+            QStringLiteral("^user/(\\d+)(?:/video)?$"),
+            QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch m = kUserPath.match(t);
         // 유저 페이지는 /video 까지 가야 올린 영상 목록이다(그냥 /user/N 은 프로필).
-        if (t.startsWith(QLatin1String("user/"), Qt::CaseInsensitive) &&
-            !t.contains(QLatin1String("/video")))
-            u += QLatin1String("/video");
-        return u;
+        if (m.hasMatch())
+            return QStringLiteral("https://www.nicovideo.jp/user/") + m.captured(1)
+                 + QLatin1String("/video");
+    }
+    {
+        static const QRegularExpression kListPath(
+            QStringLiteral("^(mylist|series)/(\\d+)$"),
+            QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch m = kListPath.match(t);
+        if (m.hasMatch())
+            return QStringLiteral("https://www.nicovideo.jp/") + m.captured(1).toLower()
+                 + QLatin1Char('/') + m.captured(2);
+    }
+    {
+        static const QRegularExpression kWatchPath(
+            QStringLiteral("^watch/((?:sm|so|nm)?\\d+)$"),
+            QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch m = kWatchPath.match(t);
+        if (m.hasMatch())
+            return QStringLiteral("https://www.nicovideo.jp/watch/") + m.captured(1);
     }
 
     // 영상 ID
@@ -3641,74 +3697,19 @@ void HanishikiBackend::openBackupTerminalLog()
     }
     QProcess::startDetached("cmd.exe", {"/c", "start", "Hanishiki-Backup", QDir::toNativeSeparators(scriptPath)});
 #else
-    // macOS — 컬러 + 스피너 애니메이션, 150ms refresh
-    QString scriptPath = scriptDir + "/miyo_backup_tail.command";
-    QFile script(scriptPath);
-    if (script.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QString content;
-        content += "#!/bin/bash\n";
-        content += "LOG='" + logPath + "'\n";
-        content += "BOLD='\\033[1m'\n";
-        content += "GREEN='\\033[32m'\n";
-        content += "YELLOW='\\033[33m'\n";
-        content += "CYAN='\\033[36m'\n";
-        content += "MAGENTA='\\033[35m'\n";
-        content += "GRAY='\\033[90m'\n";
-        content += "RESET='\\033[0m'\n";
-        content += "SPINNER='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'\n";
-        content += "sp_i=0\n";
-        // 터미널 사이즈 (가능하면)
-        // ★ 모니터 종료(Ctrl+C / 창 닫기 / 정상 exit) 시 STOP sentinel 만들기 → 앱 워커가 polling 으로 감지 후 백업 중지
-        content += "trap 'touch \"${LOG}.STOP\" 2>/dev/null; exit 0' SIGINT SIGTERM HUP EXIT\n";
-        content += "while true; do\n";
-        content += "  clear\n";
-        content += "  ROWS=$(tput lines 2>/dev/null || echo 40)\n";
-        content += "  TAIL_N=$((ROWS - 8))\n";
-        content += "  echo -e \"${BOLD}${CYAN}═══════════════════════════════════════════════════════════════${RESET}\"\n";
-        content += "  echo -e \"${BOLD}${CYAN}  📦 " APP_NAME_DISPLAY " 백업 진행 모니터  ${GRAY}$(date '+%H:%M:%S')${RESET}\"\n";
-        content += "  echo -e \"${BOLD}${CYAN}═══════════════════════════════════════════════════════════════${RESET}\"\n";
-        content += "  if [ -f \"$LOG\" ]; then\n";
-        content += "    tail -n $TAIL_N \"$LOG\"\n";
-        content += "  fi\n";
-        content += "  if grep -q '\\[DONE\\]' \"$LOG\" 2>/dev/null; then\n";
-        content += "    echo \"\"\n";
-        content += "    echo -e \"${BOLD}${GREEN}✅ 백업 완료 — 아무 키나 누르면 종료${RESET}\"\n";
-        content += "    read -n 1\n";
-        content += "    exit 0\n";
-        content += "  fi\n";
-        content += "  sp=${SPINNER:$sp_i:1}\n";
-        content += "  echo \"\"\n";
-        content += "  echo -e \"${CYAN}${BOLD}${sp}${RESET} ${MAGENTA}백업 진행 중...${RESET} ${YELLOW}(Ctrl+C 또는 창 닫기 = 백업 중지)${RESET}\"\n";
-        content += "  sp_i=$(( (sp_i + 1) % 10 ))\n";
-        content += "  sleep 0.15\n";
-        content += "done\n";
-        script.write(content.toUtf8());
-        script.close();
-        script.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner |
-                              QFileDevice::ReadGroup | QFileDevice::ExeGroup |
-                              QFileDevice::ReadOther | QFileDevice::ExeOther);
-        QProcess::execute("/bin/chmod", {"+x", scriptPath});
-        QProcess::execute("/usr/bin/xattr", {"-c", scriptPath});
-    }
-    bool opened = QProcess::startDetached("/usr/bin/open", {"-a", "Terminal.app", scriptPath});
-    if (!opened) opened = QProcess::startDetached("/usr/bin/open", {scriptPath});
-    if (!opened) {
-        QString esc = QString(scriptPath).replace("\\", "\\\\").replace("\"", "\\\"");
-        QString appleScript = QString(
-            "tell application \"Terminal\"\n"
-            "  activate\n"
-            "  do script \"clear; '%1'\"\n"
-            "end tell"
-        ).arg(esc);
-        QProcess::startDetached("/usr/bin/osascript", {"-e", appleScript});
-    }
+    // ★ 앱 안 창으로 보인다. 예전엔 스피너를 돌리는 .command 를 Terminal.app 으로 띄웠고,
+    //   그 터미널을 닫으면 trap 이 STOP 표식을 썼다. 이제 줄은 writeTerminalLog 가 바로 보내고,
+    //   표식은 창의 ⏹ 중지가 쓴다(onTerminalStop) — 백업 쪽 멈춤 길(워치독)은 그대로 둔다.
+    //   창은 메인 스레드에서만 만든다.
+    QMetaObject::invokeMethod(this, [this]() {
+        openTerminalWindow(QStringLiteral("backup"), QString());
+    }, Qt::QueuedConnection);
 #endif
 }
 
 void HanishikiBackend::openTerminalLog(const QString &platform, const QString &savePath)
 {
-    // ★ .command 는 로컬 temp 에 (NAS/외장 마운트는 POSIX 실행권한 보존 X)
-    //   사용자 tempDir 이 NAS 면 .command 실행 실패. 로컬 /tmp 사용.
+    // 로그 파일은 임시 디스크의 abiwa_<키> 폴더에 둔다(앱 안 창과 별도로 남는 기록).
     QString scriptDir = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_" + platform;
     QDir().mkpath(scriptDir);
 
@@ -3751,120 +3752,147 @@ void HanishikiBackend::openTerminalLog(const QString &platform, const QString &s
     }
     QProcess::startDetached("cmd.exe", {"/c", "start", "Hanishiki", QDir::toNativeSeparators(scriptPath)});
 #else
-    // macOS/Linux: 단순 tail -f — kernel inotify/kqueue 사용, CPU 거의 0
-    // ★ 옛 애니메이션 (150ms clear+refresh) 은 CPU/메모리 부담 큼 → 사용자 요청으로 단순화
-    QString scriptPath = scriptDir + "/miyo_" + platform + "_tail.command";
-    QFile script(scriptPath);
-    if (script.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QString content;
-        content += "#!/bin/bash\n";
-        content += "clear\n";
-        content += "cat '" + logPath + "'\n";
-        content += "tail -f -n +0 '" + logPath + "' &\n";
-        content += "TAIL_PID=$!\n";
-        content += "# Wait for DONE marker\n";
-        content += "while true; do\n";
-        content += "  if grep -q '\\[DONE\\]' '" + logPath + "' 2>/dev/null; then\n";
-        content += "    kill $TAIL_PID 2>/dev/null\n";
-        content += "    echo ''\n";
-        content += "    echo '터미널을 닫아도 됩니다.'\n";
-        content += "    read -n 1\n";
-        content += "    exit 0\n";
-        content += "  fi\n";
-        content += "  sleep 1\n";
-        content += "done\n";
-        script.write(content.toUtf8());
-        script.close();
-        script.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner |
-                              QFileDevice::ReadGroup | QFileDevice::ExeGroup |
-                              QFileDevice::ReadOther | QFileDevice::ExeOther);
-        // ★ NAS/외장 fallback — chmod 직접 + quarantine 제거
-        QProcess::execute("/bin/chmod", {"+x", scriptPath});
-        QProcess::execute("/usr/bin/xattr", {"-d", "com.apple.quarantine", scriptPath});
-    }
-    // Terminal.app으로 직접 열기 — 여러 방법 시도 (TCC/quarantine/provenance/sandbox 문제 회피)
-
-    // 1) 실행을 막을 수 있는 확장 속성들 모두 제거
-    QProcess::execute("xattr", {"-c", scriptPath});  // 모든 xattr 제거가 가장 확실
-
-    // 2) open -a Terminal.app 으로 시도
-    bool opened = QProcess::startDetached("/usr/bin/open", {"-a", "Terminal.app", scriptPath});
-
-    // 3) 실패하면 기본 핸들러로 (.command는 Terminal이 기본값)
-    if (!opened) {
-        opened = QProcess::startDetached("/usr/bin/open", {scriptPath});
-    }
-
-    // 4) 그래도 실패하면 osascript 로 Terminal 에 직접 명령
-    if (!opened) {
-        QString esc = QString(scriptPath).replace("\\", "\\\\").replace("\"", "\\\"");
-        QString appleScript = QString(
-            "tell application \"Terminal\"\n"
-            "  activate\n"
-            "  do script \"clear; '%1'; exit\"\n"
-            "end tell"
-        ).arg(esc);
-        opened = QProcess::startDetached("/usr/bin/osascript", {"-e", appleScript});
-    }
-
-    if (!opened) {
-        qWarning() << "[openTerminalLog] Failed to launch Terminal for" << platform << "script:" << scriptPath;
-    }
-
-    // ★ STOP sentinel 워치독 — 사용자가 터미널에서 Ctrl+C / 창 닫기 시 platform 수집 중지
-    //   매 500ms 폴링, sentinel 발견 → 중지 플래그 false → collector 자연 종료
-    QString stopSentinel = logPath + ".STOP";
-    QFile::remove(stopSentinel);  // stale 정리
-    QThread *watchdog = QThread::create([this, platform, stopSentinel]() {
-        while (platformRunning(platform)) {
-            if (QFile::exists(stopSentinel)) {
-                QFile::remove(stopSentinel);
-                QMetaObject::invokeMethod(this, [this, platform]() {
-                    log(QString("🛑 터미널 종료 → [%1] 수집 중지").arg(platform), "warning", platform);
-                    {
-                        // platform + 모든 trackKey (병렬 모드) 다 중지
-                        stopAllFor(platform);
-                        // ★ 예전엔 이 줄이 if 밖에 있어서 '모든' 키에 중단 표시를 했다.
-                        //   터미널 하나를 닫으면 그때 돌던 다른 플랫폼까지 나중에
-                        //   "중단됨" 으로 끝나 버렸다. 이 platform 것만 표시한다.
-                        //   (m_stopRequested 는 GUI 스레드 전용 — 이 람다도 큐잉되어 GUI다)
-                        const QString prefix = platform + "#";
-                        for (const QString &k : runFlagKeys())
-                            if (k == platform || k.startsWith(prefix)) m_stopRequested[k] = true;
-                    }
-                }, Qt::QueuedConnection);
-                break;
-            }
-            QThread::msleep(500);
-        }
-    });
-    connect(watchdog, &QThread::finished, watchdog, &QThread::deleteLater);
-    watchdog->start();
+    // ★ 앱 안 창에 보인다. 예전엔 tail -f 하는 .command 를 Terminal.app 으로 띄우고,
+    //   터미널을 닫으면 STOP 표식 워치독이 수집을 멈췄다. 이제 줄은 writeTerminalLog 가
+    //   생기는 즉시 보내고, 중지는 창의 ⏹ 단추가 한다(onTerminalStop — 워치독이 하던 일 그대로).
+    //   파일 기록은 그대로 남긴다 — 앱이 죽은 뒤에도 무슨 일이 있었는지 봐야 하고,
+    //   자가진단(llmDiagnoseIfBroken)도 이 꼬리를 읽는다.
+    //   창은 메인 스레드에서만 만든다 — 수집은 워커 스레드에서 이 함수를 부른다.
+    QMetaObject::invokeMethod(this, [this, platform, savePath]() {
+        openTerminalWindow(platform, savePath);
+    }, Qt::QueuedConnection);
 #endif
 }
 
 void HanishikiBackend::writeTerminalLog(const QString &message, const QString &platform)
 {
-    // 1) 현재 스레드가 trackKey 등록했으면 (병렬 모드) 그 키의 터미널 파일에만 write
-    QString trackKey = currentThreadTrackKey();
-    if (!trackKey.isEmpty() && m_terminalLogPaths.contains(trackKey)) {
-        QFile f(m_terminalLogPaths[trackKey]);
-        if (f.open(QIODevice::Append | QIODevice::Text)) {
-            f.write((message + "\n").toUtf8());
-            f.close();
-        }
-        return;
-    }
-    // 2) platform 자체로 매핑된 파일 — platform 명시 안 됐으면 그냥 skip (★ 섞임 방지)
+    // 1) 현재 스레드가 trackKey 등록했으면 (병렬 모드) 그 키의 터미널에만
+    // 2) 아니면 platform 자체로 매핑된 것 — platform 명시 안 됐으면 그냥 skip (★ 섞임 방지)
     //   이전엔 m_terminalLogPath 로 fallback → 마지막 열린 터미널이 모든 platform-less 호출 받아서
     //   백업 터미널에 youtube/yt-dlp 등이 섞임. 그 fallback 제거.
-    if (platform.isEmpty()) return;
-    if (!m_terminalLogPaths.contains(platform)) return;
-    QFile f(m_terminalLogPaths[platform]);
+    QString key = currentThreadTrackKey();
+    if (key.isEmpty() || !m_terminalLogPaths.contains(key)) {
+        if (platform.isEmpty() || !m_terminalLogPaths.contains(platform)) return;
+        key = platform;
+    }
+    QFile f(m_terminalLogPaths.value(key));
     if (f.open(QIODevice::Append | QIODevice::Text)) {
         f.write((message + "\n").toUtf8());
         f.close();
     }
+    // ★ 앱 안 창으로 바로 보낸다 — 파일을 폴링하지 않으므로 지연이 없다.
+    //   ANSI 색코드는 여기서 뗀다(파일에는 남긴다). 창은 메인 스레드에서만 만진다.
+    const QString clean = TerminalWindow::stripAnsi(message);
+    QMetaObject::invokeMethod(this, [this, key, clean]() {
+        if (TerminalWindow *w = m_terminalWindows.value(key)) w->appendLine(clean);
+    }, Qt::QueuedConnection);
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 앱 안 터미널 창 — 만들기 · 진행률 줄 · 끝 표시 · 중지 · 닫기
+//   예전엔 .command 를 만들어 Terminal.app 으로 띄웠다(TerminalWindow.h 머리 주석).
+// ═════════════════════════════════════════════════════════════════════════
+TerminalWindow *HanishikiBackend::openTerminalWindow(const QString &key, const QString &savePath,
+                                                      bool interactive)
+{
+    Q_ASSERT(QThread::currentThread() == thread());
+    TerminalWindow *w = m_terminalWindows.value(key);
+    if (!w) {
+        // 창 제목 — 트랙 키(twitter#0) 대신 사람이 읽는 이름으로
+        QString label = key;
+        if (key == "naikakukai")      label = QStringLiteral("内閣会");
+        else if (key == "backup")     label = QStringLiteral("백업");
+        else if (key == "haniwa")     label = QStringLiteral("ハニワ — 로컬 AI");
+        else if (key == "niconico")   label = QStringLiteral("ニコニコ");
+        else if (key == "youtube")    label = QStringLiteral("YouTube");
+        else {
+            const int hash = key.indexOf(QLatin1Char('#'));
+            label = (hash > 0 ? key.left(hash) : key);
+            if (!label.isEmpty()) label[0] = label[0].toUpper();
+            if (hash > 0) label += QStringLiteral(" #") + key.mid(hash + 1);
+        }
+        w = new TerminalWindow(key, QStringLiteral(APP_NAME_DISPLAY " — ") + label,
+                               interactive ? TerminalWindow::Interactive : TerminalWindow::Log);
+        m_terminalWindows.insert(key, w);
+        connect(w, &TerminalWindow::stopRequested, this, &HanishikiBackend::onTerminalStop,
+                Qt::QueuedConnection);
+    }
+    w->begin(savePath);
+    w->show();
+    w->raise();
+    return w;
+}
+
+void HanishikiBackend::terminalWindowLive(const QString &key, const QString &line)
+{
+    QMetaObject::invokeMethod(this, [this, key, line]() {
+        if (TerminalWindow *w = m_terminalWindows.value(key)) w->setLiveLine(line);
+    }, Qt::QueuedConnection);
+}
+
+void HanishikiBackend::terminalWindowDone(const QString &key, const QString &label, bool stopped)
+{
+    QMetaObject::invokeMethod(this, [this, key, label, stopped]() {
+        if (TerminalWindow *w = m_terminalWindows.value(key)) w->markDone(label, stopped);
+    }, Qt::QueuedConnection);
+}
+
+void HanishikiBackend::onTerminalStop(const QString &key)
+{
+    // 창의 ⏹ 중지 — 예전 STOP 표식 워치독(터미널을 닫으면 돌던 것)이 하던 일을 옮겼다.
+    log(QString("🛑 터미널 창에서 중지 → [%1]").arg(key), "warning",
+        key == "backup" ? QStringLiteral("settings") : key);
+    // ★ 수집 트랙이 아닌 것은 전용 중지로 간다. stopAllFor 는 깃발만 내린다 —
+    //   内閣会는 감시 타이머를, 유튜브·니코동은 받고 있는 yt-dlp 를, trad 는 제 작업을 못 멈춘다.
+    if (key == "naikakukai") { stopNaikakukai(); return; }
+    if (key == "youtube")    { stopYoutube();    return; }
+    if (key == "niconico")   { stopNiconico();   return; }
+    if (key == "trad")       { stopTrad();       return; }
+    if (key == "backup") {
+        // NAS 백업은 워치독이 STOP 표식을 보고 '사용자 중지' 로 마무리한다(예전 터미널의 trap 과
+        // 같은 표식). 원격(rclone) 백업에는 그 워치독이 없다 — 1초 안에 아무도 표식을 안 가져가면
+        // 원격 백업 중지를 부른다.
+        const QString sentinel = m_terminalLogPaths.value("backup") + ".STOP";
+        if (m_terminalLogPaths.contains("backup")) {
+            QFile f(sentinel);
+            if (f.open(QIODevice::WriteOnly)) f.close();
+        }
+        QTimer::singleShot(1000, this, [this, sentinel]() {
+            if (!m_backupTerminalActive.load()) return;      // 워치독이 받아 갔다
+            QFile::remove(sentinel);
+            stopRemoteBackup();
+        });
+        return;
+    }
+    // 수집 트랙 — platform + 병렬 trackKey 다 중지. 이 키의 것만 표시한다
+    //   (터미널 하나를 멈췄는데 그때 돌던 다른 플랫폼까지 '중단됨' 으로 끝나면 안 된다).
+    stopAllFor(key);
+    const QString prefix = key + "#";
+    for (const QString &k : runFlagKeys())
+        if (k == key || k.startsWith(prefix)) m_stopRequested[k] = true;
+    terminalWindowDone(key, QStringLiteral("중지됨"), true);
+}
+
+void HanishikiBackend::killBatchGroup(const QString &platform)
+{
+#ifndef Q_OS_WIN
+    // ★ 이름으로 찾아 죽이지 않는다 — 우리가 띄운 배치의 프로세스 그룹만 끝낸다
+    //   (bash · yt-dlp · ffmpeg 가 한 그룹이다. 띄울 때 setpgid 로 따로 묶었다).
+    QProcess *p = m_batchProcs.value(platform);
+    if (!p || p->state() == QProcess::NotRunning) return;
+    const qint64 pid = p->processId();
+    if (pid > 1) ::kill(-static_cast<pid_t>(pid), SIGTERM);
+#else
+    Q_UNUSED(platform);
+#endif
+}
+
+void HanishikiBackend::closeAllTerminalWindows()
+{
+    // 본 창을 닫을 때 — 이 창들만 화면에 남으면 아무것도 못 하는 빈 창이 된다.
+    //   닫기는 숨기기다(객체는 남는다). ハニワ 대화는 closed 신호로 끝난다.
+    for (const QPointer<TerminalWindow> &w : m_terminalWindows)
+        if (w) w->close();
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -3921,6 +3949,8 @@ void HanishikiBackend::closeTerminalLog(const QString &platform)
         path = m_terminalLogPath;
         m_terminalLogPath.clear();
     }
+    // 앱 안 창에도 끝났다고 알린다 — 창은 닫지 않는다. 끝난 뒤에도 읽을 수 있어야 한다.
+    if (!platform.isEmpty()) terminalWindowDone(platform);
     if (path.isEmpty()) return;
     QFile f(path);
     if (f.open(QIODevice::Append | QIODevice::Text)) {
@@ -3931,8 +3961,9 @@ void HanishikiBackend::closeTerminalLog(const QString &platform)
 
 void HanishikiBackend::closeAllTerminalLogs()
 {
-    // 모든 플랫폼별 터미널 로그에 [DONE] 마커 쓰기
+    // 모든 플랫폼별 터미널 로그에 [DONE] 마커 쓰기 (앱 안 창에도 끝 표시)
     for (auto it = m_terminalLogPaths.begin(); it != m_terminalLogPaths.end(); ++it) {
+        terminalWindowDone(it.key());
         QFile f(it.value());
         if (f.open(QIODevice::Append | QIODevice::Text)) {
             f.write("\n[DONE]\n");
@@ -3963,7 +3994,16 @@ void HanishikiBackend::updateStats(int posts, int media, const QString &status, 
         p = tk;
     }
     qint64 now = QDateTime::currentMSecsSinceEpoch();
-    bool forceUpdate = status.contains("Done") || status.contains("완료") || status.contains("待機") || status.contains("대기");
+    // ★ '끝' 을 알리는 상태는 절대 버리지 않는다(윈도우 02c4dcc).
+    //   이 1초 스로틀은 진행률처럼 쉴 새 없이 오는 것을 솎아내려고 둔 것인데,
+    //   마지막 한 줄까지 솎아 버리면 화면이 직전 상태로 굳는다. 중지를 눌러 프로세스가
+    //   다 죽고 버튼도 풀렸는데 배지는 '다운로드 중', LED 는 켜진 채로 남았다 —
+    //   '중지됨' 이 진행률 바로 뒤에 와서 버려진 탓이었다. 모든 플랫폼의 중지가 같았다.
+    const bool forceUpdate = status.contains("Done")    || status.contains("완료")
+                          || status.contains("待機")    || status.contains("대기")
+                          || status.contains("중지")    || status.contains("중단")
+                          || status.contains("Stopped") || status.contains("오류")
+                          || status.contains("Error");
     if (!forceUpdate && m_lastStatsUpdate.contains(p) && (now - m_lastStatsUpdate[p]) < 1000) {
         return;
     }
@@ -4908,7 +4948,7 @@ void HanishikiBackend::startCollection(const QString &configJson)
         }
     }
 
-    // Open terminal log window — 병렬이면 각 trackKey마다 별도 터미널 (개별 .command)
+    // Open terminal log window — 병렬이면 각 trackKey마다 별도 창
     QString savePath = config["path"].toString();
     openTerminalLog(trackKey, savePath);
 
@@ -5152,9 +5192,9 @@ void HanishikiBackend::stopCollection(const QString &platformName)
     }
     log("⏹ 중단 요청 — 진행 중인 작업을 종료합니다...", "warning", platformName);
 
-    // ★ 터미널 동기화 — GUI 중지 누르면 해당 platform 의 tail script 도 즉시 종료
-    //   1) [DONE] 마커 write — tail script 가 정상 종료 path 로 가서 사용자에게 안내 표시
-    //   2) tail .command process 강제 kill — 사용자가 확인 안 눌러도 닫힘
+    // ★ 터미널 동기화 — GUI 중지를 누르면 그 platform 의 터미널에도 멈췄다고 남긴다
+    //   1) 로그 파일에 [DONE] 마커 — 앱이 죽은 뒤에도 어디서 멈췄는지 남는다
+    //   2) 앱 안 창에 '중지됨' — 창은 닫지 않는다
     {
         QStringList platKeys;
         platKeys << platformName;
@@ -5171,16 +5211,16 @@ void HanishikiBackend::stopCollection(const QString &platformName)
                 }
             }
         }
-        // 1초 후 tail script process 강제 kill (사용자 키 입력 안 해도 닫힘)
+        // 앱 안 창에도 멈췄다고 적는다(창은 닫지 않는다 — 멈춘 뒤에도 읽을 수 있어야 한다).
+        //   예전엔 1.5초 뒤 tail 스크립트를 이름으로 pkill 했다. 이제 그 스크립트가 없다.
+        for (const QString &pk : platKeys) terminalWindowDone(pk, QStringLiteral("중지됨"), true);
+#ifdef Q_OS_WIN
+        // COMMANDLINE 은 taskkill 에 없는 필터라 아무것도 안 죽었다(그래서 옛 터미널
+        // 창이 계속 남았다). 명령줄로 PID 를 골라 그것만 죽인다.
         QTimer::singleShot(1500, this, [this, platformName]() {
-#ifdef Q_OS_MACOS
-            QProcess::execute("/usr/bin/pkill", {"-f", "miyo_" + platformName + "_tail.command"});
-#elif defined(Q_OS_WIN)
-            // COMMANDLINE 은 taskkill 에 없는 필터라 아무것도 안 죽었다(그래서 옛 터미널
-            // 창이 계속 남았다). 명령줄로 PID 를 골라 그것만 죽인다.
             killByCommandLine("cmd.exe", "miyo_" + platformName + "_tail.bat");
-#endif
         });
+#endif
     }
 
     // 2) 플랫폼별 "블로킹 지점" 즉시 해제 — 데몬 프로세스에 SIGTERM 쏴서
@@ -5266,6 +5306,75 @@ void HanishikiBackend::getDiagnosticInfo()
     info += QString("● 디스크 path: %1\n").arg(m_config ? m_config->tempDir() : "(none)");
     info.replace("'", "\\'").replace("\n", "\\n");
     runJs(QString("if(window.onDiagInfo) onDiagInfo('%1');").arg(info));
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 자가진단 — 화면에서 부르는 쪽 (설정 → 유지보수 → 자가진단)
+//
+//   runSelfDiagnosis()      : 지금 검사한다. 도구를 실제로 시켜 본다(유튜브 확인 포함).
+//   loadLastSelfDiagnosis() : 마지막 결과를 다시 띄운다 (창이 붙을 때).
+//
+//   ★ 검사는 1~2분 걸린다(유튜브에서 실제로 데이터를 받아 보고, 봉인이 깨졌으면 재서명까지 한다).
+//     그래서 백그라운드 스레드에서 돌리고 결과만 메인 스레드로 넘긴다.
+//     스레드는 SelfRepair::runStartupMaintenanceAsync 를 그대로 쓴다 — 끌 때 재서명이 도는
+//     중이면 기다려 주는 장치가 거기 있다. 따로 만들면 그 장치가 빠진다.
+// ═════════════════════════════════════════════════════════════════════════
+void HanishikiBackend::pushSelfDiagnosisReport(const QString &report)
+{
+    // ★ JSON 으로 감싸서 넘긴다. 따옴표·줄바꿈을 손으로 이스케이프하면 언젠가 깨진다
+    //   — 바로 위 getDiagnosticInfo 의 replace("'", ...) 방식은 역슬래시가 든 줄에서 깨진다.
+    const QByteArray j = QJsonDocument(QJsonObject{{"report", report}})
+                             .toJson(QJsonDocument::Compact);
+    runJs("if(window.onSelfDiagnosisReport) onSelfDiagnosisReport("
+          + QString::fromUtf8(j) + ");");
+}
+
+void HanishikiBackend::runSelfDiagnosis()
+{
+    log("🩺 자가진단 시작 — 도구가 '실제로 되는지' 까지 확인합니다. "
+        "유튜브에서 데이터를 받아 보므로 1~2분 걸릴 수 있습니다.", "info", "settings");
+    runJs("if(window.onSelfDiagnosisBusy) onSelfDiagnosisBusy(true);");
+
+    QPointer<HanishikiBackend> self(this);
+    SelfRepair::runStartupMaintenanceAsync([self](QString rep) {
+        QMetaObject::invokeMethod(qApp, [self, rep]() {
+            if (!self) return;
+            // ★ 빈 문자열 = 켤 때 도는 점검이 아직 안 끝나 이번 요청은 건너뛰었다는 뜻.
+            //   빈 화면 대신 앞선 결과를 띄운다. 돌던 점검이 끝나면 통보(onSelfDiagnosisSummary)가
+            //   loadLastSelfDiagnosis 를 다시 불러 화면이 저절로 바뀐다.
+            if (rep.isEmpty()) {
+                self->log("🩺 이미 점검이 돌고 있어 그 결과를 기다립니다 (끝나면 화면이 저절로 바뀝니다).",
+                          "info", "settings");
+                self->loadLastSelfDiagnosis();
+            } else {
+                self->pushSelfDiagnosisReport(rep);
+            }
+            self->runJs("if(window.onSelfDiagnosisBusy) onSelfDiagnosisBusy(false);");
+        }, Qt::QueuedConnection);
+    }, QStringLiteral("selfrepair-manual"));
+}
+
+void HanishikiBackend::loadLastSelfDiagnosis()
+{
+    const QString rep = SelfRepair::lastReport();
+    pushSelfDiagnosisReport(rep.isEmpty()
+        ? QStringLiteral("아직 결과가 없습니다. [지금 검사] 를 누르면 도구를 실제로 돌려 봅니다.")
+        : rep);
+}
+
+void HanishikiBackend::openSelfDiagnosisFolder()
+{
+    openFolder(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/selfrepair");
+}
+
+void HanishikiBackend::openDiagnosticsFolder()
+{
+    // ★ 경로는 여기서 정한다. 예전엔 index.html 이 backend.openFolder('~/Library/Logs/DiagnosticReports')
+    //   를 직접 불렀다. 맥에선 맞는 경로지만, 같은 화면을 쓰는 윈도우 판에선 openFolder 가 ~ 를
+    //   윈도우 사용자 홈으로 펼친 뒤 mkpath 까지 해서 있지도 않은 맥 폴더를 새로 만들고 그 빈 폴더를 열었다.
+    //   화면에 OS 경로를 박아 두면 한쪽 판에서 반드시 틀린다.
+    //   macOS 가 크래시 보고서(.ips)를 남기는 자리가 여기다.
+    openFolder(QDir::homePath() + "/Library/Logs/DiagnosticReports");
 }
 
 void HanishikiBackend::killZombieChromes()
@@ -6093,6 +6202,14 @@ void HanishikiBackend::checkNewPosts(const QString &platformName)
         }
         setPlatformRunning("twitter", true);
         QThread *thread = QThread::create([this, config]() {
+            // ★ 계정별 프록시 — startCollection 워커와 똑같이 이 스레드에만 건다.
+            //   collector 는 이제 진입할 때마다 '지금 스레드' 의 HttpClient 를 새로 만들고
+            //   (adoptHttpToCurrentThread), 그 HttpClient 와 데몬(bundledProcessEnv)은 이 스레드의
+            //   프록시를 읽는다. 여기서 걸지 않으면 '새 트윗 확인' 만 계정 프록시가 아니라
+            //   전역 설정으로 나간다 — 한 계정 두 IP. (m_lastConfig["twitter"] 에 accounts ·
+            //   accountIdx 가 그대로 들어 있다)
+            applyAccountProxyToCurrentThread(config);
+            struct ProxyScope { ~ProxyScope() { Common::clearThreadProxy(); } } _proxyScope;
             // twitter 의 중지 플래그를 넘긴다. 맵 노드가 아니라 shared_ptr 이 쥔
             // 원자값이라, 맵이 커지든 줄든 이 참조는 살아 있다.
             m_twitterCollector->checkNewPosts(config, *runFlag("twitter"));
@@ -6118,18 +6235,19 @@ void HanishikiBackend::startYoutube(const QString &configJson)
 
     if (m_window) m_window->holdAwake();
 
-    // ★ YouTube 는 yt-dlp 가 자체 터미널 (miyo_yt_download.command) 띄움 — 우리 tail 안 띄움.
-    //   대신 m_terminalLogPaths 에 dummy 등록만 (writeTerminalLog 의 fallback skip 위해)
-    //   yt-dlp 자체 출력은 yt-dlp script 가 직접 stdout 으로 보여줌.
+    // ★ 앱 터미널 창을 연다. 예전에는 열지 않았다 — yt-dlp 스크립트가 Terminal.app 을 따로
+    //   띄워서 터미널이 둘이 되기 때문이었다. 이제 스크립트 출력을 이 창으로 보내므로 창은
+    //   하나다. 덤으로 이 창의 ⏹ 중지가 유튜브에도 먹는다(윈도우 c0b90fd 와 같다).
     QString ytSavePath = config["path"].toString();
-    Q_UNUSED(ytSavePath);
-    // 의도적으로 openTerminalLog 호출 안 함 — 터미널 2개 뜨는 거 방지
+    if (ytSavePath.startsWith(QLatin1Char('~'))) ytSavePath.replace(0, 1, QDir::homePath());
+    openTerminalLog("youtube", ytSavePath + "/youtube");
 
     QThread *thread = QThread::create([this, config]() {
         runYoutubeDownload(config);
         // 완료 처리 — 메인 스레드에서 실행 (QProcess/QSocketNotifier는 cross-thread 접근 불가)
         QMetaObject::invokeMethod(this, [this]() {
             setPlatformRunning("youtube", false);
+            closeTerminalLog("youtube");   // 창은 닫지 않는다 — 끝났다고 표시만 한다
             // ★ 어떤 길로 끝났든 화면의 시작/중지 버튼을 되돌린다. 일찍 돌아가는 길(프록시를 못 씀·
             //   주소 없음·스크립트 못 만듦)은 '완료' 를 알리지 않아서, 중지 버튼이 켜진 채 시작
             //   버튼이 잠겨 앱을 다시 켜기 전엔 그 탭을 못 썼다(실측 2026-09-19).
@@ -6172,11 +6290,15 @@ void HanishikiBackend::stopYoutube()
     //   → 우리 yt-dlp 만 고른다 — 유튜브 저장 폴더의 .yt_archive.txt 를 인자로 가진 것.
     //   예전엔 스크립트도 이름(miyo_yt_download.command)으로 껐는데, 니코동 스크립트도 같은
     //   이름이라 유튜브를 멈추면 니코동까지 죽었다(윈도우 fa808be 와 같은 문제).
+    //   ★ 이제 스크립트는 앱의 자식이고 제 프로세스 그룹에 있다 — 그 그룹을 먼저 끈다.
+    //     (스크립트가 이미 죽어 그룹을 못 찾는 경우를 위해 예전 고르기도 남겨 둔다.)
     QTimer::singleShot(3000, this, [this]() {
         if (platformRunning("youtube")) return;   // 그새 다시 시작했다 — 새 것을 끄면 안 된다
+        killBatchGroup("youtube");
         QProcess::execute("/usr/bin/pkill", {"-f", "yt[-_]dlp .*/youtube/\\.yt_archive\\.txt"});
     });
 #endif
+    terminalWindowDone(QStringLiteral("youtube"), QStringLiteral("중지됨"), true);
 
     // 상태 파일에 DONE 기록 → 모니터링 루프 즉시 탈출
     QString statusFile = tempDir + "/miyo_yt_status.txt";
@@ -6200,12 +6322,18 @@ void HanishikiBackend::startNiconico(const QString &configJson)
     config["platform"] = "niconico";          // runYoutubeDownload 가 <path>/niconico 로 저장 + 로그/게이지 키
     m_lastConfig["niconico"] = config;
     setPlatformRunning("niconico", true);
+    {   // 유튜브와 같은 이유로 앱 터미널 창을 연다 — ⏹ 중지가 여기에도 먹는다.
+        QString nicoPath = config["path"].toString();
+        if (nicoPath.startsWith(QLatin1Char('~'))) nicoPath.replace(0, 1, QDir::homePath());
+        openTerminalLog("niconico", nicoPath + "/niconico");
+    }
     if (m_window) m_window->holdAwake();
 
     QThread *thread = QThread::create([this, config]() {
         runYoutubeDownload(config);
         QMetaObject::invokeMethod(this, [this]() {
             setPlatformRunning("niconico", false);
+            closeTerminalLog("niconico");
             // ★ 어떤 길로 끝났든 화면의 시작/중지 버튼을 되돌린다. 일찍 돌아가는 길(프록시를 못 씀·
             //   주소 없음·스크립트 못 만듦)은 '완료' 를 알리지 않아서, 중지 버튼이 켜진 채 시작
             //   버튼이 잠겨 앱을 다시 켜기 전엔 그 탭을 못 썼다(실측 2026-09-19).
@@ -6226,6 +6354,15 @@ void HanishikiBackend::stopNiconico()
     if (stopFile.open(QIODevice::WriteOnly)) { stopFile.write("STOP"); stopFile.close(); }
     QFile sf(tempDir + "/miyo_yt_status.txt");
     if (sf.open(QIODevice::WriteOnly)) { sf.write("DONE:0:0"); sf.close(); }
+#ifndef Q_OS_WIN
+    // 스크립트가 1초마다 표식을 보고 제 yt-dlp 를 끈다. 3초 뒤에도 배치가 남았으면 —
+    //   스크립트가 표식을 못 볼 처지인 것 — 그때만 우리 프로세스 그룹을 끈다(유튜브와 같다).
+    QTimer::singleShot(3000, this, [this]() {
+        if (platformRunning("niconico")) return;   // 그새 다시 시작했다
+        killBatchGroup("niconico");
+    });
+#endif
+    terminalWindowDone(QStringLiteral("niconico"), QStringLiteral("중지됨"), true);
     log("ニコニコ 다운로드 중지됨", "warning", "niconico");
     updateStats(0, 0, "중지됨", "niconico");
     runJs("var _e=document.getElementById('niconico-progress-fill'); if(_e)_e.style.width='0%';");
@@ -8295,8 +8432,31 @@ void HanishikiBackend::runTwitterCollection(const QJsonObject &config)
     }
 
     // Sequential 모드: 기존 멤버 collector 사용 (새 트윗 확인용으로 유지)
-    delete m_twitterCollector;
-    m_twitterCollector = new TwitterCollector(this);
+    // ★ 멤버 collector 는 '메인 스레드에서' 만들고 지운다.
+    //
+    //   이 함수는 수집 워커 스레드에서 돈다(startCollection · 内閣会 폴링의 QThread::create).
+    //   여기서 new 하면 객체가 그 워커 소속이 되고, 워커가 끝나면 thread() 가 0 이 된다.
+    //   그때부터 그 객체에 대한 deleteLater 도, 큐 연결도, 타이머도 조용히 안 먹는다.
+    //   그래서 QNetworkAccessManager 가 수집 한 번에 하나씩 샜고(~HttpClient 의 '두 걸음
+    //   옮기기' 는 그 증상을 막은 것이다), '새 트윗 확인' 은 또 다른 워커에서 죽은 스레드의
+    //   NAM 을 쓰고 있었다. 윈도우 쪽에서 실측으로 확인한 것과 같은 구조다.
+    //
+    //   HanishikiBackend 는 메인 스레드 객체다. 그 멤버도 메인 소속이어야 한다.
+    //   지우는 것도 메인에서 하므로, 메인의 stopCollection 이 m_twitterCollector->daemonPid()
+    //   를 읽는 것과도 더 이상 엇갈리지 않는다(전에는 워커의 delete 와 겹칠 수 있었다).
+    //
+    //   ※ collect() 자체는 여전히 이 워커에서 돈다 — 그래서 collector 안의 HttpClient 는
+    //     진입할 때마다 '지금 스레드' 것으로 다시 만든다(TwitterCollector::adoptHttpToCurrentThread).
+    //     둘이 같이 있어야 맞다. 계정별 프록시(setThreadProxy)도 그때 이 워커 것으로 다시 읽힌다.
+    //   ※ 이미 메인이면 BlockingQueued 로 부르면 그대로 멈춘다 — 나눠서 부른다.
+    {
+        auto makeCollector = [this]() {
+            delete m_twitterCollector;
+            m_twitterCollector = new TwitterCollector(this);
+        };
+        if (QThread::currentThread() == thread()) makeCollector();
+        else QMetaObject::invokeMethod(this, makeCollector, Qt::BlockingQueuedConnection);
+    }
     m_lastConfig["twitter"] = enrichedConfig;
     m_twitterCollector->collect(enrichedConfig, *runFlag("twitter"));
 }
@@ -8333,8 +8493,17 @@ void HanishikiBackend::runBlueskyCollection(const QJsonObject &config)
         localCollector.collect(enrichedConfig, *runFlag(parallelKey));
         return;
     }
-    delete m_blueskyCollector;
-    m_blueskyCollector = new BlueskyCollector(this);
+    // ★ 트위터 쪽과 같은 이유 — 위 runTwitterCollection 의 설명 참고.
+    //   (블루스카이 collector 는 HttpClient 멤버가 없어 adopt 짝은 필요 없다. 데몬은
+    //    부모 없이 워커에서 만들어지고 stopDaemon 이 스레드를 가려 정리한다)
+    {
+        auto makeCollector = [this]() {
+            delete m_blueskyCollector;
+            m_blueskyCollector = new BlueskyCollector(this);
+        };
+        if (QThread::currentThread() == thread()) makeCollector();
+        else QMetaObject::invokeMethod(this, makeCollector, Qt::BlockingQueuedConnection);
+    }
     m_blueskyCollector->collect(enrichedConfig, *runFlag("bluesky"));
 }
 
@@ -10533,6 +10702,19 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
                              ? QStringLiteral("youtube") : config["platform"].toString();
     const QString plabel = (platform == "niconico") ? QStringLiteral("ニコニコ") : QStringLiteral("YouTube");
 
+    // ★ 어느 길로 일찍 빠져나가도 상태 배지를 풀어 준다(윈도우 6ab6650 ②).
+    //   이 함수에는 이른 return 이 여럿이다(주소 없음·프록시를 못 씀 둘·스크립트 생성 실패).
+    //   시작/중지 버튼은 호출부 스레드가 끝날 때 onCollectionEnded 로 되돌리지만, 배지는 JS 가
+    //   시작할 때 넣은 '다운로드 중' 그대로 남아 사이드바 LED 가 켜진 채 상단 활성 수에도 잡혔다.
+    //   빠져나가는 자리마다 고치면 다음에 하나 더 생길 때 또 빠뜨린다 — 끝에서 한 번에 적는다.
+    //   이른 return 은 전부 실패라 '오류' 로 적는다(윈도우는 '중단됨' — 그러면 프록시 길이 적어 둔
+    //   '오류' 빨간 LED 를 덮는다). 버튼은 안 건드린다 — onCollectionEnded 가 멀티 진행까지 보고 푼다.
+    bool finishedNormally = false;
+    auto uiRelease = qScopeGuard([&]() {
+        if (finishedNormally) return;      // 정상 종료·중지는 아래에서 제 손으로 이미 알렸다
+        updateStats(0, 0, "오류", platform);
+    });
+
     QString url = config["url"].toString();
     QString path = config["path"].toString();
     if (path.startsWith(QLatin1Char('~'))) path.replace(0, 1, QDir::homePath());
@@ -10566,6 +10748,10 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     QStringList baseArgs;
     baseArgs << "--no-mtime";
     baseArgs << "--no-restrict-filenames";   // ★ 유니코드(한/일 등) 제목 그대로 보존
+    // ★ 출력 인코딩을 UTF-8 로 못박는다 — 이제 출력이 터미널이 아니라 파이프로 온다.
+    //   yt-dlp 는 제 preferredencoding() 을 쓰는데, 콘솔이 없으면 그것이 로케일을 따른다
+    //   (윈도우에서는 일본어가 통째로 사라졌다 — c0b90fd). 파일명에는 영향이 없다.
+    baseArgs << "--encoding" << "utf-8";
     // ★ ffmpeg 위치 — 번들→시스템 순으로 '실제 존재하는' 것만 지정(오디오 mp3 추출/영상 병합에 필수).
     //   이전엔 ffmpeg 없는 디렉토리를 무조건 가리켜 "ffmpeg could not be found" 로 실패했음(윈도우 오디오 오류 원인).
     for (const QString &ff : QStringList{ appDir + "/ffmpeg", appDir + "/ffmpeg.exe",
@@ -10573,9 +10759,31 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
         if (QFile::exists(ff)) { baseArgs << "--ffmpeg-location" << ff; break; }
     }
     // (위 후보가 없으면 --ffmpeg-location 생략 → PATH 에서 탐색)
-    // Rate limit 방지: 영상 간 딜레이
-    baseArgs << "--sleep-interval" << "3" << "--max-sleep-interval" << "8";
-    baseArgs << "--sleep-requests" << "1";
+    // ★ 영상 사이 대기 — 유튜브 차단을 피하려고 두는 것이다. 화면 '속도'(youtube-pace → ytPace)로 고른다.
+    //   예전 맥은 늘 지금의 '안전' 값(3~8초 · 요청 1초)으로 박혀 있었다.
+    //   값은 윈도우 판에서 실제로 재서 정했다(같은 채널에서 3개씩 내려받아 비교, 오류·429·403 없음):
+    //     안전 (요청 1s   · 다운 3~8s) : 45초  → 영상당 15.0초 → 700개 약 2시간 55분
+    //     보통 (요청 0.5s · 다운 1~3s) : 29초  → 영상당  9.7초 → 700개 약 1시간 55분
+    //     빠름 (요청 0.3s · 다운 0~1s) : (대기 없음은 21초였다)
+    //   ※ 3개로는 차단을 못 본다. 유튜브 제한은 누적이라 수백 개를 돌려야 드러난다.
+    //     그래서 '대기 없음' 은 넣지 않았다 — 빨라 보여도 근거가 없다.
+    //   기본은 '보통'. 700개짜리에서 한 시간을 줄이면서도 물러설 여지를 남긴다.
+    //   막히면 사용자가 화면에서 '안전' 으로 올릴 수 있다.
+    //   ytPace 를 안 보내는 옛 화면은 '보통' 으로 돈다(윈도우 판과 같다).
+    //   ★ 니코동은 화면이 ytPace 를 안 보낸다 — 예전 맥 값(안전)을 그대로 둔다.
+    //     内閣会가 사람 없이 돌리는 감시라 차단 위험을 늘리지 않는다(유튜브만 잰 값이기도 하다).
+    const QString ytPace = config.value("ytPace").toString(
+        platform == "niconico" ? QStringLiteral("safe") : QStringLiteral("normal"));
+    if (ytPace == "safe") {
+        baseArgs << "--sleep-interval" << "3" << "--max-sleep-interval" << "8";
+        baseArgs << "--sleep-requests" << "1";
+    } else if (ytPace == "fast") {
+        baseArgs << "--sleep-interval" << "0" << "--max-sleep-interval" << "1";
+        baseArgs << "--sleep-requests" << "0.3";
+    } else {
+        baseArgs << "--sleep-interval" << "1" << "--max-sleep-interval" << "3";
+        baseArgs << "--sleep-requests" << "0.5";
+    }
 
     if (type == "audio") {
         baseArgs << "-x" << "--audio-format" << "mp3";
@@ -10775,7 +10983,6 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     script += "STATUS=" + esc(statusFile) + "\n";
     script += "STOP_MARKER=" + esc(stopMarker) + "\n";
     script += "echo 'STARTED' > \"$STATUS\"\n\n";
-    script += "clear\n";
     script += "echo '========================================='\n";
     script += "echo '  " APP_NAME_DISPLAY " - " + plabel + " ダウンロード'\n";
     script += QString("echo '  총 %1개 URL'\n").arg(urls.size());
@@ -10788,7 +10995,8 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
         script += "  echo ''\n  echo '사용자에 의해 중지됨'\n";
         script += "  echo \"DONE:$SUCCESS:$FAIL\" > \"$STATUS\"\n";
         script += "  rm -f \"$STOP_MARKER\"\n";
-        script += "  echo ''\n  echo '터미널을 닫아도 됩니다.'\n  read -n 1\n  exit 0\nfi\n\n";
+        // ★ 키 입력을 기다리지 않는다(read -n 1). 이제 터미널이 없어 아무도 못 누른다.
+        script += "  exit 0\nfi\n\n";
 
         script += QString("echo 'PROGRESS:%1:%2' > \"$STATUS\"\n").arg(i + 1).arg(urls.size());
         script += QString("echo '[%1/%2] %3'\n").arg(i + 1).arg(urls.size()).arg(urls[i]);
@@ -10808,7 +11016,7 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
         script += "      echo ''\n      echo '사용자에 의해 중지됨'\n";
         script += "      echo \"DONE:$SUCCESS:$FAIL\" > \"$STATUS\"\n";
         script += "      rm -f \"$STOP_MARKER\"\n";
-        script += "      echo ''\n      echo '터미널을 닫아도 됩니다.'\n      read -n 1\n      exit 0\n";
+        script += "      exit 0\n";
         script += "    fi\n";
         script += "    sleep 1\n";
         script += "  done\n";
@@ -10846,7 +11054,6 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     script += "echo '========================================='\n";
     script += "echo \"DONE:$SUCCESS:$FAIL\" > \"$STATUS\"\n";
     script += "rm -f \"$STOP_MARKER\"\n";
-    script += "echo ''\necho '터미널을 닫아도 됩니다.'\nread -n 1\n";
 #endif
 
     // Write script
@@ -10870,7 +11077,71 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
 #ifdef Q_OS_WIN
     QProcess::startDetached("cmd.exe", {"/c", "start", "Hanishiki-YouTube", QDir::toNativeSeparators(scriptPath)});
 #else
-    QProcess::startDetached("/usr/bin/open", {scriptPath});
+    // ★ 스크립트를 앱이 직접 돌리고, 출력은 앱 안 터미널 창으로 흘린다.
+    //   예전엔 open 으로 Terminal.app 에 넘겼다. 그 창은 앱 바깥이라 ⏹ 중지 단추도 없고,
+    //   출력이 앱 로그 파일에 남지 않고, 끝나면 키 입력을 기다리며 계속 남았다.
+    //   앱이 꺼져도 따로 돌았다. 윈도우가 먼저 같은 길로 갔다(c0b90fd).
+    //   · 자식은 메인 스레드에서 만든다 — 이 함수는 워커 스레드에서 돈다. 다른 스레드의
+    //     this 에 QProcess 를 붙이면 Qt 가 막거나 finished 가 어긋난다.
+    //   · 제 프로세스 그룹으로 띄운다 — 마지막 수단으로 멈추거나 앱을 끌 때
+    //     bash · yt-dlp · ffmpeg 를 그룹째 끝내려고(이름으로 찾아 죽이지 않는다).
+    //   · 출력은 이 판의 창으로 간다. 그 창이 없으면(内閣会 니코동 감시) 内閣会 창으로 —
+    //     사용자가 안 보고 있을 때 돈 것이라 한 창에서 이어서 읽을 수 있어야 한다.
+    {
+        const QString scriptPathCopy = scriptPath;
+        const QString platformCopy = platform;
+        auto launch = [this, scriptPathCopy, platformCopy]() {
+            const QString key = m_terminalLogPaths.contains(platformCopy) ? platformCopy
+                              : (m_terminalLogPaths.contains("naikakukai") ? QStringLiteral("naikakukai")
+                                                                           : platformCopy);
+            QProcess *p = new QProcess(this);
+            p->setProgram(QStringLiteral("/bin/bash"));
+            p->setArguments({scriptPathCopy});
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            env.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));   // 파이프면 파이썬이 모아 두었다 낸다
+            env.insert(QStringLiteral("TERM"), QStringLiteral("dumb"));
+            p->setProcessEnvironment(env);
+            p->setProcessChannelMode(QProcess::MergedChannels);
+            p->setChildProcessModifier([]() { ::setpgid(0, 0); });
+            QProcess *raw = p;
+            // yt-dlp 는 진행률을 \r 로 같은 줄에 덮어쓴다. \n 으로만 줄을 나누고, 줄 안에서는
+            //   마지막 \r 구간만 남긴다. 아직 줄이 안 끝난 진행률은 '덮어쓰는 줄' 로 보여 준다 —
+            //   콘솔에서 보던 모양 그대로다. 바이트가 글자 중간에서 끊겨도 깨지지 않게
+            //   상태를 가진 디코더로 푼다.
+            auto pending = std::make_shared<QString>();
+            auto dec = std::make_shared<QStringDecoder>(QStringDecoder::Utf8);
+            connect(p, &QProcess::readyRead, this, [this, raw, key, pending, dec]() {
+                *pending += QString(dec->decode(raw->readAll()));
+                int at;
+                while ((at = pending->indexOf(QLatin1Char('\n'))) >= 0) {
+                    QString line = pending->left(at);
+                    pending->remove(0, at + 1);
+                    const int cr = line.lastIndexOf(QLatin1Char('\r'));
+                    if (cr >= 0) line = line.mid(cr + 1);
+                    if (!line.trimmed().isEmpty()) writeTerminalLog(line.trimmed(), key);
+                }
+                const int cr = pending->lastIndexOf(QLatin1Char('\r'));
+                if (cr >= 0) {
+                    pending->remove(0, cr + 1);
+                    const QString live = TerminalWindow::stripAnsi(*pending).trimmed();
+                    if (!live.isEmpty()) terminalWindowLive(key, live);
+                }
+            });
+            connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+                    [this, raw, key, platformCopy, pending](int, QProcess::ExitStatus) {
+                const QString rest = pending->trimmed();
+                pending->clear();
+                if (!rest.isEmpty()) writeTerminalLog(rest, key);   // 줄바꿈 없이 끝난 마지막 줄
+                if (m_batchProcs.value(platformCopy) == raw) m_batchProcs.remove(platformCopy);
+                raw->deleteLater();
+            });
+            m_batchProcs.insert(platformCopy, p);
+            p->start();
+            p->closeWriteChannel();   // 표준입력을 닫아 둔다 — 무엇이 입력을 기다려도 바로 끝을 받게
+        };
+        if (QThread::currentThread() == thread()) launch();
+        else QMetaObject::invokeMethod(this, launch, Qt::BlockingQueuedConnection);
+    }
 #endif
 
     // Monitor progress from status file
@@ -10888,9 +11159,16 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
             int fail = parts.value(2).toInt();
             runJs(QString("var _e=document.getElementById('%1-progress-fill'); if(_e)_e.style.width='100%';").arg(platform));
             if (platform == "youtube") runJs("if(window.setYoutubeProgress)setYoutubeProgress(100)");
-            log(QString("Complete! Success: %1, Failed: %2").arg(success).arg(fail), "success", platform);
-            log("Path: " + path, "info", platform);
-            updateStats(success, fail, "Done", platform);
+            // ★ 중지 버튼도 상태 파일에 DONE:0:0 을 쓴다(감시 루프를 바로 깨우려고). 그것을 '완료' 로
+            //   알리면 멈춘 판에 "Complete! Success: 0" 이 찍혔다. 멈춘 판은 그렇게 말하고, 이미 받은
+            //   것의 마무리(엑셀·메타데이터)만 이어 한다. 배지는 루프 뒤에서 '중지됨' 으로 적는다.
+            if (!platformRunning(platform)) {
+                log("중지됨 — 이미 받은 것까지 정리합니다", "warning", platform);
+            } else {
+                log(QString("Complete! Success: %1, Failed: %2").arg(success).arg(fail), "success", platform);
+                log("Path: " + path, "info", platform);
+                updateStats(success, fail, "Done", platform);
+            }
 
             // ── 진짜 페이지 캡쳐(SingleFile) ────────────────────────────────
             //   yt-dlp 는 영상·썸네일·자막·설명·info.json 은 받아 오지만 '보고 있던 화면'
@@ -11090,9 +11368,24 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
             int pct = (current * 100) / qMax(total, 1);
             runJs(QString("var _e=document.getElementById('%1-progress-fill'); if(_e)_e.style.width='%2%';").arg(platform).arg(pct));
             if (platform == "youtube") runJs(QString("if(window.setYoutubeProgress)setYoutubeProgress(%1)").arg(pct));
-            updateStats(current, 0, "Downloading", platform);
+            // ★ 한국어로 적는다 — 화면 JS(startYoutube/startNiconico)가 처음 넣는 문구도
+            //   "다운로드 중" 이다. 영어로 덮어쓰면 한 화면에 두 말이 섞였다(윈도우 02c4dcc).
+            updateStats(current, 0, "다운로드 중", platform);
         }
     }
+
+    // ★ 중지로 빠져나온 판은 여기서 마지막 상태를 적는다(윈도우 02c4dcc).
+    //   stopYoutube/stopNiconico 가 '중지됨' 을 적어도, 이 루프가 그 직후 진행 상태를 한 번 더
+    //   덮어쓰는 경합이 있었다 — 프로세스는 다 죽고 버튼도 풀렸는데 배지만 '다운로드 중' 으로,
+    //   사이드바 LED 는 켜진 채로 굳었다. 마지막 말은 이 루프가 한다. 정상 완료로 빠져나왔을
+    //   때는 아직 running 이 true 라(그 깃발은 호출부가 내린다) 여기에 걸리지 않는다.
+    if (!platformRunning(platform)) {
+        updateStats(0, 0, "중지됨", platform);
+        runJs(QString("var _e=document.getElementById('%1-progress-fill'); if(_e)_e.style.width='0%';").arg(platform));
+        if (platform == "youtube") runJs("if(window.setYoutubeProgress)setYoutubeProgress(0)");
+    }
+
+    finishedNormally = true;    // 여기까지 왔으면 함수 첫머리의 가드가 다시 알릴 필요가 없다
 
     // Cleanup temp files
     QFile::remove(statusFile);
@@ -11104,7 +11397,7 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     //   표식은 스크립트가 보고 지우고, 스크립트가 이미 없으면 다음 실행이 시작할 때 지운다.
     if (platformRunning(platform))
         QFile::remove(stopMarker);
-    // Don't delete scriptPath immediately - Terminal may still be reading it
+    // scriptPath 는 바로 지우지 않는다 — bash 가 아직 읽고 있을 수 있다(다음 판이 덮어쓴다)
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -15387,7 +15680,7 @@ void HanishikiBackend::llmChat(const QString &historyJson)
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// openLlmTerminal — ハニワ(로컬 LLM)를 Terminal.app 대화형 REPL 로 띄운다.
+// openLlmTerminal — ハニワ(로컬 LLM)를 앱 안 대화형 창(TerminalWindow)으로 띄운다.
 //   기존 openTerminalLog 는 로그를 tail 하는 '단방향' 뷰어였다. 이건 사용자가
 //   직접 타이핑해 로컬 AI 와 대화하는 '양방향' 셸 (127.0.0.1:8737 /v1/chat).
 //   REPL 은 stdlib(json/urllib/sys/os) 만 쓰는 python 클라이언트 → 번들/시스템
@@ -15435,6 +15728,9 @@ BASE   = "http://127.0.0.1:8737"
 REPORT = os.environ.get("HANIWA_REPORT", "")
 C = {"reset":"\033[0m","dim":"\033[90m","user":"\033[1;35m","ai":"\033[1;36m",
      "ok":"\033[1;32m","warn":"\033[1;33m","err":"\033[1;31m","brand":"\033[1;35m"}
+# 앱 안 창(파이프)이면 색 코드를 쓰지 않는다 — 콘솔이 아니면 해석되지 않는다.
+if not sys.stdout.isatty():
+    C = {k: "" for k in C}
 
 def ready(timeout=180):
     t0 = time.time()
@@ -15488,7 +15784,8 @@ def stream(messages):
     return full
 
 def main():
-    os.system("clear")
+    if sys.stdout.isatty():
+        os.system("clear")
     # ★ 박스 폭을 손으로 맞추지 않는다. 앱 이름이 바뀔 때마다(カメラ→…→@@APPNAME@@)
     #   여기 공백 개수가 따라오지 못해 배너가 어긋난 채 방치됐다. 폭을 계산해서 채운다.
     _t = "ハニワ - @@APPNAME@@ 내장 로컬 AI (오프라인)"
@@ -15522,7 +15819,7 @@ def main():
         reply = stream(messages)
         print()
         messages.append({"role":"assistant","content":reply})
-    print(C["dim"] + "\n  ハニワ를 종료합니다. 터미널을 닫아도 됩니다." + C["reset"])
+    print(C["dim"] + "\n  ハニワ를 종료합니다. 창을 닫아도 됩니다." + C["reset"])
 
 if __name__ == "__main__":
     main()
@@ -15558,45 +15855,77 @@ if __name__ == "__main__":
     }
     QProcess::startDetached("cmd.exe", {"/c", "start", "ハニワ", QDir::toNativeSeparators(scriptPath)});
 #else
+    // ★ 앱 안 대화형 창으로 연다(예전엔 .command 를 만들어 Terminal.app 으로 띄웠다).
+    //   파이썬을 앱이 직접 돌리고, 창 아래 입력 줄의 글을 표준입력으로 넘긴다.
+    //   터미널 앱을 부리지 않으니 '자동화' 허락을 묻지 않고, 앱을 끄면 대화도 같이 끝난다.
+    //
     // python 후보: 쓰기가능 env → 번들(arch) → 번들 → 시스템 (전부 앱 내부 우선)
     // 외부 복사본은 더 이상 쓰지 않는다(activePythonEnvDir 이 앱 내부 고정).
     //   옛 설치에서 남은 외부본이 있으면 그게 먼저 잡혀 '고친 줄 알았는데 옛 환경이
     //   도는' 상태가 되므로, 후보에서 뺀다.
-    const QString userPy    = Common::activePythonEnvDir() + "/bin/python3";
-    const QString bundlePyA = Common::bundledResourcesDir() + "/python_env_arm64/bin/python3";
-    const QString bundlePy  = Common::bundledResourcesDir() + "/python_env/bin/python3";
-    QString scriptPath = dir + "/haniwa.command";
-    QFile script(scriptPath);
-    if (script.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QString c;
-        c += "#!/bin/bash\n";
-        c += "export PYTHONDONTWRITEBYTECODE=1\n";       // 번들 python 이면 __pycache__ 로 서명 봉인 깨짐 방지
-        c += "export HANIWA_REPORT='" + reportPath + "'\n";
-        c += "REPL='" + replPath + "'\n";
-        c += "for P in '" + userPy + "' '" + bundlePyA + "' '" + bundlePy + "' /usr/bin/python3; do\n";
-        c += "  if [ -x \"$P\" ]; then exec \"$P\" \"$REPL\"; fi\n";
-        c += "done\n";
-        c += "if command -v python3 >/dev/null 2>&1; then exec python3 \"$REPL\"; fi\n";
-        c += "echo '❌ python3 을 찾지 못했습니다. 터미널을 닫아주세요.'; read -n 1\n";
-        script.write(c.toUtf8());
-        script.close();
-        script.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner |
-                              QFileDevice::ReadGroup | QFileDevice::ExeGroup |
-                              QFileDevice::ReadOther | QFileDevice::ExeOther);
-        QProcess::execute("/bin/chmod", {"+x", scriptPath});
+    QString py;
+    for (const QString &cand : { Common::activePythonEnvDir() + "/bin/python3",
+                                 Common::bundledResourcesDir() + "/python_env_arm64/bin/python3",
+                                 Common::bundledResourcesDir() + "/python_env/bin/python3",
+                                 QStringLiteral("/usr/bin/python3") }) {
+        if (QFileInfo(cand).isExecutable()) { py = cand; break; }
     }
-    // Terminal.app 실행 — quarantine/provenance/sandbox 회피 (openTerminalLog 와 동일 전략)
-    QProcess::execute("xattr", {"-c", scriptPath});
-    bool opened = QProcess::startDetached("/usr/bin/open", {"-a", "Terminal.app", scriptPath});
-    if (!opened) opened = QProcess::startDetached("/usr/bin/open", {scriptPath});
-    if (!opened) {
-        QString esc = QString(scriptPath).replace("\\", "\\\\").replace("\"", "\\\"");
-        QString appleScript = QString(
-            "tell application \"Terminal\"\n  activate\n  do script \"clear; '%1'; exit\"\nend tell").arg(esc);
-        opened = QProcess::startDetached("/usr/bin/osascript", {"-e", appleScript});
+    if (py.isEmpty()) {
+        log("❌ python3 을 찾지 못해 ハニワ 창을 열 수 없습니다.", "error", "settings");
+        return;
     }
-    if (!opened)
-        log("❌ Terminal.app 실행에 실패했습니다.", "error", "settings");
+
+    // 이미 대화 중이면 그 창을 앞으로만 가져온다 — 대화를 새로 시작하지 않는다.
+    if (m_haniwaProc && m_haniwaProc->state() != QProcess::NotRunning) {
+        if (TerminalWindow *w = m_terminalWindows.value("haniwa")) {
+            w->show(); w->raise(); w->activateWindow();
+        }
+        return;
+    }
+    TerminalWindow *w = openTerminalWindow(QStringLiteral("haniwa"), QString(), true);
+    w->activateWindow();
+    w->setInputEnabled(true);
+
+    QProcess *p = new QProcess(this);
+    p->setProgram(py);
+    // -u: 파이프면 파이썬이 출력을 모아 두었다 낸다 — 토큰이 생기는 대로 보이게 끈다.
+    // -B: 번들 파이썬이면 __pycache__ 가 앱 봉인을 깬다.
+    p->setArguments({QStringLiteral("-u"), QStringLiteral("-B"), replPath});
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("PYTHONDONTWRITEBYTECODE"), QStringLiteral("1"));
+    env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
+    env.insert(QStringLiteral("HANIWA_REPORT"), reportPath);
+    env.insert(QStringLiteral("TERM"), QStringLiteral("dumb"));
+    p->setProcessEnvironment(env);
+    p->setProcessChannelMode(QProcess::MergedChannels);
+
+    QPointer<TerminalWindow> wp(w);
+    auto dec = std::make_shared<QStringDecoder>(QStringDecoder::Utf8);   // 글자 중간에서 끊겨도 안 깨지게
+    connect(p, &QProcess::readyRead, this, [p, wp, dec]() {
+        const QString chunk = TerminalWindow::stripAnsi(QString(dec->decode(p->readAll())));
+        if (wp) wp->appendChunk(chunk);
+    });
+    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, p, wp](int, QProcess::ExitStatus) {
+        if (wp) wp->markDone(QStringLiteral("대화 끝"));
+        if (m_haniwaProc == p) m_haniwaProc = nullptr;
+        p->deleteLater();
+    });
+    // 창의 입력 줄 → 표준입력. 연결의 주인을 p 로 둔다 — 대화가 끝나 p 가 지워지면 연결도 끊긴다.
+    connect(w, &TerminalWindow::inputSubmitted, p, [p](const QString &, const QString &text) {
+        if (p->state() == QProcess::Running) p->write((text + "\n").toUtf8());
+    });
+    // 창을 닫으면 대화도 끝낸다 — 다시 열면 새로 시작한다.
+    connect(w, &TerminalWindow::closed, p, [p]() {
+        if (p->state() == QProcess::NotRunning) return;
+        p->closeWriteChannel();
+        p->terminate();
+        QTimer::singleShot(2000, p, [p]() { if (p->state() != QProcess::NotRunning) p->kill(); });
+    });
+    m_haniwaProc = p;
+    p->start();
+    if (!p->waitForStarted(3000))
+        log("❌ ハニワ 대화를 시작하지 못했습니다: " + p->errorString(), "error", "settings");
 #endif
 }
 
@@ -17180,6 +17509,9 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
 
     bool saveExcel = config["excel"].toBool(true);
     bool downloadMedia = config["downloadMedia"].toBool(true);
+    // ★ 화면의 '첨부 파일 다운' — 예전엔 보내기만 하고 아무도 안 읽어서,
+    //   체크를 풀어도 zip/pdf 가 그대로 받아졌다(미디어를 꺼야만 같이 꺼졌다).
+    bool downloadFiles = config["downloadFiles"].toBool(true);
     int maxPosts = config["count"].toInt(0);
 
     QString bufTmp = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_fanbox_" + target;
@@ -17342,7 +17674,10 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
                         enqueueWebDavUpload(out);
                     }
                 }
-                // 파일(zip·pdf 등) — 맵과 목록을 위에서 이미 합쳐 두었다
+                // 파일(zip·pdf 등) — 맵과 목록을 위에서 이미 합쳐 두었다.
+                // ★ 화면의 '첨부 파일 다운' 을 끄면 여기서 비운다 — 예전엔 보내기만 하고
+                //   아무도 안 읽어서 체크를 풀어도 zip/pdf 가 그대로 받아졌다.
+                if (!downloadFiles) fileMapAll = QJsonObject();
                 for (auto it = fileMapAll.constBegin(); it != fileMapAll.constEnd(); ++it) {
                     QJsonObject f = it.value().toObject();
                     QString url = JsonShape::pickString(f, {"url", "originalUrl", "downloadUrl"});
