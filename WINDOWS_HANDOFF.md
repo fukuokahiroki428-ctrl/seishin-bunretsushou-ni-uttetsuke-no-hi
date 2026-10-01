@@ -1089,3 +1089,178 @@ doc_id 는 언젠가 또 바뀝니다. 그래서 로그아웃 상태로 공개 �
 윈도우 쪽 코드는 손대지 않았습니다 — 쓰실지는 그쪽에서 정하십시오.
 
 맥 판: r32 냈습니다.
+
+---
+
+## 2026-10-02 · 맥 → 윈도우 · 이번엔 맥과 똑같이 — 크롤링 하나만 빼고
+
+> 사용자 말씀: "원도우에 전달할 변경사항을 전하여라 — 이번에는 맥 버전과 같게 할 것이다. 단 하나만 다르고 그것은 크롤링 기능이도다."
+
+지금까지는 서로 고친 것을 한두 건씩 주고받았습니다. 이번엔 다릅니다. **윈도우를 맥과 같은 앱으로 맞추는 것**이 목표이고,
+크롤링만 지금의 윈도우 것을 그대로 둡니다. 아래는 그 일을 위한 전체 대조표입니다.
+
+맥 판: **r34** 를 냈습니다(2026-10-01) — https://github.com/fukuokahiroki428-ctrl/seishin-bunretsushou-ni-uttetsuke-no-hi/releases/tag/mac-4.0.0-r34
+
+### 0. 이 표를 어떻게 만들었나
+
+두 트리는 `f7a1500`(2026-09-05)에서 갈라졌고, 그 뒤 맥(`ueno`)이 59커밋, 윈도우(`main`)가 77커밋을 쌓았습니다. 넷으로 대조했습니다.
+
+1. 맥 기능마다 코드에 남은 표지(함수·선택자·문자열) 37가지를 윈도우 트리에서 찾았습니다.
+2. 화면의 `id` 와 `backend.X` 호출을 두 `index.html` 사이에서 견줬습니다.
+3. 윈도우 커밋 45개(윈도우 트리를 고친 것 전부)를 하나씩 맥 코드와 견줬습니다.
+4. '윈도우에 없다' 고 나온 것은 다른 이름·다른 방식까지 다시 찾아 확인했습니다.
+
+★ **맥 코드는 반드시 `origin/ueno` 에서 가져오십시오.** `main` 에 있는 `mac/chernobyl` 사본은 맥이 쓰지 않습니다(2026-09-12 결정).
+윈도우 커밋 몇 개(02c4dcc · 1bf9056 · 137484a · 4be7d42)가 그 사본까지 고쳤지만, 실제 맥(`ueno`)에는 들어가 있지 않습니다.
+아래 커밋 번호는 모두 `ueno` 의 것입니다 — `git show <번호>` 로 보시면 됩니다.
+
+### 1. 원칙 넷
+
+1. **크롤링은 그대로.** 크롤 탭(経済産業省) · `SiteCrawler` · `RealChromeCrawler` · `PenChromeCrawler` · `PenBackend` · 화면의
+   `crawl-capture-btn` · `crawl-engine` · 폼 목록의 `crawl-method`. 단, `SiteCrawler.h` 의 `std::atomic<bool> m_running`(9514ae6)은
+   `HttpClient::setRunFlag(const std::atomic<bool>*)` 와 맞물려 있으니 그대로 두십시오.
+2. **덮어쓰지 말고 합치십시오.** 맥의 공용 파일(`Common.cpp/h` · `SelfRepair.h` · `HttpClient.cpp` · `bluesky_daemon.py` 등)에도
+   `Q_OS_WIN` 코드가 들어 있습니다. 맥 파일을 그대로 복사하면 윈도우의 고침이 **소리 없이** 사라집니다 — 5절의 목록을 지켜 주십시오.
+3. **윈도우 플랫폼에 필요한 것은 그대로.** 테두리 없는 창과 그 단추, `TerminalWindow`, MSVC·배포 빌드, 260자 긴 경로.
+4. **정할 것 넷은 사용자께 여쭙니다**(7절). 특히 프록시 모델은 맥과 같게 하면 윈도우의 기능이 줄어듭니다.
+
+### 2. 권하는 순서
+
+| 순서 | 일 | 까닭 |
+|---|---|---|
+| 1 | 화면 — 맥 `index.html` 을 통째로 받고 윈도우 조각을 다시 얹기 (3절) | 갈라진 뒤 윈도우 화면은 +90/−15줄, 맥은 +3126/−1728줄. 통째로 받는 편이 빠르고 틀릴 데가 적습니다 |
+| 2 | **팬박스 · 인스타** 수집 고장 (4절 P0) | 지금 윈도우는 팬박스가 0개로 끝나고, 인스타는 죽은 주소를 부릅니다 |
+| 3 | **폼 저장** — 바뀐 칸만 · 합치기 · 알리기 (4절 P0) | 맥 화면을 받으면 기능 창이 없어도 같은 규칙이 필요합니다(계정이 지워지던 고장) |
+| 4 | 응답 읽기 `JsonShape` · 고침 꾸러미와 서명 · 수리 도우미 · 프록시 판별 (4절 P1) | 바깥이 바뀌어도 버티고, 새 판 없이 고치는 길 |
+| 5 | 배율 · UI 프로필 · 기능 창 (4절 P2) | 화면을 받으면 자연히 필요해지는 것들 |
+| 6 | 공작함으로 점검 (8절) | 탭 17개 · 5폭 × 15화면 · 폼 저장을 기계가 먼저 돕니다 |
+
+### 3. 화면 — 맥 `index.html` 을 통째로, 그 위에 윈도우 조각
+
+맥 화면에는 이번 달의 액자 틀 · 벽돌 쌓기 · 자동 배치(넓음/보통/좁음, 시작하면 실행 화면으로) · 대상 한 줄 · 설정 묶음이 다 들어 있습니다
+(757d52d · fc6bd9d · 6f0f90b · ced5af7 · 20dd34e · b1cec3a). 화면의 `backend.X` 호출은 모두 `if (backend.X)` 로 막혀 있어 슬롯이 없어도
+죽지는 않습니다. 다만 **조용히 아무 일도 안 하는 자리**가 생깁니다. 받은 뒤 다시 얹을 것:
+
+| 조각 | 윈도우 지금 자리 | 할 일 |
+|---|---|---|
+| 창 단추 — 최소화·최대화·닫기, 가장자리 6px 크기 조절, 위 띠 더블클릭 최대화, `__winMaxChanged` | html 969 · 1272-1277(CSS) · 1305-1309 · 4427-4515(JS) | 그대로 다시 얹기(맥은 신호등이 있어 없음) |
+| **사이드바에서 감춰지는 넷** — 맥은 Tumblr · SpinSpin · Asked · 프록시에 `data-window-only="1"` 을 달아 본 창에서 감추고, macOS 메뉴의 '기능' 에서 따로 연 창(`#window=<탭>`)으로 엽니다 | 윈도우는 메뉴줄을 숨기고 `openFeatureWindow` 가 없음 | **그대로 받으면 이 넷에 들어갈 길이 없어집니다.** 윈도우에선 그 감춤 규칙을 끄거나(플랫폼 표시 클래스), 기능 창 방식을 옮기십시오 |
+| 프록시 프로필 칸 — `proxy-list/name/provider/type/test-result`, `getProxyProfiles/setProxyProfiles`, 계정별 `select.acct-proxy` | html 3197-3233 · 4770-4783 · 6420-6530 | **7절에서 정한 뒤** |
+| 자가진단 묶음 — `runSelfDiagnosis` · `loadLastSelfDiagnosis` · `openSelfDiagnosisFolder` · `#selfrepair-banner/-output/-run` | html 3495-3510 · 3547-3552 · 4856-4893 | 다시 얹기(맥도 가져갈 것) |
+| `diagOpenCrashLog()` | html 4847-4854 | 맥 판은 `~/Library/Logs/DiagnosticReports` 를 그대로 열라고 합니다. 윈도우의 `openDiagnosticsFolder()` 로 바꿔 얹기 |
+| 유튜브 속도 `#youtube-pace`(빠름/보통/안전) + 시작 설정 `ytPace` + 폼 목록 | html 1720-1727 · 5421 · 6953 | 다시 얹기(맥은 '안전' 에 고정) |
+| 니코동 주소 검사 `_niconicoWatchOk` 를 숫자 ID 로 좁힌 것 | html 5895-5907 | 다시 얹기 — 맥 화면은 아직 `user/abc` 를 통과시킵니다 |
+| `window.isDoneStatus` — '중지됨' 이 `/중/` 에 걸려 LED·전역 게이지가 켜진 채 굳던 것 | html 4552 · 4576-4622 · 7966 | 다시 얹기 |
+| `_formFieldIds` 의 `niconico-*` 아홉 칸 · `naikakukai-interval` 의 `onchange="saveConfig()"` | html 6955 · 2885 | 다시 얹기 |
+| 스타일 층 `#nt-v2` · `#modern-polish` · `#native-feel` | html 845-1185 | `nt-v2` 와 `modern-polish` 는 윈도우 마크업의 `nt-*` 에 맞춘 것이라 맥 마크업에선 거의 먹지 않습니다 — 버리십시오. `native-feel` 의 '앱다운' 규칙(전역 글 선택 금지 · 이미지 끌기 금지 · overscroll 금지)만 골라 얹을지는 보시고 정하십시오. 비활성 단추 커서 고침(f339088)은 `native-feel` 을 얹을 때만 필요합니다 |
+
+맥 화면이 부르는데 `MiyoBackend.h` 에 없는 슬롯 열하나:
+
+| 슬롯 | 맥에서 하는 일 | 윈도우 할 일 |
+|---|---|---|
+| `checkHotfixNow` · `getHotfixStatus` · `setHotfixAuto` · `resetHotfixTools` | 고침 꾸러미(4절) | 꾸러미를 옮길 때 같이 |
+| `getProxyConfig` · `setProxyConfig` | 전역 프록시 하나 + 계정별 칸 | 7절 결정에 따라 — 프로필을 지키면 화면 쪽을 프로필에 맞추십시오. `testProxy` 의 인자 수도 두 판이 다릅니다 |
+| `setUiScaleMode` | 창 크기에 따른 배율 방식(4절 P2) | 배율을 옮길 때 |
+| `getAppInfo` | 설정의 앱 정보(이름·판·만든 곳) | 간단 — 옮기십시오 |
+| `archiveVerify(root, record)` | 보관물 대조(설정 → AI · 보관함) | 옮기거나 그 단추를 감추기 |
+| `setDragHover` · `setDragRegions` | macOS 창 끌기 보조(맥에서도 `Q_OS_MACOS` 일 때만) | **필요 없습니다.** 윈도우는 `startSystemMove` 를 씁니다. 빈 슬롯을 두셔도 됩니다 |
+
+### 4. 맥에 있고 윈도우에 없는 것
+
+**P0 — 사용자에게 지금 보이는 고장**
+
+| 무엇 | 맥 커밋 · 자리 | 윈도우 지금 | 할 일 |
+|---|---|---|---|
+| **팬박스가 0개로 끝남** — 응답 이름이 `items`→`posts`, 쪽 넘기기는 `post.paginateCreator`(`pageUrls`), 글 내용에 껍데기 한 겹, 사진·파일은 글에 따라 목록 | de50f1d · `runFanboxCollection` | 옛 길 — `post.listCreator` + `nextUrl`(MiyoBackend.cpp 16463 근처). 맥은 이 길로 여덟 달 동안 「완료: 포스트 0」 이었습니다 | `pickArray(body, {"posts","items","list"})` · `unwrap(det, {"post","item","data"})` · `images`/`files` 목록을 맵으로 · 상세 끝점 사슬 `post.info → post.get → post.getInfo` · **HTTP 200 인데 0개면 '완료' 가 아니라 오류** |
+| 브라우저 클라이언트 힌트(`sec-ch-ua*` 를 UA 와 짝 맞춰) | de50f1d · 501c924 · `Common::browserClientHints` | 없음 | 옮기기. 맥에서 이 함수의 임시 객체 둘로 `begin()/end()` 를 돌다 충돌한 적이 있습니다 — 반드시 지역 변수에 받아서 도십시오 |
+| **인스타가 죽은 주소를 부름** — `web_profile_info` · `feed/user` · `clips/user` 는 죽었고, 지금 웹앱은 `POST /graphql/query`(doc_id + `lsd`/`fb_dtsg`) | 501c924 · 523d72e · `resources/tools/ig_docids.py` | 죽은 주소 셋을 부름(MiyoBackend.cpp 9077 · 9083 · 9313 · 9687 근처) · `graphql/query` 없음. `InstagramCollector.cpp` 도 죽은 REST 인데 어디서도 안 씀 | 09-24 글의 차림새 그대로 + doc_id 떠 오기(`ig_docids.py`) + 되살리기 사다리(`igTry`·`igRecover`: 토큰 새로받기 → 번호 떠 오기) + 릴스는 `media/<pk>/info/` 로 한 번 더 + 고른 종류만 받기(`igWantPosts`) + 릴스·태그됨에도 '개수' |
+| **계정이 지워짐** — 창이 여럿이면 옛 화면을 든 창이 저장하며 세션 칸을 빈 값으로 덮었다 | 3512b0a · html `_formBase/_formDirty/_doSaveForm/applyFormPatch` · `saveFormData` 합치기 + `runJsAll` 알림 | 통째로 저장·통째로 갈아 끼움 | 화면은 맥 것을 받으면 따라옵니다. 백엔드 `saveFormData` 를 '합치고 → 저장 → 모든 창에 `applyFormPatch`' 로 바꾸십시오. 규칙은 공작함 `docs/폼저장.md` |
+
+**P1 — 바깥이 바뀌어도 버티고, 새 판 없이 고치기**
+
+| 무엇 | 맥 커밋 · 자리 | 윈도우 지금 | 할 일 |
+|---|---|---|---|
+| 응답 읽기 `src/utils/JsonShape.h` — `pick` · `pickArray` · `pickObject` · `pickString` · `unwrap` · `findArrayOfObjects` · `idsFromMapOrArray` · `describe` | 3916efe | 없음 | 헤더 하나라 그대로 가져오십시오. `pick` 은 꾸러미의 별명(`Common::shapeAliasesFor`)까지 펼칩니다 |
+| 트위터 알맹이 꺼내기 `xInstructions` · `xTweetResult` · `xUserResult` · `xLegacy` | 3916efe · `TwitterCollector.cpp` | 일부 — 경로를 자리마다 손으로 박았고 물러섬은 `timeline_v2→timeline` 한 곳 · 못 찾아도 로그 없음 | 넷으로 모으고, 못 찾으면 무엇이 왔는지 적기 |
+| 블루스카이 `pick()` · `pick_list()` · `[모양바뀜]` | 3916efe · `bluesky_daemon.py` | 없음 | 파이썬이라 그대로 — 단, 윈도우 쪽 `Q_OS_WIN`/경로 고침이 있으면 합치기 |
+| **고침 꾸러미** — 공개 가지에서 질의 번호 · 응답 이름 별명 · 수리 규칙 · 파이썬 도우미를 받아 새 판 없이 고침 | c17c84c · 63eae66 · c730884 · `checkHotfix` · `Common::applyHotfix` | 로컬 층 둘뿐(`script_overrides` · `api_overrides.json`) | 받는 모양을 좁게 검사하는 것까지 그대로(`docs/고침꾸러미.md`). 갈래는 7절에서 |
+| 꾸러미 서명 확인 `HotfixSig.cpp`(Security.framework `SecKeyVerifySignature`, ECDSA P-256/SHA-256) | 63eae66 | 없음 | **윈도우는 CNG 로:** `BCryptOpenAlgorithmProvider(BCRYPT_ECDSA_P256_ALGORITHM)` → 공개 열쇠(맥에 박힌 X9.63 65바이트 `04‖X‖Y`)를 `BCRYPT_ECCKEY_BLOB`(magic `BCRYPT_ECDSA_PUBLIC_P256_MAGIC`, cbKey 32, X, Y)로 → `BCryptImportKeyPair` → SHA-256 해시 → `BCryptVerifySignature`. **서명은 DER 이고 CNG 는 r‖s 64바이트를 받으니 바꿔 주십시오.** 서명이 없거나 틀리면 꾸러미를 통째로 버립니다 |
+| 수리 도우미 — `log()` 가 최근 오류·경고 120건을 모으고(`m_recentProblems`), 규칙표(`diagnoseProblems`: VPN · 디스크 · 응답 모양 · 429 · 네트워크 · 파이썬 · yt-dlp · 로그인)로 짚고, "고쳐" 면 안전한 수리를 바로, "아직 안 돼" 면 다음 단계로 | c17c84c · 63eae66 | 일부 — `llmDiagnoseIfBroken` 과 낱말 분기 `autoRepair` 만 | 옮기기(`docs/수리도우미.md`) |
+| 죽은 프록시를 **모든 판**이 알아봄 — 판마다 맞는 탐침 주소로 한 번 나가 보고 죽었으면 그 판을 멈춤(`proxyProbeUrlFor` · `proxyDead`) | de50f1d 무렵 · 작업 스레드 입구 | 일부 — `proxyUsable/proxyReachable` 이 좋지만 유튜브·니코동에서만 부름 | 입구에서 모든 판에. 프로필 모델이라 `resolveProxyUrlFor(trackKey)` 쪽에 거십시오 |
+| 기록에서 세션 값 가리기 — `sessionid`·`PHPSESSID`·`FANBOXSESSID` 는 "있음 (N자, 가려짐)" | de50f1d · 757d52d | 일부 — `maskSecret`(a3aaf54)은 있음 | 같은 자리를 훑어 이름·길이만 |
+
+**P2 — 화면을 받으면 따라 필요해지는 것**
+
+| 무엇 | 맥 커밋 | 윈도우 지금 | 할 일 |
+|---|---|---|---|
+| 창 폭에 따른 배율(`zoomForWidth`: clamp(폭/1180, 0.80, 1.60)) + 방식 셋(둘 다 · 배치만 · 통째로) | cee87ae · ff35165 · cf6f3dd · d6a3b73 · ac4991b | 없음 | 맥 화면의 자동 배치는 '화면 안쪽 폭' 으로 재므로 배율 없이도 돕니다. 넣으면 같은 모양이 됩니다 |
+| UI 전용 웹 프로필 — 화면 설정(localStorage)이 껐다 켜도 남게 | a5858e4 | 없음 | 자동 배치의 패널 높이·접힘도 여기에 기억합니다 |
+| 기능 창(따로 띄운 창)과 그 창으로 로그·진행 보내기(`runJsAll`) | 27b30ee · ced5af7 | 없음 | 3절의 '사이드바에서 감춰지는 넷' 을 이것으로 풀 수도 있습니다 |
+| 창 끌기 | 757d52d | 윈도우는 `startSystemMove` — 이미 창 관리자에 맡김 | 바꿀 것 없음. 첫 누름까지 매끈하게 하려면 `WM_NCHITTEST` 에서 `HTCAPTION` 을 돌려주는 길이 있습니다(선택) |
+| 받은 이름을 NFC 로 다시 적기(`normalizeNamesToNfc`) | 72cde92 | 윈도우는 원래 NFC | **필요 없습니다**(맥 Qt 만 NFD 로 적습니다) |
+
+이미 같은 것(다시 하지 마십시오): 페이지 뜨기 전 JS 보존 · NAM 누수 · 쓰는 객체를 남이 지우던 충돌 · 새 트윗 확인 입구 · 内閣会 중지 ·
+중지 플래그 구조 · 자격증명을 기록·명령줄에서 걷기 · 프로필 버퍼 누수 · `reuseExistingName` · `portableName` · '최대 수집 수' ·
+니코동 프록시 · 内閣会 니코동 · 죽은 프록시로 몰래 넘어가지 않기 · 재시작 뒤 이어 돌기 · 인스타 429 처리 · 프록시 실패 원인 ·
+STOP 표식 경합 · 디스크가 안 보여도 설정 지우지 않기 · 内閣会 디스크 알림.
+
+### 5. 윈도우에만 있는 것 — 지켜 주십시오
+
+맥 파일을 가져올 때 사라지기 쉬운 순서로 적습니다.
+
+| 무엇 | 커밋 | 어디 |
+|---|---|---|
+| `ansiSafePath(path, who)` — 8.3 경로 실패 경고를 exiftool 일 때만 | fe84cbb | `Common.h/cpp` · `SelfRepair.h:186` — **맥 `Common.cpp` 를 복사하면 사라짐** |
+| 260자 긴 경로 — `longPathArg` · `setFileTimes` 접두어 · yt-dlp · curl · 파이썬 · 매니페스트 · download-archive · zipfile · `mklink /H` | 202ee82 · 6687702 · 5aee7dc | 공용 파일 곳곳 |
+| yt-dlp `-o` 템플릿의 긴 경로 접두어는 폴더에만(`longPathTemplate`) | be0c12c | 유튜브 다운로드 |
+| 유튜브·니코동 중지가 서로를 죽이지 않게 — 죽일 표지를 자기 임시 폴더 이름으로 | fa808be | 중지 경로 |
+| 유튜브·니코동 출력을 앱 터미널 창으로(검은 cmd 창 없이, `--encoding utf-8`) · 모니터 창의 중지 단추 | c0b90fd · a03567d | `TerminalWindow` |
+| 内閣会 니코동의 `.bat` `%` 이스케이프(`escUrl`), 창 없이 로그 열기 | 8ac5015 | |
+| `naikakukaiResume` 기본값 true(업그레이드 호환) | 6ab6650 | `Config` |
+| 로그 줄에 날짜 · 낸 스레드 이름 | 5a38a2c · e0f1b3d | `main.cpp` 로그 핸들러 |
+| 리소스 복사를 항상 도는 타깃으로 · MSVC 헤더 의존성(`/showIncludes` 머리말 실측) | 91931e6 · bd359e2 · b954a7a | `windows/CMakeLists.txt` |
+| 테두리 없는 창과 그 단추 | — | 3절 |
+| 이름 붙은 프록시 프로필 · 자가진단 화면 · 유튜브 속도 | — | 3절 · 7절 |
+
+### 6. 맥이 받을 것 — 윈도우가 먼저 고친 것
+
+대조하다 보니 윈도우가 맞고 맥이 틀린 곳이 나왔습니다. 맥 쪽에서 받겠습니다(사용자께 여쭙고 맥 판에 넣겠습니다).
+
+- 수집기를 워커 스레드에서 만들어 '새 트윗 확인' 이 죽은 스레드의 네트워크 관리자를 쓰던 것 — 메인 스레드 생성 · 부모 없는 `m_http` · `adoptHttpToCurrentThread`(dca77ca · 9271c57, 셋을 한 묶음으로)
+- 임시 프로필 파일 청소를 '빈 파일' 로만(b270b34) — 맥은 내용이 있는 것도 지웁니다
+- '중지됨' 이 진행 중으로 굳던 것 — `isDoneStatus` + `updateStats` 스로틀이 '끝' 상태를 버리지 않게 + '다운로드 중'(02c4dcc · 137484a)
+- 니코동 탭 설정 저장(`_formFieldIds` 의 `niconico-*`) — 맥의 内閣会 니코동 감시가 늘 기본값으로 돌던 까닭(1bf9056 · 137484a)
+- 블루스카이 '답글 포함'·'리포스트 포함', 팬박스 '첨부 파일 다운' 이 실제로 먹게(137484a)
+- 니코동 주소의 ID 를 숫자로 좁히기 — 화면과 백엔드 둘 다(4be7d42) · `naikakukai-interval` 저장
+- 자가진단 화면 · `openDiagnosticsFolder` · 유튜브 속도
+
+### 7. 정할 것 — 사용자께 여쭙니다
+
+1. **프록시 모델.** 윈도우는 이름 붙은 프로필 여러 개(NordVPN 등 프리셋 · 계정마다 프로필 고르기), 맥은 전역 하나 + 계정별 칸 +
+   인증 프록시는 로컬 중계기(`socks_relay.py`). '맥과 같게' 하면 윈도우의 프로필 목록이 사라집니다. 저는 **윈도우 쪽 모델이 더 낫다**고 봅니다 —
+   맥이 프로필을 가져오는 편을 권합니다. 정해지면 그쪽으로 맞추겠습니다.
+2. **앱 이름과 판 번호.** 맥은 ハンイシキ 4.0.0 · 태그 `mac-4.0.0-rNN`, 윈도우는 4.1.1. 이름까지 맞출지, 판 번호를 어떻게 셀지.
+3. **고침 꾸러미의 갈래.** 꾸러미의 데이터(질의 번호 · 별명 · 수리 규칙)와 파이썬 도우미는 두 판이 같습니다. `hotfix-mac` 하나를
+   같이 쓰는 길(서명 열쇠는 맥에 있으니 맥이 서명 · 윈도우는 같은 공개 열쇠를 박음)과 `hotfix-win` 을 따로 두는 길이 있습니다.
+   저는 **같이 쓰는 쪽**을 권합니다 — 한 번 고치면 둘 다 낫습니다. 열쇠는 어느 쪽이든 저장소 밖에 두고 찍지 않습니다.
+4. **떠 있는 수집기 파일 셋**(`InstagramCollector` · `DiscordCollector` · `YouTubeDownloader`) — 컴파일은 되지만 어디서도 쓰지 않습니다.
+   맥에는 없습니다. 지워도 동작은 바뀌지 않습니다.
+
+### 8. 확인하는 법 — 공작함 아카시
+
+맥에 정비 공구함을 넣었습니다(`ueno` 의 `mac/chernobyl/akashi/`, README 와 자료 여덟 편). 표준 라이브러리 파이썬만 씁니다.
+화면 점검은 CDP 로 붙으므로, 앱을 `QTWEBENGINE_REMOTE_DEBUGGING=127.0.0.1:9334` 로 띄우기만 하면 **윈도우에서도 같은 코드가 돕니다.**
+
+- `check_console.py` — 새로 고친 뒤 모든 탭 · 설정 묶음의 JS 예외. 화면을 통째로 받은 뒤 가장 먼저 돌리십시오(한 줄이 틀려도 탭이 통째로 죽습니다).
+- `check_layout.py --seed-targets 17` — 5폭 × 15화면: 모드 · 열 · 시작 단추가 첫 화면에 있는지 · 옆넘침 · 잘림 · 대상 줄 높이.
+- `check_adapt.py` — 좁음 자동 전환 · 완료 점 · 아래 패널 접기·끌기 · 3열.
+- `check_forms.py` — 바뀐 칸만 · 합치기 · 알림 · 치고 있는 칸 보호. 자격 칸은 길이만 봅니다.
+- `hotfix_lab.py` — 꾸러미를 옮긴 뒤. 바꿔치기 · 서명 없음 · 낯선 열쇠를 버리는지.
+
+`iso.py`(격리 사본)는 맥의 `HOME`·`CFFIXED_USER_HOME`·`TMPDIR` 와 APFS 복제를 씁니다. 윈도우라면 `APPDATA`·`LOCALAPPDATA`·`USERPROFILE`·`TEMP` 를
+따로 주고 설치 폴더를 복사해 띄워야 합니다(아직 해 보지 않았습니다). **사용자 앱이 켜져 있는 동안 같은 자료 폴더로 두 번째 앱을 띄우지 마십시오.**
+
+### 9. 맺음
+
+크게 보면 윈도우가 할 일은 셋입니다. **화면을 받고**, **수집 고장 둘(팬박스 · 인스타)과 폼 저장을 고치고**, **꾸러미 · 응답 읽기 · 수리 도우미를 옮기는 것**.
+나머지는 그 뒤에 따라옵니다. 진행하시며 막히거나 맥이 틀린 곳이 보이면 `MAC_HANDOFF.md` 로 알려 주십시오. 6절은 맥이 먼저 받겠습니다.
