@@ -2237,15 +2237,27 @@ void TwitterCollector::handleRateLimit(const QJsonArray &accounts, int &currentI
         //   반드시 setupClient·startDaemon 보다 먼저 해야 한다 — 데몬은 뜨는
         //   시점의 환경변수로 프록시를 물려받기 때문이다.
         {
-            const QString ph = account.value("proxyHost").toString();
-            const int    pp = account.value("proxyPort").toInt();
-            if (!ph.isEmpty() && pp > 0) {
-                Common::setThreadProxy(true, ph, pp,
-                                       account.value("proxyUser").toString(),
-                                       account.value("proxyPass").toString());
-                m_backend->log(QString("🔒 %1 은 %2:%3 으로 나갑니다")
-                                   .arg(account["name"].toString("Account"), ph).arg(pp),
+            // ★ 계정은 프로필 이름(proxy)만 든다 — 이름 → 주소·비밀번호는 백엔드가 푼다
+            //   (HanishikiBackend::proxyForAccount — 옛 모양의 계정도 그대로 받는다).
+            const QJsonObject prof = m_backend ? m_backend->proxyForAccount(account) : QJsonObject();
+            const QString want = account.value("proxy").toString();
+            if (!prof.isEmpty()) {
+                Common::setThreadProxy(true, prof["host"].toString(), prof["port"].toInt(),
+                                       prof["user"].toString(), prof["pass"].toString(),
+                                       prof["type"].toString());
+                m_backend->log(QString("🔒 %1 은 프로필 '%2' (%3:%4) 로 나갑니다")
+                                   .arg(account["name"].toString("Account"), prof["name"].toString(),
+                                        prof["host"].toString()).arg(prof["port"].toInt()),
                                "info", "twitter");
+            } else if (!want.isEmpty()) {
+                // ★ 고른 프로필이 목록에 없다(지웠거나 이름을 바꿨다). 직접 연결로 조용히 새지 않게
+                //   닫힌 길(127.0.0.1:9 — 아무것도 듣지 않는다)을 건다.
+                //   이 계정의 요청은 실패하고, 까닭은 이 줄로 남는다.
+                Common::setThreadProxy(true, QStringLiteral("127.0.0.1"), 9, QString(), QString());
+                m_backend->log(QString("⚠ %1 이 고른 프록시 '%2' 이 목록에 없습니다 — 이 계정은 나가지 않습니다. "
+                                       "'프록시 (VPN)' 탭에서 다시 등록하거나 계정의 출구를 다시 고르십시오.")
+                                   .arg(account["name"].toString("Account"), want),
+                               "error", "twitter");
             } else {
                 // 이 계정엔 지정이 없다 — 앞 계정 것을 물려받지 않도록 반드시 지운다.
                 Common::clearThreadProxy();

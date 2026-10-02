@@ -57,6 +57,13 @@ using FileHelper::sanitizeFilename;
 #endif
 #include <QRegularExpression>
 
+class HanishikiBackend;
+// 계정이 고른 프록시 프로필을 이 스레드에 건다 — 정의와 설명은 startCollection 앞에 있다.
+//   (内閣会 폴링이 그보다 앞에서 쓰므로 미리 알린다. 기본 인자는 정의 쪽에 있다.)
+static bool applyAccountProxyToCurrentThread(const HanishikiBackend *self, const QJsonObject &config,
+                                             QString *hostOut, int *portOut, QString *missing,
+                                             QJsonObject *profileOut);
+
 // ★ 수집 동시성 가드 — RAII. 시작 시 semaphore 대기, 종료 시 자동 release.
 namespace {
 struct CollectionGuard {
@@ -3444,7 +3451,18 @@ void HanishikiBackend::naikakukaiTick()
         // 니코동은 '새 글' 을 아카이브 줄 수로 잰다 — 폴링 전후를 비교한다.
         const int prevArchive = naikakukaiArchiveCount(nicoBase);
 
-        if (p == "twitter") runTwitterCollection(runConfig);
+        // ★ 계정별 프록시 — startCollection 워커와 똑같이 이 스레드에만 건다(윈도우 모델).
+        //   예전엔 여기서 걸지 않아, 内閣会가 돌린 수집만 계정이 고른 출구를 벗어났다.
+        //   고른 프로필이 목록에 없으면 이번 폴링은 건너뛴다 — 직접 연결로 새지 않게.
+        QString missingProxy;
+        applyAccountProxyToCurrentThread(this, runConfig, nullptr, nullptr, &missingProxy, nullptr);
+        struct ProxyScope { ~ProxyScope() { Common::clearThreadProxy(); } } _proxyScope;
+
+        if (!missingProxy.isEmpty())
+            log(QString("内閣会: %1 계정이 고른 프록시 '%2' 이 목록에 없어 이번 폴링을 건너뜁니다 — "
+                        "'프록시 (VPN)' 탭에서 다시 등록하거나 계정의 출구를 다시 고르십시오")
+                    .arg(p, missingProxy), "error", "naikakukai");
+        else if (p == "twitter") runTwitterCollection(runConfig);
         else if (p == "bluesky") runBlueskyCollection(runConfig);
         else if (p == "tumblr") runTumblrCollection(runConfig);
         else if (p == "niconico") runYoutubeDownload(runConfig);
@@ -4078,7 +4096,12 @@ void HanishikiBackend::loadConfig()
     FileHelper::setUnixFilenames(m_config->unixFilenames());
 
     m_config->load();
-    QJsonDocument doc(m_config->toJson());
+    // ★ 프록시 프로필·비밀번호는 화면으로 보내지 않는다. 목록은 getProxyProfiles 가 hasPass 만
+    //   담아 따로 보낸다. (윈도우는 여기로 프로필을 비밀번호째 통째로 보내고 있다 — 고칠 것.)
+    QJsonObject cfgForUi = m_config->toJson();
+    cfgForUi.remove("proxyProfiles");
+    cfgForUi.remove("proxyPass");
+    QJsonDocument doc(cfgForUi);
     QString configStr = QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
     // ★ JS literal 안전 전달 — base64 인코딩으로 모든 특수문자 우회.
     //   JS 의 atob() 가 풀어줌. ASCII-only 라서 JS string literal 깨질 일 없음.
@@ -4097,6 +4120,12 @@ void HanishikiBackend::loadConfig()
                         "디스크를 바꾸셨다면 설정에서 새로 고르십시오.").arg(td), "warning", "settings");
         runJsAll(QString("checkDiskSetup('%1')").arg(td));
     }
+
+    // ★ 프록시 프로필 목록을 폼 복원보다 먼저 보낸다. 니코동 '프록시' 칸은 목록이 와야
+    //   옵션이 생긴다 — 순서가 바뀌면 저장된 이름이 잠깐 '직접 연결' 로 보인다
+    //   (화면 쪽 fillProxySelect 가 dataset.want 로 한 번 더 막는다).
+    //   윈도우는 시작 때 목록을 아예 안 보낸다(loadProxyProfiles 를 부르는 곳이 없다).
+    getProxyProfiles();
 
     // Restore form inputs (대상, 경로, 유형, 옵션 등)
     loadFormData();
@@ -4146,14 +4175,16 @@ void HanishikiBackend::loadConfig()
     getTradCoverBase64();
 
     // Startup log (background)
-    // ★ 저장된 프록시 설정을 프로세스 전체에 반영한다. 이걸 빼먹으면 화면에는
-    //   "켬" 인데 실제로는 아무 데도 안 먹는다.
-    Common::setProxyConfig(m_config->proxyEnabled(), m_config->proxyHost(),
-                           m_config->proxyPort(), m_config->proxyUser(),
-                           m_config->proxyPass());
-    if (m_config->proxyEnabled())
-        log(QString("🌐 프록시 사용 중 — %1:%2").arg(m_config->proxyHost()).arg(m_config->proxyPort()),
-            "info", "settings");
+    // ★ 앱 전체 출구(전역 프록시)는 두지 않는다 — 윈도우와 같다. 계정이 고른 프로필만
+    //   그 수집 스레드에 걸린다(applyAccountProxyToCurrentThread). 프로필을 고르지 않은 계정과
+    //   계정 없이 도는 요청은 이 컴퓨터의 회선으로 나간다. 예전 '전역 프록시 켬' 은 설정을
+    //   읽을 때 계정마다 '기본' 프로필로 옮겨 붙였다(Config::migrateLegacyProxy).
+    Common::setProxyConfig(false, QString(), 1080, QString(), QString());
+    {
+        const QString note = m_config->takeProxyMigrationNote();
+        if (!note.isEmpty()) log("🌐 " + note, "info", "settings");
+    }
+
 
     writeStartupLog();
 
@@ -4863,9 +4894,15 @@ static QString proxyProbeUrlFor(const QString &platform)
     return QStringLiteral("https://www.google.com/");
 }
 
-static bool applyAccountProxyToCurrentThread(const QJsonObject &config,
+// ★ 계정은 프로필 이름(proxy)만 든다 — 이름 → 주소·비밀번호는 self->proxyForAccount 가 푼다.
+//   계정이 이름을 들고 있는데 그 프로필이 없으면(지웠거나 이름을 바꿨으면) *missing 에 그 이름을
+//   담고 false — 부르는 쪽이 멈춘다. 그냥 false 만 주면 그 계정만 직접 연결로 조용히 샌다.
+static bool applyAccountProxyToCurrentThread(const HanishikiBackend *self,
+                                             const QJsonObject &config,
                                              QString *hostOut = nullptr,
-                                             int *portOut = nullptr)
+                                             int *portOut = nullptr,
+                                             QString *missing = nullptr,
+                                             QJsonObject *profileOut = nullptr)
 {
     const QJsonArray accs = config["accounts"].toArray();
     int idx = 0;
@@ -4874,14 +4911,20 @@ static bool applyAccountProxyToCurrentThread(const QJsonObject &config,
     else if (ai.isString() && ai.toString() != "all") idx = ai.toString().toInt();
     if (idx < 0 || idx >= accs.size()) return false;
     const QJsonObject a = accs.at(idx).toObject();
-    const QString ph = a.value("proxyHost").toString();
-    const int    pp = a.value("proxyPort").toInt();
-    if (ph.isEmpty() || pp <= 0) return false;
-    Common::setThreadProxy(true, ph, pp,
-                           a.value("proxyUser").toString(),
-                           a.value("proxyPass").toString());
+    // 옛 모양(계정에 주소가 직접 적힌 것)도 proxyForAccount 가 그대로 받는다.
+    const QJsonObject prof = self ? self->proxyForAccount(a) : QJsonObject();
+    if (prof.isEmpty()) {
+        const QString want = a.value("proxy").toString();
+        if (missing && !want.isEmpty()) *missing = want;
+        return false;
+    }
+    const QString ph = prof["host"].toString();
+    const int    pp = prof["port"].toInt();
+    Common::setThreadProxy(true, ph, pp, prof["user"].toString(), prof["pass"].toString(),
+                           prof["type"].toString());
     if (hostOut) *hostOut = ph;
     if (portOut) *portOut = pp;
+    if (profileOut) *profileOut = prof;
     return true;
 }
 
@@ -5007,14 +5050,17 @@ void HanishikiBackend::startCollection(const QString &configJson)
         //   이게 없으면 모든 터미널이 platform="twitter"로 수렴된 같은 로그를 보게 됨.
         if (isParallel) setThreadTrackKey(trackKey);
 
-        // ★ 계정별 프록시 — 이 수집이 쓸 계정에 프록시가 지정돼 있으면 이 스레드에만 건다.
+        // ★ 계정별 프록시 — 이 수집이 쓸 계정에 프로필이 붙어 있으면 이 스레드에만 건다.
         //   전역 하나를 바꿔 끼우면 동시에 도는 다른 수집이 그 설정을 같이 타 버린다.
-        //   지정이 없으면 아무것도 걸지 않고 전역 설정을 그대로 쓴다.
+        //   지정이 없으면 아무것도 걸지 않는다 — 직접 연결이다(윈도우와 같다).
+        //   계정이 고른 프로필이 목록에 없으면 missingProxy 에 이름이 온다 — 아래에서 멈춘다.
+        QString missingProxy;
         {
             QString ph; int pp = 0;
-            if (applyAccountProxyToCurrentThread(config, &ph, &pp))
+            if (applyAccountProxyToCurrentThread(this, config, &ph, &pp, &missingProxy))
                 log(QString("🔒 이 계정은 %1:%2 로 나갑니다").arg(ph).arg(pp), "info", platformName);
         }
+
         // 스레드가 끝나면 반드시 지운다 — 남겨 두면 이 스레드를 재사용할 때 엉뚱한 IP 로 나간다.
         struct ProxyScope { ~ProxyScope() { Common::clearThreadProxy(); } } _proxyScope;
 
@@ -5022,10 +5068,24 @@ void HanishikiBackend::startCollection(const QString &configJson)
         //   보이고, 사용자는 멀쩡한 계정을 고치려 들어간다(실측 2026-09-24: 죽은 프록시로
         //   Bluesky 를 돌리면 "Login failed: all accounts failed" 만 남았다).
         bool proxyDead = false;
-        if (Common::proxyEnabled()) {
+        if (!missingProxy.isEmpty()) {
+            // ★ 그냥 가면 그 계정만 기본 출구나 직접 연결로 조용히 샌다 — 계정마다 출구를
+            //   나눈 의미가 그 자리에서 깨진다. 프로필을 지웠거나 이름을 바꾼 경우다.
+            log(QString("이 계정이 고른 프록시 '%1' 이 목록에 없습니다 — 이 판은 멈추고 끝냅니다.\n"
+                        "   '프록시 (VPN)' 탭에서 그 이름으로 다시 등록하거나, 계정 줄에서 출구를 다시 고르십시오.")
+                    .arg(missingProxy), "error", platformName);
+            showSystemNotification(QString(APP_NAME_DISPLAY) + " — " + platformName,
+                                   QString("계정이 고른 프록시 '%1' 이 없어 수집을 멈췄습니다").arg(missingProxy));
+            updateStats(0, 0, "오류", platformName);
+            ++m_collectionErrorCount;
+            proxyDead = true;   // ★ 여기서 return 하면 아래 뒷정리(버튼 복귀)를 건너뛴다
+        } else if (Common::proxyEnabled()) {
             const QString pUrl = Common::proxyUrl();
             const QString pHost = QUrl(pUrl).host();
-            const QString why = pHost.isEmpty() ? QString()
+            // ★ 주소를 못 얻었으면(HTTPS 프록시의 중계기를 못 띄움) 그것이 곧 '닿지 않음' 이다.
+            //   예전엔 빈 주소면 확인을 건너뛰고 그대로 갔다.
+            const QString why = pHost.isEmpty()
+                              ? QStringLiteral("프록시 중계기를 띄우지 못했습니다(HTTPS 프록시는 중계기로만 나갑니다)")
                               : proxyProblem(pHost, pUrl, proxyProbeUrlFor(platformName));
             if (!why.isEmpty()) {
                 log(QString("프록시(VPN)에 닿지 않습니다 — %1\n   주소: %2:%3\n"
@@ -5462,45 +5522,205 @@ void HanishikiBackend::setApiOverride(const QString &key, const QString &value)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 프록시(VPN) — 켜면 다섯 갈래가 전부 같은 길로 나간다.
-void HanishikiBackend::setProxyConfig(const QString &host, int port,
-                                      const QString &user, const QString &pass, bool enabled)
+// 프록시(VPN) — 옛 setProxyConfig(전역 하나)는 이름 붙은 프로필로 바뀌었다.
+//   아래 getProxyProfiles · setProxyProfiles · testProxyProfile 을 본다.
+
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 프록시(VPN) 프로필 — 윈도우 MiyoBackend 와 같은 이름·같은 모양.
+//   계정마다 다른 출구로 나가게 한다. 시스템 VPN 은 기계 전체를 한 길로 보내므로
+//   계정별 분리가 안 된다 — 앱이 연결마다 출구를 고르려면 프록시여야 한다.
+//   NordVPN 같은 곳이 주는 SOCKS5 서버 자격증명을 프로필로 등록해 두고, 계정에 이름으로 붙인다.
+//   ★ 앱 전체 출구는 없다(윈도우와 같다) — 프로필을 고르지 않은 계정은 직접 연결이다.
+//   ★ 비밀번호는 화면으로 돌려보내지 않는다. 등록돼 있는지 여부(hasPass)만 알린다.
+//     화면에 뿌린 값은 로그·스크린샷·개발자도구로 새어 나갈 수 있다.
+void HanishikiBackend::getProxyProfiles()
 {
-    m_config->setProxyEnabled(enabled);
-    m_config->setProxyHost(host.trimmed());
-    m_config->setProxyPort(port > 0 ? port : 1080);
-    m_config->setProxyUser(user);
-    m_config->setProxyPass(pass);
-    m_config->save();
-
-    Common::setProxyConfig(enabled, host.trimmed(), port > 0 ? port : 1080, user, pass);
-    if (!enabled) Common::stopProxyRelay();
-
-    log(enabled ? QString("🌐 프록시 켬 — %1:%2 (모든 요청이 이 길로 나갑니다)").arg(host).arg(port)
-                : QString("🌐 프록시 끔 — 요청이 이 컴퓨터의 회선으로 나갑니다"),
-        "info", "settings");
-    if (enabled)
-        log("먼저 '나가는 IP 확인' 을 눌러 실제로 바뀌었는지 보십시오.", "info", "settings");
+    QJsonArray out;
+    for (const QJsonValue &v : m_config->proxyProfiles()) {
+        const QJsonObject p = v.toObject();
+        out.append(QJsonObject{
+            {"provider", p["provider"]}, {"name", p["name"]}, {"type", p["type"]},
+            {"host", p["host"]}, {"port", p["port"]}, {"user", p["user"]},
+            {"hasPass", !p["pass"].toString().isEmpty()}});
+    }
+    // 모든 창에 보낸다 — 기능 창(프록시 탭)에서 고친 목록이 본 창의 계정 칸·니코동 칸에도
+    //   곧바로 보이게. 되풀이해도 결과가 같은 화면 갱신이라 runJsAll 이 맞다.
+    runJsAll(QString("if(window.onProxyProfiles)onProxyProfiles(%1);")
+                 .arg(QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact))));
 }
 
-void HanishikiBackend::getProxyConfig()
+// 저장된 비밀번호를 빈 칸에 다시 붙여도 되는가 — 종류·주소·포트·아이디가 모두 같을 때만.
+//   ★ 이름과 아이디만 보면, 주소만 바꿔 보낸 요청에 저장된 비밀번호가 실려 처음 보는 곳으로 간다
+//     (화면은 비밀번호를 못 읽지만, 이렇게 '다른 곳으로 보내게' 할 수는 있었다).
+static bool sameProxyEndpoint(const QJsonObject &a, const QJsonObject &b)
 {
-    QJsonObject o{
-        {"enabled", m_config->proxyEnabled()},
-        {"host",    m_config->proxyHost()},
-        {"port",    m_config->proxyPort()},
-        {"user",    m_config->proxyUser()},
-        {"hasPass", !m_config->proxyPass().isEmpty()},   // 비밀번호 자체는 화면으로 안 보낸다
+    auto t = [](const QJsonObject &o) { const QString v = o["type"].toString().toLower();
+                                        return v.isEmpty() ? QStringLiteral("socks5") : v; };
+    return t(a) == t(b)
+        && a["host"].toString().trimmed().compare(b["host"].toString().trimmed(), Qt::CaseInsensitive) == 0
+        && a["port"].toInt() == b["port"].toInt()
+        && a["user"].toString().trimmed() == b["user"].toString().trimmed();
+}
+
+void HanishikiBackend::setProxyProfiles(const QString &json)
+{
+    const QJsonArray incoming = QJsonDocument::fromJson(json.toUtf8()).array();
+    // ★ 비밀번호가 빈 채로 오면 지우라는 뜻이 아니라 '안 바꿈' 이다(윈도우와 같다).
+    //   화면에 비밀번호를 내려보내지 않으므로, 그대로 저장하면 편집할 때마다 지워진다.
+    //   예전 setProxyConfig 가 바로 그랬다 — 비밀번호 칸을 비운 채 '저장하고 적용' 을
+    //   누르면 저장된 비밀번호가 빈 값으로 덮였다.
+    //   ★ 종류·주소·포트·아이디 중 하나라도 바뀌었으면 옛 비밀번호를 붙이지 않는다 —
+    //     다른 곳의 자격증명이 되거나, 처음 보는 곳으로 비밀번호를 보내게 된다(sameProxyEndpoint).
+    QMap<QString, QJsonObject> old;
+    for (const QJsonValue &v : m_config->proxyProfiles()) {
+        const QJsonObject p = v.toObject();
+        old.insert(p["name"].toString(), p);
+    }
+    QJsonArray merged;
+    QStringList names;
+    for (const QJsonValue &v : incoming) {
+        QJsonObject p = v.toObject();
+        const QString name = p["name"].toString().trimmed();
+        // 이름이 없거나 겹치면 버린다 — 계정은 이름으로 프로필을 찾는다.
+        //   'global' 은 옛 니코동 칸의 값이라 이름으로 쓰지 않는다.
+        if (name.isEmpty() || names.contains(name) || name == QLatin1String("global")) continue;
+        names << name;
+        p["name"] = name;
+        p["host"] = p["host"].toString().trimmed();
+        p["user"] = p["user"].toString().trimmed();
+        if (p["type"].toString().isEmpty()) p["type"] = QStringLiteral("socks5");
+        const QJsonObject prev = old.value(name);
+        if (p["pass"].toString().isEmpty() && !prev.isEmpty() && sameProxyEndpoint(prev, p))
+            p["pass"] = prev["pass"];
+        else if (p["pass"].toString().isEmpty() && !prev.isEmpty() && !prev["pass"].toString().isEmpty()
+                 && !p["user"].toString().isEmpty())
+            log(QString("⚠ 프록시 '%1' — 주소·종류·아이디가 바뀌어 저장된 비밀번호를 옮기지 않았습니다. "
+                        "비밀번호를 다시 넣어 주십시오.").arg(name), "warning", "settings");
+        merged.append(p);
+    }
+    m_config->setProxyProfiles(merged);
+    // 지운 프로필을 고른 계정이 남아 있으면 알린다 — 그 계정은 다음 수집에서 멈추고 까닭을 말한다
+    //   (직접 연결로 조용히 새지 않게). 이름을 바꾼 경우도 같다.
+    {
+        QStringList orphan;
+        for (auto it = old.constBegin(); it != old.constEnd(); ++it)
+            if (!names.contains(it.key())) orphan << it.key();
+        if (!orphan.isEmpty())
+            log(QString("⚠ 목록에서 빠진 프록시: %1 — 이것을 고른 계정은 다음 수집에서 멈춥니다. "
+                        "계정 줄에서 출구를 다시 고르십시오.").arg(orphan.join(", ")), "warning", "settings");
+    }
+    m_config->save();
+    // 떠 있는 중계기는 옛 자격증명을 든 채다. 돌고 있는 수집이 없을 때 모두 내린다 —
+    //   다음 요청이 새 설정으로 다시 띄운다. 수집 중이면 그 수집이 쓰는 중계기를 끊지 않는다
+    //   (비밀번호가 바뀐 것은 서명이 달라 어차피 새 중계기로 간다 — Common::proxySignature).
+    if (!isAnyRunning()) Common::stopProxyRelay();
+    log(QString("프록시 프로필 %1개 저장").arg(merged.size()), "success", "settings");
+    getProxyProfiles();
+}
+
+// 계정 ↔ 프록시 — 화면이 아니라 여기서 저장하고 모든 창에 알린다.
+//   ★ 창(본 창·기능 창)마다 accounts 를 따로 든다. 화면이 saveConfig 로 '자기 accounts 통째' 를
+//     보내면, 이 선택을 모르는 다른 창이 다음에 저장할 때 옛 목록으로 덮어 출구 선택이 지워졌다 —
+//     그 계정은 직접 연결로 나간다. 여기서 그 한 칸만 고치고, 모든 창의 accounts 를 맞춘다.
+//   ★ 번호만 믿지 않는다 — 창마다 목록이 어긋났을 수 있어 handle(없으면 이름)로 같은 계정인지 본다.
+void HanishikiBackend::setAccountProxy(const QString &platform, int index, const QString &handle,
+                                       const QString &name)
+{
+    auto ident = [](const QJsonObject &a) {
+        const QString h = a["handle"].toString();
+        return h.isEmpty() ? a["name"].toString() : h;
     };
-    runJs(QString("onProxyConfig(%1)").arg(QString::fromUtf8(
-        QJsonDocument(o).toJson(QJsonDocument::Compact))));
+    QJsonArray arr = m_config->getAccounts(platform);
+    int i = index;
+    if (i < 0 || i >= arr.size() || ident(arr[i].toObject()) != handle) {
+        i = -1;
+        for (int k = 0; k < arr.size(); ++k)
+            if (ident(arr[k].toObject()) == handle) { i = k; break; }
+    }
+    if (i < 0) {
+        log("계정을 찾지 못해 출구를 바꾸지 않았습니다 — 계정 목록을 다시 열어 주십시오", "error", platform);
+        return;
+    }
+    const QString n = name.trimmed();
+    if (!n.isEmpty() && m_config->proxyProfileByName(n).isEmpty()) {
+        log(QString("프록시 '%1' 이 목록에 없어 출구를 바꾸지 않았습니다").arg(n), "error", platform);
+        return;
+    }
+    QJsonObject a = arr[i].toObject();
+    if (n.isEmpty()) a.remove("proxy"); else a["proxy"] = n;
+    arr[i] = a;
+    m_config->setAccounts(platform, arr);
+    m_config->save();
+    runJsAll(QString("if(window.onAccountProxy)onAccountProxy(%1,%2,%3,%4);")
+                 .arg(Common::jsStringLiteral(platform)).arg(i)
+                 .arg(Common::jsStringLiteral(handle), Common::jsStringLiteral(n)));
+}
+
+// 프로필 하나로 실제로 나가 보고 나가는 IP 를 돌려준다(윈도우 testProxy(json) 과 같은 일).
+//   ★ 이름이 testProxy 가 아닌 까닭: 맥에는 인자 없는 testProxy()(두 갈래 비교)가 이미 있다.
+//     QWebChannel 은 같은 이름의 겹친 함수를 화면에서 고를 때 헷갈린다 — 이름을 나눈다.
+//   ★ 화면은 비밀번호를 갖고 있지 않다 — 비어 오면 같은 이름·같은 곳(종류·주소·포트·아이디)으로
+//     저장된 것을 쓴다.
+//   ★ 자격증명은 명령줄이 아니라 환경변수(ALL_PROXY)로만 curl 에 준다 — ps 에 남지 않게.
+void HanishikiBackend::testProxyProfile(const QString &json)
+{
+    QJsonObject p = QJsonDocument::fromJson(json.toUtf8()).object();
+    if (p["pass"].toString().isEmpty()) {
+        // 저장된 것과 종류·주소·포트·아이디가 모두 같을 때만 저장된 비밀번호를 쓴다(sameProxyEndpoint).
+        const QJsonObject saved = m_config->proxyProfileByName(p["name"].toString().trimmed());
+        if (!saved.isEmpty() && sameProxyEndpoint(saved, p))
+            p["pass"] = saved["pass"];
+    }
+    if (p["type"].toString().isEmpty()) p["type"] = QStringLiteral("socks5");
+    const QString url = proxyUrl(p);
+    if (url.isEmpty()) {
+        runJsAll("if(window.onProxyTest)onProxyTest(false,'주소나 포트가 비어 있습니다');");
+        return;
+    }
+    log(QString("프록시 시험 → %1").arg(proxyUrl(p, false)), "info", "settings");
+    const QString host = p["host"].toString();
+    QThread *t = QThread::create([this, url, host]() {
+        // 먼저 까닭을 가른다(이름 · 포트 · 비밀번호) — 수집 전 확인과 같은 판정을 쓴다.
+        const QString why = proxyProblem(host, url, QStringLiteral("https://api.ipify.org"));
+        QString ip;
+        if (why.isEmpty()) {
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            for (const char *k : {"http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "no_proxy", "NO_PROXY"})
+                env.remove(QString::fromLatin1(k));
+            QString u = url;
+            if (u.startsWith(QLatin1String("socks5://"))) u.replace(0, 9, QStringLiteral("socks5h://"));
+            env.insert("ALL_PROXY", u);
+            QProcess c;
+            c.setProcessEnvironment(env);
+            c.start("/usr/bin/curl", {"-sS", "--max-time", "20", "https://api.ipify.org"});
+            if (c.waitForStarted(5000) && c.waitForFinished(25000))
+                ip = QString::fromUtf8(c.readAllStandardOutput()).trimmed();
+            else { c.kill(); c.waitForFinished(2000); }
+        }
+        QMetaObject::invokeMethod(this, [this, why, ip]() {
+            const bool ok = why.isEmpty() && !ip.isEmpty() && ip.size() < 64;
+            const QString detail = ok ? ip : (why.isEmpty() ? QStringLiteral("나가는 IP 를 받지 못했습니다") : why);
+            log(ok ? QString("프록시 정상 — 나가는 IP %1").arg(ip) : QString("프록시 실패 — %1").arg(detail),
+                ok ? "success" : "error", "settings");
+            // 프록시 탭은 기능 창으로 따로 뜰 수 있다 — 결과 표시는 모든 창에(되풀이해도 같은 화면 갱신).
+            runJsAll(QString("if(window.onProxyTest)onProxyTest(%1,%2);")
+                         .arg(ok ? QStringLiteral("true") : QStringLiteral("false"),
+                              Common::jsStringLiteral(detail)));
+        }, Qt::QueuedConnection);
+    });
+    connect(t, &QThread::finished, t, &QObject::deleteLater);
+    t->start();
 }
 
 // 프록시 도우미 — 윈도우 MiyoBackend 와 같은 이름·같은 모양(니코동 경유를 두 판이 같게 쓰려고).
-//   맥은 이름 붙은 프로필 목록 대신 '프록시 (VPN)' 탭 설정 하나와 계정별 프록시가 있다.
-//     proxyForAccount({"proxy":"global"}) → 프록시 (VPN) 탭 설정(켜짐 여부와 상관없이 주소가 있으면)
-//     proxyForAccount(계정 객체)          → 그 계정의 proxyHost/proxyPort/proxyUser/proxyPass
-//   ★ 비밀번호를 담아 돌려주므로 슬롯이 아니다(화면에서 부를 수 없게 private).
+//     proxyForAccount({"proxy":"이름"})   → 그 이름의 프로필(윈도우와 같다)
+//     proxyForAccount({"proxy":"global"}) → '기본' 프로필(옛 니코동 칸 값 — 옮긴 뒤에도 받는다)
+//     proxyForAccount(옛 계정 객체)        → 계정에 직접 적힌 proxyHost/proxyPort/proxyUser/proxyPass
+//   주소나 포트가 빈 프로필은 없는 것으로 본다 — 부르는 쪽이 '못 찾음' 으로 멈춘다.
+//   ★ 비밀번호를 담아 돌려주므로 슬롯도 Q_INVOKABLE 도 아니다 — 화면에서 부를 수 없다.
+//     (public 인 것은 TwitterCollector 가 계정을 돌릴 때 이름 → 프로필을 풀어야 해서다.)
 QString HanishikiBackend::proxyUrl(const QJsonObject &p, bool withCredentials) const
 {
     const QString host = p["host"].toString();
@@ -5512,9 +5732,12 @@ QString HanishikiBackend::proxyUrl(const QJsonObject &p, bool withCredentials) c
     if (withCredentials) {
         const QString u = p["user"].toString(), pw = p["pass"].toString();
         if (!u.isEmpty())
-            auth = QUrl::toPercentEncoding(u) + (pw.isEmpty() ? QByteArray() : ":" + QUrl::toPercentEncoding(pw)) + "@";
+            auth = QString::fromLatin1(QUrl::toPercentEncoding(u)
+                                       + (pw.isEmpty() ? QByteArray() : ":" + QUrl::toPercentEncoding(pw)) + "@");
     }
-    return QString("%1://%2%3:%4").arg(scheme, auth, host).arg(port);
+    // ★ 이어 붙인다 — arg() 를 겹쳐 쓰면 비밀번호의 퍼센트 코드(%2F · %3A …)를 자리표시로 읽어
+    //   비밀번호와 포트가 함께 깨졌다(Common::proxyUrl 과 같은 고침).
+    return scheme + QStringLiteral("://") + auth + host + QLatin1Char(':') + QString::number(port);
 }
 
 QJsonObject HanishikiBackend::proxyForAccount(const QJsonObject &account) const
@@ -5525,12 +5748,14 @@ QJsonObject HanishikiBackend::proxyForAccount(const QJsonObject &account) const
         return QJsonObject{{"name", "account"}, {"type", "socks5"}, {"host", ph}, {"port", pp},
                            {"user", account.value("proxyUser").toString()},
                            {"pass", account.value("proxyPass").toString()}};
-    if (account.value("proxy").toString() == QLatin1String("global") && m_config
-        && !m_config->proxyHost().isEmpty() && m_config->proxyPort() > 0)
-        return QJsonObject{{"name", "global"}, {"type", "socks5"},
-                           {"host", m_config->proxyHost()}, {"port", m_config->proxyPort()},
-                           {"user", m_config->proxyUser()}, {"pass", m_config->proxyPass()}};
-    return QJsonObject();
+    if (!m_config) return QJsonObject();
+    QString want = account.value("proxy").toString().trimmed();
+    // 'global' 은 옛 니코동 칸의 값('프록시 (VPN) 탭 설정') — 옮긴 뒤 그 설정은 '기본' 프로필이다.
+    if (want == QLatin1String("global")) want = QStringLiteral("기본");
+    const QJsonObject p = m_config->proxyProfileByName(want);
+    // 주소나 포트가 빈 프로필은 없는 것으로 본다 — 부르는 쪽이 '못 찾음' 으로 멈춘다.
+    if (p["host"].toString().isEmpty() || p["port"].toInt() <= 0) return QJsonObject();
+    return p;
 }
 
 // 프록시로 한 번 실제로 나가 보고, 안 되면 '왜' 를 한글로 돌려준다(되면 빈 문자열).
@@ -5567,6 +5792,8 @@ static QString proxyProblem(const QString &proxyHost, const QString &proxyUrlWit
     case 5:  return QStringLiteral("이름을 풀 수 없습니다(DNS) — 서버가 없어졌을 수 있습니다");
     case 7:  return QStringLiteral("연결할 수 없습니다 — 서버가 꺼졌거나 포트가 닫혀 있습니다");
     case 97: return QStringLiteral("프록시가 거절했습니다 — 아이디·비밀번호를 확인하세요(구독이 끝났을 수도 있습니다)");
+    // HTTP 프록시가 CONNECT 를 거절했다(407 인증 실패 포함) — 이름 붙은 프로필에 HTTP 종류가 생기며 나온다.
+    case 56: return QStringLiteral("프록시가 거절했습니다 — 아이디·비밀번호를 확인하세요(HTTP 프록시)");
     case 28: return QStringLiteral("시간 초과 — 서버가 매우 느리거나 막혀 있습니다");
     case 6:  return QStringLiteral("프록시 너머에서 사이트 이름을 풀지 못했습니다 — 프록시 쪽 DNS 문제입니다");
     default: return QString("프록시로 나가지 못했습니다(curl %1)").arg(c.exitCode());
@@ -6206,10 +6433,21 @@ void HanishikiBackend::checkNewPosts(const QString &platformName)
             //   collector 는 이제 진입할 때마다 '지금 스레드' 의 HttpClient 를 새로 만들고
             //   (adoptHttpToCurrentThread), 그 HttpClient 와 데몬(bundledProcessEnv)은 이 스레드의
             //   프록시를 읽는다. 여기서 걸지 않으면 '새 트윗 확인' 만 계정 프록시가 아니라
-            //   전역 설정으로 나간다 — 한 계정 두 IP. (m_lastConfig["twitter"] 에 accounts ·
+            //   직접 연결로 나간다 — 한 계정 두 IP. (m_lastConfig["twitter"] 에 accounts ·
             //   accountIdx 가 그대로 들어 있다)
-            applyAccountProxyToCurrentThread(config);
+            //   고른 프로필이 목록에 없으면 확인하지 않는다 — 직접 연결로 새지 않게.
+            QString missingProxy;
+            applyAccountProxyToCurrentThread(this, config, nullptr, nullptr, &missingProxy, nullptr);
             struct ProxyScope { ~ProxyScope() { Common::clearThreadProxy(); } } _proxyScope;
+            if (!missingProxy.isEmpty()) {
+                log(QString("이 계정이 고른 프록시 '%1' 이 목록에 없어 새 트윗 확인을 멈춥니다 — "
+                            "'프록시 (VPN)' 탭에서 다시 등록하거나 계정의 출구를 다시 고르십시오")
+                        .arg(missingProxy), "error", "twitter");
+                setPlatformRunning("twitter", false);
+                QMetaObject::invokeMethod(this, [this]() { updateStats(0, 0, "오류", "twitter"); },
+                                          Qt::QueuedConnection);
+                return;
+            }
             // twitter 의 중지 플래그를 넘긴다. 맵 노드가 아니라 shared_ptr 이 쥔
             // 원자값이라, 맵이 커지든 줄든 이 참조는 살아 있다.
             m_twitterCollector->checkNewPosts(config, *runFlag("twitter"));
@@ -6591,16 +6829,28 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
     //   m_captureChrome (port 9223) 은 LoginAware 도 같은 trackKey 의 per-track chrome 쓰니까
     //   사용 안 됨. 포트 충돌 없음.
     QString trackKey = currentThreadTrackKey();
+    // ★ 이 캡처가 나갈 출구 — 수집 스레드에 걸린 계정 프록시(있으면)를 여기서 풀어 넘긴다.
+    //   Chrome 은 메인 스레드에서 뜨므로 거기서는 계정 프록시가 안 보인다 — 그냥 두면 그 계정의
+    //   캡처만 이 컴퓨터의 회선으로 나갔다(윈도우 m_proxyPerTrack 과 같은 일을 한다).
+    const bool capProxyOn = Common::proxyEnabled();
+    const QString capProxy = capProxyOn ? Common::proxyLocalRelayUrl() : QString();
+    // ★ 순차 모드(트랙 키 없음)는 캡처 Chrome 하나를 같이 쓴다. 계정마다 출구가 다르면 그 하나를
+    //   번갈아 내렸다 올리게 되고, 그 사이 다른 캡처(LoginAware)가 쓰던 것을 끊는다. 출구마다 따로 둔다 —
+    //   직접 연결은 예전 그 하나(포트 9223), 출구가 있으면 '~exit:<출구 꼬리표>' 열쇠로(프로필 폴더도 출구마다).
+    const QString exitTag = Common::proxyExitTag();
+    const QString chromeKey = (trackKey.isEmpty() && !exitTag.isEmpty())
+                              ? QStringLiteral("~exit:") + exitTag : trackKey;
     RealChromeCrawler **chromePtr = nullptr;
     QMutex *chromeMutex = nullptr;
-    const int debugPort = capturePortFor(trackKey);   // 잠금 밖에서 배정/조회
+    const int debugPort = capturePortFor(chromeKey);   // 잠금 밖에서 배정/조회
 
-    if (trackKey.isEmpty()) {
+    if (chromeKey.isEmpty()) {
         chromePtr = &m_captureChrome;
         chromeMutex = &m_captureChromeMutex;
     } else {
         QMutexLocker mapLock(&m_capChromeMapMutex);
-        chromePtr = &m_captureChromesPerThread[trackKey];
+        chromePtr = &m_captureChromesPerThread[chromeKey];
+        if (trackKey.isEmpty()) chromeMutex = &m_captureChromeMutex;   // 순차 모드는 여전히 한 번에 하나
     }
     // sequential 모드만 직렬화 잠금 (병렬은 각자 자기 Chrome)
     std::unique_ptr<QMutexLocker<QMutex>> seqLock;
@@ -6618,12 +6868,21 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
         int port = debugPort;
         // suffix 미리 sanitize (lambda 안에서는 const라 .replace 못 함)
         QString tkSuffix;
-        if (!trackKey.isEmpty()) {
-            QString b64 = QString::fromLatin1(trackKey.toUtf8().toBase64());
+        if (!chromeKey.isEmpty()) {
+            QString b64 = QString::fromLatin1(chromeKey.toUtf8().toBase64());
             b64.replace("=", "").replace("/", "_").replace("+", "_");
             tkSuffix = "_" + b64;
         }
-        QMetaObject::invokeMethod(this, [this, chromePtr, needStart, checkDone, port, tkSuffix]() {
+        QMetaObject::invokeMethod(this, [this, chromePtr, needStart, checkDone, port, tkSuffix, capProxyOn, capProxy]() {
+            // 이미 떠 있는 Chrome 이 다른 출구로 떠 있으면 내리고 새로 띄운다 — 계정이 바뀌었다
+            //   (하나를 같이 쓰는 순차 모드). 출구가 있어야 하는데 주소가 비었으면 역시 내린다 —
+            //   새로 띄우려다 실패로 끝나야 직접 연결로 새지 않는다.
+            if (*chromePtr && (*chromePtr)->isReady()
+                && ((*chromePtr)->proxyServerUsed() != capProxy || (capProxyOn && capProxy.isEmpty()))) {
+                (*chromePtr)->stop();
+                (*chromePtr)->deleteLater();
+                *chromePtr = nullptr;
+            }
             if (!*chromePtr) {
                 *chromePtr = new RealChromeCrawler(this, this);
                 (*chromePtr)->setUseUserProfile(false);
@@ -6635,6 +6894,7 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                     (*chromePtr)->setUserDataDir(perThreadDir);
                 }
             }
+            (*chromePtr)->setProxyServer(capProxy, capProxyOn);
             *needStart = !(*chromePtr)->isReady();
             checkDone->release();
         }, Qt::QueuedConnection);
@@ -7195,14 +7455,26 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
     // ★ 병렬 안전 — trackKey 별 chrome 인스턴스 사용 (captureRealPageCDP 와 공유).
     //   trackKey 먼저 fetch — invokeMethod 후 메인 스레드에선 thread-local 못 읽음.
     QString trackKey = currentThreadTrackKey();
-    const int reservedPort = capturePortFor(trackKey);
+    // ★ 이 캡처가 나갈 출구 — 수집 스레드에 걸린 계정 프록시(있으면)를 여기서 풀어 넘긴다.
+    //   Chrome 은 메인 스레드에서 뜨므로 거기서는 계정 프록시가 안 보인다 — 그냥 두면 그 계정의
+    //   캡처만 이 컴퓨터의 회선으로 나갔다(윈도우 m_proxyPerTrack 과 같은 일을 한다).
+    const bool capProxyOn = Common::proxyEnabled();
+    const QString capProxy = capProxyOn ? Common::proxyLocalRelayUrl() : QString();
+    // ★ 순차 모드(트랙 키 없음)는 캡처 Chrome 하나를 같이 쓴다. 계정마다 출구가 다르면 그 하나를
+    //   번갈아 내렸다 올리게 되고, 그 사이 다른 캡처(captureRealPageCDP)가 쓰던 것을 끊는다. 출구마다 따로 둔다 —
+    //   직접 연결은 예전 그 하나(포트 9223), 출구가 있으면 '~exit:<출구 꼬리표>' 열쇠로(프로필 폴더도 출구마다).
+    const QString exitTag = Common::proxyExitTag();
+    const QString chromeKey = (trackKey.isEmpty() && !exitTag.isEmpty())
+                              ? QStringLiteral("~exit:") + exitTag : trackKey;
+    const int reservedPort = capturePortFor(chromeKey);
 
-    QMetaObject::invokeMethod(this, [this, url, p, loginCheckJs, cookieArr, sem, needsLogin, navOk, trackKey, reservedPort]() {
-        // chrome 인스턴스 결정 — trackKey 없으면 singleton, 있으면 per-track map
-        auto getChromePtr = [this, trackKey]() -> RealChromeCrawler** {
-            if (trackKey.isEmpty()) return &m_captureChrome;
+    QMetaObject::invokeMethod(this, [this, url, p, loginCheckJs, cookieArr, sem, needsLogin, navOk, trackKey, reservedPort,
+                                     capProxyOn, capProxy, chromeKey]() {
+        // chrome 인스턴스 결정 — 열쇠(트랙 또는 출구)가 없으면 singleton, 있으면 map
+        auto getChromePtr = [this, chromeKey]() -> RealChromeCrawler** {
+            if (chromeKey.isEmpty()) return &m_captureChrome;
             QMutexLocker mapLock(&m_capChromeMapMutex);
-            return &m_captureChromesPerThread[trackKey];
+            return &m_captureChromesPerThread[chromeKey];
         };
         auto chromePP = getChromePtr();
 
@@ -7251,7 +7523,11 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
         // ★ 죽은(연결 끊긴) 캡쳐 Chrome 인스턴스 재사용 방지 — m_ready=false 면 정리 후 재생성.
         //   이게 없으면 첫 캡쳐 뒤 Chrome 이 한 번 끊기면 *chromePP 가 non-null 인 채 남아
         //   start() 를 건너뛰고 → 이후 모든 트윗이 "로그인 사전 navigate 실패" 로 무한 실패.
-        if (*chromePP && !(*chromePP)->isReady()) {
+        //   출구가 다르게 떠 있는 것도 내린다(계정이 바뀌었다 — captureRealPageCDP 와 같은 판정).
+        if (*chromePP && (!(*chromePP)->isReady()
+                          || (*chromePP)->proxyServerUsed() != capProxy
+                          || (capProxyOn && capProxy.isEmpty()))) {
+            if ((*chromePP)->isReady()) (*chromePP)->stop();
             (*chromePP)->deleteLater();
             *chromePP = nullptr;
         }
@@ -7259,8 +7535,9 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
             *chromePP = new RealChromeCrawler(this, this);
             (*chromePP)->setUseUserProfile(false);
             (*chromePP)->setDebugPort(reservedPort);
-            if (!trackKey.isEmpty()) {
-                QString b64 = QString::fromLatin1(trackKey.toUtf8().toBase64());
+            (*chromePP)->setProxyServer(capProxy, capProxyOn);
+            if (!chromeKey.isEmpty()) {
+                QString b64 = QString::fromLatin1(chromeKey.toUtf8().toBase64());
                 b64.replace("=", "").replace("/", "_").replace("+", "_");
                 QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
                 QString perThreadDir = appData + "/chrome_capture_profile_" + b64;
@@ -7297,11 +7574,11 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
         //   다음 캡쳐가 새 크롬으로 시작한다. 실패는 한 건으로 끝난다.
         log("로그인 사전 검사 타임아웃 — 응답 없는 캡쳐 브라우저를 정리하고 다음 항목부터 새로 띄웁니다",
             "warning", p);
-        if (!trackKey.isEmpty()) {
+        if (!chromeKey.isEmpty()) {   // 트랙별·출구별 Chrome (순차 모드의 직접 연결 하나는 예전처럼 둔다)
             RealChromeCrawler *stuck = nullptr;
             {
                 QMutexLocker mapLock(&m_capChromeMapMutex);
-                auto it = m_captureChromesPerThread.find(trackKey);
+                auto it = m_captureChromesPerThread.find(chromeKey);
                 if (it != m_captureChromesPerThread.end()) {
                     stuck = it.value();
                     it.value() = nullptr;   // ★ 노드는 남긴다 — 콜백들이 주소를 붙들고 있다
@@ -8140,9 +8417,10 @@ void HanishikiBackend::runRealChromeCollection(const QJsonObject &config)
             bool on = false;
             ~MainProxyScope() { if (on) Common::clearThreadProxy(); }
         } _mainProxy;
+        m_realChromeProxyProfile = QJsonObject();
         {
             QString ph; int pp = 0;
-            if (applyAccountProxyToCurrentThread(config, &ph, &pp)) {
+            if (applyAccountProxyToCurrentThread(this, config, &ph, &pp, nullptr, &m_realChromeProxyProfile)) {
                 _mainProxy.on = true;
                 log(QString("🔒 Chrome 도 %1:%2 로 내보냅니다").arg(ph).arg(pp), "info", platform);
             }
@@ -8221,7 +8499,17 @@ void HanishikiBackend::runRealChromeCollection(const QJsonObject &config)
                                         done->release();
                                         return;
                                     }
+                                    // ★ 여기는 메인 스레드다(CDP 콜백) — 계정 프록시가 안 보인다. 그대로 두면 Chrome 은
+                                    //   계정 출구로, 미디어는 이 컴퓨터의 회선으로 나가 한 세션이 두 IP 가 됐다.
+                                    //   HttpClient 를 만드는 동안만 이 스레드에 계정 출구를 건다(생성자가 그때 읽는다) —
+                                    //   곧바로 풀어 메인 스레드의 다른 통신은 타지 않게.
+                                    const QJsonObject mp = m_realChromeProxyProfile;
+                                    if (!mp.isEmpty())
+                                        Common::setThreadProxy(true, mp["host"].toString(), mp["port"].toInt(),
+                                                               mp["user"].toString(), mp["pass"].toString(),
+                                                               mp["type"].toString());
                                     HttpClient http;
+                                    if (!mp.isEmpty()) Common::clearThreadProxy();
                                     http.setRunFlag(runFlag(platformCopy).get());
                                     int dl = 0;
                                     for (int i = 0; i < urls.size(); ++i) {
@@ -10839,32 +11127,41 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     // ★ 프록시 경유 — 니코동의 일본 전용(so…) 영상은 실제 접속 IP 를 본다. yt-dlp 의
     //   --geo-bypass·--xff(헤더 위조)는 안 통한다(니코동 추출기가 _GEO_BYPASS = False,
     //   윈도우 실측 2026-09-18). 경유만이 방법이다.
-    //   프록시는 새로 받지 않고 '프록시 (VPN)' 탭에 등록해 둔 것을 쓴다(proxyForAccount).
+    //   프록시는 새로 받지 않고 '프록시 (VPN)' 탭에 이름 붙여 등록해 둔 프로필을 쓴다(proxyForAccount).
     //   ★ 인증이 있으면 로컬 중계기(127.0.0.1)를 준다 — 이 인자들은 .command 스크립트 파일에
     //     그대로 적히므로, 비밀번호를 넣으면 디스크와 명령줄(ps)에 남는다.
+    // ★ 고른 출구는 이 함수가 끝날 때까지 이 스레드에 걸어 둔다(끝나면 푼다).
+    //   예전엔 yt-dlp 인자만 만들고 곧바로 풀어서, 다운로드 뒤 '진짜 페이지 캡쳐' 가 출구 없이
+    //   — 이 컴퓨터의 회선으로 — 니코동 페이지를 열었다(일본 경유를 고른 의미가 거기서 깨졌다).
+    //   캡처(captureRealPageCDPLoginAware)는 이 스레드의 출구를 읽어 Chrome 에 그대로 건다.
+    struct YtProxyScope { bool on = false; ~YtProxyScope() { if (on) Common::clearThreadProxy(); } } _ytProxy;
     {
         const QString wantProxy = config["proxy"].toString().trimmed();
         if (!wantProxy.isEmpty()) {
             const QJsonObject prof = proxyForAccount(QJsonObject{{"proxy", wantProxy}});
             QString arg;
             if (!proxyUrl(prof).isEmpty()) {
-                if (prof["user"].toString().isEmpty()) {
+                // ★ 종류도 넘긴다 — HTTP 프로필이면 중계기가 상위로 HTTP CONNECT 를 쓴다(socks_relay.py).
+                Common::setThreadProxy(true, prof["host"].toString(), prof["port"].toInt(),
+                                       prof["user"].toString(), prof["pass"].toString(),
+                                       prof["type"].toString());
+                _ytProxy.on = true;
+                // 인증 없는 SOCKS5·HTTP 는 주소 그대로, 인증이 있거나 HTTPS 면 로컬 중계기(127.0.0.1)로 —
+                //   yt-dlp 인자는 스크립트 파일에 적히므로 비밀번호를 넣지 않는다. HTTPS 프록시는 중계기만
+                //   상위에 TLS 로 붙는다.
+                if (prof["user"].toString().isEmpty() && prof["type"].toString() != QLatin1String("https"))
                     arg = proxyUrl(prof);
-                } else {
-                    Common::setThreadProxy(true, prof["host"].toString(), prof["port"].toInt(),
-                                           prof["user"].toString(), prof["pass"].toString());
+                else
                     arg = Common::proxyLocalRelayUrl();
-                    Common::clearThreadProxy();
-                }
             }
             // ★ 프록시를 못 쓰면 멈춘다 — 직접 연결로 몰래 넘어가지 않는다(윈도우 cba34f5 와 같은 뜻).
             //   프록시를 켠 이유가 바로 그것이다. 지역 제한을 넘으려던 것이면 직접 연결은 어차피
             //   막히고, 주소를 숨기려던 것이면 진짜 주소가 그대로 나간다. 예전엔 "직접 연결로
             //   진행합니다" 하고 갔고, 죽은 프록시는 yt-dlp 가 몇 분 헤매다 영어 한 줄로 끝났다.
-            const QString pname = (wantProxy == QLatin1String("global")) ? QStringLiteral("프록시 (VPN) 탭 설정") : wantProxy;
+            const QString pname = (wantProxy == QLatin1String("global")) ? QStringLiteral("기본 (예전 설정)") : wantProxy;
             if (arg.isEmpty()) {
                 log(QString("프록시 '%1' 을 찾을 수 없습니다 — 다운로드를 멈춥니다. "
-                            "'프록시 (VPN)' 탭에 주소·포트가 들어 있는지 확인하세요.").arg(pname), "error", platform);
+                            "'프록시 (VPN)' 탭에 그 이름으로 등록돼 있는지(주소·포트까지) 확인하세요.").arg(pname), "error", platform);
                 showSystemNotification(QString(APP_NAME_DISPLAY) + " — " + plabel, QStringLiteral("프록시를 찾을 수 없어 다운로드를 멈췄습니다"));
                 updateStats(0, 0, "오류", platform);
                 return;

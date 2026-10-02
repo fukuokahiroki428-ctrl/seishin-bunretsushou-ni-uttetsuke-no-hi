@@ -6,6 +6,8 @@
 #include <QJsonDocument>
 #include <QString>
 #include <QMap>
+#include <QRecursiveMutex>
+#include <QMutexLocker>
 
 struct AccountInfo {
     QString name;
@@ -151,6 +153,17 @@ public:
     void setProxyUser(const QString &v) { m_proxyUser = v; }
     QString proxyPass() const { return m_proxyPass; }
     void setProxyPass(const QString &v) { m_proxyPass = v; }
+    // ★ 이름 붙은 프록시 프로필 — 윈도우 Config::proxyProfiles 와 같은 모양.
+    //   [{provider,name,type,host,port,user,pass}, …]. 계정은 account["proxy"] 에 이름만 든다.
+    //   프로필을 고르지 않은 계정은 직접 연결로 나간다(윈도우와 같다 — 앱 전체 '기본 출구' 는 없다).
+    //   위의 proxyEnabled…proxyPass 는 옛 모양이다 — 읽어서 옮기고(migrateLegacyProxy), 쓸 때는
+    //   읽은 그대로 남겨 둔다(옛 판으로 되돌려도 예전 전역 설정 그대로 돌게). 새 코드는 안 쓴다.
+    //   ★ 잠금을 쥔다 — 수집 스레드(계정 출구 풀기)가 읽는 동안 메인 스레드가 목록을 바꿀 수 있다.
+    QJsonArray proxyProfiles() const { QMutexLocker l(&m_proxyMutex); return m_proxyProfiles; }
+    void setProxyProfiles(const QJsonArray &a) { QMutexLocker l(&m_proxyMutex); m_proxyProfiles = a; }
+    QJsonObject proxyProfileByName(const QString &name) const;   // 없으면 빈 객체
+    // 옛 설정을 옮겼다면 한 줄 알림(앱이 시작할 때 로그로 한 번 알리고 비운다).
+    QString takeProxyMigrationNote() { QString n = m_proxyMigrationNote; m_proxyMigrationNote.clear(); return n; }
 
     int maxConcurrent() const { return m_maxConcurrent; }
     void setMaxConcurrent(int n) { m_maxConcurrent = n; }
@@ -194,4 +207,11 @@ private:
     int m_proxyPort = 1080;
     QString m_proxyUser;
     QString m_proxyPass;   // ★ 설정 파일은 0600 으로 조인다(Config::save 의 lockDown)
+    // ★ 이름 붙은 프로필 — 비밀번호가 들어 있다. 화면(setConfig)으로 보내지 않는다
+    //   (HanishikiBackend::loadConfig 가 떼어 내고, 목록은 getProxyProfiles 가 hasPass 만 담아 보낸다).
+    QJsonArray m_proxyProfiles;
+    mutable QRecursiveMutex m_proxyMutex;   // m_proxyProfiles 를 지킨다(옮기기가 안에서 다시 잠근다)
+    QString m_proxyMigrationNote;
+    // 옛 모양(전역 하나 + 계정마다 주소)을 프로필로 옮긴다. 몇 번 불러도 결과가 같다.
+    void migrateLegacyProxy(bool legacyGlobal);
 };

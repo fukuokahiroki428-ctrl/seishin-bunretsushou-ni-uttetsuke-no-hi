@@ -334,9 +334,22 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
 void HttpClient::applyGlobalProxy()
 {
     const QString u = Common::proxyUrl();
-    if (u.isEmpty()) { m_nam->setProxy(QNetworkProxy::NoProxy); return; }
+    if (u.isEmpty()) {
+        // ★ 출구가 있어야 하는데 주소를 못 얻었으면(HTTPS 프록시의 중계기를 못 띄움) 닫힌 길을 건다
+        //   (127.0.0.1:9 — 아무것도 듣지 않는다). 그냥 NoProxy 로 두면 이 요청만 직접 연결로 샌다.
+        if (Common::proxyEnabled())
+            m_nam->setProxy(QNetworkProxy(QNetworkProxy::Socks5Proxy, QStringLiteral("127.0.0.1"), 9));
+        else
+            m_nam->setProxy(QNetworkProxy::NoProxy);
+        return;
+    }
     const QUrl url(u);
-    QNetworkProxy p(QNetworkProxy::Socks5Proxy, url.host(), quint16(url.port(1080)));
+    // ★ 프로필이 HTTP 프록시일 수도 있다(윈도우 HttpClient::setProxyUrl 과 같은 판정).
+    //   HTTPS 프록시는 여기까지 오지 않는다 — Qt 에는 '프록시까지 TLS' 종류가 없어서
+    //   Common::proxyUrl 이 중계기(socks5://127.0.0.1) 주소로 바꿔 준다.
+    const bool socks = url.scheme().startsWith(QLatin1String("socks"));
+    QNetworkProxy p(socks ? QNetworkProxy::Socks5Proxy : QNetworkProxy::HttpProxy,
+                    url.host(), quint16(url.port(socks ? 1080 : 8080)));
     if (!url.userName().isEmpty()) { p.setUser(url.userName()); p.setPassword(url.password()); }
     m_nam->setProxy(p);
 }

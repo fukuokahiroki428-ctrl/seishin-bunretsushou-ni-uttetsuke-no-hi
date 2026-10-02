@@ -289,6 +289,11 @@ QJsonObject Config::toJson() const
     root["unixFilenames"] = m_unixFilenames;
     root["maxConcurrent"] = m_maxConcurrent;
     root["windowGeometry"] = m_windowGeometry;
+    // ★ 이름 붙은 프록시 프로필(윈도우와 같은 키). 비어 있어도 적는다 — 이 키가 있으면
+    //   '새 모양으로 쓴 파일' 이라는 표시가 되어, 아래 옛 키를 다시 옮기지 않는다(fromJson).
+    root["proxyProfiles"] = proxyProfiles();   // 잠금을 쥐고 베낀다
+    // 옛 키는 읽은 그대로 남긴다 — 옛 판(전역 하나만 아는 판)으로 되돌려도 예전처럼 돌게.
+    //   새 판은 이 값을 쓰지 않는다(옮긴 결과는 위 프로필과 계정의 proxy 이름에 있다).
     root["proxyEnabled"] = m_proxyEnabled;
     root["proxyHost"]    = m_proxyHost;
     root["proxyPort"]    = m_proxyPort;
@@ -340,4 +345,111 @@ void Config::fromJson(const QJsonObject &obj)
     if (obj.contains("proxyPort"))    m_proxyPort    = obj["proxyPort"].toInt(1080);
     if (obj.contains("proxyUser"))    m_proxyUser    = obj["proxyUser"].toString();
     if (obj.contains("proxyPass"))    m_proxyPass    = obj["proxyPass"].toString();
+    // ★ 키가 있을 때만 덮어쓴다. 화면은 이 키를 보내지 않는다 — 화면은 비밀번호를
+    //   갖고 있지 않으므로, 보내면 그 순간 저장된 비밀번호가 전부 지워진다.
+    //   (프로필 저장은 HanishikiBackend::setProxyProfiles 한 곳에서만 한다.)
+    if (obj.contains("proxyProfiles")) setProxyProfiles(obj["proxyProfiles"].toArray());
+    // 옛 모양이면 프로필로 옮긴다. 'proxyHost 는 있는데 proxyProfiles 가 없다' 가 옛 판이 쓴
+    //   파일(또는 옛 판에서 내보낸 파일)의 표시다. 화면이 보내는 saveConfig 에는 둘 다 없다.
+    //   계정마다 적힌 옛 주소는 그것만 보고 옮긴다(전역 키가 없는 파일이어도).
+    migrateLegacyProxy(obj.contains("proxyHost") && !obj.contains("proxyProfiles"));
+}
+
+QJsonObject Config::proxyProfileByName(const QString &name) const
+{
+    if (name.isEmpty()) return QJsonObject();
+    QMutexLocker l(&m_proxyMutex);
+    for (const QJsonValue &v : m_proxyProfiles) {
+        const QJsonObject p = v.toObject();
+        if (p["name"].toString() == name) return p;
+    }
+    return QJsonObject();
+}
+
+// 옛 프록시 설정을 이름 붙은 프로필로 옮긴다(윈도우 모델 — 계정마다 이름으로 고른다).
+//   ★ 비밀번호는 옮기기만 한다 — 버리지도, 로그에 적지도 않는다. 같은 출구(종류·주소·
+//     포트·아이디·비밀번호가 모두 같은 것)는 프로필 하나로 합친다.
+//   ★ 계정에 붙어 있던 proxyHost/proxyPort/proxyUser/proxyPass 는 지우고 이름(proxy)만 남긴다.
+//     계정 목록은 화면(setConfig)으로 그대로 가고, 예전엔 그 비밀번호가 계정 편집 칸의
+//     value 로 DOM 에 박혔다.
+//   ★ 예전 '전역 프록시 켬' 은 '모든 요청이 이 길로' 였다. 새 모델에는 앱 전체 출구가 없다 —
+//     프로필을 고르지 않은 계정은 직접 연결이다(윈도우와 같다). 그래서 옮길 때 그 길을 타던
+//     계정(자기 주소가 따로 없던 계정)에 '기본' 프로필을 직접 붙여, 계정이 나가던 길을 지킨다.
+//     계정 없이 도는 요청(유튜브 등)은 이제 직접 연결이다 — 그 사실을 알림으로 남긴다.
+void Config::migrateLegacyProxy(bool legacyGlobal)
+{
+    QMutexLocker lock(&m_proxyMutex);   // 재귀 잠금 — 안에서 proxyProfileByName 이 다시 잠근다
+    auto same = [](const QJsonObject &p, const QString &h, int port, const QString &u, const QString &pw) {
+        return p["type"].toString(QStringLiteral("socks5")) == QLatin1String("socks5")
+            && p["host"].toString() == h && p["port"].toInt() == port
+            && p["user"].toString() == u && p["pass"].toString() == pw;
+    };
+    auto uniqueName = [this](const QString &base) {
+        QString n = base; int k = 2;
+        while (!proxyProfileByName(n).isEmpty()) n = QStringLiteral("%1 (%2)").arg(base).arg(k++);
+        return n;
+    };
+    // 같은 출구가 이미 있으면 그 이름을, 없으면 새로 만들어 그 이름을 돌려준다.
+    auto adopt = [&](const QString &base, const QString &h, int port, const QString &u, const QString &pw) {
+        for (const QJsonValue &v : m_proxyProfiles) {
+            const QJsonObject p = v.toObject();
+            if (same(p, h, port, u, pw)) return p["name"].toString();
+        }
+        const QString n = uniqueName(base);
+        m_proxyProfiles.append(QJsonObject{
+            {"provider", h.endsWith(QLatin1String(".nordhold.net")) ? QStringLiteral("nordvpn") : QStringLiteral("other-socks")},
+            {"name", n}, {"type", QStringLiteral("socks5")}, {"host", h}, {"port", port},
+            {"user", u}, {"pass", pw}});
+        return n;
+    };
+
+    // 1) 전역 하나 → 프로필 '기본'. 꺼져 있었어도 만든다 — 자격증명을 잃지 않게(붙이지는 않는다).
+    QString globalName;
+    if (legacyGlobal && !m_proxyHost.trimmed().isEmpty() && m_proxyPort > 0) {
+        globalName = adopt(QStringLiteral("기본"), m_proxyHost.trimmed(), m_proxyPort,
+                           m_proxyUser, m_proxyPass);
+        // 니코동 칸의 '프록시 (VPN) 탭 설정'(global) 은 이제 그 프로필 이름이다.
+        if (m_formData.value("niconico-proxy").toString() == QLatin1String("global"))
+            m_formData["niconico-proxy"] = globalName;
+    }
+    const bool globalWasOn = legacyGlobal && m_proxyEnabled && !globalName.isEmpty();
+
+    // 2) 계정마다 적혀 있던 주소 → 프로필 이름. 자기 주소가 없던 계정은 전역이 켜져 있었으면
+    //    '기본' 을 붙인다(예전에 그 길로 나갔다). 이미 이름이 있는 계정은 건드리지 않는다.
+    int perAccount = 0, viaGlobal = 0;
+    for (auto it = m_accounts.begin(); it != m_accounts.end(); ++it) {
+        QJsonArray arr = it.value();
+        bool touched = false;
+        for (int i = 0; i < arr.size(); ++i) {
+            QJsonObject a = arr[i].toObject();
+            const bool legacyKeys = a.contains("proxyHost") || a.contains("proxyPort")
+                                 || a.contains("proxyUser") || a.contains("proxyPass");
+            const QString h = a.value("proxyHost").toString().trimmed();
+            // 옛 주소가 있고, 이름이 없거나 그 이름의 프로필이 없으면(옛 판으로 되돌렸다가 다시
+            //   올라온 경우 — 옛 판은 프로필 목록을 지운다) 옛 주소를 프로필로 다시 들인다.
+            const QString named = a.value("proxy").toString();
+            if (!h.isEmpty() && (named.isEmpty() || proxyProfileByName(named).isEmpty())) {
+                const int port = a.value("proxyPort").toInt() > 0 ? a.value("proxyPort").toInt() : 1080;
+                a["proxy"] = adopt(QStringLiteral("%1:%2").arg(h).arg(port), h, port,
+                                   a.value("proxyUser").toString(), a.value("proxyPass").toString());
+                ++perAccount;
+            } else if (globalWasOn && a.value("proxy").toString().isEmpty()) {
+                a["proxy"] = globalName;
+                ++viaGlobal;
+            } else if (!legacyKeys) {
+                continue;
+            }
+            a.remove("proxyHost"); a.remove("proxyPort"); a.remove("proxyUser"); a.remove("proxyPass");
+            arr[i] = a; touched = true;
+        }
+        if (touched) it.value() = arr;
+    }
+    if (perAccount || viaGlobal || !globalName.isEmpty()) {
+        m_proxyMigrationNote = QStringLiteral("예전 프록시 설정을 이름 붙은 프로필로 옮겼습니다 — 프로필 %1개, "
+                                              "계정별 주소 %2개, 전역 프록시를 타던 계정 %3개")
+                                   .arg(m_proxyProfiles.size()).arg(perAccount).arg(viaGlobal);
+        if (globalWasOn)
+            m_proxyMigrationNote += QStringLiteral(". 계정 없이 도는 요청(유튜브 등)은 이제 직접 연결입니다 — "
+                                                   "필요하면 니코동 칸처럼 출구를 골라 주십시오");
+    }
 }

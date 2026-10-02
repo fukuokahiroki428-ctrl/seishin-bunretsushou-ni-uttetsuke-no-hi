@@ -50,6 +50,12 @@ public:
     void setUseUserProfile(bool b) { m_useUserProfile = b; }
     void setDebugPort(int port) { m_debugPort = port; }
     void setUserDataDir(const QString &d) { m_userDataDir = d; }
+    // ★ 출구를 정해서 넘긴다(캡처 Chrome). start() 는 메인 스레드에서 도는데, 계정 프록시는
+    //   수집 스레드에만 걸려 있다(Common::setThreadProxy). 그래서 수집 스레드에서 구한 중계 주소를
+    //   여기로 넘긴다. required 면 주소가 비었을 때 start 를 실패로 끝낸다 — 직접 연결로 새지 않게.
+    void setProxyServer(const QString &server, bool required)
+    { m_proxyPinned = true; m_proxyServer = server; m_proxyRequired = required; }
+    QString proxyServerUsed() const { return m_proxyServerUsed; }   // 이 Chrome 이 뜬 출구(빈 값 = 직접)
 
     // 1) Chrome 시작 + CDP 연결 (콜백 ok=true면 성공)
     void start(std::function<void(bool)> done);
@@ -124,6 +130,10 @@ private:
     QMap<int, std::function<void(const QJsonValue &, const QJsonValue &)>> m_pendingCmds;
 
     QString m_userDataDir;     // 임시 프로필 경로 (m_useUserProfile=false일 때)
+    bool    m_proxyPinned = false;    // setProxyServer 로 출구를 정해 받았는가
+    bool    m_proxyRequired = false;
+    QString m_proxyServer;            // 정해 받은 출구
+    QString m_proxyServerUsed;        // 실제로 띄울 때 쓴 출구
     QString m_responseSaveDir; // Network 응답 저장 디렉토리
     QStringList m_capturedRespFiles;
 

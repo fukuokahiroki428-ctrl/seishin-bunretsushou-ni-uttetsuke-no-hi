@@ -9,6 +9,7 @@
 #include <QLockFile>
 #include <QProcess>
 #include <QUrl>
+#include <QCryptographicHash>
 #include <QProcessEnvironment>
 #include <QTimeZone>
 #include <QLocale>
@@ -730,6 +731,9 @@ struct ProxyCfg {
     bool enabled = false;
     QString host, user, pass;
     int port = 1080;
+    // ★ 연결 방식 — 이름 붙은 프로필에는 HTTP 프록시도 들어온다(윈도우 프로필의 type).
+    //   예전엔 SOCKS5 만 받았으므로 비면 socks5 로 본다.
+    QString type = QStringLiteral("socks5");
 };
 QMutex   g_proxyMutex;
 ProxyCfg g_proxy;                 // 전역(기본) 프록시 — 계정별 지정이 없을 때 쓴다
@@ -756,14 +760,21 @@ static ProxyCfg effectiveProxy()
 
 static QString proxySignature(const ProxyCfg &c)
 {
-    return QStringLiteral("%1:%2:%3").arg(c.host).arg(c.port).arg(c.user);
+    // ★ 종류도 서명에 넣는다 — 같은 주소라도 SOCKS5 와 HTTP 는 다른 중계기여야 한다.
+    // ★ 비밀번호의 지문도 넣는다(값 자체는 넣지 않는다). 프로필의 비밀번호를 고친 뒤에도 옛 중계기가
+    //   옛 비밀번호로 계속 쓰였다 — 연결 시험은 새 비밀번호로 통과하는데 캡처만 실패했다.
+    const QString passTag = QString::fromLatin1(
+        QCryptographicHash::hash(c.pass.toUtf8(), QCryptographicHash::Sha256).toHex().left(12));
+    return c.type + QStringLiteral("://") + c.host + QLatin1Char(':') + QString::number(c.port)
+         + QLatin1Char(':') + c.user + QLatin1Char('#') + passTag;
 }
 
 void setThreadProxy(bool enabled, const QString &host, int port,
-                    const QString &user, const QString &pass)
+                    const QString &user, const QString &pass, const QString &type)
 {
     clearThreadProxy();
-    t_proxy = new ProxyCfg{enabled, host, user, pass, port};
+    t_proxy = new ProxyCfg{enabled, host, user, pass, port,
+                           type.isEmpty() ? QStringLiteral("socks5") : type.toLower()};
 }
 
 void clearThreadProxy()
@@ -773,13 +784,14 @@ void clearThreadProxy()
 }
 
 void setProxyConfig(bool enabled, const QString &host, int port,
-                    const QString &user, const QString &pass)
+                    const QString &user, const QString &pass, const QString &type)
 {
+    const QString t = type.isEmpty() ? QStringLiteral("socks5") : type.toLower();
     QMutexLocker lock(&g_proxyMutex);
     const bool changed = (g_proxy.enabled != enabled) || (g_proxy.host != host)
                       || (g_proxy.port != port) || (g_proxy.user != user)
-                      || (g_proxy.pass != pass);
-    g_proxy = {enabled, host, user, pass, port};
+                      || (g_proxy.pass != pass) || (g_proxy.type != t);
+    g_proxy = {enabled, host, user, pass, port, t};
     if (changed) {     // 설정이 바뀌면 중계기를 모두 정리한다(다음 요청 때 새로 뜬다)
         for (auto it = g_relays.begin(); it != g_relays.end(); ++it) {
             if (!it->proc) continue;
@@ -801,18 +813,41 @@ QString proxyUrl()
 {
     const ProxyCfg c = effectiveProxy();
     if (!c.enabled || c.host.isEmpty() || c.port <= 0) return QString();
+    // ★ HTTPS 프록시(프록시까지 TLS)는 Qt 도 파이썬 urllib 도 말하지 못한다 — 그대로 넘기면 평문으로
+    //   붙어 아이디·비밀번호가 그대로 흘렀다. 중계기(socks_relay.py)만 상위에 TLS 로 붙는다.
+    //   그래서 https 는 언제나 중계기 주소(127.0.0.1 · 자격증명 없음)를 준다.
+    //   중계기를 못 띄우면 빈 값이다 — 부르는 쪽(HttpClient·bundledProcessEnv)이 닫힌 길로 막는다.
+    if (c.type == QLatin1String("https")) return proxyLocalRelayUrl();
     QString auth;
     if (!c.user.isEmpty()) {
-        auth = QUrl::toPercentEncoding(c.user) + ":"
-             + QUrl::toPercentEncoding(c.pass) + "@";
+        auth = QString::fromLatin1(QUrl::toPercentEncoding(c.user) + ":"
+                                   + QUrl::toPercentEncoding(c.pass) + "@");
     }
-    return QStringLiteral("socks5://%1%2:%3").arg(auth, c.host).arg(c.port);
+    // 프로필의 종류를 그대로 scheme 으로 쓴다 — httpx·yt-dlp·curl 이 모두 이 모양을 읽는다.
+    // ★ 이어 붙인다. arg() 를 겹쳐 쓰면 비밀번호의 퍼센트 코드(%2F · %3A …)를 다음 arg() 가
+    //   자리표시로 읽어 비밀번호와 포트가 함께 깨졌다('/' 나 ':' 가 든 비밀번호).
+    return (c.type.isEmpty() ? QStringLiteral("socks5") : c.type) + QStringLiteral("://")
+         + auth + c.host + QLatin1Char(':') + QString::number(c.port);
+}
+
+QString proxyExitTag()
+{
+    if (!proxyEnabled()) return QString();
+    const ProxyCfg c = effectiveProxy();
+    const QString id = c.type + QStringLiteral("://") + c.host + QLatin1Char(':')
+                     + QString::number(c.port) + QLatin1Char(':') + c.user;
+    return QString::fromLatin1(QCryptographicHash::hash(id.toUtf8(), QCryptographicHash::Sha256).toHex().left(10));
 }
 
 QString proxyLocalRelayUrl()
 {
     if (!proxyEnabled()) return QString();
     const ProxyCfg cfg = effectiveProxy();
+    // ★ 인증 없는 HTTP(S) 프록시는 중계기가 필요 없다 — 크로미움이 그대로 받는다.
+    //   인증이 붙은 HTTP 프록시는 중계기가 상위로 HTTP CONNECT 를 쓴다(socks_relay.py).
+    //   HTTPS 는 인증이 없어도 중계기로 간다 — Qt·파이썬 쪽(proxyUrl)이 이 주소를 같이 쓰기 때문이다.
+    if (cfg.type == QLatin1String("http") && cfg.user.isEmpty())
+        return QStringLiteral("http://") + cfg.host + QLatin1Char(':') + QString::number(cfg.port);
     const QString sig = proxySignature(cfg);
     {
         QMutexLocker lock(&g_proxyMutex);
@@ -839,7 +874,8 @@ QString proxyLocalRelayUrl()
     if (!p->waitForStarted(5000)) { p->deleteLater(); return QString(); }
 
     // ★ 자격증명은 stdin 첫 줄로만 넘긴다 — 명령줄에 실으면 ps 로 남이 읽는다.
-    QJsonObject init{{"listen_port", 0},
+    // type 은 상위 프록시의 종류 — 중계기가 SOCKS5 와 HTTP CONNECT 를 이것으로 가른다.
+    QJsonObject init{{"listen_port", 0}, {"type", cfg.type},
                      {"host", cfg.host}, {"port", cfg.port},
                      {"user", cfg.user}, {"pass", cfg.pass}};
     p->write(QJsonDocument(init).toJson(QJsonDocument::Compact) + "\n");
@@ -1389,7 +1425,10 @@ QProcessEnvironment bundledProcessEnv()
             env.insert("PYTHONPATH", parts.join(':'));
         }
 
-        const QString pu = proxyUrl();
+        QString pu = proxyUrl();
+        // ★ 출구가 있어야 하는데 주소를 못 얻었으면(HTTPS 중계기를 못 띄움) 닫힌 길을 준다.
+        //   비워 두면 데몬·rclone·curl 이 이 컴퓨터의 회선으로 조용히 나간다.
+        if (pu.isEmpty() && proxyEnabled()) pu = QStringLiteral("socks5://127.0.0.1:9");
         if (!pu.isEmpty()) {
             env.insert("ALL_PROXY",   pu);
             env.insert("all_proxy",   pu);

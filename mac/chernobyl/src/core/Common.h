@@ -161,14 +161,20 @@ QMap<QString, QString> browserClientHints();
 //   그래서 설정을 한 곳에 두고, 각 경로가 여기서 받아 간다.
 //
 //   자격증명은 명령줄로 넘기지 않는다(ps 로 남이 읽는다). 환경변수와 stdin 만 쓴다.
+// ★ type 은 프로필의 연결 방식("socks5" · "http" · "https") — 윈도우 프로필과 같은 값.
+//   기본값을 socks5 로 두어 예전 호출(전역 하나·계정별 SOCKS5)이 그대로 같은 뜻이 되게 한다.
 void  setProxyConfig(bool enabled, const QString &host, int port,
-                     const QString &user, const QString &pass);
+                     const QString &user, const QString &pass,
+                     const QString &type = QStringLiteral("socks5"));
 bool  proxyEnabled();
 // "socks5://user:pass@host:port" — 없으면 빈 문자열.
 QString proxyUrl();
 // 크로미움처럼 '인증을 못 넣는' 프로그램용. 로컬 중계기를 띄우고 그 주소를 준다.
 // (인증 없는 127.0.0.1 → 중계기가 상위에 인증해 연결)
 QString proxyLocalRelayUrl();
+// 지금 스레드가 나가는 출구를 가리키는 짧은 꼬리표(종류·주소·포트·아이디의 지문 — 비밀번호는 없다).
+//   출구가 없으면 빈 값. 캡처 Chrome 을 출구마다 따로 둘 때 열쇠로 쓴다(앱을 다시 켜도 같다).
+QString proxyExitTag();
 
 // 사용자 쪽 꾸러미 덧씌우기 폴더 — 번들을 건드리지 않고 새 판을 얹는 자리.
 //   번들에 직접 설치하면 codesign 봉인이 깨진다. 여기에 깔고 PYTHONPATH 로 먼저 읽는다.
@@ -177,7 +183,8 @@ QString userPyOverlayDir();
 // 이 스레드에만 적용되는 프록시(계정별 지정). 지우면 전역 설정으로 돌아간다.
 //   수집이 병렬로 도므로 전역 하나를 바꿔 끼우면 서로 덮어쓴다 — 그래서 스레드별이다.
 void setThreadProxy(bool enabled, const QString &host, int port,
-                    const QString &user, const QString &pass);
+                    const QString &user, const QString &pass,
+                    const QString &type = QStringLiteral("socks5"));
 void clearThreadProxy();
 void  stopProxyRelay();
 

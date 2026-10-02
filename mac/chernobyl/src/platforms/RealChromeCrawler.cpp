@@ -237,8 +237,21 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
             //   그래서 인증이 붙은 프록시를 켜면 여기만 진짜 IP 로 새어 나갔다.
             //   앱이 띄운 로컬 중계기(인증 없음 → 상위에 인증)를 가리킨다.
             //   자격증명이 크로미움 명령줄에 실리지 않는 이점도 있다.
-            { const QString relay = Common::proxyLocalRelayUrl();
-              if (!relay.isEmpty()) args << "--proxy-server=" + relay; }
+            //   ★ 출구가 있어야 하는데 중계 주소를 못 얻으면(파이썬 없음·중계기가 죽음) 띄우지 않는다.
+            //     예전엔 그냥 --proxy-server 없이 띄워 그 Chrome 만 이 컴퓨터의 회선으로 나갔다.
+            {
+                const bool required = m_proxyPinned ? m_proxyRequired : Common::proxyEnabled();
+                const QString relay = m_proxyPinned ? m_proxyServer : Common::proxyLocalRelayUrl();
+                if (required && relay.isEmpty()) {
+                    if (m_backend)
+                        m_backend->log("프록시 중계기를 띄우지 못해 Chrome 을 열지 않습니다 — 직접 연결로 새지 않게 멈춥니다",
+                                       "error", "crawl");
+                    if (done) done(false);
+                    return;
+                }
+                if (!relay.isEmpty()) args << "--proxy-server=" + relay;
+                m_proxyServerUsed = relay;
+            }
             args << "--user-data-dir=" + m_userDataDir;
             // ★ 시크릿 모드 — 임시 프로필이라도 incognito 윈도우로 띄움. 흔적 안 남음.
             //   CDP Network.setCookie 로 주입하는 토큰 (auth_token/ct0/sessionid 등) 은 정상 작동.

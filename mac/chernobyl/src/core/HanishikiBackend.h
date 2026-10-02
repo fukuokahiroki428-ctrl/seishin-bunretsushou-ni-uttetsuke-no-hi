@@ -216,10 +216,14 @@ public slots:
     void showSystemNotification(const QString &title, const QString &body);
 
     // 디버그 진단 — 설정 탭에서 호출
-    Q_INVOKABLE void setProxyConfig(const QString &host, int port,
-                                    const QString &user, const QString &pass, bool enabled);
-    Q_INVOKABLE void getProxyConfig();     // JS onProxyConfig(json)
-    Q_INVOKABLE void testProxy();          // 실제로 나가는 IP 를 확인해 로그로
+    // ── 프록시(VPN) — 이름 붙은 프로필(윈도우 MiyoBackend 와 같은 이름·같은 모양) ──
+    Q_INVOKABLE void getProxyProfiles();                       // JS onProxyProfiles(list) — 비밀번호는 hasPass 만
+    Q_INVOKABLE void setProxyProfiles(const QString &json);    // 목록 저장(빈 비밀번호 = 안 바꿈)
+    Q_INVOKABLE void testProxyProfile(const QString &json);    // 한 개를 실제로 나가 보고 JS onProxyTest(ok, detail)
+    // 계정 ↔ 프록시 — 여기서 저장하고 모든 창의 accounts 를 맞춘다(JS onAccountProxy). handle 로 같은 계정인지 본다.
+    Q_INVOKABLE void setAccountProxy(const QString &platform, int index, const QString &handle, const QString &name);
+    Q_INVOKABLE void testProxy();          // 앱·데몬 두 갈래가 어떤 IP 로 나가는지 로그로(프로필 없이 = 직접 연결)
+
     Q_INVOKABLE void getAppInfo();                   // JS onAppInfo(json) — 이름/판/만든 곳
     Q_INVOKABLE void getDiagnosticInfo();
     Q_INVOKABLE void killZombieChromes();
@@ -311,10 +315,13 @@ private slots:
     void executeJsAllWindows(const QString &js);
     void appendLogMainThread(const QString &message, const QString &type, const QString &platform);
 
-private:
-    // 프록시 도우미 — 비밀번호를 담아 돌려주므로 슬롯이 아니다(HanishikiBackend.cpp 설명).
+public:   // ↓ 슬롯도 Q_INVOKABLE 도 아니다 — QWebChannel 은 이것들을 화면에 내보이지 않는다.
+    // 프록시 도우미 — 비밀번호를 담아 돌려주므로 화면에서 부를 수 없어야 한다(HanishikiBackend.cpp 설명).
+    //   public 인 까닭: TwitterCollector 가 계정을 돌릴 때(switchToAccount) 이름 → 프로필을 풀어야 한다.
     QString proxyUrl(const QJsonObject &p, bool withCredentials = true) const;
     QJsonObject proxyForAccount(const QJsonObject &account) const;
+private:
+
     MainWindow *m_window;
     Config *m_config;
     mutable QMutex m_recentMutex;                 // 최근 오류·경고(수리 도우미용)
@@ -433,6 +440,9 @@ private:
     void killBatchGroup(const QString &platform);
     // ハニワ 대화(REPL) — 앱 안 대화형 창에 붙은 파이썬
     QPointer<QProcess> m_haniwaProc;
+    // 실제 Chrome 수집(m_realChrome — 한 번에 하나)이 쓰는 계정 출구. 미디어 다운로드는 메인 스레드
+    //   콜백에서 돌아 계정 프록시가 안 보인다 — 이것을 그 HttpClient 에만 건다.
+    QJsonObject m_realChromeProxyProfile;
 public:
     void closeAllTerminalLogs();
     void closeAllTerminalWindows();   // 본 창을 닫을 때 — 앱 안 터미널 창도 같이 닫는다

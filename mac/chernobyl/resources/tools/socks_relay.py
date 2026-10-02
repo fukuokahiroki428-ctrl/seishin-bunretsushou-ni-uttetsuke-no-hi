@@ -84,8 +84,39 @@ async def _client_handshake(reader, writer):
     return atyp, host, port
 
 
+async def _upstream_connect_http(cfg, atyp, host, port):
+    """상위 HTTP(S) 프록시에 CONNECT 로 붙는다 — 이름 붙은 프로필의 type 이 http/https 일 때.
+
+    ★ 크로미움은 HTTP 프록시 인증도 명령줄로 받지 못한다(윈도우판은 CDP Fetch.authRequired 로
+      넘긴다). 여기서 Proxy-Authorization 을 붙이면 크로미움은 SOCKS5 때와 똑같이 인증 없는
+      로컬 주소만 알면 된다. 자격증명은 이 프로세스 밖으로 나가지 않는다.
+    """
+    import base64
+    import ssl as _ssl
+    tls = _ssl.create_default_context() if cfg.get("type") == "https" else None
+    ureader, uwriter = await asyncio.open_connection(
+        cfg["host"], int(cfg["port"]), ssl=tls,
+        server_hostname=cfg["host"] if tls else None)
+    target = ("[%s]" % host) if atyp == ATYP_IPV6 else host
+    req = "CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n" % (target, port, target, port)
+    user = cfg.get("user") or ""
+    if user:
+        tok = base64.b64encode(("%s:%s" % (user, cfg.get("pass") or "")).encode("utf-8")).decode("ascii")
+        req += "Proxy-Authorization: Basic %s\r\n" % tok
+    uwriter.write((req + "\r\n").encode("utf-8"))
+    await uwriter.drain()
+    head = await ureader.readuntil(b"\r\n\r\n")
+    status = head.split(b"\r\n", 1)[0].split()
+    if len(status) < 2 or status[1] != b"200":
+        # 응답 본문은 적지 않는다 — 프록시가 요청을 되비추면 자격증명이 섞일 수 있다.
+        raise ValueError("상위 HTTP 프록시가 CONNECT 를 거절했다")
+    return ureader, uwriter
+
+
 async def _upstream_connect(cfg, atyp, host, port):
     """상위 SOCKS5 에 인증해서 붙고, 같은 목적지로 CONNECT 한다."""
+    if (cfg.get("type") or "socks5") in ("http", "https"):
+        return await _upstream_connect_http(cfg, atyp, host, port)
     ureader, uwriter = await asyncio.open_connection(cfg["host"], int(cfg["port"]))
 
     user = (cfg.get("user") or "").encode("utf-8")
