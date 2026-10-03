@@ -26,6 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib import paths, proc  # noqa: E402
+from lib.seal import seal_state, describe  # noqa: E402
 
 
 def ask(q: str, yes: bool) -> bool:
@@ -130,9 +131,13 @@ def main() -> int:
     if r.returncode != 0:
         print("rsync 실패(%d): %s" % (r.returncode, (r.stderr or "").strip()[-300:]))
         return 1
-    ok, why = codesign_ok(dst)
-    print("덮음 — 설치본 %s · 서명 %s" % (paths.version_of(dst), "맞음" if ok else "틀림 " + " ".join(why)))
-    if not ok:
+    # ★ rsync 는 내용이 같은 파일과 폴더를 건너뛰어 예전 설치본의 'Finder 정보' 표시가 남는다
+    #   (Finder 로 복사한 앱이면 프레임워크 폴더마다 붙어 있다). 그것만으로 엄격 검사가 실패한다.
+    #   지울 수 있는 것은 지우고, iCloud 폴더라 지울 수 없는 앱 폴더의 표시만 남으면 '맞음' 으로 본다(lib/seal.py).
+    state, why = seal_state(dst, strip=True)
+    print("덮음 — 설치본 %s · 서명 %s%s" % (paths.version_of(dst), describe(state),
+                                       (" " + why) if state == "broken" else ""))
+    if state == "broken":
         return 1
     if a.open:
         subprocess.run(["open", str(dst)])

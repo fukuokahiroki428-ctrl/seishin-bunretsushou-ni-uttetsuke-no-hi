@@ -1061,6 +1061,48 @@ QString appBundlePath()
 static QAtomicInt g_resealInFlight(0);
 bool resealInFlight() { return g_resealInFlight.loadAcquire() != 0; }
 
+SealState checkAppSeal(QString *detail)
+{
+#ifdef Q_OS_MACOS
+    const QString app = appBundlePath();
+    if (app.isEmpty()) return SealState::NotBundle;
+    auto verify = [&app](bool strict, QString *errOut) {
+        QProcess vf;
+        QStringList args{QStringLiteral("--verify"), QStringLiteral("--deep")};
+        if (strict) args << QStringLiteral("--strict");
+        args << app;
+        vf.start(QStringLiteral("/usr/bin/codesign"), args);
+        if (!vf.waitForFinished(900000)) { vf.kill(); vf.waitForFinished(3000); }
+        if (errOut) *errOut = QString::fromUtf8(vf.readAllStandardError());
+        return vf.exitStatus() == QProcess::NormalExit && vf.exitCode() == 0;
+    };
+    QString e;
+    if (verify(true, &e)) return SealState::Ok;
+    if (e.contains(QLatin1String("detritus"))) {
+        // 지울 수 있는 표시는 지운다 — 확장 속성만 지우고 파일 내용은 건드리지 않는다.
+        //   (없는 파일마다 'No such xattr' 를 찍으므로 출력은 버린다)
+        for (const char *attr : {"com.apple.FinderInfo", "com.apple.ResourceFork"}) {
+            QProcess x;
+            x.setStandardOutputFile(QProcess::nullDevice());
+            x.setStandardErrorFile(QProcess::nullDevice());
+            x.start(QStringLiteral("/usr/bin/xattr"), {QStringLiteral("-rd"), QString::fromLatin1(attr), app});
+            if (!x.waitForFinished(120000)) { x.kill(); x.waitForFinished(3000); }
+        }
+        if (verify(true, &e)) return SealState::Ok;
+        QString loose;
+        if (e.contains(QLatin1String("detritus")) && verify(false, &loose)) {
+            if (detail) *detail = e.left(300);
+            return SealState::OkFinderDetritus;
+        }
+    }
+    if (detail) *detail = e.left(300);
+    return SealState::Broken;
+#else
+    Q_UNUSED(detail);
+    return SealState::NotBundle;
+#endif
+}
+
 bool resealAppBundle(QString *err)
 {
 #ifdef Q_OS_MACOS
@@ -1116,6 +1158,9 @@ bool resealAppBundle(QString *err)
         return false;
     }
     if (cs.exitCode() != 0) {
+        // ★ 스크립트는 마지막에 엄격 검사를 한다. iCloud 폴더의 앱은 서명은 다 됐어도 앱 폴더의
+        //   Finder 표시 때문에 거기서만 걸린다(checkAppSeal 설명) — 그것이면 서명은 된 것이다.
+        if (checkAppSeal() == SealState::OkFinderDetritus) return true;
         // 스크립트가 실패 사유를 표준출력에도 적는다(개별 서명 실패 목록 등).
         const QString out = QString::fromUtf8(cs.readAllStandardOutput()).right(400);
         const QString e   = QString::fromUtf8(cs.readAllStandardError()).left(300);
@@ -1123,11 +1168,9 @@ bool resealAppBundle(QString *err)
         return false;
     }
 
-    QProcess vf;
-    vf.start("/usr/bin/codesign", {"--verify", "--deep", "--strict", app});
-    vf.waitForFinished(900000);
-    if (vf.exitCode() != 0) {
-        if (err) *err = "재서명 후 검증 실패: " + QString::fromUtf8(vf.readAllStandardError()).left(300);
+    QString why;
+    if (checkAppSeal(&why) == SealState::Broken) {
+        if (err) *err = "재서명 후 검증 실패: " + why;
         return false;
     }
     return true;

@@ -31,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib import paths  # noqa: E402
+from lib.seal import seal_state, describe  # noqa: E402
 
 # pip 이름 → import 이름 (다른 것만)
 MODULE = {"xclienttransaction": "x_client_transaction", "yt-dlp": "yt_dlp", "Pillow": "PIL",
@@ -77,8 +78,10 @@ def is_macho(p: Path) -> bool:
 def check_app(app: Path, rep: Report, quick: bool, is_build: bool) -> None:
     print("\n── %s %s  %s  (%s)" % ("빌드본" if is_build else "설치본", app.name, paths.version_of(app), paths.bundle_id(app)))
     if not quick:
-        code, out = run(["codesign", "--verify", "--deep", "--strict", str(app)], timeout=180)
-        rep.add("OK" if code == 0 else "FAIL", "서명", "" if code == 0 else out.splitlines()[-1][:160])
+        # 점검은 사용자 앱을 고치지 않는다(strip=False) — iCloud 폴더의 Finder 표시는 알리기만 한다.
+        state, why = seal_state(app, strip=False)
+        rep.add({"ok": "OK", "finder-detritus": "WARN"}.get(state, "FAIL"), "서명",
+                "" if state == "ok" else (describe(state) if state != "broken" else why[:160]))
     # 도구
     for name, args in TOOLS:
         p = tool_path(app, name)

@@ -1290,10 +1290,18 @@ inline QString runStartupMaintenance()
     {
         const QString app = Common::appBundlePath();
         if (!app.isEmpty()) {
-            QProcess vf;
-            vf.start("/usr/bin/codesign", {"--verify", "--deep", "--strict", app});
-            vf.waitForFinished(300000);
-            if (vf.exitCode() != 0) {
+            // ★ 판정은 Common::checkAppSeal 이 한다 — 다른 데서 Finder 로 복사해 붙은 표시는 그 자리에서
+            //   지우고, iCloud 폴더라 시스템이 붙여 지울 수 없는 표시만 남았으면 '서명은 맞음' 으로 본다.
+            //   예전엔 엄격 검사가 실패하면 무조건 다시 서명했다. 문서 폴더(iCloud)에 둔 앱은 그 표시가
+            //   다시 서명해도 그대로라, 켤 때마다 1분씩 '봉인이 깨져 있습니다 → 복구 실패' 를 되풀이했고
+            //   그동안 실행 중인 앱 안을 고쳐 썼다(실측 2026-09-30 보고서).
+            QString sealWhy;
+            const Common::SealState seal = Common::checkAppSeal(&sealWhy);
+            if (seal == Common::SealState::OkFinderDetritus)
+                report += "[SEAL] 서명은 맞습니다 — 앱이 iCloud 로 동기화되는 폴더(문서·데스크탑)에 있어 앱 폴더에\n"
+                          "       Finder 표시가 붙고, 엄격 검사만 그것에 걸립니다. 다시 서명하지 않습니다.\n"
+                          "       (그 표시는 시스템이 붙여 지울 수 없습니다 — 응용 프로그램 폴더로 옮기면 사라집니다.)\n";
+            if (seal == Common::SealState::Broken) {
                 // ★ 이 줄은 report 에만 담으면 안 된다. 보고서는 진단이 다 끝난 뒤에야
                 //   한꺼번에 출력된다(맨 아래 qInfo). 그런데 재서명은 1분쯤 걸린다.
                 //   그동안 화면에도 로그에도 아무 것도 안 뜨니, 사용자는 앱이 그냥

@@ -92,6 +92,14 @@ QString appBundlePath();
 //   Windows/Linux 는 서명 봉인이 없어 항상 true(무동작).
 bool resealAppBundle(QString *err = nullptr);
 
+// ★ macOS: 앱 서명 봉인 상태. 엄격 검사(codesign --verify --deep --strict)로 본다.
+//   OkFinderDetritus — 서명은 맞는데 앱 폴더에 'Finder 정보' 표시가 붙어 엄격 검사만 걸리는 것.
+//     iCloud 로 동기화되는 폴더(문서·데스크탑)에 둔 앱은 시스템(파일 공급자)이 앱 폴더 맨 위에 이 표시를
+//     붙이고, 지워지지 않는다. 다시 서명해도 그대로라 재서명은 1분만 쓰고 실패한다 — 다시 서명하지 않는다.
+//   다른 곳에서 Finder 로 복사해 붙은 표시(지울 수 있는 것)는 판정하면서 지운다(내용은 건드리지 않는다).
+enum class SealState { Ok, OkFinderDetritus, Broken, NotBundle };
+SealState checkAppSeal(QString *detail = nullptr);
+
 // 지금 재서명이 돌고 있나. 종료할 때 이것만 기다린다 —
 // 서명 도중에 잘리면 번들이 무효인 채로 남기 때문이다.
 bool resealInFlight();
