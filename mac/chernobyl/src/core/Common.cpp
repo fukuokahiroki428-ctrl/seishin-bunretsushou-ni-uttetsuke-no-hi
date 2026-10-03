@@ -1061,6 +1061,13 @@ QString appBundlePath()
 static QAtomicInt g_resealInFlight(0);
 bool resealInFlight() { return g_resealInFlight.loadAcquire() != 0; }
 
+int capturePortBase()
+{
+    bool ok = false;
+    const int v = qEnvironmentVariableIntValue("HANISHIKI_CAPTURE_PORT", &ok);
+    return (ok && v >= 1024 && v <= 65000) ? v : 9223;
+}
+
 SealState checkAppSeal(QString *detail)
 {
 #ifdef Q_OS_MACOS

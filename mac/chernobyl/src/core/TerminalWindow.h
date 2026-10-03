@@ -15,12 +15,19 @@
 // 윈도우판이 먼저 같은 길로 갔다(TerminalWindow, a03567d · c0b90fd). 맥도 맞춘다 —
 // 줄은 생기는 즉시 도착하고, 글꼴은 앱이 고르고, 중지는 창의 단추로 한다.
 //
+// ★ 모양은 맥 판을 따른다(윈도우판의 검은 콘솔 모양을 그대로 쓰지 않는다).
+//   · 본 창과 같은 일체형 제목줄 — 제목줄 배경을 그리지 않고, 창 바탕을 앱 바탕색으로
+//     칠해 신호등 단추가 머리줄 위에 바로 뜬다. 머리줄을 끌면 창이 움직인다.
+//   · 색은 앱 화면의 테마 토큰(--bg·--text·--accent …)을 그대로 받는다(applyTheme).
+//     설정에서 라이트·다크를 바꾸면 이 창도 그 자리에서 바뀐다.
+//
 // ※ 창을 '닫는' 것은 중지가 아니다. 예전 맥은 터미널을 닫으면 수집이 멈췄지만,
 //   여기서 닫기는 로그를 접는 가벼운 동작이다(윈도우와 같다). 로그만 치우려던
 //   사용자가 수집을 잃으면 안 된다. 멈추려면 ⏹ 중지를 누른다.
 // ═══════════════════════════════════════════════════════════════════════════
 
 #include <QWidget>
+#include <QJsonObject>
 
 class QPlainTextEdit;
 class QLabel;
@@ -53,6 +60,10 @@ public:
     void markDone(const QString &label = QString(), bool stopped = false);
     void setInputEnabled(bool on);
 
+    // 앱 화면의 테마 토큰으로 칠한다 — {"dark":bool, "bg":"#…", "text":"#…", …}.
+    //   비어 있는 칸은 맥 판 기본값(라이트)으로 채운다.
+    void applyTheme(const QJsonObject &pal);
+
     // ANSI 색·커서 코드를 뗀다. 콘솔이 아니면 해석되지 않고 "[0m" 같은 날것이 보인다.
     static QString stripAnsi(const QString &s);
 
@@ -63,20 +74,31 @@ signals:
 
 protected:
     void closeEvent(QCloseEvent *e) override;
+    void showEvent(QShowEvent *e) override;
+    bool eventFilter(QObject *obj, QEvent *ev) override;
 
 private:
+    enum State { Live, Done, Stopped };
+    void setState(State s, const QString &text);
+    void restyle();                     // 지금 테마로 모든 칸을 다시 칠한다
+    void applyNativeChrome();           // 맥: 일체형 제목줄 · 창 바탕색 · 라이트/다크 외관
     void replaceLastBlock(const QString &text);
     bool atBottom() const;
     void followBottom(bool wasAtBottom);
+    QString tok(const char *name, const char *lightFallback, const char *darkFallback) const;
 
     QString         m_key;
     QString         m_baseTitle;
     Mode            m_mode;
-    QPlainTextEdit *m_view  = nullptr;
+    QWidget        *m_head  = nullptr;
+    QLabel         *m_title = nullptr;
     QLabel         *m_path  = nullptr;
     QLabel         *m_state = nullptr;
     QPushButton    *m_stop  = nullptr;
+    QPlainTextEdit *m_view  = nullptr;
     QLineEdit      *m_input = nullptr;
     bool            m_liveActive = false;   // 마지막 블록이 덮어쓸 진행률 줄인가
     bool            m_stopped = false;      // 이번 판을 사용자가 멈췄는가
+    State           m_stateKind = Live;
+    QJsonObject     m_pal;                  // 지금 테마 토큰
 };

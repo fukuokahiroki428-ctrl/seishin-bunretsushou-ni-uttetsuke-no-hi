@@ -161,6 +161,9 @@ def cmd_start(a) -> int:
             cfg.write_text(json.dumps({"tempDir": str(work)}, ensure_ascii=False), "utf-8")
 
     env = dict(os.environ)
+    # ★ 캡처 Chrome 포트를 사용자 앱과 다른 대로 — 앱은 기본 9223 을 쓰고, 시작할 때 그 포트의 '자기 프로필'
+    #   Chrome 을 정리한다. 포트가 겹치면 시험 사본이 사용자의 캡처를 방해한다(--env 로 덮을 수 있다).
+    env["HANISHIKI_CAPTURE_PORT"] = str(19223 + (port - 9334) * 20)
     env.update({
         "HOME": str(home), "CFFIXED_USER_HOME": str(home), "TMPDIR": str(tmp) + "/",
         "QTWEBENGINE_REMOTE_DEBUGGING": "127.0.0.1:%d" % port,

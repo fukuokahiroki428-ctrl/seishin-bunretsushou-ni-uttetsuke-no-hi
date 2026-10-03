@@ -3834,11 +3834,24 @@ TerminalWindow *HanishikiBackend::openTerminalWindow(const QString &key, const Q
         m_terminalWindows.insert(key, w);
         connect(w, &TerminalWindow::stopRequested, this, &HanishikiBackend::onTerminalStop,
                 Qt::QueuedConnection);
+        if (!m_uiPalette.isEmpty()) w->applyTheme(m_uiPalette);   // 화면과 같은 색으로
     }
     w->begin(savePath);
     w->show();
     w->raise();
     return w;
+}
+
+// 화면의 테마 토큰을 받아 앱 안 터미널 창을 같은 색으로 칠한다.
+//   ★ 창은 네이티브 위젯이라 CSS 를 모른다. 화면이 라이트·다크를 바꿀 때(applyTheme)와 채널이 붙을 때
+//     지금 쓰는 토큰 값을 보내 준다 — 기능 창도 같은 값을 보내므로 몇 번 와도 결과는 같다.
+void HanishikiBackend::setUiPalette(const QString &json)
+{
+    const QJsonObject pal = QJsonDocument::fromJson(json.toUtf8()).object();
+    if (pal.isEmpty() || pal == m_uiPalette) return;
+    m_uiPalette = pal;
+    for (const QPointer<TerminalWindow> &w : m_terminalWindows)
+        if (w) w->applyTheme(m_uiPalette);
 }
 
 void HanishikiBackend::terminalWindowLive(const QString &key, const QString &line)
@@ -4034,10 +4047,12 @@ void HanishikiBackend::updateStats(int posts, int media, const QString &status, 
 //   Chrome 을 죽여, 병렬 수집이 서로를 무너뜨린다.
 int HanishikiBackend::capturePortFor(const QString &trackKey)
 {
-    if (trackKey.isEmpty()) return 9223;          // 단일 수집은 고정 포트
+    if (trackKey.isEmpty()) return Common::capturePortBase();   // 단일 수집은 고정 포트(기본 9223)
     QMutexLocker mapLock(&m_capChromeMapMutex);
     auto it = m_capPortPerThread.find(trackKey);
     if (it != m_capPortPerThread.end()) return it.value();
+    // ★ 트랙은 기준 + 1 부터 — 예전엔 9223 부터 줘서 첫 트랙이 단일 수집 Chrome 과 같은 포트를 받았다.
+    if (m_nextCapPort == 0) m_nextCapPort = Common::capturePortBase() + 1;
     const int port = m_nextCapPort++;
     m_capPortPerThread[trackKey] = port;
     if (!m_captureChromesPerThread.contains(trackKey))
@@ -7605,6 +7620,23 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
         // GUI 측에 platform별 배너 띄우기
         runJs(QString("if(window.onLoginPause) onLoginPause('%1');").arg(p));
 
+        // ★ 캐쉬 Chrome 은 수집 중 최소화돼 있다 (RealChromeCrawler::start). 로그인은 그 창에서 해야 하니
+        //   여기서 올려 앞에 낸다 — 사용자가 Dock 에서 창을 찾지 않아도 되게.
+        //   확인을 누르거나 대기가 끝나면 다시 내린다. Chrome 은 메인 스레드 객체라 넘겨서 부른다.
+        auto showCaptureChrome = [this, chromeKey](bool show) {
+            QMetaObject::invokeMethod(this, [this, chromeKey, show]() {
+                RealChromeCrawler *c = nullptr;
+                if (chromeKey.isEmpty()) {
+                    c = m_captureChrome;
+                } else {
+                    QMutexLocker mapLock(&m_capChromeMapMutex);
+                    c = m_captureChromesPerThread.value(chromeKey, nullptr);
+                }
+                if (c && c->isReady()) c->setWindowMinimized(!show);
+            }, Qt::QueuedConnection);
+        };
+        showCaptureChrome(true);
+
         // platform별 sem 만들기
         QSemaphore *waitSem = nullptr;
         {
@@ -7618,11 +7650,13 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
         // 사용자 confirm 대기 — 최대 1시간
         if (!waitSem->tryAcquire(1, 3600 * 1000)) {
             log("로그인 대기 타임아웃 (1시간)", "warning", p);
+            showCaptureChrome(false);
             runJs(QString("if(window.onLoginResume) onLoginResume('%1');").arg(p));
             return false;
         }
         runJs(QString("if(window.onLoginResume) onLoginResume('%1');").arg(p));
         log("로그인 확인됨 — 캡쳐 진행", "success", p);
+        showCaptureChrome(false);   // 로그인 끝 — 다시 최소화하고 캡쳐로
     }
 
     // 3) 본 캡쳐 호출 (captureRealPageCDP가 navigate를 다시 해도 같은 페이지면 깜빡임 적음)

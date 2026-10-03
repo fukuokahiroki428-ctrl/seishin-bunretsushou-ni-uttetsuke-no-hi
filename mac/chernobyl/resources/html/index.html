@@ -1468,13 +1468,14 @@
                                         </div>
                                         <!-- ★ 영상 사이 대기 — 짧을수록 빠르지만 유튜브가 막을 위험이 커진다.
                                              시간은 윈도우 판에서 같은 채널 3개씩 받아 재서 정한 값(백엔드 runYoutubeDownload 주석). -->
-                                        <div class="field">
-                                            <label class="field-label">속도</label>
-                                            <select class="input" id="youtube-pace"
-                                                    title="영상 사이에 두는 대기 시간입니다. 짧을수록 빠르지만 유튜브가 막을 위험이 커집니다.">
-                                                <option value="fast">빠름 — 700개 약 1시간 25분</option>
-                                                <option value="normal" selected>보통 — 700개 약 1시간 55분</option>
-                                                <option value="safe">안전 — 700개 약 2시간 55분</option>
+                                        <!-- title 은 칸(.field)에 — select.input 은 pointer-events:none 이라 거기 단 title 은 안 뜬다.
+                                             '700개 기준' 은 이름표로 올리고 항목은 짧게 — 180px 칸에서 잘리지 않게. -->
+                                        <div class="field" title="영상 사이에 두는 대기 시간입니다. 짧을수록 빠르지만 유튜브가 막을 위험이 커집니다.">
+                                            <label class="field-label">속도 <span style="font-weight:400;color:var(--text-tertiary);">· 700개 기준</span></label>
+                                            <select class="input" id="youtube-pace">
+                                                <option value="fast">빠름 · 약 1시간 25분</option>
+                                                <option value="normal" selected>보통 · 약 1시간 55분</option>
+                                                <option value="safe">안전 · 약 2시간 55분</option>
                                             </select>
                                         </div>
                                     </div>
@@ -3181,7 +3182,7 @@
                                     <button class="btn btn-secondary btn-sm" id="selfrepair-run" onclick="runSelfDiagnosis()">지금 검사</button>
                                     <button class="btn btn-secondary btn-sm" onclick="openSelfDiagnosisFolder()">보고서 폴더 열기</button>
                                 </div>
-                                <pre id="selfrepair-output" style="margin-top:8px;max-height:320px;overflow:auto;font-size:11px;line-height:1.55;color:var(--text-secondary);font-family:'SF Mono',Menlo,monospace;white-space:pre-wrap;word-break:break-all;"></pre>
+                                <pre id="selfrepair-output" class="sr-output"></pre>
                             </div>
                             <div class="section" data-group="maint">
                                 <div class="section-label">디버그</div>
@@ -3281,7 +3282,7 @@
                             다른 프로그램의 명령줄에 실리지 않습니다. 고칠 때 비밀번호 칸을 비워 두면 저장된 값을 그대로 둡니다.
                         </p>
                         <div class="input-row" style="margin-bottom:6px;">
-                            <div class="field" style="width:170px;">
+                            <div class="field" style="flex:0 1 170px;">
                                 <label class="field-label">업체</label>
                                 <select class="input" id="proxy-provider" onchange="applyProxyPreset()">
                                     <option value="custom">직접 입력</option>
@@ -3292,11 +3293,11 @@
                                     <option value="other-http">기타 HTTP(S)</option>
                                 </select>
                             </div>
-                            <div class="field" style="flex:1;">
+                            <div class="field" style="flex:1 1 160px;">
                                 <label class="field-label">이름</label>
                                 <input type="text" class="input" id="proxy-name" placeholder="예) 일본1">
                             </div>
-                            <div class="field" style="width:120px;">
+                            <div class="field" style="flex:0 1 120px;">
                                 <label class="field-label">종류</label>
                                 <select class="input" id="proxy-type">
                                     <option value="socks5">SOCKS5</option>
@@ -3306,11 +3307,11 @@
                             </div>
                         </div>
                         <div class="input-row" style="margin-bottom:6px;">
-                            <div class="field" style="flex:2;">
+                            <div class="field" style="flex:1 1 220px;">
                                 <label class="field-label">주소</label>
                                 <input type="text" class="input" id="proxy-host" placeholder="예) amsterdam.nl.socks.nordhold.net">
                             </div>
-                            <div class="field" style="width:110px;">
+                            <div class="field" style="flex:0 1 110px;">
                                 <label class="field-label">포트</label>
                                 <input type="text" class="input" id="proxy-port" placeholder="1080" value="1080">
                             </div>
@@ -3325,15 +3326,16 @@
                                 <input type="password" class="input" id="proxy-pass" placeholder="service password">
                             </div>
                         </div>
-                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:var(--sp-3);">
                             <button class="btn btn-primary btn-sm" onclick="addProxyProfile()"
                                     title="같은 이름이 있으면 그것을 고칩니다">추가 · 고치기</button>
                             <button class="btn btn-secondary btn-sm" onclick="testProxyProfile()"
                                     title="이 칸의 주소로 실제로 나가 보고 나가는 IP 를 보여 줍니다">연결 시험</button>
                         </div>
-                        <div id="proxy-provider-note" style="margin-top:8px;font-size:12px;color:var(--text-secondary);"></div>
-                        <div id="proxy-test-result" style="margin-top:8px;font-size:12px;"></div>
-                        <div id="proxy-list" style="margin-top:10px;font-size:12px;"></div>
+                        <!-- 모양은 refine-office 층(#proxy-…) — 색은 토큰만, 비어 있으면 자리도 비운다 -->
+                        <div id="proxy-provider-note"></div>
+                        <div id="proxy-test-result" aria-live="polite"></div>
+                        <div id="proxy-list"></div>
                         <p style="font-size:11px;color:var(--text-tertiary);margin:8px 0 0;">
                             등록한 뒤에는 <b>'연결 시험'</b> 으로 실제로 나가는 IP 를 확인하십시오. 계정에 고른 출구가
                             목록에서 빠지면 그 계정의 수집은 직접 연결로 새지 않고 멈춥니다.
@@ -3348,17 +3350,11 @@
 
     <!-- ★ 자가진단 알림 띠 — 문제를 찾았을 때만 뜬다.
          파일에만 적어 두면 아무도 안 본다는 것이 이 앱에서 이미 증명됐다(윈도우 판, EXIF 1668건). -->
-    <div id="selfrepair-banner" role="alert" style="display:none;position:fixed;left:50%;bottom:18px;transform:translateX(-50%);
-         z-index:9998;max-width:min(720px,92vw);padding:10px 14px;border-radius:10px;
-         font-size:12.5px;line-height:1.5;box-shadow:0 6px 24px rgba(0,0,0,.28);
-         background:#3b1d1d;color:#ffd9d9;border:1px solid #7a3a3a;">
+    <!-- 모양은 refine-office 층의 .sr-banner(토큰만). JS 는 style.display 만 만진다(none / flex). -->
+    <div id="selfrepair-banner" class="sr-banner" role="alert" style="display:none;">
         <span id="selfrepair-banner-text"></span>
-        <button onclick="showSelfDiagnosisSettings()"
-                style="margin-left:10px;padding:3px 9px;border-radius:6px;border:1px solid currentColor;
-                       background:transparent;color:inherit;cursor:pointer;font-size:11.5px;">보기</button>
-        <button onclick="hideSelfDiagnosisBanner()"
-                style="margin-left:4px;padding:3px 9px;border-radius:6px;border:1px solid transparent;
-                       background:transparent;color:inherit;cursor:pointer;opacity:.7;font-size:11.5px;">닫기</button>
+        <button type="button" class="btn btn-primary btn-sm" onclick="showSelfDiagnosisSettings()">보기</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="hideSelfDiagnosisBanner()">닫기</button>
     </div>
 
     <!-- Disk Selection Modal -->
@@ -4266,6 +4262,7 @@
             window.backend = backend;
             // 백엔드 연결 시점에 네이티브 창 크롬을 현재 테마와 동기화(로드 초기 흰 띠 방지)
             try{ if (backend && backend.setWindowChrome) backend.setWindowChrome(!!window._chromeDark); }catch(e){}
+            try{ if (window._sendUiPalette) window._sendUiPalette(); }catch(e){}   // 앱 안 터미널 창 색
             // 창 크기 방식(배치 바꾸기 / 통째로 크기 조절) — 기억해 둔 것을 앱에 알린다
             try{ if (backend && backend.setUiScaleMode) backend.setUiScaleMode(localStorage.getItem('uiScaleMode')||'both'); }catch(e){}
             // 저장된 웹 검색 키 복원
@@ -4606,10 +4603,19 @@
                     const sel = document.createElement('select');
                     sel.className = 'acct-proxy';
                     sel.title = '이 계정이 나갈 출구';
-                    sel.style.cssText = 'margin-left:auto;margin-right:8px;font-size:11px;height:22px;max-width:150px;';
+                    // 모양은 CSS(select.acct-proxy). 네이티브 select 로 둔다 — .account-list 가 overflow:hidden 이라
+                    //   커스텀 드롭다운(select.input)은 한두 줄짜리 목록에서 펼친 목록이 잘린다. 네이티브는 맥 메뉴로 뜬다.
                     sel.dataset.want = a.proxy || '';
                     fillProxySelect(sel, '직접 연결');
-                    sel.onchange = function(){ setAccountProxy(platform, i, this.value); };
+                    // 켜진 계정은 강조색 칩, 목록에서 빠진 이름(⚠ 없는 프로필)은 위험색
+                    const markProxy = function(){
+                        const v = sel.value;
+                        const list = (typeof _proxyProfiles !== 'undefined' && _proxyProfiles) || [];
+                        sel.classList.toggle('on', !!v);
+                        sel.classList.toggle('missing', !!v && v !== 'global' && !list.some(function(p){ return p.name === v; }));
+                    };
+                    markProxy();
+                    sel.onchange = function(){ markProxy(); setAccountProxy(platform, i, this.value); };
                     d.insertBefore(sel, d.querySelector('.account-delete'));
                 }
                 c.appendChild(d);
@@ -4737,8 +4743,8 @@
             const b = document.getElementById('selfrepair-banner');
             const t = document.getElementById('selfrepair-banner-text');
             if (!b || !t) return;
-            t.textContent = '🩺 ' + o.line;
-            b.style.display = 'block';
+            t.textContent = o.line;          // 그림 이모지는 화면에서 걷어냈다(0fdbf2a) — 상태는 띠 색이 말한다
+            b.style.display = 'flex';        // .sr-banner 는 flex 줄(점 · 글 · 단추)
         };
         // backend → JS callback for diagnostic info
         window.onDiagInfo = function(info) {
@@ -6309,7 +6315,7 @@
             if (p.port !== '') document.getElementById('proxy-port').value = p.port;
             document.getElementById('proxy-host').placeholder = p.hostHint;
             var note = document.getElementById('proxy-provider-note');
-            if (note) note.innerHTML = p.note || '';
+            if (note) { note.innerHTML = p.note || ''; note.classList.toggle('warn', k === 'expressvpn'); }   // 안 되는 업체는 주의색 띠
         }
         var _proxyProfiles = [];
         function loadProxyProfiles(){ if (window.backend && backend.getProxyProfiles) backend.getProxyProfiles(); }
@@ -6321,7 +6327,7 @@
             var box = document.getElementById('proxy-list');
             if (box) {
                 if (!_proxyProfiles.length) {
-                    box.innerHTML = '<span style="color:var(--text-tertiary)">등록된 프록시가 없습니다.</span>';
+                    box.innerHTML = '<div class="account-list"><div class="data-panel-empty">등록된 프록시가 없습니다.</div></div>';
                 } else {
                     // 업체 → 연결 방식 순으로 묶어 보여준다. 어떤 출구가 몇 개인지 한눈에 보이게.
                     var LABEL = {nordvpn:'NordVPN', pia:'PIA', expressvpn:'ExpressVPN',
@@ -6336,19 +6342,21 @@
                             return (a.p.type || '').localeCompare(b.p.type || '');
                         }).map(function(e){
                             var p = e.p;
-                            return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0 5px 12px;border-bottom:1px solid var(--border);">'
-                                 + '<b style="min-width:110px;">' + _esc(p.name) + '</b>'
-                                 + '<span style="min-width:70px;color:var(--accent);">' + _esc((p.type || '?').toUpperCase()) + '</span>'
-                                 + '<span style="color:var(--text-secondary);">' + _esc(p.host) + ':' + _esc(p.port) + '</span>'
-                                 + '<span style="color:var(--text-tertiary);">' + _esc(p.user || '(인증 없음)')
-                                 + (p.hasPass ? ' · 비밀번호 저장됨' : '') + '</span>'
-                                 + '<button class="btn btn-secondary btn-sm" style="margin-left:auto;" onclick="editProxyProfile(' + e.i + ')">고치기</button>'
-                                 + '<button class="btn btn-secondary btn-sm" onclick="removeProxyProfile(' + e.i + ')">삭제</button>'
-                                 + '</div>';
+                            // 계정 목록과 같은 틀 — 두 줄(이름·종류 칩 / 주소·인증), 단추는 오른쪽. 모양은 CSS(#proxy-list)
+                            return '<div class="proxy-row">'
+                                 + '<div class="proxy-main"><span class="proxy-name">' + _esc(p.name) + '</span>'
+                                 + '<span class="metric-chip accent">' + _esc((p.type || '?').toUpperCase()) + '</span></div>'
+                                 + '<div class="proxy-sub"><span class="proxy-addr">' + _esc(p.host) + ':' + _esc(p.port) + '</span>'
+                                 + ' · ' + _esc(p.user || '(인증 없음)')
+                                 + (p.hasPass ? ' · 비밀번호 저장됨' : '') + '</div>'
+                                 + '<div class="proxy-actions">'
+                                 + '<button class="btn btn-secondary btn-sm" onclick="editProxyProfile(' + e.i + ')">고치기</button>'
+                                 + '<button class="btn btn-ghost btn-sm proxy-del" onclick="removeProxyProfile(' + e.i + ')">삭제</button>'
+                                 + '</div></div>';
                         }).join('');
-                        return '<div style="margin-top:8px;font-weight:600;color:var(--text-secondary);">'
-                             + g + ' <span style="font-weight:400;color:var(--text-tertiary);">('
-                             + groups[g].length + ')</span></div>' + rows;
+                        return '<div class="proxy-group-head">' + _esc(g)
+                             + ' <span class="metric-chip">' + groups[g].length + '</span></div>'
+                             + '<div class="account-list">' + rows + '</div>';
                     }).join('');
                 }
             }
@@ -6431,7 +6439,7 @@
             var p = _proxyFromForm();
             if (!p.host || !p.port) { alert('주소와 포트를 넣어 주세요.'); return; }
             var el = document.getElementById('proxy-test-result');
-            if (el) { el.textContent = '확인 중…'; el.style.color = 'var(--text-secondary)'; }
+            if (el) { el.textContent = '확인 중…'; el.dataset.state = 'busy'; }   // 색은 CSS(#proxy-test-result[data-state])
             if (window.backend && backend.testProxyProfile) backend.testProxyProfile(JSON.stringify(p));
             // ★ 비밀번호 칸을 여기서 비우지 않는다 — 시험이 통과하면 곧바로 '추가 · 고치기' 를 누르는 것이
             //   보통인데, 비워 두면 새 프로필은 비밀번호 없이, 있던 프로필은 옛 비밀번호로 조용히 저장됐다.
@@ -6441,7 +6449,7 @@
             var el = document.getElementById('proxy-test-result');
             if (!el) return;
             el.textContent = ok ? ('정상 — 나가는 IP ' + detail) : ('실패 — ' + detail);
-            el.style.color = ok ? '#3fb950' : '#f85149';
+            el.dataset.state = ok ? 'ok' : 'err';   // --success / --danger 토큰 — 두 테마 모두 AA
         };
         // 계정 ↔ 프록시 연결. 빈 값이면 그 계정은 직접 연결로 나간다(윈도우와 같다).
         //   ★ 저장은 백엔드가 한다(setAccountProxy) — 모든 창의 accounts 를 같이 맞춘다(onAccountProxy).
@@ -8451,6 +8459,20 @@
     </style>
     <script>
     /* Darkroom v2 — 테마 토글 (윈도우판과 동일 동작·동일 저장 키) */
+    /* 테마 토큰을 앱(네이티브 창 — 터미널 창)에 보낸다. 값은 지금 계산된 CSS 변수 그대로 —
+       층(darkroom-graft·refine-office)이 덮어쓴 마지막 값이라 화면과 한 치도 어긋나지 않는다. */
+    window._sendUiPalette = function(){
+        if (!window.backend || !backend.setUiPalette) return;
+        var cs = getComputedStyle(document.documentElement);
+        var g = function(n){ return (cs.getPropertyValue(n) || '').trim(); };
+        backend.setUiPalette(JSON.stringify({
+            dark: document.documentElement.getAttribute('data-theme') === 'dark',
+            bg: g('--bg'), bgSecondary: g('--bg-secondary'), bgTertiary: g('--bg-tertiary'), card: g('--card'),
+            text: g('--text'), textSecondary: g('--text-secondary'), textTertiary: g('--text-tertiary'),
+            border: g('--border'), accent: g('--accent'), success: g('--success'), danger: g('--danger'),
+            warning: g('--warning')
+        }));
+    };
     (function(){
         function cur(){ try{ return localStorage.getItem('ntTheme')||'auto'; }catch(e){ return 'auto'; } }
         function applyTheme(mode){
@@ -8460,6 +8482,8 @@
             document.documentElement.setAttribute('data-theme',r);
             // 네이티브 창 크롬(타이틀바 색)을 앱 테마와 맞춰 흰 띠 숨김
             try{ window._chromeDark = (r==='dark'); if(window.backend && backend.setWindowChrome) backend.setWindowChrome(window._chromeDark); }catch(e){}
+            // 앱 안 터미널 창(네이티브)도 같은 색으로 — 지금 쓰는 테마 토큰 값을 보낸다
+            try{ if(window._sendUiPalette) window._sendUiPalette(); }catch(e){}
             var seg=document.getElementById('themeSeg');
             if(seg){ seg.querySelectorAll('.theme-seg-btn').forEach(function(x){ x.classList.toggle('active', x.getAttribute('data-theme-mode')===mode); }); }
         }
@@ -8881,6 +8905,107 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
 
 /* 계정별 프록시 표시 — 켜진 계정은 자물쇠 그림 대신 강조색 칩으로 구분한다
    (이 앱은 화면에서 그림 이모지를 걷어냈다: 0fdbf2a). */
+/* ── 윈도우에서 옮겨 온 조각들의 맥 모양 ─────────────────────────────────────
+   색은 그래프트 층 토큰만 쓴다(새 색 없음). 인라인 색(#3b1d1d·#3fb950 등)은 테마를 못 따라갔다. */
+
+/* 계정 줄의 출구 고르기 — 대상 목록의 계정 고르기(.batch-account-sel)와 같은 치수·같은 화살표.
+   네이티브 select 그대로(펼침은 맥 메뉴) — 커스텀 드롭다운은 .account-list{overflow:hidden} 에 잘린다. */
+select.acct-proxy {
+    margin-left: auto; margin-right: var(--sp-2);
+    flex: 0 1 150px; min-width: 72px; max-width: 150px;
+    height: 26px; padding: 0 22px 0 8px;
+    font: inherit; font-size: 11px; font-weight: 500;
+    color: var(--text-secondary); background-color: var(--bg);
+    border: 1px solid var(--border-light); border-radius: var(--radius);
+    -webkit-appearance: none; appearance: none; cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23AEAEB2' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 6px center;
+    white-space: nowrap; text-overflow: ellipsis;
+}
+select.acct-proxy:hover:not(:disabled) { border-color: var(--text-tertiary); }
+select.acct-proxy.on {
+    color: var(--accent); font-weight: 600; background-color: var(--accent-bg);
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+select.acct-proxy.missing {
+    color: var(--danger); background-color: var(--danger-bg);
+    border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+/* refine 의 select:focus 와 특이도가 같아 위 테두리가 초점 표시를 덮는다 — 초점은 마지막에 */
+select.acct-proxy:focus { border-color: var(--accent); }
+
+/* 자가진단 보고서 — 시스템 정보 상자(#system-info-box)와 같은 읽기 판. 비어 있으면 자리도 비운다.
+   한글은 낱말 단위로, 긴 경로만 아무 데서나 끊는다(기록판 .log-box 와 같은 이유). */
+.sr-output {
+    margin-top: var(--sp-2); max-height: 320px; overflow: auto;
+    padding: 8px 10px;
+    background: var(--bg-secondary); border: 1px solid var(--border-light); border-radius: var(--radius);
+    color: var(--text-secondary);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; font-size: 11px; line-height: 1.6;
+    white-space: pre-wrap; word-break: keep-all; overflow-wrap: anywhere;
+}
+.sr-output:empty { display: none; }
+
+/* 자가진단 알림 띠 — 로그인 대기 카드(.login-pause-card)와 같은 꼴: 화면 면 + 왼쪽 상태 띠 + 점.
+   display 는 JS 가 정한다(none / flex). fixed 에 left:50% 면 줄바꿈 폭이 창의 절반이 되므로 max-content. */
+.sr-banner {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 9998;
+    width: max-content; max-width: min(720px, calc(100vw - 32px));
+    align-items: center; gap: var(--sp-2);
+    padding: 8px 8px 8px 12px;
+    background: var(--card); color: var(--text);
+    border: 1px solid var(--border); border-left: 3px solid var(--danger);
+    border-radius: 10px; box-shadow: var(--shadow-lg);
+    font-size: 12.5px; line-height: 1.5;
+}
+.sr-banner::before { content: ''; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+.sr-banner > span { flex: 1 1 auto; min-width: 0; margin-right: var(--sp-1); }
+.sr-banner > .btn { flex: none; height: 28px; }
+
+/* 프록시 창 — 업체 안내 · 연결 시험 · 등록 목록 */
+#proxy-provider-note:empty, #proxy-test-result:empty { display: none; }
+#proxy-provider-note {
+    margin-top: var(--sp-3); padding: 8px 10px;
+    font-size: 11.5px; line-height: 1.5; color: var(--text-secondary);
+    background: var(--accent-bg); border-left: 3px solid var(--accent); border-radius: var(--radius);
+}
+#proxy-provider-note b { color: var(--text); }
+#proxy-provider-note.warn {
+    background: color-mix(in srgb, var(--warning) 10%, transparent); border-left-color: var(--warning);
+}
+#proxy-test-result {
+    display: flex; align-items: center; gap: 6px;
+    margin-top: var(--sp-2); font-size: 12px; color: var(--text-secondary);
+}
+#proxy-test-result::before { content: ''; flex: none; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+#proxy-test-result[data-state="busy"]::before { animation: fxPulse 1.2s ease-in-out infinite; }
+#proxy-test-result[data-state="ok"]  { color: var(--success); }
+#proxy-test-result[data-state="err"] { color: var(--danger); }
+#proxy-list { margin-top: var(--sp-3); font-size: 12px; }
+#proxy-list .account-list { margin-bottom: 0; }
+#proxy-list .proxy-group-head {
+    display: flex; align-items: center; gap: 6px;
+    margin: var(--sp-3) 0 6px; font-size: 11.5px; font-weight: 600; color: var(--text-secondary);
+}
+#proxy-list .proxy-group-head:first-child { margin-top: 0; }
+#proxy-list .proxy-row {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+    column-gap: var(--sp-3); row-gap: 2px; padding: 8px 12px;
+    border-bottom: 1px solid var(--border-light);
+}
+#proxy-list .proxy-row:last-child { border-bottom: none; }
+#proxy-list .proxy-main { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+#proxy-list .proxy-name {
+    font-size: 13px; font-weight: 600; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#proxy-list .proxy-sub {
+    grid-column: 1; min-width: 0; font-size: 11.5px; color: var(--text-tertiary);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#proxy-list .proxy-addr { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; color: var(--text-secondary); }
+#proxy-list .proxy-actions { grid-column: 2; grid-row: 1 / span 2; display: flex; gap: 6px; }
+#proxy-list .proxy-del:hover:not(:disabled) { color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
 
 /* ── 목록 접기 단추 ↔ 신호등 ─────────────────────────────────────────────
    ★ 이 단추가 창 왼쪽 위(8,8)에 있었는데, 맥은 타이틀바를 투명하게 해 두어

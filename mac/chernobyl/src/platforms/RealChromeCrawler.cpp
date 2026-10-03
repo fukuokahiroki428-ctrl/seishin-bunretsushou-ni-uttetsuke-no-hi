@@ -31,10 +31,13 @@
 #include <QEventLoop>
 #include <QCryptographicHash>
 #include <QUrl>
+#include <QGuiApplication>
+#include <QWindow>
 
 RealChromeCrawler::RealChromeCrawler(HanishikiBackend *backend, QObject *parent)
     : QObject(parent), m_backend(backend), m_nam(new QNetworkAccessManager(this))
 {
+    m_debugPort = Common::capturePortBase();   // 기본 9223 — 격리 사본은 다른 포트대(Common 설명)
 }
 
 RealChromeCrawler::~RealChromeCrawler()
@@ -193,15 +196,28 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
             }
         }
 #else
+        // ★ 포트를 쥔 프로세스는 '우리 캡처 프로필' 을 쓰는 Chrome 일 때만 끈다.
+        //   예전엔 주인을 묻지 않고 그 포트의 프로세스를 모두 껐다. 같은 맥에서 앱이 둘(사용자 앱 · 시험 사본,
+        //   또는 옛 판)이 돌면 서로의 캡처 Chrome 을 '좀비' 로 보고 죽였다. 다른 프로필의 것이면 그대로 두고
+        //   알린다 — 그 경우 이 Chrome 은 포트를 못 얻어 시작에 실패하지만, 남의 수집을 끊지는 않는다.
         QProcess lsof;
         lsof.start("lsof", {"-ti", QString(":%1").arg(m_debugPort)});
         lsof.waitForFinished(2000);
         QString out = QString::fromUtf8(lsof.readAllStandardOutput()).trimmed();
         for (const QString &pidStr : out.split('\n', Qt::SkipEmptyParts)) {
             qint64 pid = pidStr.toLongLong();
-            if (pid > 0) {
+            if (pid <= 0) continue;
+            QProcess psq;
+            psq.start("/bin/ps", {"-o", "command=", "-p", QString::number(pid)});
+            psq.waitForFinished(2000);
+            const QString cmdline = QString::fromUtf8(psq.readAllStandardOutput());
+            if (!m_userDataDir.isEmpty() && cmdline.contains(m_userDataDir)) {
                 ::kill(static_cast<pid_t>(pid), SIGTERM);
                 if (m_backend) m_backend->log(QString("이전 Chrome 좀비 종료 (PID %1)").arg(pid), "info", "crawl");
+            } else if (m_backend) {
+                m_backend->log(QString("포트 %1 을 다른 프로그램(PID %2)이 쓰고 있어 끄지 않았습니다 — "
+                                       "같은 맥에서 앱을 둘 띄웠다면 하나를 닫으십시오").arg(m_debugPort).arg(pid),
+                               "warning", "crawl");
             }
         }
         // ★ 포트뿐 아니라 '같은 캡쳐 프로필'을 쓰는 잔존 Chrome 도 정리.
@@ -259,10 +275,18 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
         }
         // ★ --disable-blink-features=AutomationControlled 제거 — Chrome이 보안 경고 띄움.
         //   대신 onWsConnected에서 Page.addScriptToEvaluateOnNewDocument로 JS 단에서 webdriver 가림.
+        // ★ --disable-features 는 한 번만 넘긴다(아래 #endif 뒤). 크로미움은 같은 스위치가 여러 번 오면
+        //   마지막 것만 쓴다 — 예전엔 셋(윈도우 갈래는 일곱)으로 나뉘어 마지막 줄만 먹고 나머지는 버려졌다.
+        //   ※ 합치면서 둘을 뺐다. 그동안 '안 먹던' 덕에 해가 없었던 것들이다.
+        //     · IsolateOrigins · site-per-process — 사이트 격리(보안)를 끈다. 아래 --site-per-process 와 정반대다.
+        //     · WebRtcHideLocalIpsWithMdns · WebRTC — 내부 IP 를 감춰 주는 장치를 끈다(주석의 'IP 노출 방지' 와
+        //       정반대). WebRTC 로 진짜 IP 가 새는 것은 --force-webrtc-ip-handling-policy 로 막는다.
+        QStringList disabledFeatures = {
+            QStringLiteral("Translate"), QStringLiteral("OptimizationHints"), QStringLiteral("MediaRouter"),
+            QStringLiteral("GlobalMediaControls"),                       // 8GB Mac OOM 방지 — 쓰지 않는 기능
+            QStringLiteral("AutofillServerCommunication"), QStringLiteral("OptimizationGuideModelDownloading")};
         args << "--no-first-run"
              << "--no-default-browser-check"
-             // ★ 8GB Mac OOM 방지 — Chrome 메모리 ~50% 절약 (single-process + 캐시 cap)
-             << "--disable-features=Translate,OptimizationHints,MediaRouter,GlobalMediaControls,IsolateOrigins,site-per-process"
              << "--disable-background-networking"
              << "--disable-component-update"
              << "--disable-domain-reliability"
@@ -272,6 +296,8 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
              << "--mute-audio"
              << "--disable-backgrounding-occluded-windows"
              << "--disable-renderer-backgrounding"
+             // ★ 최소화 중 타이머를 1초 단위로 묶지 않게 — 윈도우처럼 창을 내려 두고 수집하므로 (setWindowMinimized).
+             << "--disable-background-timer-throttling"
              // ★ 메모리 설정이 정반대로 되어 있었다. 저용량 기계를 배려한 의도였지만
              //   결과는 "메모리 부족" 으로 페이지가 죽는 것이었다.
              //     · max-old-space-size=384 : V8 힙을 384MB 로 묶었다. 트위터·인스타
@@ -307,26 +333,27 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
              << "--site-per-process"                                    // Site isolation (Spectre 방어)
              << "--enable-strict-mixed-content-checking"                // HTTPS 안 HTTP 차단
              << "--block-third-party-cookies"                           // 3rd party 쿠키 차단 (추적 방지)
-             << "--disable-features=WebRtcHideLocalIpsWithMdns,WebRTC"  // WebRTC IP 노출 방지
+             // WebRTC 가 프록시 밖(직접 UDP)으로 나가지 않게 — 계정 출구를 쓸 때 진짜 IP 가 새는 길이다
+             << "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
              << "--disable-background-mode"                             // 백그라운드 실행 차단
              << "--disable-default-apps"
              << "--disable-translate"
              << "--no-default-browser-check"
              << "--no-first-run"
-             << "--disable-sync"
-             << "--disable-features=AutofillServerCommunication,OptimizationGuideModelDownloading";
+             << "--disable-sync";
 #ifdef Q_OS_WIN
         // ★ Windows 전용 추가 보안 — macOS 보다 공격 표면이 넓음
         args << "--win-job-object"                              // Windows Job Object 격리 강화
-             << "--disable-features=NtlmV1"                     // NTLMv1 인증 차단 (legacy 취약)
              << "--enforce-strict-secure-origin-for-secure-frames"
-             << "--disable-features=AsyncDns"                   // mDNS 응답 IP 노출 방지
              << "--restrict-runtime-allocation"                 // ASLR 강화
              << "--enable-features=NetworkServiceSandbox"       // Network 서비스 sandbox
-             << "--block-insecure-private-network-requests"     // 내부망 비보안 요청 차단
-             << "--disable-features=ChromeWhatsNewUI"
-             << "--disable-features=DnsOverHttpsUpgrade";       // DoH 자동 upgrade 차단 (MITM 우회 방지)
+             << "--block-insecure-private-network-requests";    // 내부망 비보안 요청 차단
+        disabledFeatures << QStringLiteral("NtlmV1")            // NTLMv1 인증 차단 (legacy 취약)
+                         << QStringLiteral("AsyncDns")          // mDNS 응답 IP 노출 방지
+                         << QStringLiteral("ChromeWhatsNewUI")
+                         << QStringLiteral("DnsOverHttpsUpgrade");   // DoH 자동 upgrade 차단 (MITM 우회 방지)
 #endif
+        args << (QStringLiteral("--disable-features=") + disabledFeatures.join(QLatin1Char(',')));
         args << "--disable-gpu"
              << "--disable-software-rasterizer"
              << "--disable-accelerated-2d-canvas"
@@ -353,6 +380,12 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
         m_chromeProc = new QProcess(this);
         m_chromeProc->setProgram(chrome);
         m_chromeProc->setArguments(args);
+#ifdef Q_OS_MACOS
+        // ★ 맥은 새로 뜬 Chrome 이 스스로 앞으로 나와 포커스를 가져간다 (윈도우는 SW_SHOWMINNOACTIVE 로 막는다).
+        //   우리 앱이 앞에 있었다면 그 창을 기억해 두고, CDP 로 최소화한 뒤 돌려준다 (아래 connected 람다).
+        m_refocusAfterLaunch = (QGuiApplication::applicationState() == Qt::ApplicationActive)
+                                   ? QGuiApplication::focusWindow() : nullptr;
+#endif
         m_chromeProc->start();
         if (!m_chromeProc->waitForStarted(5000)) {
             if (m_backend) m_backend->log("Chrome 프로세스 시작 실패", "error", "crawl");
@@ -416,6 +449,25 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
                 if (!m_responseSaveDir.isEmpty()) {
                     enableNetwork([this](bool){});
                 }
+                // ★ 윈도우처럼 최소화로 수집한다 — 화면을 가리지 않게.
+                //   윈도우는 CreateProcess 의 SW_SHOWMINNOACTIVE 로 처음부터 최소화로 띄운다.
+                //   맥은 그런 실행 옵션이 없어 CDP 가 붙자마자 내린다 (잠깐 보였다 내려간다).
+                //   직접 띄운 Chrome(m_chromeProc)만 — 이미 떠 있던 사용자 Chrome 에 붙은 경우는 그 창을 건드리지 않는다.
+                //   ※ 맥에서 최소화된 창은 '가려진(occluded)' 창으로 취급되고, --disable-backgrounding-occluded-windows
+                //     덕분에 페이지는 visible 로 남는다 — 스크롤·SingleFile 캡쳐는 그대로 돈다.
+                //     (그리기만 멈춰 rAF/IntersectionObserver 가 약 1초 간격으로 느려질 수 있다.)
+                if (m_startMinimized && m_chromeProc) {
+                    QPointer<QWindow> back = m_refocusAfterLaunch;
+                    m_refocusAfterLaunch = nullptr;
+                    setWindowMinimized(true, [this, back](bool ok) {
+                        if (!ok) {
+                            if (m_backend) m_backend->log("Chrome 창 최소화 실패 — 창이 보이는 채로 수집합니다", "warning", "crawl");
+                            return;
+                        }
+                        // 띄우기 전 우리 앱이 앞에 있었다면 포커스를 돌려준다 (윈도우의 '포커스도 주지 않는다').
+                        if (back) { back->raise(); back->requestActivate(); }
+                    });
+                }
                 if (done) done(true);
                 delete wsUrl;
             }, Qt::SingleShotConnection);
@@ -477,6 +529,38 @@ void RealChromeCrawler::setDownloadPath(const QString &path, std::function<void(
                 [done](const QJsonValue &, const QJsonValue &err) {
                     if (done) done(err.isNull() || err.isUndefined());
                 });
+}
+
+void RealChromeCrawler::setWindowMinimized(bool minimized, std::function<void(bool)> done)
+{
+    if (!m_ready) { if (done) done(false); return; }
+    // targetId 를 비우면 이 세션(우리가 붙은 페이지 타겟)이 든 창을 돌려준다.
+    const int sent = sendCommand("Browser.getWindowForTarget", QJsonObject(),
+        [this, minimized, done](const QJsonValue &result, const QJsonValue &err) {
+            const int windowId = result.toObject().value("windowId").toInt(-1);
+            if (!err.toObject().isEmpty() || windowId < 0) {
+                if (done) done(false);
+                return;
+            }
+            QJsonObject bounds;
+            // 'minimized' 는 left/top/width/height 와 같이 줄 수 없다 — 상태만 준다.
+            // 'normal' 은 최소화된 창을 원래 크기·자리로 되돌린다 (Chrome 쪽 Restore()).
+            bounds["windowState"] = minimized ? "minimized" : "normal";
+            QJsonObject p;
+            p["windowId"] = windowId;
+            p["bounds"] = bounds;
+            const int sent2 = sendCommand("Browser.setWindowBounds", p,
+                [this, minimized, done](const QJsonValue &, const QJsonValue &err2) {
+                    const bool ok = err2.toObject().isEmpty();
+                    if (!ok || minimized) { if (done) done(ok); return; }
+                    // 올렸으면 앞으로 — 로그인할 창이 다른 창 뒤에 묻히지 않게 (앱 활성화 포함).
+                    const int sent3 = sendCommand("Page.bringToFront", QJsonObject(),
+                        [done](const QJsonValue &, const QJsonValue &) { if (done) done(true); });
+                    if (sent3 < 0 && done) done(true);
+                });
+            if (sent2 < 0 && done) done(false);
+        });
+    if (sent < 0 && done) done(false);
 }
 
 void RealChromeCrawler::dispatchKey(const QString &key, int modifiers, std::function<void()> done)

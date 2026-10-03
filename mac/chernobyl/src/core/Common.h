@@ -86,6 +86,10 @@ QHash<QString, QString> hotfixTools();
 
 // ★ macOS: 앱 번들 경로(.../Chernobyl.app). 번들이 아니면 빈 문자열.
 QString appBundlePath();
+// 캡처 Chrome 디버그 포트의 기준(순차 캡처 = 이 값, 병렬 트랙 = 이 값 + 1 부터). 기본 9223.
+//   HANISHIKI_CAPTURE_PORT 로 바꾼다 — 공작함의 격리 사본은 19223 부터 써서, 같은 맥에서 돌고 있는
+//   사용자 앱의 Chrome 과 포트가 겹치지 않게 한다(겹치면 서로를 '좀비' 로 보고 끈다).
+int capturePortBase();
 // ★ macOS: 앱 번들 재서명 — 번들 안에 파일이 추가/변경되면(모듈 설치 등) codesign 봉인이 깨져
 //   macOS 가 앱을 SIGKILL 할 수 있다. 설치 직후 이걸 호출해 봉인을 복구한다.
 //   유효한 서명 아이덴티티가 있으면 그걸 쓰고, 없으면 ad-hoc(-) 서명. 검증까지 통과해야 true.

@@ -222,6 +222,8 @@ public slots:
     Q_INVOKABLE void testProxyProfile(const QString &json);    // 한 개를 실제로 나가 보고 JS onProxyTest(ok, detail)
     // 계정 ↔ 프록시 — 여기서 저장하고 모든 창의 accounts 를 맞춘다(JS onAccountProxy). handle 로 같은 계정인지 본다.
     Q_INVOKABLE void setAccountProxy(const QString &platform, int index, const QString &handle, const QString &name);
+    // 화면의 테마 토큰({dark, bg, text, accent …}) — 앱 안 터미널 창이 같은 색으로 칠한다(라이트·다크 바꿀 때마다)
+    Q_INVOKABLE void setUiPalette(const QString &json);
     Q_INVOKABLE void testProxy();          // 앱·데몬 두 갈래가 어떤 IP 로 나가는지 로그로(프로필 없이 = 직접 연결)
 
     Q_INVOKABLE void getAppInfo();                   // JS onAppInfo(json) — 이름/판/만든 곳
@@ -443,6 +445,7 @@ private:
     // 실제 Chrome 수집(m_realChrome — 한 번에 하나)이 쓰는 계정 출구. 미디어 다운로드는 메인 스레드
     //   콜백에서 돌아 계정 프록시가 안 보인다 — 이것을 그 HttpClient 에만 건다.
     QJsonObject m_realChromeProxyProfile;
+    QJsonObject m_uiPalette;   // 마지막으로 받은 화면 테마 토큰(setUiPalette)
 public:
     void closeAllTerminalLogs();
     void closeAllTerminalWindows();   // 본 창을 닫을 때 — 앱 안 터미널 창도 같이 닫는다
@@ -624,7 +627,7 @@ public:
     // ★ 병렬 모드: 각 trackKey마다 자기 Chrome 인스턴스 — 다른 디버그 포트로 격리
     QMap<QString, RealChromeCrawler*> m_captureChromesPerThread;
     QMutex m_capChromeMapMutex;
-    int m_nextCapPort = 9223;
+    int m_nextCapPort = 0;   // 0 이면 처음 배정할 때 Common::capturePortBase() + 1 로 시작
     // 수집 중 실패 건수. 디스코드 'all' 모드의 하위 수집과, 라우팅에 없는
     // 플랫폼이 들어온 경우를 센다. 0 이 아니면 '완료' 라고 말하지 않는다.
     int m_collectionErrorCount = 0;

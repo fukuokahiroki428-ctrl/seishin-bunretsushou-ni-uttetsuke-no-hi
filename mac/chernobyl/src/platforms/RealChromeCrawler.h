@@ -34,6 +34,7 @@
 
 class HanishikiBackend;
 class QProcess;
+class QWindow;
 class QWebSocket;
 class QNetworkAccessManager;
 
@@ -93,6 +94,15 @@ public:
     //     modifiers: 1=Alt, 2=Ctrl, 4=Meta(Cmd), 8=Shift (조합 비트마스크)
     void dispatchKey(const QString &key, int modifiers, std::function<void()> done);
 
+    // 12) 창 최소화/복원 — 윈도우의 SW_SHOWMINNOACTIVE 와 같은 목적.
+    //     수집 중에는 화면을 가리지 않게 최소화해 두고, 사용자가 이 창에서 로그인해야 할 때만 올린다.
+    //     CDP Browser.getWindowForTarget → Browser.setWindowBounds{windowState} 로 한다 —
+    //     손쉬운 사용·자동화(AppleScript) 권한이 필요 없다. 올릴 때는 Page.bringToFront 로 앞에 낸다.
+    //     메인 스레드에서 부른다 (QWebSocket 이 메인 스레드 객체).
+    void setWindowMinimized(bool minimized, std::function<void(bool)> done = nullptr);
+    // 직접 띄운 Chrome 을 CDP 연결 직후 최소화할지 (기본 true). 이미 떠 있던 Chrome 에 붙은 경우는 건드리지 않는다.
+    void setStartMinimized(bool b) { m_startMinimized = b; }
+
     // 종료
     void stop();
     bool isReady() const { return m_ready; }
@@ -134,6 +144,8 @@ private:
     bool    m_proxyRequired = false;
     QString m_proxyServer;            // 정해 받은 출구
     QString m_proxyServerUsed;        // 실제로 띄울 때 쓴 출구
+    bool    m_startMinimized = true;  // 직접 띄운 Chrome 은 최소화로 둔다 (윈도우 SW_SHOWMINNOACTIVE 대응)
+    QPointer<QWindow> m_refocusAfterLaunch;  // 띄우기 직전 우리 앱에서 포커스를 쥐고 있던 창 — 최소화 뒤 돌려준다
     QString m_responseSaveDir; // Network 응답 저장 디렉토리
     QStringList m_capturedRespFiles;
 
