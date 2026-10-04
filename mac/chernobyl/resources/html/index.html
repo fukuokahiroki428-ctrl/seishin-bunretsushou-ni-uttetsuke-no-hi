@@ -1030,12 +1030,12 @@
                 <div class="nav-item" onclick="switchTab('proxy')" data-window-only="1">
                     <div class="nav-icon">V</div> 프록시 (VPN)
                 </div>
-                <!-- 経済産業省 (crawl) — 메뉴에서 숨김. 향후 개발은 "펜을 잘 쓰고 싶다" 앱으로 이전.
-                     코드는 #tab-crawl + runCrawlCollection + SiteCrawler 그대로 유지 (제거 안 함).
+                <!-- 経済産業省 (crawl) — 사이트 크롤러(SiteCrawler)를 다시 사이드바에 낸다.
+                     크롤링은 맥과 윈도우가 달라도 되는 유일한 기능이다(윈도우는 같은 자리를 PEN 미러에 이었다).
+                     기능 메뉴·LED 는 이 항목을 DOM 에서 읽어 저절로 따라온다. -->
                 <div class="nav-item" onclick="switchTab('crawl')">
                     <div class="nav-icon crawl">経</div> 経済産業省
                 </div>
-                -->
                 <div class="nav-item" onclick="switchTab('trad')">
                     <div class="nav-icon trad">Tr</div> trad
                 </div>
@@ -1242,6 +1242,8 @@
                             <button class="btn btn-primary" id="twitter-start-btn" onclick="startTwitter()">수집 시작</button>
                             <button class="btn btn-secondary" id="twitter-stop-btn" onclick="stopTwitter()" disabled>중지</button>
                             <button class="btn" id="twitter-checknew-btn" onclick="checkNewTwitter()" disabled style="background:var(--success);color:var(--success-ink);opacity:0.5;">새트윗확인</button>
+                            <button class="btn btn-secondary" id="twitter-viewer-btn" onclick="openTwitterViewer()"
+                                    title="받아 둔 계정을 예전 트위터 모양으로 엽니다 — 프로필·시간순 글·미디어·원본 페이지">옛 트위터로 보기</button>
                         </div>
                         <div class="section fx-log" style="margin-top:20px;">
                             <div class="section-label">로그</div>
@@ -5247,6 +5249,13 @@
         function stopTwitter() {
             if (_multis['twitter']) { stopPlatformMulti('twitter'); return; }
             if(backend){ backend.stopCollection('twitter'); appendLog('중지 중...','warning','twitter'); }
+        }
+        // 옛 트위터 보기 — 받아 둔 계정을 예전 트위터 사이트 모양의 페이지로 만들어 브라우저로 연다.
+        //   만드는 일(twitter_viewer.py)은 앱이 뒤에서 한다. 바뀐 계정만 다시 만든다.
+        function openTwitterViewer() {
+            if (!backend || !backend.openTwitterViewer) return;
+            appendLog('옛 트위터 보기를 만드는 중… (처음에는 계정마다 잠깐 걸립니다)', 'info', 'twitter');
+            backend.openTwitterViewer(document.getElementById('twitter-path').value || '');
         }
         function checkNewTwitter() {
             if(backend) {

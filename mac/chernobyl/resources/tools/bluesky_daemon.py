@@ -402,9 +402,61 @@ def main():
             nonlocal count
             filepath = os.path.join(media_dir, filename)
             if os.path.exists(filepath):
-                return filepath
+                # ★ 예전 판은 영상의 HLS 재생목록(m3u8 텍스트, 수백 바이트)을 .mp4 이름으로 저장했다.
+                #   그것은 '받아 둔 영상' 이 아니다 — 지우고 다시 받는다. 진짜 파일은 그대로 건너뛴다.
+                #   (0 바이트와 작은 .mp4 만 연다 — 매 판 수천 장의 사진을 NAS 에서 하나씩 열지 않게)
+                try:
+                    _sz = os.path.getsize(filepath)
+                    _bad = _sz == 0
+                    if not _bad and _sz < 65536 and filepath.lower().endswith('.mp4'):
+                        with open(filepath, 'rb') as _f:
+                            _bad = _f.read(7) == b'#EXTM3U'
+                except OSError:
+                    _bad = False
+                if not _bad:
+                    return filepath
+                try:
+                    os.remove(filepath)
+                except OSError:
+                    return filepath
+            # ★ 받는 동안은 .part 에 쓰고 다 받은 뒤에만 진짜 이름으로 바꾼다 — 중간에 죽어도 잘린
+            #   파일이 진짜 이름으로 남아 위 exists() 검사에 영원히 걸리는 일이 없다.
+            part = filepath + '.part'
             try:
-                urllib.request.urlretrieve(url, filepath)
+                try:
+                    # 앞 판(중지 = 데몬 SIGKILL)이 남긴 조각. 그 판의 ffmpeg 는 고아로 아직 쓰고 있을 수 있다 —
+                    #   먼저 지워 두면 그 쓰기는 이름 없는 옛 파일로 가고 새 파일과 섞이지 않는다.
+                    os.remove(part)
+                except OSError:
+                    pass
+                try:
+                    if '.m3u8' in url:
+                        # 블루스카이 영상은 HLS 다. 재생목록을 저장하지 않고 ffmpeg 로 이어 붙여 mp4 로 만든다.
+                        # ★ ffmpeg 는 http:// 프록시(http_proxy)만 쓰고 SOCKS 는 모른다. 앱이 socks5:// 를 걸어 둔 채로
+                        #   부르면 프록시를 건너뛰고 이 컴퓨터 회선으로 직접 나간다(앱의 '닫힌 길' socks5://127.0.0.1:9 도
+                        #   무시된다). 그때는 받지 않는다 — 실패로 남겨 다음 판(프록시를 바꾼 뒤)에 다시 본다.
+                        _pk = ('http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY')
+                        _anyp = any(os.environ.get(k) for k in _pk)
+                        if _anyp and not os.environ.get('http_proxy', '').lower().startswith('http://'):
+                            raise RuntimeError('프록시가 HTTP 가 아니라 HLS 영상은 받지 않습니다'
+                                               '(ffmpeg 는 SOCKS 를 몰라 직접 연결로 샙니다)')
+                        ff = shutil.which('ffmpeg')
+                        if not ff:
+                            raise RuntimeError('ffmpeg 를 찾지 못해 HLS 영상을 받을 수 없습니다')
+                        r = subprocess.run([ff, '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+                                            '-i', url, '-c', 'copy', '-f', 'mp4', part],
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=1800)
+                        if r.returncode != 0 or not os.path.exists(part) or os.path.getsize(part) == 0:
+                            raise RuntimeError('ffmpeg 실패: ' + (r.stderr or b'').decode('utf-8', 'replace')[-300:])
+                    else:
+                        urllib.request.urlretrieve(url, part)
+                    os.replace(part, filepath)
+                except BaseException:
+                    try:
+                        os.remove(part)
+                    except OSError:
+                        pass
+                    raise
                 count += 1
                 # Set file date
                 if post_data and len(post_data) > 4 and post_data[4]:
@@ -457,7 +509,8 @@ def main():
                 # Mirror to _complete folder
                 try:
                     complete_path = os.path.join(complete_dir, filename)
-                    if not os.path.exists(complete_path):
+                    # 크기가 다르면(예전의 m3u8 텍스트 .mp4 같은 망가진 사본) 새로 받은 것으로 바꾼다
+                    if not os.path.exists(complete_path) or os.path.getsize(complete_path) != os.path.getsize(filepath):
                         shutil.copy2(filepath, complete_path)
                         # Apply Finder comment + xattr to _complete copy
                         try:
@@ -584,6 +637,49 @@ def main():
 
     # Save Excel
     def save_xlsx(filename, data, headers):
+        # ★ 기존 파일과 합친다(uri 열 기준, type 열이 있으면 (type, uri) — 제 글을 제가 리포스트하면 같은 uri 로
+        #   Post·Repost 두 줄이 된다). 예전엔 이번 판 행만으로 새로 써서, 중지·'최대 수집 수'·内閣会 폴링(count=10)
+        #   판이 몇 천 행짜리 엑셀을 몇 행으로 덮어썼다. 옛 행은 '열 이름' 으로 맞춰 옮긴다(중간 저장본은 14열,
+        #   최종본은 15열 — 옛 판 파일의 열 순서가 달라도 섞이지 않게). 부르는 쪽 목록·헤더는 건드리지 않는다.
+        #   팔로워·팔로잉·차단처럼 uri 열이 없는 '그때의 명단' 은 예전처럼 새로 쓴다.
+        data = list(data)
+        if 'uri' in headers and os.path.exists(filename):
+            try:
+                _owb = openpyxl.load_workbook(filename, read_only=True)
+                try:
+                    _old = list(_owb.active.iter_rows(values_only=True))
+                finally:
+                    _owb.close()
+                _oh = [str(h) if h is not None else '' for h in (_old[0] if _old else ())]
+                if 'uri' in _oh:
+                    # 옛 파일에만 있는 열(예: 최종본의 repost_time — 중간 저장 헤더에는 빠져 있다)은 뒤에 붙여 지킨다
+                    headers = list(headers) + [h for h in _oh if h and h not in headers]
+                    _pos = [(_oh.index(h) if h in _oh else -1) for h in headers]
+                    _ti = headers.index('type') if 'type' in headers else -1
+                    _ui = headers.index('uri')
+
+                    def _key(r):
+                        t = r[_ti] if 0 <= _ti < len(r) else None
+                        u = r[_ui] if _ui < len(r) else None
+                        return ('' if t is None else str(t), '' if u is None else str(u))
+
+                    seen = {_key(r) for r in data}
+                    for orow in _old[1:]:
+                        if not orow:
+                            continue
+                        r = [(orow[p] if 0 <= p < len(orow) else None) for p in _pos]
+                        k = _key(r)
+                        if not k[1] or k in seen:
+                            continue
+                        seen.add(k)
+                        data.append(r)
+            except Exception as e:
+                # 못 읽는 옛 파일은 지우지 않고 옆에 남긴다
+                try:
+                    shutil.copy2(filename, filename + f'.unreadable_{int(time.time())}')
+                except Exception:
+                    pass
+                log(f"기존 Excel 을 읽지 못해 합치지 못했습니다(원본은 .unreadable_* 로 남김): {e}")
         try:
             wb = openpyxl.Workbook()
             ws = wb.active
@@ -606,7 +702,10 @@ def main():
                 for col_idx, val in enumerate(row_data, 1):
                     ws.cell(row=row_idx, column=col_idx, value=val)
 
-            wb.save(filename)
+            # 옆 이름에 다 쓴 뒤 한 번에 바꾼다 — 쓰는 도중 죽어도 기존 파일은 멀쩡하다.
+            _tmp = filename + '.part'
+            wb.save(_tmp)
+            os.replace(_tmp, filename)
             return True
         except Exception as e:
             log(f"Excel save error: {e}")

@@ -32,6 +32,8 @@ public:
     void continueAfterLogin();
     bool isWaitingForLogin() const { return m_waitingForLogin; }
     QWebEnginePage *page() const { return m_page; }
+    int pageCount() const { return m_pageCount; }
+    int resourceCount() const { return m_resourceCount; }
 
 signals:
     void finished();
@@ -100,6 +102,7 @@ private:
     QQueue<CrawlItem> m_queue;
     CrawlItem m_current;
     std::atomic<bool> m_running = false;
+    bool m_finished = false;   // finishCrawl 은 한 판에 한 번만 — 중지하면 여러 길이 동시에 부른다
 
     // Visited / downloaded tracking
     QSet<QString> m_visited;

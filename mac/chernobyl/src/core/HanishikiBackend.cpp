@@ -3287,11 +3287,15 @@ static QString niconicoWatchUrl(const QString &raw)
 static int naikakukaiArchiveCount(const QString &nicoBaseDir)
 {
     if (nicoBaseDir.isEmpty()) return -1;
-    QFile f(nicoBaseDir + QStringLiteral("/.yt_archive.txt"));
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return -1;
-    int n = 0;
-    while (!f.atEnd())
-        if (!f.readLine().trimmed().isEmpty()) ++n;
+    // 동영상 장부 + 오디오 장부(runYoutubeDownload 가 형태마다 따로 적는다)를 합해 센다.
+    int n = -1;
+    for (const QString &name : {QStringLiteral("/.yt_archive.txt"), QStringLiteral("/.yt_archive_audio.txt")}) {
+        QFile f(nicoBaseDir + name);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
+        if (n < 0) n = 0;
+        while (!f.atEnd())
+            if (!f.readLine().trimmed().isEmpty()) ++n;
+    }
     return n;
 }
 
@@ -3428,6 +3432,15 @@ void HanishikiBackend::naikakukaiTick()
     // ★ "알람 오면 다운" 모드 — 새 글 있을 때만 다운 + 시스템 알림
     //   resumeMode=future로 since:newestDate 검색 → 새 글 0개면 collection 자체를 skip
     if (!runConfig.contains("resumeMode")) runConfig["resumeMode"] = "future";
+    // ★ 'future' 는 progress 파일(지난번 가장 새 날짜·ID)을 읽어야 since: 로 좁혀진다. 그런데
+    //   TwitterCollector 는 '이어서 수집' 체크(saveProgress)가 켜졌을 때만 그 파일을 읽고, 화면은 앱을
+    //   켤 때마다 그 체크를 끈다(m_lastConfig 도 재시작하면 비거나 false 다). 그래서 감시는 매 폴링마다
+    //   from:대상 검색을 커서 끝까지 다시 훑었다(중복은 엑셀 ID 로 걸러지지만 요청·요금 제한이 쌓인다).
+    //   감시는 늘 '지난번 이후' 만 본다 — 트위터는 못박는다.
+    if (platform == "twitter") {
+        runConfig["resumeMode"] = "future";
+        runConfig["saveProgress"] = true;
+    }
 
     // 백그라운드 스레드에서 실행
     setPlatformRunning(platform, true);
@@ -3823,6 +3836,7 @@ TerminalWindow *HanishikiBackend::openTerminalWindow(const QString &key, const Q
         else if (key == "haniwa")     label = QStringLiteral("ハニワ — 로컬 AI");
         else if (key == "niconico")   label = QStringLiteral("ニコニコ");
         else if (key == "youtube")    label = QStringLiteral("YouTube");
+        else if (key == "crawl")      label = QStringLiteral("経済産業省 — 크롤링");
         else {
             const int hash = key.indexOf(QLatin1Char('#'));
             label = (hash > 0 ? key.left(hash) : key);
@@ -3840,6 +3854,85 @@ TerminalWindow *HanishikiBackend::openTerminalWindow(const QString &key, const Q
     w->show();
     w->raise();
     return w;
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 옛 트위터 보기 — 받아 둔 계정을 '예전 트위터 사이트' 모양으로 다시 연다.
+//   사용자: "트위터 서버를 옮겨서 여기 설치한다는 생각으로 — 계정 프로필에 들어가서 순서대로 시간까지
+//   전부 예전 트위터 모양으로". 만드는 일은 twitter_viewer.py(번들 파이썬, 표준 라이브러리 + openpyxl)가 한다.
+//   받은 자료(엑셀 · media · captures · profiles)만 읽고 계정 폴더 안에 view/ 와 보관 폴더에 index.html 을
+//   쓴다. 인터넷에 나가지 않는다. 바뀐 계정만 다시 만든다(지문 — 엑셀 크기·수정 시각, 폴더 수정 시각).
+// ═════════════════════════════════════════════════════════════════════════
+void HanishikiBackend::openTwitterViewer(const QString &savePath)
+{
+    buildTwitterViewer(savePath, true);
+}
+
+void HanishikiBackend::buildTwitterViewer(const QString &savePath, bool openWhenDone)
+{
+    QString base = savePath.trimmed();
+    if (base.startsWith(QLatin1Char('~'))) base.replace(0, 1, QDir::homePath());
+    if (base.isEmpty()) return;
+    const QString root = base + "/twitter";
+    if (!QDir(root).exists()) {
+        if (openWhenDone) log("아직 받아 둔 트위터 계정이 없습니다 — 저장 경로를 확인하십시오", "warning", "twitter");
+        return;
+    }
+    const QString py = Common::bundledPythonPath();
+    const QString script = Common::activeToolScriptPath(QStringLiteral("twitter_viewer.py"));
+    if (py.isEmpty() || !QFileInfo(py).isExecutable() || !QFileInfo::exists(script)) {
+        if (openWhenDone) log("옛 트위터 보기를 만들 도구가 없습니다(파이썬 또는 twitter_viewer.py)", "error", "twitter");
+        return;
+    }
+    // 한 번에 하나만 — 수집이 연달아 끝나면 같은 폴더를 두 번 쓰지 않게.
+    static QAtomicInt busy(0);
+    if (!busy.testAndSetOrdered(0, 1)) {
+        if (openWhenDone) log("옛 트위터 보기를 만드는 중입니다 — 끝나면 열립니다", "info", "twitter");
+        if (openWhenDone) QTimer::singleShot(4000, this, [this, savePath]() { buildTwitterViewer(savePath, true); });
+        return;
+    }
+    QPointer<HanishikiBackend> self(this);
+    QThread *t = QThread::create([self, py, script, root, openWhenDone]() {
+        QProcess p;
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("PYTHONDONTWRITEBYTECODE"), QStringLiteral("1"));   // 번들 봉인을 깨지 않게
+        env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
+        p.setProcessEnvironment(env);
+        p.start(py, {QStringLiteral("-B"), script, root, QStringLiteral("--all")});
+        const bool done = p.waitForStarted(10000) && p.waitForFinished(60 * 60 * 1000);
+        if (!done) { p.kill(); p.waitForFinished(3000); }
+        const QStringList lines = QString::fromUtf8(p.readAllStandardOutput()).trimmed().split('\n');
+        QJsonObject res = QJsonDocument::fromJson(lines.isEmpty() ? QByteArray() : lines.last().toUtf8()).object();
+        // ★ 파이썬이 예외로 죽으면 JSON 줄 없이 traceback 이 stderr 에만 남는다 — 그 마지막 줄을 까닭으로 싣는다
+        if (!res.value("ok").toBool() && res.value("error").toString().isEmpty()) {
+            const QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();
+            res.insert("error", !done ? QStringLiteral("시간 초과 또는 시작 실패")
+                                      : err.section(QLatin1Char('\n'), -1).left(300));
+        }
+        busy.storeRelease(0);
+        QMetaObject::invokeMethod(qApp, [self, res, root, openWhenDone]() {
+            if (!self) return;
+            if (!res.value("ok").toBool()) {
+                const QString why = res.value("error").toString();
+                self->log(why.isEmpty() ? QStringLiteral("옛 트위터 보기를 만들지 못했습니다")
+                                        : QStringLiteral("옛 트위터 보기를 만들지 못했습니다 — ") + why, "error", "twitter");
+                return;
+            }
+            if (openWhenDone) {
+                self->log(QString("옛 트위터 보기 — 받아 둔 계정 %1개").arg(res.value("accounts").toInt()), "success", "twitter");
+                // 점검용 사본은 사용자의 브라우저에 창을 띄우지 않는다(HANISHIKI_SNAPSHOT_DIR 과 같은 시험 표시)
+                if (qEnvironmentVariableIsSet("HANISHIKI_NO_OPEN_URL"))
+                    qInfo().noquote() << "[TWITTER-VIEWER] 열 곳:" << root + "/index.html";
+                else
+                    QDesktopServices::openUrl(QUrl::fromLocalFile(root + "/index.html"));
+            }
+        }, Qt::QueuedConnection);
+    });
+    // ★ 수집 워커(QThread::create — 이벤트 루프 없음)에서 불리면 t 가 그 워커 소속이 되어 finished→deleteLater 가
+    //   영영 처리되지 않는다(8940 의 makeCollector 설명과 같은 까닭). 메인 소속으로 옮긴 뒤 잇는다.
+    t->moveToThread(QCoreApplication::instance()->thread());
+    connect(t, &QThread::finished, t, &QObject::deleteLater);
+    t->start(QThread::LowPriority);
 }
 
 // 화면의 테마 토큰을 받아 앱 안 터미널 창을 같은 색으로 칠한다.
@@ -3879,6 +3972,9 @@ void HanishikiBackend::onTerminalStop(const QString &key)
     if (key == "youtube")    { stopYoutube();    return; }
     if (key == "niconico")   { stopNiconico();   return; }
     if (key == "trad")       { stopTrad();       return; }
+    // ★ 크롤러(SiteCrawler)는 실행 깃발을 안 보고 제 m_running 만 본다 — 깃발만 내리면 창은 '중지됨' 인데
+    //   크롤은 계속 돌았다. 화면의 중지 단추와 같은 길(m_crawler->stop() + 터미널 표시)로 보낸다.
+    if (key == "crawl")      { stopCollection(QStringLiteral("crawl")); return; }
     if (key == "backup") {
         // NAS 백업은 워치독이 STOP 표식을 보고 '사용자 중지' 로 마무리한다(예전 터미널의 trap 과
         // 같은 표식). 원격(rclone) 백업에는 그 워치독이 없다 — 1초 안에 아무도 표식을 안 가져가면
@@ -5350,7 +5446,9 @@ void HanishikiBackend::stopCollection(const QString &platformName)
     //    상태 배지를 "중단됨"으로 바꿔서 실제 스레드 종료 전에 시각적 피드백 제공
     runJsAll(QString("setRunning('%1', false)").arg(platformName));
     // updateStats를 직접 돌려 상태를 "중단됨"으로 바꿈 — throttle 우회 위해 runJs 직접 호출
-    runJsAll(QString("updateStats(0, 0, '중단됨', '%1')").arg(platformName));
+    //   ★ 센 값은 그대로 둔다 — 0,0 을 넣으면 멈추는 순간 받은 글·미디어 수가 지워졌다(실측: 크롤 1p → 0p).
+    runJsAll(QString("(function(p){var s=(typeof platformStats!=='undefined'&&platformStats[p])||{};"
+                     "updateStats(s.posts||0, s.media||0, '중단됨', p);})('%1')").arg(platformName));
     m_lastStatsUpdate[platformName] = QDateTime::currentMSecsSinceEpoch();
 }
 
@@ -6548,7 +6646,7 @@ void HanishikiBackend::stopYoutube()
     QTimer::singleShot(3000, this, [this]() {
         if (platformRunning("youtube")) return;   // 그새 다시 시작했다 — 새 것을 끄면 안 된다
         killBatchGroup("youtube");
-        QProcess::execute("/usr/bin/pkill", {"-f", "yt[-_]dlp .*/youtube/\\.yt_archive\\.txt"});
+        QProcess::execute("/usr/bin/pkill", {"-f", "yt[-_]dlp .*/youtube/\\.yt_archive(_audio)?\\.txt"});
     });
 #endif
     terminalWindowDone(QStringLiteral("youtube"), QStringLiteral("중지됨"), true);
@@ -6817,6 +6915,17 @@ bool HanishikiBackend::captureRealTweetPage(const QString &tweetUrl,
 // 실제 Chrome을 CDP로 조종하면 사용자의 로그인 세션 + 일반적인 fingerprint를 그대로 써서
 // 정상 페이지가 받아진다. m_captureChrome 인스턴스를 한 번 띄우면 batch 내내 재사용.
 
+// 이미 '진짜 캡쳐' 가 끝난 파일인가 — 합성 카드·크롬 오류 화면·받다 만 파일은 아니라고 본다(다시 캡쳐해 덮어쓴다).
+// SingleFile 머리 주석은 <html …> 시작 태그 바로 뒤(documentElement 첫 자식)에 붙는다. 시작 태그가 긴 페이지
+// (클래스 목록·인라인 CSS 변수)에서도 놓치지 않게 앞 64KB 를 본다 — 놓치면 멀쩡한 캡쳐를 다시 받아 덮어쓴다.
+static bool isFinishedRealCapture(const QString &filePath)
+{
+    QFile f(filePath);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    const QByteArray head = f.read(64 * 1024);
+    return head.contains("Page saved with SingleFile") && !head.contains("url: chrome-error://");
+}
+
 bool HanishikiBackend::captureRealPageCDP(const QString &url,
                                       const QString &saveDir,
                                       const QString &filename,
@@ -6827,7 +6936,9 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
 
     QDir().mkpath(saveDir);
     QString filePath = saveDir + "/" + filename + ".html";
-    if (QFile::exists(filePath)) return true;
+    // ★ 파일이 '있기만' 하면 끝으로 보던 것을 바꾼다 — 트위터는 캡쳐가 한 번 실패하면 같은 이름(filename.html)에
+    //   합성 카드를 쓰는데(TwitterCollector::captureTweet), 그 카드 때문에 이후 판에서 진짜 캡쳐를 영영 못 받았다.
+    if (isFinishedRealCapture(filePath)) return true;
 
     // ★ RAM 제한 — 동시 Chrome 인스턴스 1개로 제한 (8GB Mac OOM 방지).
     //   슬롯 확보까지 최대 30분 대기, 함수 끝에서 release.
@@ -6979,7 +7090,12 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
         }
         QFile lib(sfLibPath);
         if (lib.open(QIODevice::ReadOnly)) {
-            s_sfLibCode = QString::fromUtf8(lib.readAll());
+            // ★ single-file.js 는 UMD 묶음이라, 페이지에 AMD define(RequireJS 등)이나 module/exports 가 있으면
+            //   그쪽에 등록하고 전역 singlefile 을 만들지 않는다 → "SingleFile lib not loaded" 로 캡쳐 실패.
+            //   define/exports/module 을 가린 함수 안에서 돌린다(로컬 재현: 감싸면 전역 singlefile 생성, getPageData 정상).
+            s_sfLibCode = QStringLiteral("(function(define, exports, module){\n")
+                        + QString::fromUtf8(lib.readAll())
+                        + QStringLiteral("\n}).call(globalThis);");
             lib.close();
         }
     }
@@ -7018,13 +7134,28 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                     (async () => {
                         const sleep = ms => new Promise(r => setTimeout(r, ms));
                         // 1) 끝까지 스크롤 (lazy-load + 댓글 트리거)
+                        // ★ 한 화면씩 내려간다. 예전엔 맨 끝으로 바로 뛰어(scrollTo(scrollHeight)) 가운데의
+                        //   IntersectionObserver 지연 그림(data-src)이 한 번도 화면에 안 들어와 빈 자리로 저장됐다
+                        //   (로컬 시험: 8장 중 7장 누락 → 한 화면씩: 8장 모두). 상한 55초는 예전(80×0.7초)과 같다.
+                        const se = document.scrollingElement || document.documentElement;
                         let prevH = 0, same = 0;
-                        for (let i = 0; i < 80; i++) {
-                            window.scrollTo(0, document.body.scrollHeight);
-                            await sleep(700);
-                            const curH = document.body.scrollHeight;
-                            if (curH === prevH) { if (++same >= 3) break; }
-                            else { same = 0; prevH = curH; }
+                        const deadline = performance.now() + 55000;
+                        // ★ 화면이 실제로 한 번 그려질 때까지 기다린다. IntersectionObserver 는 그리는 순간에만 판정한다 —
+                        //   최소화된 수집 창은 그리는 간격이 길어 0.3초만 머물면 그사이 그리지 않은 그림을 건너뛰었다
+                        //   (격리 사본 실측: 6장 중 2~3장만, 매번 다른 자리). 그리지 않으면 1.2초 뒤에 그냥 넘어간다.
+                        const frame = () => Promise.race([
+                            new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))), sleep(1200)]);
+                        while (performance.now() < deadline) {
+                            const y0 = window.scrollY;
+                            window.scrollBy(0, Math.max(200, Math.floor(window.innerHeight * 0.8)));
+                            await frame();
+                            await sleep(150);
+                            if (window.scrollY === y0 || window.innerHeight + window.scrollY >= se.scrollHeight - 2) {
+                                await sleep(700);
+                                const curH = se.scrollHeight;
+                                if (curH === prevH) { if (++same >= 3) break; }
+                                else { same = 0; prevH = curH; }
+                            }
                         }
                         // 2) "더 보기" 버튼 자동 클릭 (댓글 펼치기)
                         try {
@@ -7103,6 +7234,7 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                     log("[캡쳐] grayscale/blur 필터 정리 완료", "info", "twitter");
                     // 1) SingleFile lib 주입
                     if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
+                    (*chromePtr)->setCorsRelax(true);   // SingleFile fetch 가 CORS 로 비지 않게 — getPageData 끝에서 끈다
                     (*chromePtr)->evaluate(libCode, [this, chromePtr, filePath, url, done, resultOk, trackKey](const QJsonValue &) {
                     // 2) singlefile.getPageData() 호출 (await Promise)
                     QString call = R"JS(
@@ -7132,7 +7264,15 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                                     blockAudios: false,
                                     blockVideos: false,
                                     backgroundSave: false,
-                                    compressHTML: true            // HTML minify (가독성↓ 사이즈↓ 30%)
+                                    compressHTML: true,           // HTML minify (가독성↓ 사이즈↓ 30%)
+                                    // ★ srcset 후보를 전부 base64 로 박지 않는다 — 보이는 한 장만 (로컬 시험: 4후보+2후보 → 8장→2장, 3.28M→0.82M자)
+                                    removeAlternativeImages: true,
+                                    removeAlternativeMedias: true,
+                                    // ★ 큰 자원(mp4·대형 GIF)은 빼고 저장 — 미디어는 따로 받는다. 통째 base64 면 렌더러 힙(1GB)·문자열 한도에 걸린다
+                                    maxResourceSizeEnabled: true,
+                                    maxResourceSize: 15,          // MB
+                                    // ★ 응답 없는 자원 하나가 getPageData 를 영원히 붙잡지 않게
+                                    networkTimeout: 30000
                                 });
                                 let html = data.content;
                                 // 후처리: meta refresh / X-UA-Compatible 등 자동 새로고침 유발 태그 제거
@@ -7152,6 +7292,7 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                     )JS";
                     if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
                     (*chromePtr)->evaluate(call, [this, chromePtr, filePath, url, done, resultOk, trackKey](const QJsonValue &v) {
+                        if (*chromePtr) (*chromePtr)->setCorsRelax(false);   // 자원 모으기 끝 — 페이지 자체 요청은 원래 규칙대로
                         QJsonObject obj = v.toObject();
                         if (obj.contains("error")) {
                             log(QString("[SingleFile] 호출 오류: %1").arg(obj["error"].toString()), "warning", "twitter");
@@ -7169,7 +7310,8 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                                 return;
                             }
                             // ★ NAS/외장 path 면 사용자 임시 디스크에 먼저 쓰고 → 끝나면 NAS 로 cp.
-                            QString writeTarget = filePath;
+                            // ★ 다 받기 전에는 제 이름을 쓰지 않는다(.part) — 끊긴 파일이 '이미 캡쳐됨' 으로 남지 않게
+                            QString writeTarget = filePath + QStringLiteral(".part");
                             bool useLocalTemp = filePath.startsWith("/Volumes/");
                             if (useLocalTemp) {
                                 QString baseTemp = Common::resolveTempBase(m_config ? m_config->tempDir() : QString());
@@ -7217,6 +7359,13 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                                         } else {
                                             QFile::remove(writeTarget);  // 로컬 temp 삭제
                                         }
+                                    } else {
+                                        QFile::remove(filePath);   // 다시 캡쳐(카드·오류 화면을 덮어쓰기)
+                                        if (!QFile::rename(writeTarget, filePath)) {
+                                            log(QString("[SingleFile] ⚠ 이름 바꾸기 실패 (.part 로 남김): %1").arg(writeTarget),
+                                                "warning", "twitter");
+                                            finalOk = false;
+                                        }
                                     }
                                     FileHelper::setDownloadMeta(filePath, url);
                                     FileHelper::setFinderComment(filePath, url);
@@ -7251,20 +7400,28 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                                     return;
                                 }
                                 qint64 end = qMin(*offsetPtr + CHUNK, totalSize);
-                                QString slice = QString("window.__capContent.slice(%1, %2)").arg(*offsetPtr).arg(end);
-                                // ★ 트랙 종료로 슬롯이 비워짐 — 열어둔 파일을 닫고 빠져나간다(핸들 누수 방지).
-                                if (!*chromePtr) {
+                                // ★ 조각 끝이 서로게이트 쌍(이모지) 한가운데면 한 글자 더 — 둘로 갈리면 양쪽이 깨진 글자가 된다
+                                QString slice = QString("(()=>{const s=window.__capContent;let e=%2;"
+                                                        "const c=s.charCodeAt(e-1);if(e<s.length&&c>=0xD800&&c<=0xDBFF)e++;"
+                                                        "return s.slice(%1,e)})()").arg(*offsetPtr).arg(end);
+                                // ★ 트랙 종료로 슬롯이 비워졌거나(아래 타임아웃 포함) 조각이 문자열로 안 왔다 — 저장하지 않고 끝낸다.
+                                if (!*chromePtr || *offsetPtr < 0) {
                                     outFile->close();
                                     delete outFile;
-                                    log("[SingleFile] 캡쳐 Chrome 정리됨 — 청크 전송 중단", "warning", "twitter");
+                                    QFile::remove(writeTarget);
+                                    log("[SingleFile] 청크 전송 중단 — 이 캡쳐는 저장하지 않습니다", "warning", "twitter");
                                     done->release();
                                     return;
                                 }
-                                (*chromePtr)->evaluate(slice, [outFile, offsetPtr, fetchNext, end](const QJsonValue &cv) {
-                                    QByteArray bytes = cv.toString().toUtf8();
+                                (*chromePtr)->evaluate(slice, [outFile, offsetPtr, fetchNext](const QJsonValue &cv) {
+                                    // 페이지가 바뀌었거나(다음 캡쳐의 navigate) 렌더러가 죽으면 값이 비어 온다 —
+                                    //   예전엔 빈 조각을 쓰고 계속 가서 잘린 파일이 '✅ 캡쳐 완료' 로 남았다.
+                                    const QString part = cv.isString() ? cv.toString() : QString();
+                                    if (part.isEmpty()) { *offsetPtr = -1; (*fetchNext)(); return; }
+                                    QByteArray bytes = part.toUtf8();
                                     outFile->write(bytes);
                                     bytes.clear();
-                                    *offsetPtr = end;
+                                    *offsetPtr += part.size();   // 서로게이트 보정으로 end 보다 1 클 수 있다
                                     (*fetchNext)();
                                 });
                             };
@@ -7307,7 +7464,16 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
     }, Qt::QueuedConnection);
 
     if (!done->tryAcquire(1, waitMs + 120000)) {  // +120s: 스크롤 lazy-load 시간 확보
-        log("captureRealPageCDP 타임아웃", "warning", "twitter");
+        log("captureRealPageCDP 타임아웃 — 이 캡쳐 Chrome 을 내리고 다음 항목은 새로 띄웁니다", "warning", "twitter");
+        // ★ 그냥 돌아가면 슬롯·잠금이 풀린 뒤에도 콜백 사슬이 계속 돈다 — 다음 캡쳐가 같은 Chrome 을 navigate 하면
+        //   늦게 온 getPageData/조각 전송이 다음 페이지 내용을 이 파일에 쓰거나 잘린 파일을 남겼다.
+        //   슬롯을 먼저 비워(사슬의 if (!*chromePtr) 가드가 받는다) 그 다음에 내린다 — stop() 이 대기 콜백을 바로 부른다.
+        //   큐 순서상 다음 캡쳐의 invokeMethod 보다 먼저 돈다.
+        QMetaObject::invokeMethod(this, [chromePtr]() {
+            RealChromeCrawler *c = *chromePtr;
+            *chromePtr = nullptr;
+            if (c) { c->stop(); c->deleteLater(); }
+        }, Qt::QueuedConnection);
         return false;
     }
     return *resultOk;
@@ -7424,6 +7590,9 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
 {
     if (url.isEmpty() || saveDir.isEmpty()) return false;
     QString p = platform.isEmpty() ? "general" : platform;
+    // ★ 이미 끝난 항목은 사전 navigate(로그인 검사)부터 건너뛴다 — 예전엔 다시 돌릴 때마다 받은 글마다
+    //   캡쳐 Chrome 이 그 페이지를 한 번씩 열고(로드+1.5초) 나서야 captureRealPageCDP 가 '있음' 으로 돌아갔다.
+    if (isFinishedRealCapture(saveDir + "/" + filename + ".html")) return true;
 
     // ★ 캡쳐 시작 전 — 저장된 계정 쿠키 자동 주입 (전 플랫폼 공통).
     //   호출자가 추가 cookies 를 넘기면 그것도 병합 → 사용자 입력 쿠키 보존.
@@ -7482,6 +7651,20 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
     const QString chromeKey = (trackKey.isEmpty() && !exitTag.isEmpty())
                               ? QStringLiteral("~exit:") + exitTag : trackKey;
     const int reservedPort = capturePortFor(chromeKey);
+
+    // ★ 사전 navigate 도 캡쳐 슬롯을 잡고 한다. 순차 수집 둘(예: 픽시브 + 인스타, 트랙 키 없음)은 캡쳐 Chrome
+    //   하나(m_captureChrome)를 같이 쓰는데, 이 navigate 가 잠금 없이 나가 다른 수집의 captureRealPageCDP 가
+    //   스크롤·SingleFile 중이던 탭을 다른 URL 로 바꿨다 — 그 수집의 파일에 이쪽 페이지가 저장됐다.
+    //   로그인 대기·본 캡쳐 전에 내려놓는다(본 캡쳐가 다시 잡는다).
+    if (!m_chromeCapacitySem.tryAcquire(1, 30 * 60 * 1000)) {
+        log("Chrome 캡쳐 슬롯 30분 대기 타임아웃 — 캡쳐 스킵", "warning", p);
+        return false;
+    }
+    struct PreNavSlot {
+        QSemaphore *sem;
+        void release() { if (sem) { sem->release(); sem = nullptr; } }
+        ~PreNavSlot() { release(); }
+    } preNavSlot{&m_chromeCapacitySem};
 
     QMetaObject::invokeMethod(this, [this, url, p, loginCheckJs, cookieArr, sem, needsLogin, navOk, trackKey, reservedPort,
                                      capProxyOn, capProxy, chromeKey]() {
@@ -7613,6 +7796,13 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
         return false;
     }
 
+    // ★ 순차 모드(트랙 키 없음)는 캡쳐 Chrome 하나를 다른 수집과 같이 쓴다. 로그인 대기 동안 슬롯을 놓으면
+    //   다른 수집의 사전 navigate·captureRealPageCDP 가 사용자가 로그인 중인 그 탭을 다른 주소로 옮기고
+    //   CORS 완화(Fetch)를 켜며, 그 수집의 showCaptureChrome(false) 가 CSP 를 다시 끈다.
+    //   그때만 로그인이 끝날 때까지 쥐고 있다가 본 캡쳐 직전에 놓는다(트랙별 Chrome 은 지금처럼 바로 놓는다).
+    if (!*needsLogin || !trackKey.isEmpty())
+        preNavSlot.release();   // 로그인 대기(최대 1시간)·본 캡쳐 동안 슬롯을 쥐고 있지 않는다
+
     // 2) 로그인 페이지면 사용자 대기
     if (*needsLogin) {
         log(QString("⚠ 로그인 필요 — Chrome 창에서 직접 로그인 후 우측 패널 '%1 로그인 확인' 버튼 누르세요").arg(p),
@@ -7632,7 +7822,14 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
                     QMutexLocker mapLock(&m_capChromeMapMutex);
                     c = m_captureChromesPerThread.value(chromeKey, nullptr);
                 }
-                if (c && c->isReady()) c->setWindowMinimized(!show);
+                if (c && c->isReady()) {
+                    // ★ 캡쳐 Chrome 은 SingleFile 때문에 페이지 CSP 를 꺼 둔다(RealChromeCrawler::start).
+                    //   사용자가 이 창에서 로그인하는 동안은 사이트의 CSP 를 그대로 켜고 다시 불러온다.
+                    //   로그인이 끝나 내리면 다시 끈다 — 다음 캡쳐의 navigate 부터 적용된다.
+                    c->setBypassCsp(!show);
+                    if (show) c->reloadPage();
+                    c->setWindowMinimized(!show);
+                }
             }, Qt::QueuedConnection);
         };
         showCaptureChrome(true);
@@ -7647,9 +7844,15 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
                 m_loginPauseSems[p] = waitSem;
             }
         }
-        // 사용자 confirm 대기 — 최대 1시간
-        if (!waitSem->tryAcquire(1, 3600 * 1000)) {
-            log("로그인 대기 타임아웃 (1시간)", "warning", p);
+        // 사용자 confirm 대기 — 최대 1시간. ★ 중지(실행 깃발 내림)도 0.5초마다 본다 — 안 보면
+        //   크롤 '로그인 후 확인'(기본 체크: 비밀번호 칸)에서 중지해도 워커가 최대 1시간 붙들려 있었다.
+        bool loginConfirmed = false;
+        for (int waitedMs = 0; waitedMs < 3600 * 1000 && platformRunning(p, true); waitedMs += 500) {
+            if (waitSem->tryAcquire(1, 500)) { loginConfirmed = true; break; }
+        }
+        if (!loginConfirmed) {
+            log(platformRunning(p, true) ? QStringLiteral("로그인 대기 타임아웃 (1시간)")
+                                         : QStringLiteral("로그인 대기 중 중지됨"), "warning", p);
             showCaptureChrome(false);
             runJs(QString("if(window.onLoginResume) onLoginResume('%1');").arg(p));
             return false;
@@ -7660,6 +7863,7 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
     }
 
     // 3) 본 캡쳐 호출 (captureRealPageCDP가 navigate를 다시 해도 같은 페이지면 깜빡임 적음)
+    preNavSlot.release();   // 로그인 대기 동안 쥐고 있었다면 여기서 놓는다 — captureRealPageCDP 가 같은 슬롯을 다시 잡는다
     return captureRealPageCDP(url, saveDir, filename, waitMs, effectiveCookies);
 }
 
@@ -8781,6 +8985,9 @@ void HanishikiBackend::runTwitterCollection(const QJsonObject &config)
     }
     m_lastConfig["twitter"] = enrichedConfig;
     m_twitterCollector->collect(enrichedConfig, *runFlag("twitter"));
+    // 받은 것으로 '옛 트위터 보기' 페이지를 갱신한다(뒤에서 · 바뀐 계정만). 사용자가 단추를 누를 때
+    //   처음부터 만들면 클라우드 보관 폴더에서는 계정마다 한참 걸린다.
+    buildTwitterViewer(enrichedConfig["path"].toString(), false);
 }
 
 void HanishikiBackend::runBlueskyCollection(const QJsonObject &config)
@@ -9157,12 +9364,15 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
 
                 if (downloadMedia) {
                     QJsonArray attachments = msg["attachments"].toArray();
-                    for (const auto &attVal : attachments) {
-                        QJsonObject att = attVal.toObject();
+                    QSet<QString> usedNames;   // ★ 같은 이름 첨부 — 아래 일반 메시지 쪽 설명
+                    for (int ai = 0; ai < attachments.size(); ++ai) {
+                        QJsonObject att = attachments.at(ai).toObject();
                         QString attUrl = JsonShape::pickString(att, {"url", "proxy_url", "attachment_url"});
                         if (attUrl.isEmpty()) continue;
                         QString origName = att["filename"].toString("file");
                         QString filename = dcFilename(msg, origName);
+                        if (usedNames.contains(filename)) filename = dcFilename(msg, origName, ai);
+                        usedNames.insert(filename);
                         QString filepath = mediaDir + "/" + filename;
                         if (http.downloadFile(attUrl, filepath)) {
                             QString author = msg["author"].toObject()["username"].toString();
@@ -9288,13 +9498,19 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
                 if (downloadMedia) {
                     // Download attachments
                     QJsonArray attachments = msg["attachments"].toArray();
-                    for (const auto &attVal : attachments) {
-                        QJsonObject att = attVal.toObject();
+                    // ★ 한 메시지에 같은 이름의 첨부(붙여 넣은 image.png 여러 장)가 오면 저장 이름이 같아져
+                    //   둘째부터 downloadFile 의 '이미 받음' 검사에 걸려 사라졌다. 첫째는 예전 이름 그대로
+                    //   (이미 받아 둔 것과 맞게), 겹치는 둘째부터만 순번을 붙인다.
+                    QSet<QString> usedNames;
+                    for (int ai = 0; ai < attachments.size(); ++ai) {
+                        QJsonObject att = attachments.at(ai).toObject();
                         QString attUrl = att["url"].toString();
                         if (attUrl.isEmpty()) continue;
 
                         QString origName = att["filename"].toString("file");
                         QString filename = dcFilename(msg, origName);
+                        if (usedNames.contains(filename)) filename = dcFilename(msg, origName, ai);
+                        usedNames.insert(filename);
                         QString filepath = mediaDir + "/" + filename;
 
                         // Classify attachment type
@@ -10321,8 +10537,10 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                         return !!document.querySelector('input[name="username"]');
                     })()
                 )JS";
-                captureRealPageCDPLoginAware(postUrl, igCapturesDir, igFilename,
-                                              igLoginCheck, "instagram", 8000, igCookies, config);
+                // ★ 같은 포스트를 아래(미디어를 받은 뒤, 날짜 접두어 이름)에서 한 번 더 캡쳐하고 있었다 —
+                //   포스트마다 Chrome 캡쳐 두 번(시간·용량 2배), 파일도 두 개(<code>.html · <날짜><code>.html).
+                //   아래 한 번만 남긴다. 계정 sessionId·captureCookie 는 cookiesForCapture 가 똑같이 넣는다.
+                Q_UNUSED(igCapturesDir); Q_UNUSED(igFilename); Q_UNUSED(igCookies); Q_UNUSED(igLoginCheck);
             }
 
             auto setIgMeta = [&](const QString &fp) {
@@ -10558,7 +10776,10 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             tmpWriter.autoFitColumns(tmpHdrs);
             QString tmpExcelDir = userDir + "/excel";
             QDir().mkpath(tmpExcelDir);
-            QString tmpExcelPath = FileHelper::typeExcelPath(tmpExcelDir, username, igType);
+            // ★ 체크포인트는 '이번 판 행만' 담는다. 예전엔 최종 합본과 같은 이름에 써서, 100개를 넘긴 판이
+            //   이전 판들의 행(이미 지워진 게시물 기록 포함)을 덮어 지웠다 — 끝의 '기존 파일 + 새 데이터 합치기' 는
+            //   그 덮인 파일을 '기존' 으로 읽는다. 다른 이름에 쓰고, 정상으로 끝나면 끝에서 지운다.
+            QString tmpExcelPath = FileHelper::typeExcelPath(tmpExcelDir, username, igType + "_inprogress");
             tmpWriter.save(tmpExcelPath);
         }
 
@@ -11011,7 +11232,8 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
         }
         for (const auto &r : oldRows) writer.writeRow(row++, r);
         writer.autoFitColumns(hdrs);
-        writer.save(igExcelPath);
+        if (writer.save(igExcelPath))
+            QFile::remove(FileHelper::typeExcelPath(excelDir, username, igType + "_inprogress"));   // 중간 저장본 — 위 체크포인트 설명
         FileHelper::setDownloadMeta(igExcelPath, "https://instagram.com");
         log(QString("Excel 저장: +%1개 (총 %2개)").arg(newRows.size()).arg(newRows.size() + oldRows.size()), "success", "instagram");
     }
@@ -11154,7 +11376,13 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
         baseArgs << "--cookies-from-browser" << "chrome";
 
     // ★ 핸드오프 F/G: 이어받기 + 봇차단 수렴 (전 플랫폼) — 완료 ID 기록/스킵, .part 이어받기, 간헐 오류 무시.
-    baseArgs << "--download-archive" << (ytBaseDir + "/.yt_archive.txt");
+    // ★ 장부를 형태마다 따로 둔다. 하나를 같이 쓰면 '오디오만' 으로 받은 영상이 장부에 올라,
+    //   나중에 '동영상' 으로 받으려 해도 yt-dlp 가 "already been recorded in the archive" 로 건너뛴다
+    //   (반대도 같다). 동영상은 예전 이름 그대로 — 이미 쌓인 장부와 内閣会(naikakukaiArchiveCount)가 본다.
+    //   '썸네일만'(--skip-download)은 yt-dlp 가 장부에 적지 않으므로 상관없다.
+    const QString ytArchive = (type == "audio") ? ytBaseDir + "/.yt_archive_audio.txt"
+                                                : ytBaseDir + "/.yt_archive.txt";
+    baseArgs << "--download-archive" << ytArchive;
     baseArgs << "--ignore-errors";
     baseArgs << "--no-overwrites" << "--continue";
 
@@ -17995,14 +18223,37 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
                     QString fname = QString("%1.%2").arg(it.key()).arg(ext);
                     QString out = postDir + "/" + fname;
                     if (QFile::exists(out)) { mediaCount++; continue; }
+                    // ★ 받는 동안은 조각 파일에, 다 받은 뒤에만 진짜 이름으로. -f: 4xx/5xx 오류 페이지를 파일로 남기지 않는다.
+                    //   예전엔 시간 초과(--max-time)·오류로 끊겨도 잘린 파일/오류 HTML 이 진짜 이름으로 남았고,
+                    //   다음 판은 위 exists() 검사로 그것을 '받아 둔 것' 으로 세어 영영 다시 받지 않았다.
+                    // 조각은 짧은 숨은 이름으로 — 첨부 원래 이름은 길 수 있고(255바이트 한계), 거기에 .part 를 붙이면
+                    //   바이트로 세는 저장소(NAS·SMB)에서 열리지 않는다(HttpClient::downloadFile 과 같은 규칙).
+                    const QString part = postDir + QStringLiteral("/.dl_")
+                        + QString::fromLatin1(QCryptographicHash::hash(fname.toUtf8(), QCryptographicHash::Sha1).toHex().left(20))
+                        + QStringLiteral(".part");
+                    QFile::remove(part);
                     QProcess curl;
-                    curl.start("curl", {"-sSL", "-H", "Origin: https://www.fanbox.cc",
-                                        "-H", "Referer: https://www.fanbox.cc/", "-H", "Cookie: " + cookie,
-                                        "-o", out, origUrl, "--max-time", "60"});
-                    if (curl.waitForFinished(65000) && curl.exitCode() == 0 && QFileInfo(out).size() > 100) {
+                    // ★ 프록시를 켰으면 curl 도 같은 출구로 내보낸다(ALL_PROXY 등 — bundledProcessEnv).
+                    //   예전엔 앱 환경 그대로 띄워, 목록·상세(HttpClient)는 프록시로, 이미지는 로그인 쿠키를
+                    //   단 채 이 컴퓨터 회선으로 나갔다 — 한 세션 두 IP. 출구를 못 띄웠으면 닫힌 길이라 실패한다.
+                    curl.setProcessEnvironment(Common::bundledProcessEnv());
+                    // ★ 쿠키는 명령줄에 두지 않는다 — 명령줄은 같은 컴퓨터의 아무 프로세스나 ps 로 읽는다.
+                    //   '-H @-' 로 표준 입력에서 머리글을 읽게 하고 거기로 넘긴다.
+                    curl.start("curl", {"-fsSL", "-H", "Origin: https://www.fanbox.cc",
+                                        "-H", "Referer: https://www.fanbox.cc/", "-H", "@-",
+                                        "-o", part, origUrl, "--max-time", "60"});
+                    curl.write(("Cookie: " + cookie + "\n").toUtf8());
+                    curl.closeWriteChannel();
+                    const bool curlDone = curl.waitForFinished(65000);
+                    if (!curlDone) { curl.kill(); curl.waitForFinished(3000); }
+                    if (curlDone && curl.exitStatus() == QProcess::NormalExit && curl.exitCode() == 0
+                        && QFileInfo(part).size() > 100 && QFile::rename(part, out)) {
                         mediaCount++;
                         FileHelper::setDownloadMeta(out, detailUrl);
                         enqueueWebDavUpload(out);
+                    } else {
+                        QFile::remove(part);
+                        log(QString("이미지 받기 실패(다음 판에 다시 받음): %1").arg(fname), "warning", "fanbox");
                     }
                 }
                 // 파일(zip·pdf 등) — 맵과 목록을 위에서 이미 합쳐 두었다.
@@ -18018,14 +18269,31 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
                     QString fname = name.isEmpty() ? QString("%1.%2").arg(it.key()).arg(ext) : (name + "." + ext);
                     QString out = postDir + "/" + fname;
                     if (QFile::exists(out)) { mediaCount++; continue; }
+                    // ★ 위 이미지와 같은 까닭 — 조각 파일에 받고 -f 로 오류 페이지를 거른다. 첨부(zip·pdf)는 커서
+                    //   120초 안에 못 받는 일이 잦았고, 그 잘린 zip 이 '받은 것' 으로 영원히 남았다.
+                    // 조각은 짧은 숨은 이름으로 — 첨부 원래 이름은 길 수 있고(255바이트 한계), 거기에 .part 를 붙이면
+                    //   바이트로 세는 저장소(NAS·SMB)에서 열리지 않는다(HttpClient::downloadFile 과 같은 규칙).
+                    const QString part = postDir + QStringLiteral("/.dl_")
+                        + QString::fromLatin1(QCryptographicHash::hash(fname.toUtf8(), QCryptographicHash::Sha1).toHex().left(20))
+                        + QStringLiteral(".part");
+                    QFile::remove(part);
                     QProcess curl;
-                    curl.start("curl", {"-sSL", "-H", "Origin: https://www.fanbox.cc",
-                                        "-H", "Referer: https://www.fanbox.cc/", "-H", "Cookie: " + cookie,
-                                        "-o", out, url, "--max-time", "120"});
-                    if (curl.waitForFinished(125000) && curl.exitCode() == 0 && QFileInfo(out).size() > 100) {
+                    curl.setProcessEnvironment(Common::bundledProcessEnv());   // 프록시 출구 — 위 이미지 설명
+                    curl.start("curl", {"-fsSL", "-H", "Origin: https://www.fanbox.cc",
+                                        "-H", "Referer: https://www.fanbox.cc/", "-H", "@-",   // 쿠키는 표준 입력으로 — 위 설명
+                                        "-o", part, url, "--max-time", "120"});
+                    curl.write(("Cookie: " + cookie + "\n").toUtf8());
+                    curl.closeWriteChannel();
+                    const bool curlDone = curl.waitForFinished(125000);
+                    if (!curlDone) { curl.kill(); curl.waitForFinished(3000); }
+                    if (curlDone && curl.exitStatus() == QProcess::NormalExit && curl.exitCode() == 0
+                        && QFileInfo(part).size() > 100 && QFile::rename(part, out)) {
                         mediaCount++;
                         FileHelper::setDownloadMeta(out, detailUrl);
                         enqueueWebDavUpload(out);
+                    } else {
+                        QFile::remove(part);
+                        log(QString("첨부 받기 실패(다음 판에 다시 받음): %1").arg(fname), "warning", "fanbox");
                     }
                 }
             }
@@ -20118,6 +20386,11 @@ void HanishikiBackend::runAskedCollection(const QJsonObject &config)
 
 void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
 {
+    // 판 번호 — 늦게 끝난 옛 '실제 Chrome' 워커가 새 판의 깃발·터미널·상태를 덮지 않게.
+    //   메인 스레드에서만 올리고, 워커는 읽기만 한다.
+    static std::atomic<int> s_crawlRun{0};
+    const int crawlRun = ++s_crawlRun;
+
     // ★ "실제 Chrome (CDP)" 모드 — 사용자 Chrome 프로필로 navigate → SingleFile 캡쳐 (모든 자원 인라인)
     //   QWebEngine으로는 봇 탐지 / JS-shell 페이지 → 실제 Chrome으로 우회.
     if (config["useRealChrome"].toBool(false) || config["method"].toString() == "chrome") {
@@ -20142,6 +20415,10 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
         // 각 URL을 별도 워커 스레드에서 처리. config["loginCheckJs"] 있으면 LoginAware 사용
         //   사용자가 UI에서 "로그인 체크 JS" 옵션 입력 시 → 첫 URL에서 로그인 페이지 감지 시 사용자 대기
         QString loginCheckJs = config["loginCheckJs"].toString();
+        // ★ '로그인 후 확인' 을 켜고 체크 JS 를 비워 두면 그 칸은 아무 일도 안 했다(LoginAware 는 JS 가 있어야 돈다).
+        //   흔한 로그인 화면 표시(비밀번호 칸)를 기본으로 쓴다 — 최소화된 수집 Chrome 이 그때 앞으로 올라온다.
+        if (loginCheckJs.isEmpty() && config["waitLogin"].toBool(false))
+            loginCheckJs = QStringLiteral("!!document.querySelector('input[type=\"password\"]')");
         // ★ 캡쳐용 raw cookie — 도메인은 첫 URL의 호스트로 자동 추정
         QString loginCookie = config["loginCookie"].toString();
         QList<QNetworkCookie> crawlCookies;
@@ -20161,10 +20438,10 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
                 log(QString("크롤 쿠키 %1개 (도메인: %2)").arg(crawlCookies.size()).arg(domain), "info", "crawl");
             }
         }
-        QThread *thread = QThread::create([this, urlList, capturesDir, loginCheckJs, crawlCookies, config]() {
+        QThread *thread = QThread::create([this, urlList, capturesDir, loginCheckJs, crawlCookies, config, crawlRun]() {
             int saved = 0;
             for (int i = 0; i < urlList.size(); ++i) {
-                if (!platformRunning("crawl", true)) break;
+                if (!platformRunning("crawl", true) || crawlRun != s_crawlRun.load()) break;
                 QString url = urlList[i];
                 QString filename = QString("page_%1_%2").arg(i+1, 3, 10, QChar('0'))
                                        .arg(QCryptographicHash::hash(url.toUtf8(), QCryptographicHash::Md5).toHex().left(8));
@@ -20180,10 +20457,16 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
                 updateStats(saved, urlList.size(),
                     QString("진행 %1/%2").arg(i+1).arg(urlList.size()), "crawl");
             }
-            QMetaObject::invokeMethod(this, [this, saved, total = urlList.size(), capturesDir]() {
+            QMetaObject::invokeMethod(this, [this, saved, total = urlList.size(), capturesDir, crawlRun]() {
+                // 그새 새 판이 시작됐다 — 새 판의 깃발·상태·터미널은 건드리지 않는다
+                if (crawlRun != s_crawlRun.load()) return;
+                // 중지 단추·터미널 ⏹ 는 깃발을 먼저 내린다 — 멈춘 판을 'Done'·'✅ 완료' 로 덮지 않는다(SiteCrawler 쪽과 같게)
+                const bool stopped = !platformRunning("crawl");
                 setPlatformRunning("crawl", false);
-                updateStats(saved, total, "Done", "crawl");
-                log(QString("✅ 크롤 완료: %1/%2 저장 → %3").arg(saved).arg(total).arg(capturesDir), "success", "crawl");
+                updateStats(saved, total, stopped ? QStringLiteral("중단됨") : QStringLiteral("Done"), "crawl");
+                if (!stopped)
+                    log(QString("✅ 크롤 완료: %1/%2 저장 → %3").arg(saved).arg(total).arg(capturesDir), "success", "crawl");
+                closeTerminalLog("crawl");   // 앱 안 터미널 창에 끝 표시 — SiteCrawler 쪽(finished)과 같게
                 runJsAll("setRunning('crawl', false)");
                 if (m_window) m_window->releaseAwake();
             }, Qt::QueuedConnection);
@@ -20207,18 +20490,25 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
     }
 
     m_crawler = new SiteCrawler(this, browserProfile, this);
-    connect(m_crawler, &SiteCrawler::finished, this, [this]() {
+    SiteCrawler *const crawler = m_crawler;
+    connect(m_crawler, &SiteCrawler::finished, this, [this, crawler]() {
+        // ★ 지금 크롤러의 끝만 받는다. 새 판을 시작한 뒤 옛 크롤러가 늦게 끝나면
+        //   새 판을 '끝남' 으로 덮고 터미널을 닫았다.
+        if (m_crawler != crawler) return;
+        // 중지 단추·터미널 ⏹ 는 실행 깃발을 먼저 내린다 — 깃발이 살아 있으면 제대로 끝난 것이다
+        const bool stopped = !platformRunning("crawl");
         setPlatformRunning("crawl", false);
-        updateStats(0, 0, "Done", "crawl");
-        log("Complete.", "success", "crawl");
+        // ★ 0,0 으로 덮으면 요약 판이 '0p · 0r' 로 지워졌다 — 센 값을 그대로 둔다.
+        //   멈춘 판을 'Done' 으로 덮지도 않는다(stopCollection 이 '중단됨' 을 먼저 썼다).
+        updateStats(crawler->pageCount(), crawler->resourceCount(),
+                    stopped ? QStringLiteral("중단됨") : QStringLiteral("Done"), "crawl");
+        if (!stopped) log("Complete.", "success", "crawl");
         closeTerminalLog("crawl");
 
         if (m_window) m_window->releaseAwake();
 
-        if (m_crawler) {
-            m_crawler->deleteLater();
-            m_crawler = nullptr;
-        }
+        m_crawler = nullptr;
+        crawler->deleteLater();
         runJsAll("setRunning('crawl', false)");
     });
 
@@ -20226,6 +20516,21 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
     if (m_window && m_window->browserView() && m_crawler->page()) {
         m_window->browserView()->setPage(m_crawler->page());
         m_window->showBrowser(true);
+    } else if (config["waitLogin"].toBool(false) && m_crawler->page()) {
+        // ★ 맥은 내장 브라우저 창을 걷어냈다(MainWindow — browserView() 는 늘 nullptr).
+        //   그래서 '로그인 후 확인' 을 켜면 크롤러 페이지가 어디에도 안 보여 로그인할 길이 없었다.
+        //   그때만 크롤러의 페이지를 작은 창에 붙인다. 창은 페이지를 갖지 않는다(setPage) —
+        //   크롤이 끝나면(finished, 페이지가 아직 살아 있을 때) 창을 닫는다.
+        auto *view = new QWebEngineView();
+        view->setAttribute(Qt::WA_DeleteOnClose);
+        view->setWindowTitle(QStringLiteral(APP_NAME_DISPLAY " — 크롤 로그인"));
+        view->setPage(m_crawler->page());
+        view->resize(1100, 800);
+        view->show();
+        view->raise();
+        connect(m_crawler, &SiteCrawler::finished, view, &QWidget::close);
+        // finished 없이 지워지는 길(새 판이 옛 크롤러를 stop()+deleteLater)에서도 빈 로그인 창이 남지 않게
+        connect(m_crawler, &QObject::destroyed, view, &QWidget::close);
     }
 
     m_crawler->crawl(config);

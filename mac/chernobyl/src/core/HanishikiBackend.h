@@ -224,6 +224,9 @@ public slots:
     Q_INVOKABLE void setAccountProxy(const QString &platform, int index, const QString &handle, const QString &name);
     // 화면의 테마 토큰({dark, bg, text, accent …}) — 앱 안 터미널 창이 같은 색으로 칠한다(라이트·다크 바꿀 때마다)
     Q_INVOKABLE void setUiPalette(const QString &json);
+    // 옛 트위터 보기 — <저장 경로>/twitter 아래 받아 둔 계정을 예전 트위터 모양 페이지로 만들고 연다
+    Q_INVOKABLE void openTwitterViewer(const QString &savePath);
+    void buildTwitterViewer(const QString &savePath, bool openWhenDone);   // 어느 스레드에서든
     Q_INVOKABLE void testProxy();          // 앱·데몬 두 갈래가 어떤 IP 로 나가는지 로그로(프로필 없이 = 직접 연결)
 
     Q_INVOKABLE void getAppInfo();                   // JS onAppInfo(json) — 이름/판/만든 곳

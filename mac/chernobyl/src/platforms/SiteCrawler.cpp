@@ -53,7 +53,13 @@ SiteCrawler::SiteCrawler(HanishikiBackend *backend, QWebEngineProfile *sharedPro
     connect(m_page, &QWebEnginePage::loadFinished, this, &SiteCrawler::onPageLoaded);
 }
 
-SiteCrawler::~SiteCrawler() {}
+SiteCrawler::~SiteCrawler()
+{
+    // ★ 페이지를 프로필보다 먼저 지운다. 자식은 만든 순서(m_http → m_profile → m_page)로 지워져
+    //   자체 프로필이 페이지보다 먼저 사라졌다(Qt: "Release of profile requested but WebEnginePage still not deleted").
+    delete m_page;
+    m_page = nullptr;
+}
 
 void SiteCrawler::crawl(const QJsonObject &config)
 {
@@ -114,6 +120,7 @@ void SiteCrawler::crawl(const QJsonObject &config)
     m_quarantineCount = 0;
     m_scanCount = 0;
     m_running = true;
+    m_finished = false;
 
     // 중지 시 진행 중 HTTP 다운로드 즉시 abort
     if (m_http) m_http->setRunFlag(&m_running);
@@ -193,10 +200,17 @@ void SiteCrawler::continueAfterLogin()
 
 void SiteCrawler::stop()
 {
+    const bool wasWaitingForLogin = m_waitingForLogin;
     m_running = false;
     m_waitingForLogin = false;
     m_backend->runJs("if(window.showCrawlLoginConfirm)window.showCrawlLoginConfirm(false)");
     m_page->triggerAction(QWebEnginePage::Stop);
+    // ★ 끝 예약은 '로그인 대기' 일 때만 한다 — 그때만 돌아올 콜백이 하나도 없다.
+    //   아무 때나 예약하면 processRenderedHtml(자원 받기)·트위터 버퍼 콜백이 HttpClient 의 중첩
+    //   QEventLoop 안에 있는 동안 그 루프가 finishCrawl → finished → (백엔드) deleteLater 까지 처리해,
+    //   크롤러와 m_http 가 제 함수 한가운데서 지워졌다(use-after-free).
+    //   동적 스크롤 대기는 deepScrollAndExtract 의 타이머가 끝을 맡는다.
+    if (wasWaitingForLogin) QTimer::singleShot(0, this, &SiteCrawler::finishCrawl);
 }
 
 void SiteCrawler::processNextInQueue()
@@ -1187,7 +1201,7 @@ void SiteCrawler::deepScrollAndExtract(int maxScrolls, int scrollWaitMs,
         m_page->runJavaScript("window.scrollTo(0, document.body.scrollHeight)");
 
         QTimer::singleShot(scrollWaitMs, this, [=]() {
-            if (!m_running) return;
+            if (!m_running) { finishCrawl(); return; }   // 중지 — 이 사슬이 끝을 낸다(stop() 은 로그인 대기만 예약)
             m_page->runJavaScript(probeJs, [=](const QVariant &newProbeVar) {
                 QJsonObject newProbe = QJsonDocument::fromJson(newProbeVar.toString().toUtf8()).object();
                 int newHeight = newProbe["h"].toInt();
@@ -1415,6 +1429,8 @@ bool SiteCrawler::shouldCrawl(const QString &url)
 
 void SiteCrawler::finishCrawl()
 {
+    if (m_finished) return;   // 이미 끝냈다 — 두 번째 finished 가 백엔드에서 터미널·상태를 또 건드렸다
+    m_finished = true;
     if (!m_running && m_pageCount == 0) {
         m_backend->log("크롤링 중단됨", "warning", "crawl");
         emit finished();

@@ -103,6 +103,15 @@ public:
     // 직접 띄운 Chrome 을 CDP 연결 직후 최소화할지 (기본 true). 이미 떠 있던 Chrome 에 붙은 경우는 건드리지 않는다.
     void setStartMinimized(bool b) { m_startMinimized = b; }
 
+    // 13) SingleFile 자원 모으기용 — 켜 둔 동안 fetch 응답에 Access-Control-Allow-Origin 이 없으면 요청 Origin 을 붙인다.
+    //     (자격증명은 안 붙인다 — ACAC 없음.) 교차 출처 그림이 CORS 로 'data:,' 로 비는 것을 막는다. 메인 스레드에서 부른다.
+    void setCorsRelax(bool on, std::function<void()> done = nullptr);
+
+    // 14) 페이지 CSP 끄기/켜기(Page.setBypassCSP) — 다음 navigate·reload 부터 적용된다.
+    //     캡쳐 때는 끄고(SingleFile 이 페이지 안에서 자원을 모은다), 사용자가 이 창에서 로그인할 때는 켠다.
+    void setBypassCsp(bool on);
+    void reloadPage();
+
     // 종료
     void stop();
     bool isReady() const { return m_ready; }

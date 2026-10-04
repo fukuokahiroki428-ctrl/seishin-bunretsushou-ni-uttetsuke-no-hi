@@ -118,6 +118,48 @@ QJsonObject xLegacy(const QJsonObject &result)
     return QJsonObject();
 }
 
+// 사용자 알맹이의 legacy — 2026-08 새 모양도 채워서 준다.
+//   X 는 2026-08 초 user 객체에서 legacy 를 통째로 뺐다. 필드가
+//   core / profile_bio / relationship_counts / tweet_counts / action_counts /
+//   banner / avatar / location / privacy / verification / website 로 흩어졌다.
+//   ★ legacy 에 이미 있는 값은 그대로 둔다 — 없거나 빈 키만 새 자리에서 채운다.
+//     데몬(twitter_daemon.py _normalize_user_result)과 같은 지도. 데몬이 옛 판일 때의 그물.
+QJsonObject xUserLegacy(const QJsonObject &user)
+{
+    QJsonObject lg = xLegacy(user);
+    auto sub = [&user](const QString &k) { return user.value(k).toObject(); };
+    auto fill = [&lg](const QString &key, const QJsonValue &v) {
+        if (v.isUndefined() || v.isNull()) return;
+        if (v.isString() && v.toString().isEmpty()) return;
+        const QJsonValue cur = lg.value(key);
+        if (cur.isUndefined() || cur.isNull() || (cur.isString() && cur.toString().isEmpty()))
+            lg.insert(key, v);
+    };
+    const QJsonObject core = sub("core");
+    fill("name", core.value("name"));
+    fill("screen_name", core.value("screen_name"));
+    fill("created_at", core.value("created_at"));
+    const QJsonObject bio = sub("profile_bio");
+    fill("description", bio.value("description"));
+    fill("entities", bio.value("entities"));
+    const QJsonValue loc = user.value("location");
+    fill("location", loc.isObject() ? loc.toObject().value("location") : loc);
+    fill("url", sub("website").value("url"));
+    fill("protected", sub("privacy").value("protected"));
+    fill("verified", sub("verification").value("verified"));
+    const QJsonObject rc = sub("relationship_counts");
+    fill("followers_count", rc.value("followers"));
+    fill("friends_count", rc.value("following"));
+    const QJsonObject tc = sub("tweet_counts");
+    fill("statuses_count", tc.value("tweets"));
+    fill("media_count", tc.value("media_tweets"));
+    fill("favourites_count", sub("action_counts").value("favorites_count"));
+    fill("profile_banner_url", sub("banner").value("image_url"));
+    const QJsonValue av = user.value("avatar");
+    fill("profile_image_url_https", av.isObject() ? av.toObject().value("image_url") : av);
+    return lg;
+}
+
 } // namespace
 
 const QString TwitterCollector::GRAPHQL_BASE = "https://x.com/i/api/graphql";
@@ -899,6 +941,12 @@ QPair<QJsonArray, QString> TwitterCollector::searchTweets(const QString &query, 
     int status = resp["status"].toInt();
     if (status == 429) return {QJsonArray(), "RATE_LIMITED"};
 
+    if (status == 404 && resp.value(QStringLiteral("_cause")).toString() == QLatin1String("no_tid")) {
+        m_backend->log("SearchTimeline 404 — X 서명(x-client-transaction-id)을 만들지 못했습니다: "
+                       + resp.value(QStringLiteral("_tid_reason")).toString().left(200)
+                       + " (해시·토큰 문제 아님)", "error", "twitter");
+        return {QJsonArray(), QStringLiteral("ERROR")};
+    }
     // 401/403/404: 토큰/해시 만료 → 데몬 재시작으로 자동 갱신 (최대 3회)
     if (status == 401 || status == 403 || status == 404) {
         m_backend->log(QString("SearchTimeline HTTP %1 → 자동 갱신 시도 (최대 3회)").arg(status), "warning", "twitter");
@@ -1748,7 +1796,7 @@ void TwitterCollector::downloadUserProfileMedia(const QJsonObject &tweet, const 
 
         // ── Twitter API 2025+ 구조: screen_name, name, profile_image_url_https가 legacy에서 제거됨 ──
         // 새 구조: userObj = { rest_id, avatar, core: {screen_name, name, ...}, legacy: {stats만...} }
-        QJsonObject uLeg = xLegacy(userObj);
+        QJsonObject uLeg = xUserLegacy(userObj);
         QJsonObject uCore = userObj["core"].toObject();
 
         // screen_name 추출 (여러 위치 시도)
@@ -2784,7 +2832,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         }
     }
 
-    QJsonObject userLegacy = xLegacy(user);
+    QJsonObject userLegacy = xUserLegacy(user);   // 2026-08 legacy 없는 모양도 채운다
     QString userName = userLegacy["name"].toString();
     QString userId = user["rest_id"].toString();
     int statusesCount = userLegacy["statuses_count"].toInt();
@@ -3100,7 +3148,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             int dlCount = 0;
             while (allUsers.readNext(pu)) {
                 if (!isRunning) break;
-                QJsonObject pLeg = xLegacy(pu);
+                QJsonObject pLeg = xUserLegacy(pu);
                 QJsonObject pCore = pu["core"].toObject();
                 QString handle = pLeg["screen_name"].toString();
                 if (handle.isEmpty()) handle = pCore["screen_name"].toString();
@@ -3184,7 +3232,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             allUsers.resetReader();
             QJsonObject uo;
             while (allUsers.readNext(uo)) {
-                QJsonObject leg = xLegacy(uo);
+                QJsonObject leg = xUserLegacy(uo);
                 QString handle = screenNameOf(uo);
                 writer.writeRow(row++, {
                     uo["rest_id"].toString(),
@@ -3669,7 +3717,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 // Author info (원글 작성자)
                 QJsonObject rtUserResult = rtResult["core"].toObject()["user_results"].toObject()["result"].toObject();
                 // 팔로워 수 등 통계는 아직 legacy 에 남아 있다 — 이름만 옮겨 갔다.
-                QJsonObject rtUserLeg = xLegacy(rtUserResult);
+                QJsonObject rtUserLeg = xUserLegacy(rtUserResult);
                 data["author_name"] = displayNameOf(rtUserResult);
                 data["author_username"] = rtScreenName;
 
@@ -4037,6 +4085,9 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     //   "both" / 기본: 양방향 (과거로 backtrack + 현재 새 트윗 둘 다)
     QString resumeMode = config["resumeMode"].toString();
     if (resumeMode.isEmpty()) resumeMode = "both";
+    // ★ 화면의 방식 '새 글만'(mode=incremental). 예전엔 아무도 이 값을 읽지 않아 '전체(2006년부터)' 와
+    //   똑같이 과거 끝까지 훑었다. 지난번 가장 새 트윗 이후만 본다(= 이어서 수집 + 현재에서 이어서).
+    if (mode == "incremental") { resumeMode = "future"; m_saveProgress = true; }
 
     if (QFile::exists(excelPath)) {
         QXlsx::Document doc(excelPath);
@@ -4101,6 +4152,23 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         }
     }
 
+    // ★ 위쪽(새 글 쪽) 이어짐. progress 의 newestDate/Id 는 '이보다 새 것은 다 받았다' 는 약속이다.
+    //   예전엔 이번 판에서 본 가장 새 트윗으로 무조건 올렸다 — 새 글 쪽 훑기가 오류·중지·50쪽 안전장치·
+    //   기간 지정 때문에 지난번 가장 새 트윗까지 내려오지 못했어도 그랬다. 그러면 그 사이가 다음
+    //   '현재 이어서/양방향' 에서 영영 빠진다(since: 는 새 값 위에서 시작하고, 과거 쪽은 oldest 밑만 본다).
+    //   → 맨 위에서 이어 내려오며 지난번 가장 새 트윗(이하)을 실제로 만났거나, since: 구간을 끝까지
+    //     봤을 때만 올린다. 아니면 예전 값을 지킨다 — 다음 판이 그 자리부터 다시 본다(중복은 ID 로 걸러진다).
+    QString prevNewestBoundary;
+    if (QFile::exists(progressPath)) {
+        QFile bf(progressPath);
+        if (bf.open(QIODevice::ReadOnly)) {
+            prevNewestBoundary = QJsonDocument::fromJson(bf.readAll()).object()["newestId"].toString();
+            bf.close();
+        }
+    }
+    bool forwardScan = true;                                // 지금 훑는 것이 맨 위에서 이어 내려오는 중인가
+    bool reachedPrevNewest = prevNewestBoundary.isEmpty();  // 지난 기록이 없으면 지킬 것도 없다
+
     // Helper: progress 파일 저장 — oldest/newest 둘 다 누적
     //   기존 파일에 이미 newestDate가 있으면 그보다 새로운 것만 갱신 (newer wins)
     //   기존 oldestDate가 있으면 그보다 오래된 것만 갱신 (older wins)
@@ -4114,7 +4182,13 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             }
         }
         // oldestDate: older wins
-        QString outOldest = oldestDate;
+        // ★ 중지로 끝난 판의 '가장 오래된 날짜' 는 믿을 수 없다. 검색 루프는 처리하기 전에 배치 전체
+        //   (한 쪽 최대 40개 — 드물게 올리는 계정이면 몇 달 치)의 날짜로 iterOldestDate·oldestTweetDate 를 정하고,
+        //   중지는 processTweetBatch 가 그 배치 한가운데서 끊는다. 그 날짜를 적으면 다음 '과거 이어서' 의
+        //   until:(그 날 제외) 가 처리 못 한 트윗들과 그 날의 나머지를 건너뛴다. 루프 안 저장(nextUntil)도
+        //   중지된 판에서 이 날짜를 적으므로 마지막 저장만 고쳐서는 안 된다 — 여기서 함께 막는다.
+        //   중지된 판은 지난 값을 지킨다(끝까지 돈 iteration 은 돌던 중에 이미 적었다).
+        QString outOldest = isRunning ? oldestDate : prev["oldestDate"].toString();
         QString prevOldest = prev["oldestDate"].toString();
         if (!prevOldest.isEmpty()) {
             QDate prevD = QDate::fromString(prevOldest, "yyyy-MM-dd");
@@ -4125,12 +4199,13 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         QString outNewestId = m_newestTweetId;
         QString prevNewestId = prev["newestId"].toString();
         if (!prevNewestId.isEmpty()
-            && (outNewestId.isEmpty() || prevNewestId.toLongLong() > outNewestId.toLongLong())) {
+            && (outNewestId.isEmpty() || !reachedPrevNewest
+                || prevNewestId.toLongLong() > outNewestId.toLongLong())) {
             outNewestId = prevNewestId;
         }
         // newestDate: newer wins
         QString outNewestDate = prev["newestDate"].toString();
-        if (newestTweetDate.isValid()) {
+        if (newestTweetDate.isValid() && reachedPrevNewest) {
             QString curND = newestTweetDate.toString("yyyy-MM-dd");
             QDate prevD = QDate::fromString(outNewestDate, "yyyy-MM-dd");
             QDate curD  = QDate::fromString(curND, "yyyy-MM-dd");
@@ -4203,6 +4278,11 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             QJsonObject legacy = xLegacy(tweet);
             QString tweetId = legacy["id_str"].toString();
             if (tweetId.isEmpty()) tweetId = tweet["rest_id"].toString();
+
+            // ★ 위쪽 이어짐 — 지난번 가장 새 트윗(이하)을 만났는가. 이미 받은 트윗도 센다(그래서 Dedup 앞).
+            if (forwardScan && !reachedPrevNewest && !tweetId.isEmpty()
+                && tweetId.toLongLong() <= prevNewestBoundary.toLongLong())
+                reachedPrevNewest = true;
 
             // Dedup
             if (collectedIds.contains(tweetId)) continue;
@@ -4541,7 +4621,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             // 작성자 프로필 정보
             {
                 QJsonObject uResult = tweet["core"].toObject()["user_results"].toObject()["result"].toObject();
-                QJsonObject uLeg = xLegacy(uResult);
+                QJsonObject uLeg = xUserLegacy(uResult);
                 data["user_followers"] = QString::number(uLeg["followers_count"].toInt());
                 data["user_following"] = QString::number(uLeg["friends_count"].toInt());
                 data["user_verified"] = uResult.value("is_blue_verified").toBool(false) ? "True": "False";
@@ -4813,7 +4893,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             int row = 2;
             for (const auto &uv : users) {
                 QJsonObject u = uv.toObject();
-                QJsonObject l = xLegacy(u);
+                QJsonObject l = xUserLegacy(u);
                 QStringList r;
                 r << u["rest_id"].toString()
                   << l["screen_name"].toString()
@@ -4897,13 +4977,16 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
         QString cCursor;
         int cEmpty = 0;
+        int cErr = 0;   // ★ 오류가 끝없이 이어지면(서명·해시 문제는 기다려도 안 풀린다) 5번째에 멈춘다
         while (isRunning && !capReached()) {
             auto [batch, nextCursor] = getCommunityTweets(commId, cCursor);
             if (nextCursor == "RATE_LIMITED") { handleRateLimit(accounts, currentAccountIdx, isRunning); continue; }
             if (nextCursor == "ERROR") {
+                if (++cErr >= 5) { m_backend->log("API 오류가 5번 이어졌습니다 — 커뮤니티 수집을 멈춥니다", "error", "twitter"); break; }
                 for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1);
                 continue;
             }
+            cErr = 0;
             if (batch.isEmpty()) { if (++cEmpty >= 2) break; } else { cEmpty = 0; }
             processTweetBatch(batch);
             if (nextCursor.isEmpty()) break;
@@ -4924,6 +5007,21 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     //       3) 반복 (backtrack 횟수 무제한, 연속 빈 결과 시 종료)
     // ══════════════════════════════════════════════════════════════
     bool searchFailed = false;  // Phase 1 검색 실패 플래그 (Phase 2에서 사용)
+    // ★ 검색이 "ERROR" 를 돌려주면 5초 쉬고 끝없이 다시 했다. 서명(TID)·해시 문제는 기다려도 안 풀려서
+    //   같은 요청만 수백 번 나갔다. 5번 이어지면 그 단계를 멈추고 다음 단계(Phase 2 등)로 넘긴다.
+    int searchErrStreak = 0;
+    bool searchErrored = false;
+    auto searchErrorGiveUp = [&]() -> bool {
+        if (++searchErrStreak < 5) {
+            m_backend->log(QString("API 오류 — 5초 후 재시도 (%1/5)").arg(searchErrStreak), "warning", "twitter");
+            for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1);
+            return false;
+        }
+        m_backend->log("API 오류가 5번 이어졌습니다 — 검색 단계를 멈춥니다", "error", "twitter");
+        searchErrStreak = 0;
+        searchErrored = true;
+        return true;
+    };
     // Phase 1: tweets, media, all 일 때만 실행 (tweets_api, replies는 건너뜀)
     // ── 포스트 좁히기 (narrow) — from:user [키워드] [since/until] SearchTimeline ──
     //   복잡한 아니포 백트래킹 없이, 좁힌 쿼리로 커서 페이지네이션만 한다.
@@ -4941,7 +5039,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         while (isRunning && !capReached() && pages < NARROW_MAX_PAGES) {
             auto [tweets, nextCursor] = searchTweets(q, cur);
             if (nextCursor == "RATE_LIMITED") { handleRateLimit(accounts, currentAccountIdx, isRunning); continue; }
-            if (nextCursor == "ERROR") { for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1); continue; }
+            if (nextCursor == "ERROR") { if (searchErrorGiveUp()) break; continue; }
+            searchErrStreak = 0;
             if (tweets.isEmpty()) break;
             processTweetBatch(tweets);
             pages++;
@@ -4993,7 +5092,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             while (isRunning && !capReached() && searchHasMore) {
                 auto [tweets, nextCursor] = searchTweets(currentQuery, searchCursor);
                 if (nextCursor == "RATE_LIMITED") { handleRateLimit(accounts, currentAccountIdx, isRunning); continue; }
-                    if (nextCursor == "ERROR") { m_backend->log("API 오류 — 5초 후 재시도", "warning", "twitter"); for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1); continue; }
+                if (nextCursor == "ERROR") { if (searchErrorGiveUp()) break; continue; }
+                searchErrStreak = 0;
                 if (tweets.isEmpty()) break;
                 processTweetBatch(tweets);
                 searchCursor = nextCursor;
@@ -5025,13 +5125,17 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                         handleRateLimit(accounts, currentAccountIdx, isRunning);
                         continue;
                     }
-                    if (nextCursor == "ERROR" || tweets.isEmpty()) break;
+                    if (nextCursor == "ERROR") break;
+                    if (tweets.isEmpty()) { reachedPrevNewest = true; break; }   // since: 구간을 끝까지 봤다
                     int prev = tweetCount;
                     processTweetBatch(tweets);
                     futureNew += (tweetCount - prev);
                     futurePages++;
                     futCursor = nextCursor;
-                    if (futCursor.isEmpty()) break;
+                    if (futCursor.isEmpty()) {
+                        if (isRunning && !capReached()) reachedPrevNewest = true;   // 중간에 멈춘 게 아니면 끝까지 본 것
+                        break;
+                    }
                     for (int w = qMax(2, (int)m_delay); w > 0 && isRunning; --w) QThread::sleep(1);
                 }
                 m_backend->log(QString("[양방향 1단계] %1개 새 트윗 → 2단계 backtrack 시작")
@@ -5062,6 +5166,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 QDate rd = QDate::fromString(resumeOldestDate, "yyyy-MM-dd");
                 if (rd.isValid()) {
                     currentQuery = QString("from:%1 until:%2").arg(target, resumeOldestDate);
+                    forwardScan = false;   // 여기부터는 과거 쪽 이어가기 — 위쪽 이어짐 판정에 쓰지 않는다
                     QString modeLabel = (resumeMode == "past") ? "[과거 이어서]" : "[양방향 이어서]";
                     m_backend->log(QString("%1 %2 이전부터").arg(modeLabel, resumeOldestDate),
                                    "info", "twitter");
@@ -5089,10 +5194,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                         continue;
                     }
                     if (nextCursor == "ERROR") {
-                        m_backend->log("API 오류 — 5초 후 재시도", "warning", "twitter");
-                        for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1);
+                        if (searchErrorGiveUp()) break;
                         continue;
                     }
+                    searchErrStreak = 0;
                     if (tweets.isEmpty()) break;
 
                     iterBatchCount += tweets.size();
@@ -5116,6 +5221,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                     if (searchCursor.isEmpty()) break;
                     for (int w = qMax(2, (int)m_delay); w > 0 && isRunning; --w) QThread::sleep(1);
                 }
+                if (searchErrored) break;   // 오류로 멈춘 판 — 날짜를 물리며 같은 오류를 되풀이하지 않는다
 
                 if (iterBatchCount > 0) {
                     consecutiveEmpty = 0;
@@ -5133,6 +5239,9 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
                 // ★ "현재 이어서" 모드는 한 iteration만 — backtrack 안 함
                 if (resumeMode == "future") {
+                    // 오류로 멈춘 판은 바로 위에서 이미 빠져나갔다. 중지·최대 수가 아니면 since: 구간을 끝까지 본 것이다.
+                    if (isRunning && !capReached() && (!resumeNewestDate.isEmpty() || !resumeNewestId.isEmpty()))
+                        reachedPrevNewest = true;
                     if (iterNewCount > 0) {
                         m_backend->log(QString("[현재 이어서] 새 트윗 %1개 수집 (과거 backtrack 생략)").arg(iterNewCount),
                                        "success", "twitter");
@@ -5184,7 +5293,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         }
 
         int phase1New = tweetCount - phase1Start;
-        searchFailed = (phase1New == 0 && backtrackCount == 0);  // 검색 API 자체가 실패
+        searchFailed = (phase1New == 0 && backtrackCount == 0)  // 검색 API 자체가 실패
+                       || (phase1New == 0 && searchErrored);   // 오류가 이어져 멈춤 — Phase 2(UserTweets)로 받는다
         m_backend->log(QString("Phase 1 완료: %1개 트윗, %2개 미디어%3")
                            .arg(tweetCount).arg(mediaCount)
                            .arg(searchFailed ? "(검색 API 실패)": ""),
@@ -5253,6 +5363,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     if (isRunning && !capReached() && (type == "replies"|| type == "all") && mode != "period") {
         m_backend->log("Phase 3: 답글 검색 (filter:replies) + 주간 백트래킹...", "info", "twitter");
         int replyNew = 0;
+        bool replyErr = false;   // ★ 답글 검색도 오류가 5번 이어지면 멈춘다(Phase 1 과 같은 상한 — searchErrored 는 Phase 1 판정용이라 따로 둔다)
 
         // Step 1: 최신 답글부터 검색
         {
@@ -5268,10 +5379,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                     continue;
                 }
                 if (nextCursor == "ERROR") {
-                    m_backend->log("API 오류 — 5초 후 재시도", "warning", "twitter");
-                    for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1);
+                    if (searchErrorGiveUp()) { replyErr = true; break; }
                     continue;
                 }
+                searchErrStreak = 0;
                 if (tweets.isEmpty()) {
                     replyEmptyRetries++;
                     if (replyEmptyRetries >= 5) break;
@@ -5314,7 +5425,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 replyQuery2 = QString("from:%1 filter:replies").arg(target);
             }
 
-            while (isRunning && !capReached() && replyConsecutiveEmpty < REPLY_MAX_EMPTY) {
+            while (isRunning && !capReached() && !replyErr && replyConsecutiveEmpty < REPLY_MAX_EMPTY) {
                 QString rCursor;
                 int iterNew = 0;
                 int iterBatch = 0;
@@ -5327,10 +5438,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                         continue;
                     }
                     if (nextCursor == "ERROR") {
-                        m_backend->log("API 오류 — 5초 후 재시도", "warning", "twitter");
-                        for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1);
+                        if (searchErrorGiveUp()) { replyErr = true; break; }
                         continue;
                     }
+                    searchErrStreak = 0;
                     if (tweets.isEmpty()) break;
 
                     iterBatch += tweets.size();
@@ -5505,7 +5616,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     // ★ 최대 수집 수에서 멈춘 판은 progress 를 적지 않는다. 이 판의 가장 오래된·새 날짜는
     //   끝까지 못 본 구간을 덮고 있어, 적으면 다음 '이어서' 가 그 사이를 영영 건너뛴다.
     //   안 적으면 같은 자리를 다시 훑고, 받아 둔 것은 엑셀 ID 로 건너뛰므로 빠짐없이 이어진다.
-    if (oldestTweetDate.isValid() && !capReached()) {
+    if (oldestTweetDate.isValid() && !capReached() && !searchErrored) {   // ★ 검색 오류 상한으로 멈춘 판도 최대 수와 같다 — 끝까지 못 본 구간의 날짜를 적지 않는다(끝난 iteration 은 루프 안 saveProgress(nextUntil) 가 이미 적었다)
         saveProgress(oldestTweetDate.toString("yyyy-MM-dd"));
     }
 

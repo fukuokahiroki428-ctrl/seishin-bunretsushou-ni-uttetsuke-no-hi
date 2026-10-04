@@ -231,6 +231,17 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
             for (const QString &pidStr : pgo.split('\n', Qt::SkipEmptyParts)) {
                 qint64 pid = pidStr.toLongLong();
                 if (pid > 0) {
+                    // ★ pgrep -f 는 부분 일치다. 기본 프로필(…/chrome_capture_profile)로 찾으면 트랙별·출구별
+                    //   (…/chrome_capture_profile_<b64>) Chrome 까지 걸려, 순차 캡쳐 Chrome(또는 m_realChrome)이 뜰 때
+                    //   병렬 트랙들의 캡쳐 Chrome 을 모두 죽였다. --user-data-dir 값이 정확히 같을 때만 끈다.
+                    QProcess psq;
+                    psq.start("/bin/ps", {"-o", "command=", "-p", QString::number(pid)});
+                    psq.waitForFinished(2000);
+                    const QString cl = QString::fromUtf8(psq.readAllStandardOutput()).trimmed();
+                    const QString key = QStringLiteral("--user-data-dir=") + m_userDataDir;
+                    const int at = cl.indexOf(key);
+                    if (at < 0 || (at + key.size() < cl.size() && cl.at(at + key.size()) != QLatin1Char(' ')))
+                        continue;
                     ::kill(static_cast<pid_t>(pid), SIGTERM);
                     if (m_backend) m_backend->log(QString("이전 Chrome(프로필) 좀비 종료 (PID %1)").arg(pid), "info", "crawl");
                 }
@@ -444,6 +455,17 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
                         "Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});";
                     sendCommand("Page.enable", QJsonObject(), nullptr);
                     sendCommand("Page.addScriptToEvaluateOnNewDocument", p, nullptr);
+                    // ★ SingleFile 은 페이지 안(main world)에서 fetch()·DOMParser 로 자원을 모은다.
+                    //   페이지 CSP 의 connect-src 가 CDN 을 막으면 그림이 'data:,' 로 비고,
+                    //   Trusted Types(require-trusted-types-for 'script' — 유튜브)면 DOMParser 가 막혀 getPageData 가 통째로 실패했다.
+                    //   캡쳐 전용 탭이므로 CSP 를 끈다(다음 navigate 부터 적용).
+                    //   ★ 사용자 본인 프로필(setUseUserProfile(true) — 실제 Chrome 모드의 '내 프로필')이면 그 탭은
+                    //     캡쳐 전용이 아니고 SingleFile 도 돌지 않는다 — CSP 를 끄지 않는다.
+                    if (!m_useUserProfile) {
+                        QJsonObject bp;
+                        bp["enabled"] = true;
+                        sendCommand("Page.setBypassCSP", bp, nullptr);
+                    }
                 }
                 // Network 자동 활성화
                 if (!m_responseSaveDir.isEmpty()) {
@@ -563,6 +585,36 @@ void RealChromeCrawler::setWindowMinimized(bool minimized, std::function<void(bo
     if (sent < 0 && done) done(false);
 }
 
+void RealChromeCrawler::setBypassCsp(bool on)
+{
+    if (!m_ready) return;
+    QJsonObject bp;
+    bp["enabled"] = on;
+    sendCommand("Page.setBypassCSP", bp, nullptr);
+}
+
+void RealChromeCrawler::reloadPage()
+{
+    if (!m_ready) return;
+    sendCommand("Page.reload", QJsonObject(), nullptr);
+}
+
+void RealChromeCrawler::setCorsRelax(bool on, std::function<void()> done)
+{
+    if (!m_ready) { if (done) done(); return; }
+    QJsonObject params;
+    if (on) {
+        QJsonObject pat;
+        pat["urlPattern"] = "*";
+        pat["resourceType"] = "Fetch";
+        pat["requestStage"] = "Response";
+        params["patterns"] = QJsonArray{pat};
+    }
+    const int id = sendCommand(on ? "Fetch.enable" : "Fetch.disable", params,
+                               [done](const QJsonValue &, const QJsonValue &) { if (done) done(); });
+    if (id < 0 && done) done();
+}
+
 void RealChromeCrawler::dispatchKey(const QString &key, int modifiers, std::function<void()> done)
 {
     if (!m_ready) { if (done) done(); return; }
@@ -607,6 +659,18 @@ void RealChromeCrawler::setCookies(const QJsonArray &cookies, std::function<void
         auto okCount = std::make_shared<int>(0);
         for (const QJsonValue &v : cookies) {
             QJsonObject ck = v.toObject();
+            // ★ 로그인 세션 쿠키는 사이트가 원래 HttpOnly 로 준다 — 우리가 넣을 때도 같게 해 둔다.
+            //   안 그러면 캡쳐 Chrome 안의 페이지 스크립트가 document.cookie 로 읽을 수 있다(캡쳐 때는 CSP 도 꺼 둔다).
+            //   ct0·csrftoken 처럼 사이트 스크립트가 직접 읽는 쿠키는 그대로 둔다(막으면 사이트가 로그인 상태로 안 돈다).
+            static const QSet<QString> kSessionCookies = {
+                QStringLiteral("auth_token"), QStringLiteral("kdt"), QStringLiteral("sessionid"),
+                QStringLiteral("PHPSESSID"), QStringLiteral("FANBOXSESSID"), QStringLiteral("user_session"),
+                QStringLiteral("user_session_secure")};
+            //   ※ 부르는 쪽(HanishikiBackend 의 QNetworkCookie→JSON 변환 세 곳, 실제 Chrome 모드 pushCookie)은 httpOnly 를
+            //     늘 넣어 보낸다(QNetworkCookie::isHttpOnly() 기본 false, pushCookie 는 false 고정). '없을 때만' 으로
+            //     거르면 한 번도 켜지지 않는다 — 이름이 맞으면 덮어쓴다.
+            if (kSessionCookies.contains(ck.value(QStringLiteral("name")).toString()))
+                ck[QStringLiteral("httpOnly")] = true;
             sendCommand("Network.setCookie", ck,
                         [this, remaining, okCount, total = cookies.size(), done](const QJsonValue &result, const QJsonValue &err) {
                             bool ok = err.isNull() || err.isUndefined() || (err.isObject() && err.toObject().isEmpty());
@@ -637,6 +701,75 @@ int RealChromeCrawler::sendCommand(const QString &method, const QJsonObject &par
 
 void RealChromeCrawler::handleEvent(const QString &method, const QJsonObject &params)
 {
+    if (method == "Fetch.requestPaused") {   // setCorsRelax(true) 동안만 온다
+        const QString rid = params["requestId"].toString();
+        QJsonObject p;
+        p["requestId"] = rid;
+        if (params.contains("responseErrorReason")) {   // 네트워크 오류 — 그대로 실패시킨다
+            p["errorReason"] = params["responseErrorReason"].toString();
+            sendCommand("Fetch.failRequest", p, nullptr);
+            return;
+        }
+        QString origin;
+        const QJsonObject reqHdrs = params["request"].toObject()["headers"].toObject();
+        for (auto it = reqHdrs.begin(); it != reqHdrs.end(); ++it)
+            if (it.key().compare(QLatin1String("Origin"), Qt::CaseInsensitive) == 0) origin = it.value().toString();
+        QJsonArray respHdrs = params["responseHeaders"].toArray();
+        bool hasAcao = false;
+        for (const QJsonValue &h : respHdrs)
+            if (h.toObject()["name"].toString().compare(QLatin1String("access-control-allow-origin"), Qt::CaseInsensitive) == 0)
+                hasAcao = true;
+        // ★ 고치는 것은 SingleFile 이 페이지에 넣는 자원(그림·글꼴·CSS·소리·영상)뿐이다 — 이 동안 페이지 자신의
+        //   fetch 도 여기를 지나므로, JSON·HTML 같은 다른 응답까지 교차 출처로 읽히게 열어 두지 않는다.
+        QString ctype;
+        for (const QJsonValue &h : respHdrs)
+            if (h.toObject()["name"].toString().compare(QLatin1String("content-type"), Qt::CaseInsensitive) == 0)
+                ctype = h.toObject()["value"].toString().trimmed().toLower();
+        static const char *const kInlineable[] = {"image/", "font/", "text/css", "audio/", "video/",
+                                                  "application/font", "application/x-font",
+                                                  "application/vnd.ms-fontobject"};
+        bool inlineable = false;
+        for (const char *pre : kInlineable)
+            if (ctype.startsWith(QLatin1String(pre))) { inlineable = true; break; }
+        // application/octet-stream 은 아무 이진 응답(첨부 내려받기·API 페이로드·장비 설정 백업 등)에나 붙는다.
+        //   잘못 설정된 CDN 의 글꼴·그림처럼 주소가 자원 파일일 때만 연다.
+        if (!inlineable && (ctype.startsWith(QLatin1String("application/octet-stream"))
+                             || ctype.startsWith(QLatin1String("binary/octet-stream")))) {   // S3 기본값
+            static const char *const kResExt[] = {".woff2", ".woff", ".ttf", ".otf", ".eot", ".png", ".jpg", ".jpeg",
+                                                  ".gif", ".webp", ".avif", ".svg", ".ico", ".bmp", ".mp3", ".m4a",
+                                                  ".ogg", ".wav", ".mp4", ".webm", ".mov"};
+            const QString path = QUrl(params["request"].toObject()["url"].toString()).path().toLower();
+            for (const char *ext : kResExt)
+                if (path.endsWith(QLatin1String(ext))) { inlineable = true; break; }
+        }
+        const int status = params["responseStatusCode"].toInt(0);
+        // 3xx(리다이렉트)는 머리를 바꾸지 않는다 — 리다이렉트 머리 교체는 거부될 수 있고, 거부되면 요청이 멈춘 채 남는다.
+        const bool isRedirect = status >= 300 && status < 400;
+        bool modified = false;
+        if (inlineable && !origin.isEmpty() && origin != QLatin1String("null") && !hasAcao && status > 0 && !isRedirect) {
+            // ★ 서버가 Access-Control-Allow-Credentials: true 만(ACAO 없이) 주는 경우가 있다. 그 위에 ACAO 를 붙이면
+            //   자격증명(쿠키) 요청의 응답까지 교차 출처로 읽힌다 — 여는 것은 자격증명 없는 읽기뿐이므로 ACAC 는 뺀다.
+            for (int i = respHdrs.size() - 1; i >= 0; --i)
+                if (respHdrs.at(i).toObject()["name"].toString()
+                        .compare(QLatin1String("access-control-allow-credentials"), Qt::CaseInsensitive) == 0)
+                    respHdrs.removeAt(i);
+            QJsonObject h;
+            h["name"] = "Access-Control-Allow-Origin";
+            h["value"] = origin;
+            respHdrs.append(h);
+            p["responseCode"] = status;
+            p["responseHeaders"] = respHdrs;
+            modified = true;
+        }
+        // 고친 머리가 거부되면(오류) 고치지 않은 채로 이어 보낸다 — 멈춘 요청(페이지 자신의 fetch 포함)을 남기지 않는다.
+        sendCommand("Fetch.continueResponse", p, [this, rid, modified](const QJsonValue &, const QJsonValue &err) {
+            if (!modified || err.toObject().isEmpty()) return;
+            QJsonObject q;
+            q["requestId"] = rid;
+            sendCommand("Fetch.continueRequest", q, nullptr);
+        });
+        return;
+    }
     if (method == "Network.requestWillBeSent") {
         QString reqId = params["requestId"].toString();
         QJsonObject req = params["request"].toObject();
@@ -700,9 +833,14 @@ void RealChromeCrawler::navigate(const QString &url, std::function<void(bool)> d
     QJsonObject params;
     params["url"] = url;
     sendCommand("Page.enable", QJsonObject(), nullptr);
-    sendCommand("Page.navigate", params, [done](const QJsonValue &result, const QJsonValue &err) {
-        Q_UNUSED(result);
-        if (done) done(err.isNull() || err.toObject().isEmpty());
+    sendCommand("Page.navigate", params, [this, url, done](const QJsonValue &result, const QJsonValue &err) {
+        // ★ 연결 거부·DNS·프록시 실패는 CDP 'error' 가 아니라 result.errorText 로 온다.
+        //   예전엔 성공으로 보고 크롬 오류 화면(chrome-error://chromewebdata)을 SingleFile 로 저장했다 —
+        //   파일이 생겼으니 다음 판에서도 다시 캡쳐하지 않았다.
+        const QString navErr = result.toObject().value("errorText").toString();
+        if (!navErr.isEmpty() && m_backend)
+            m_backend->log(QString("navigate 실패 (%1): %2").arg(navErr, url), "warning", "crawl");
+        if (done) done((err.isNull() || err.toObject().isEmpty()) && navErr.isEmpty());
     });
 }
 

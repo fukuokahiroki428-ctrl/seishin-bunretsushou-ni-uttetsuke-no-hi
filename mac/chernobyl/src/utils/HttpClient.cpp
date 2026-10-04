@@ -114,7 +114,21 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
     QNetworkReply *reply = m_nam->get(request);
 
     // Stream directly to file to avoid loading entire file into memory
-    QFile file(filePath);
+    // ★ 받는 동안은 같은 폴더의 숨은 조각 파일에 쓰고, 끝까지 받아 아래 검사(상태·Content-Length·쓰기 오류)를
+    //   통과한 뒤에만 진짜 이름으로 바꾼다. 진짜 이름에 바로 쓰면 앱이 강제 종료·크래시·전원 차단으로
+    //   죽을 때(아래 정리 코드가 돌지 못한다) 잘린 파일이 진짜 이름으로 남고, 맨 위 이어받기
+    //   검사(size>0)가 그것을 영원히 완성본으로 본다.
+    //   조각 이름은 '<진짜 이름>.part' 로 짓지 않는다 — 트윗 미디어 이름은 UTF-8 255바이트 한계까지 채워
+    //   짓는다(TwitterCollector::downloadTweetMedia). 5바이트만 붙여도 바이트로 세는 저장소(리눅스 NAS·SMB)
+    //   에서는 "File name too long" 으로 열리지 않아 그 파일을 영영 못 받는다. 진짜 이름의 해시로 짧게 짓는다 —
+    //   같은 파일은 늘 같은 조각 이름이라, 강제 종료로 남은 조각은 다음 판이 지우고 새로 받는다.
+    const QFileInfo targetInfo(filePath);
+    const QString partPath = targetInfo.absolutePath() + QStringLiteral("/.dl_")
+        + QString::fromLatin1(QCryptographicHash::hash(targetInfo.fileName().toUtf8(),
+                                                       QCryptographicHash::Sha1).toHex().left(20))
+        + QStringLiteral(".part");
+    QFile::remove(partPath);
+    QFile file(partPath);
     if (!file.open(QIODevice::WriteOnly)) {
         reply->abort();
         reply->deleteLater();
@@ -189,8 +203,16 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
 
     // Remove empty/failed files
     if (!success || file.size() == 0) {
-        QFile::remove(filePath);
+        QFile::remove(partPath);
         success = false;
+    } else {
+        // 진짜 이름에 0 바이트 잔재가 있으면 QFile::rename 이 실패하므로 먼저 치운다
+        // (size>0 이면 맨 위에서 이미 돌아갔다 — 여기 오는 것은 '없음' 이거나 0 바이트뿐이다).
+        QFile::remove(filePath);
+        if (!QFile::rename(partPath, filePath)) {
+            QFile::remove(partPath);
+            success = false;
+        }
     }
 
     // macOS 다운로드 메타데이터 (setxattr syscall — 프로세스 스폰 없음)
@@ -234,7 +256,14 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
 
     QNetworkReply *reply = m_nam->get(request);
 
-    QFile file(filePath);
+    // ★ downloadFile 과 같은 까닭·같은 이름 규칙 — 숨은 조각 파일에 받고, 성공했을 때만 진짜 이름으로 바꾼다.
+    const QFileInfo targetInfo(filePath);
+    const QString partPath = targetInfo.absolutePath() + QStringLiteral("/.dl_")
+        + QString::fromLatin1(QCryptographicHash::hash(targetInfo.fileName().toUtf8(),
+                                                       QCryptographicHash::Sha1).toHex().left(20))
+        + QStringLiteral(".part");
+    QFile::remove(partPath);
+    QFile file(partPath);
     if (!file.open(QIODevice::WriteOnly)) {
         reply->abort();
         reply->deleteLater();
@@ -318,8 +347,14 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
     if (writeFailed) result.success = false;
 
     if (!result.success || totalWritten == 0) {
-        QFile::remove(filePath);
+        QFile::remove(partPath);
         result.success = false;
+    } else {
+        QFile::remove(filePath);   // 0 바이트 잔재 — downloadFile 의 같은 자리 설명
+        if (!QFile::rename(partPath, filePath)) {
+            QFile::remove(partPath);
+            result.success = false;
+        }
     }
 
     if (result.success) {
