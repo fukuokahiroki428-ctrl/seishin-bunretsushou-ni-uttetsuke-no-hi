@@ -11,6 +11,7 @@
 ```bash
 cd mac/chernobyl
 python3 akashi/inspect_all.py --doctor --hotfix   # 정기 점검 — 새 빌드마다, 설치·판 내기 전에
+python3 akashi/tests/run_all.py                   # 기능 시험 — 크롤 · 캡처 · 이어받기를 실제로(약 8분)
 python3 akashi/iso.py start                       # 격리 사본 하나 띄우기 (끄기: iso.py stop)
 ```
 
@@ -19,6 +20,7 @@ python3 akashi/iso.py start                       # 격리 사본 하나 띄우�
 | 공구 | 하는 일 | 앱 | 바깥 |
 |---|---|---|---|
 | `inspect_all.py` | 정기 점검 — 사본을 띄워 아래 화면 점검을 차례로 돌리고 표로 알림 | 사본 | — |
+| `tests/run_all.py` | 기능 시험 다섯 — 캡처 Chrome 정리 · 옛 트위터 보기 · 이어받기 · 크롤러 · SingleFile ([기능시험](docs/기능시험.md)) | 사본 | — |
 | `iso.py` | 격리 사본 띄우기 · 끄기 · 상태 · 기록 (빌드본을 APFS 복제해서 띄움) | 사본 | — |
 | `check_console.py` | 새로 고침 뒤 모든 탭 · 설정 묶음의 JS 예외 · console.error | 사본 | — |
 | `check_layout.py` | 5폭 × 15화면 — 모드 · 열 · 시작 단추 · 옆넘침 · 잘림 · 대상 줄 높이 | 사본 | — |
@@ -42,6 +44,7 @@ python3 akashi/iso.py start                       # 격리 사본 하나 띄우�
 |---|---|
 | [정비수칙](docs/정비수칙.md) | 지킬 것 — 비밀 · 허락 · 사용자의 앱 · 이름으로 죽이지 않기 · 빌드·설치·판 순서 |
 | [수리법](docs/레시피.md) | 증상 → 확인 → 고치기 → 다시 확인 |
+| [기능시험](docs/기능시험.md) | 기능을 실제로 돌리는 시험 다섯 — 살피는 것 · 생긴 까닭 · 옛 판과 견주기 · 시험 더하기 |
 | [화면배치](docs/화면배치.md) | 액자 · 벽돌 쌓기 · 자동 배치 세 단계 · 대상 한 줄 |
 | [창끌기](docs/창끌기.md) | 창 서버에 맡기는 끌기와 확인법 |
 | [폼저장](docs/폼저장.md) | 창이 여럿일 때 계정이 지워지던 것과 지금의 규칙 |

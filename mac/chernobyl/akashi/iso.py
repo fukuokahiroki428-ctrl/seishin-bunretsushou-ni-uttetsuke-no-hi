@@ -40,6 +40,11 @@ def base_dir(port: int) -> Path:
     return root / str(port)
 
 
+def capture_port_for(port: int) -> int:
+    """사본의 캡처 Chrome 기준 포트 — 기본 사본(9334)은 19223, 포트 하나에 20씩(트랙 몫)."""
+    return 19223 + (port - 9334) * 20
+
+
 def state_path(port: int) -> Path:
     return base_dir(port) / "state.json"
 
@@ -67,6 +72,14 @@ def cmd_start(a) -> int:
         return 0
     if proc.port_open(port):
         print("포트 %d 를 다른 것이 쓰고 있습니다(PID %s). --port 로 다른 번호를 주십시오." % (port, proc.listening_pids(port)))
+        return 2
+    # ★ 사본의 캡처 Chrome 포트는 이 포트에서 셈한다(아래 HANISHIKI_CAPTURE_PORT). 앱(Common::capturePortBase)은 1024~65000 밖의
+    #   값을 버리고 9223 — 사용자 앱의 캡처 포트 — 으로 돌아가고, 9223 근처면 트랙(+1~)이 겹친다. 그러면 사본의 실제 Chrome 크롤이
+    #   사용자 앱의 캡처 Chrome 에 CDP 로 붙는다. 캡처 포트가 10000~65000 안에 들 때만(포트 8873~11622) 띄운다.
+    cap_port = capture_port_for(port)
+    if not 10000 <= cap_port <= 65000:
+        print("포트 %d 로는 사본의 캡처 Chrome 포트가 %d 가 되어 사용자 앱 쪽(9223~)과 겹칠 수 있습니다 — "
+              "--port 는 8873~11622 사이로 주십시오" % (port, cap_port))
         return 2
 
     src_app = Path(a.app).resolve() if a.app else paths.find_build_app()
@@ -163,7 +176,7 @@ def cmd_start(a) -> int:
     env = dict(os.environ)
     # ★ 캡처 Chrome 포트를 사용자 앱과 다른 대로 — 앱은 기본 9223 을 쓰고, 시작할 때 그 포트의 '자기 프로필'
     #   Chrome 을 정리한다. 포트가 겹치면 시험 사본이 사용자의 캡처를 방해한다(--env 로 덮을 수 있다).
-    env["HANISHIKI_CAPTURE_PORT"] = str(19223 + (port - 9334) * 20)
+    env["HANISHIKI_CAPTURE_PORT"] = str(cap_port)
     env.update({
         "HOME": str(home), "CFFIXED_USER_HOME": str(home), "TMPDIR": str(tmp) + "/",
         "QTWEBENGINE_REMOTE_DEBUGGING": "127.0.0.1:%d" % port,
