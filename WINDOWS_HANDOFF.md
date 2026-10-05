@@ -1314,3 +1314,70 @@ STOP 표식 경합 · 디스크가 안 보여도 설정 지우지 않기 · 内�
 
 2(앱 이름·판 번호) · 3(고침 꾸러미 갈래 — 맥은 한 갈래 공유를 권함) · 4(떠 있는 수집기 파일 셋)는
 윈도우 차례가 오면 사용자께 다시 여쭙니다.
+
+---
+
+## 2026-10-05 · 맥 → 윈도우 · 이어받기·SingleFile·크롤러 점검과 X 8월 변경 — 윈도우에도 그대로 있는 것
+
+사용자 요청으로 맥에서 '전 기능 이어서 다운로드', 'SingleFile HTML', '웹 크롤러 되살리기', '옛 트위터 모양 보기' 를
+했습니다. 맥 커밋은 `ueno` 의 `a8eb4ce` · `4bbcf56` 인데 **아직 origin 에 올리지 않았습니다(사용자 승인 대기)**.
+그래서 아래는 커밋 없이도 옮길 수 있게 위치와 방법을 적습니다. 윈도우 트리는 `origin/main` `37faf03` 기준으로
+읽기만 해서 대조했습니다. **윈도우는 사용자가 시작하라고 할 때까지 손대지 마십시오.** 시작할 때 이 절을 함께 보십시오.
+
+### 1. X(트위터) — 8월에 바뀐 것 두 가지, 윈도우도 같습니다
+
+| # | 무엇 | 윈도우 위치 | 옮기는 법 |
+|---|---|---|---|
+| X1 | **8월 초부터 사용자 정보에 `legacy` 가 오지 않는다.** 소개·팔로워/팔로잉/트윗/좋아요 수·가입일·배너·위치·url 이 새 자리(`profile_bio.description`, `relationship_counts.followers/following`, `tweet_counts.tweets/media_tweets`, `action_counts.favorites_count`, `core.created_at/name/screen_name`, `banner.image_url`, `avatar.image_url`, `location.location`, `website.url`, `privacy.protected`, `verification.verified`)로 옮겨 갔다(twscrape b71007c·c65c7f0, 2026-08-06). 맥 보관 폴더의 대상 프로필 23개가 8월 이후 전부 빈칸·0 이었다 | 데몬 `twitter_daemon.py:1092-1131` 은 name·screen_name·avatar 만 채운다. C++ 은 `legacy` 를 바로 읽는 곳이 일곱 군데 — `TwitterCollector.cpp:2671`(대상) · `1675`(작성자) · `2990`(팔로워 프로필) · `3074`(팔로워/팔로잉 시트) · `3559`(리트윗 원작자) · `4431`(트윗별 작성자 열) · `4706`(좋아요·리트윗한 사람) | 맥 데몬의 `_dig`·`_normalize_user_result` 는 순수 함수라 그대로 복사하고 `leg = u.get("legacy", {})` 앞에서 부른다. C++ 은 `legacy` 를 출발점으로 위 새 자리에서 **빈 칸만** 채우는 `xUserLegacy()` 를 두고 일곱 곳을 바꾼다(데몬 보정은 user_by_screen_name 에만 걸리므로 C++ 이 꼭 필요) |
+| X2 | **검색 404 는 POST 전환이 아니라 서명(x-client-transaction-id) 문제**(RSSHub #23359 를 #23408 이 하루 만에 되돌림 — 원문 확인). x-web 프런트 교체로 여러 라이브러리의 서명기 초기화가 깨졌다 | 무작위 가짜 TID `twitter_daemon.py:751-754`(x_session 일 때도 덮는다) · 404 에 죽은 `1.1/search/tweets.json`(1189)·`2/search/adaptive.json`(1212) 폴백 · followers/following 404 → 해시 수리(1320) · 메인 루프 404 수리가 해시 캐시를 지움(867-871) · C++ `TwitterCollector.cpp:813` 이 404 마다 데몬 재시작 · `refresh_cookies` 가 토큰 앞 10자를 출력(818-819) | 토큰 출력은 길이만으로. 캐시 삭제 블록 제거. 옛 폴백은 기본 끔. 서명기를 못 만들었으면 404 에 `_cause:"no_tid"` 를 붙여 돌려주고 C++ 은 재시작 대신 그 까닭을 로그로. **주의: 윈도우 주 경로인 twikit 의 ClientTransaction 에는 `ready`/`reason` 이 없다** — twikit 경로에서는 `tid_ok` 로 판정해야 한다. 데몬은 통째로 덮지 말 것(twikit 우선·DPAPI·APPDATA 등 윈도우 것이 들어 있다) |
+| X3 | 검색 `"ERROR"` 를 5초마다 끝없이 다시 보냄 | 커뮤니티 4797 · narrow 4834 · period 4885 · 본 backtrack 4980 · Phase 2 UserTweets 5095 · Phase 3 답글 5152·5211 | 5번 이어지면 그 단계를 멈춘다(맥 `searchErrorGiveUp` 람다). Phase 1 이 오류로 멈추면 끝의 `saveProgress(oldestTweetDate)` 를 건너뛴다(못 본 구간을 적지 않게) |
+| X4 | '새 글만'(`mode=incremental`)을 아무도 안 읽어 전체와 같이 돈다 · progress 의 newest 를 무조건 올려 1단계가 오류·중지로 끊기면 지난 newest 와의 사이가 영구 누락 · 중지한 판의 oldest 날짜를 그대로 적어 `until:` 배제로 그날 나머지 누락 | `TwitterCollector.cpp:2562`(mode) · 4145-4148 · 4012-4024 · 4004 | 맥은 '지난 newest 에 실제로 닿았을 때만' newest 를 올린다(`reachedPrevNewest`). incremental 은 resumeMode=future + saveProgress 로 |
+| X5 | 内閣会 트위터 폴링이 `resumeMode=future` 만 넣고 saveProgress 를 안 켜 매번 처음부터 검색 | `MiyoBackend.cpp:3664-3666` | 그 다음 줄에 `runConfig["saveProgress"] = true;` |
+
+### 2. 이어받기 — 잘린 파일·덮어쓴 엑셀
+
+| # | 무엇 | 윈도우 위치 | 옮기는 법 |
+|---|---|---|---|
+| R1 | 공용 다운로더가 **진짜 이름에 바로 쓰고**, 다음 판은 `size>0` 이면 받은 것으로 친다 → 강제 종료·크래시로 잘린 파일이 영구히 '받음'. 윈도우 `downloadFile` 은 `write()` 반환값·Content-Length 검사도 없다 | `HttpClient.cpp:122/132`, Ex `212/233`, `147` | 같은 폴더의 짧은 조각 이름 `.dl_<sha1 20자>.part` 에 받고 검사를 통과하면 바꾼다(원래 이름 + `.part` 는 255바이트를 넘는다 — `TwitterCollector.cpp:1560` 이 이름을 255바이트까지 채운다). 윈도우는 rename 이 대상 있음·백신 잠금으로 실패하니 `FileHelper::moveFileSafe` 식 재시도, '.' 은 숨김이 아니니 필요하면 숨김 속성 |
+| R2 | 블루스카이 영상: `video.playlist`(m3u8 텍스트)를 `.mp4` 이름으로 저장하고 exists() 로 영원히 건너뜀 · urlretrieve 잘린 파일 · 엑셀을 매번 새 Workbook 으로 덮어씀(중지·최대 수·内閣会 count=10 판마다 행 소실) | `bluesky_daemon.py:446-449` · `544-546` · `632/653` · `_complete` 미러 `502` | 맥은 HLS 를 ffmpeg 로 mp4 로, `.part` 후 교체, 옛 m3u8 파일은 다시 받음, 엑셀은 (type, uri) 로 합쳐 원자적으로 저장. 윈도우는 프록시를 env 로 주지 않으니 ffmpeg 프록시 가드는 init_args 의 `_PROXY` 를 보게(socks → 거부, http → `-http_proxy`) |
+| R3 | 인스타 100개 체크포인트가 **최종 합본과 같은 경로에 이번 판 행만** 써서, 끝의 합치기가 그것을 '기존' 으로 읽어 지난 판 행(삭제된 게시물 기록 포함)을 잃음 | `MiyoBackend.cpp:9666-9667` → `9905/9932/9968` | 체크포인트는 `igType + "_inprogress"` 로, 합본 저장이 성공하면 지운다 |
+| R4 | 유튜브·니코동 `--download-archive` 하나를 동영상·오디오가 같이 써서 오디오로 받은 것은 동영상으로 못 받음 | `MiyoBackend.cpp:10242-10243` · `naikakukaiArchiveCount 3522` | 오디오는 `.yt_archive_audio.txt`. 内閣会 집계는 두 장부 합산 |
+| R5 | 디스코드 한 메시지의 같은 이름 첨부(image.png 여러 장)가 한 경로가 되어 둘째부터 사라짐 | `MiyoBackend.cpp:8436-8441`(pins) · `8567-8573` | `dcFilename(msg, origName, ai)` + 이미 쓴 이름 집합. NTFS 는 대소문자를 안 가리니 키는 소문자로 |
+| R6 | 팬박스 curl: `-f` 없음·진짜 이름에 씀·실패해도 안 지움(404 HTML·잘린 zip 이 '받음'), **세션 쿠키가 명령줄(argv)에** | `MiyoBackend.cpp:16526-16530` · 첨부 `16549-16552` | `-fsSL` + 조각 파일 + 성공 시 교체. 쿠키는 `-H @-` 로 표준 입력에(curl 7.55+, 윈도우 curl.exe 도 됨). 윈도우 팬박스는 프록시가 아예 없어 맥의 '한 세션 두 IP' 문제는 없다 |
+| R7 | `ExcelWriter::save` 가 최종 파일에 바로 씀 — 저장 중 죽으면 다음 판이 '0행' 으로 읽고 덮음 | `ExcelWriter.cpp:71-73` | 임시 파일에 쓰고 교체. 윈도우는 `std::rename` 이 덮어쓰지 않고 `encodeName` 이 ANSI 라 한글·일본어 경로에서 실패 — `MoveFileExW(MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)` + 짧은 재시도, 실패하면 tmp 를 남긴다 |
+| R8 | 중지하면 요약 판의 수가 0 으로 지워짐 | `MiyoBackend.cpp:5099` · 워커 끝 `4972` | `updateStats(0,0,...)` 대신 `platformStats[p]` 의 수를 그대로 다시 넣는 JS(맥은 두 곳 다 고침 — 4bbcf56) |
+
+### 3. SingleFile·캡쳐 Chrome
+
+| # | 무엇 | 윈도우 위치 | 옮기는 법 |
+|---|---|---|---|
+| S1 | `navigate` 가 `Page.navigate` 의 `errorText` 를 무시해 **크롬 오류 화면이 '✅ 캡쳐 완료' 로 저장** | `RealChromeCrawler.cpp:723-725` | errorText 가 있으면 실패. PEN 은 이미 처리(`PenChromeCrawler.cpp:644`, ERR_ABORTED 만 성공) — 둘 중 하나로 정책을 맞출 것 |
+| S2 | 파일이 있기만 하면 완료(`MiyoBackend.cpp:6187`) — 실패 때 같은 경로에 쓴 합성 카드(`TwitterCollector.cpp:2389`) 때문에 진짜 캡쳐가 영영 안 됨 · 조각을 최종 경로에 이어 씀(6508, 윈도우는 늘 직접) · evaluate 실패해도 빈 조각을 쓰고 진행(6602) | 왼쪽 | 첫 주석 `Page saved with SingleFile` 이 있는지로 완료 판정(앞 64KB), `.part` 에 쓰고 교체, 빈 조각이면 중단, 서로게이트 경계 보정 |
+| S3 | `scrollTo(scrollHeight)` 로 끝까지 뛰어 중간의 IntersectionObserver 지연 그림이 안 뜸 | `MiyoBackend.cpp:6358-6360`, `6377` · PEN `733`·`2676` | **한 화면씩** 내리고 매번 `requestAnimationFrame` 두 번(1.2초 폴백)을 기다린다. 맥 실측: 0.3초만 머물면 최소화된 창은 그리는 간격이 길어 6장 중 2~3장만 — 그리기를 기다리니 6/6. 윈도우는 `--disable-background-timer-throttling` 도 없다(맥은 넣었다) |
+| S4 | 페이지 CSP connect-src·Trusted Types 에 막혀 그림이 `data:,` 로 비거나(유튜브는) getPageData 가 통째로 실패 · `removeAlternativeImages`·`maxResourceSize`·`networkTimeout` 없음 | `MiyoBackend.cpp:6454-6471` · CSP 우회 없음 | 맥: `Page.setBypassCSP(true)`(캡쳐 동안), **로그인 창을 띄울 때는 CSP 를 다시 켜고 reload**, 교차 출처 그림은 Fetch 응답 단계에서 ACAO 를 붙이되 그림·글꼴·CSS·소리·영상(octet-stream 은 자원 확장자일 때만)만, ACAC 는 지운다. **주의: 윈도우는 프록시 인증에 이미 Fetch 를 쓴다(`RealChromeCrawler.cpp:488` handleAuthRequests, 654-657)** — 맥 것을 그대로 넣으면 캡쳐 동안 프록시 인증이 꺼지고 끈 뒤로는 아예 꺼진다(407). Request·Response 단계를 한 핸들러에서 가르고, 켜고 끌 때 인증 설정을 유지해야 한다. 윈도우 LoginAware 에는 창을 올리는 자리가 없어 CSP 를 다시 켤 자리를 새로 만들어야 한다 |
+| S5 | 캡쳐 Chrome 정리: 포트 주인을 묻지 않고 taskkill(`RealChromeCrawler.cpp:235`, PEN `209`) · 프로필 폴더 이름 부분 일치라 트랙별 프로필까지 죽임(`245/255`, PEN `220/230`) · `--disable-features` 에 **IsolateOrigins·site-per-process·WebRtcHideLocalIpsWithMdns·WebRTC** 가 들어 있어 사이트 격리를 끄고 WebRTC 로 내부 IP 가 샌다(`326`) · `--force-webrtc-ip-handling-policy` 없음 · Edge 갈래가 `--disable-features` 를 두 번 줘서 앞의 것(ms* 신원 차단)이 무시됨(303 대 326) | 왼쪽 | 플래그: 그 넷을 빼고 `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` 를 더하고 목록을 하나로. 정리: 포트 주인 PID 의 CommandLine 을 확인해 **우리 `--user-data-dir=<전체 경로>` 일 때만** 끝낸다 |
+| S6 | **PEN 크롤 Chrome 과 순차 수집 캡쳐 Chrome 이 포트 9223 과 프로필 폴더를 같이 쓴다**(`PenChromeCrawler.cpp:190`, `RealChromeCrawler.cpp:212`) — 크롤 탭을 시작하면 수집 캡쳐 Chrome 을 죽이고 반대도 같다 | 왼쪽 | PEN 에 따로 포트·프로필을 준다(기존 PEN 로그인 쿠키를 옮길지는 사용자께) |
+| S7 | 주입 쿠키가 `httpOnly=false` 라 캡쳐 중 페이지 스크립트가 `document.cookie` 로 `auth_token`·`sessionid` 등을 읽을 수 있음 | `MiyoBackend.cpp:6290/6803/6998` → `RealChromeCrawler.cpp:600-604` | `setCookies` 에서 이름이 `auth_token·kdt·sessionid·PHPSESSID·FANBOXSESSID·user_session(_secure)` 면 HttpOnly 로 덮는다(사이트가 원래 그렇게 준다). `ct0`·`csrftoken` 은 사이트 스크립트가 읽으니 그대로 |
+| S8 | 타임아웃 뒤 슬롯·잠금은 풀리는데 콜백 사슬은 계속 돌아 다음 캡쳐 페이지가 섞임(6647-6649) · LoginAware 사전 navigate 에 잠금 없음(6813) · 로그인 대기 1시간이 중지를 안 봄(6956) · 인스타 글마다 두 번 캡쳐(9429·9602) · SingleFile lib 을 감싸지 않아 페이지에 AMD `define` 이 있으면 전역 `singlefile` 이 안 생김(6318, PEN 291) | 왼쪽 | 타임아웃이면 그 Chrome 을 내리고 슬롯을 비움 · 사전 검사에 같은 슬롯 · 0.5초마다 실행 깃발 확인 · 첫 캡쳐 호출 제거 · `(function(define,exports,module){…}).call(globalThis)` 로 감쌈 |
+
+### 4. 크롤러(SiteCrawler — 윈도우는 배치 '크롤링' 으로만 닿음)
+
+`SiteCrawler.cpp:1400` finishCrawl 에 한 번만 가드 없음 · 로그인·동적 스크롤 대기 중 중지하면 finished 가 안 옴(188-194, 1174) ·
+`MiyoBackend.cpp:18689` `updateStats(0,0,"Done")` 이 수를 지움 · finished 핸들러에 '지금 크롤러인가' 가드 없음 ·
+`~SiteCrawler() {}` 라 자체 프로필이 페이지보다 먼저 지워짐. 맥 수정을 그대로 옮기되, **`stop()` 의 끝 예약은 '로그인 대기일 때만'**
+으로 두십시오 — 아무 때나 예약하면 HttpClient 중첩 이벤트 루프 안에서 크롤러가 지워지는 use-after-free 가 생깁니다(맥이 겪고 고침).
+PEN 중지 경로는 정적으로만 봤는데, 미러 chunk 람다(2020/2035)가 `m_crawlChrome` 을 null 확인 없이 씁니다.
+
+### 5. 맥에만 들어간 것 — 참고
+
+- **옛 트위터 보기** `resources/tools/twitter_viewer.py` — 받아 둔 계정을 예전 트위터 웹 모양의 오프라인 HTML 로(프로필·시간순
+  타임라인·미디어·팔로잉/팔로워·연도별·야간 모드). 순수 파이썬(openpyxl)이고 상대 경로·퍼센트 인코딩만 써서 윈도우에서도 그대로
+  쓸 수 있을 것입니다(미검증). 프로필은 두 엑셀 꼴(대상 'Field|Value' / 글에 나온 사람 줄 표)을 합쳐 읽고, 시각 칸이 비면
+  트윗 번호(snowflake)로 구합니다. 확장 프로그램 Old Twitter Layout 은 저작권상 모양만 참고했고 코드는 쓰지 않았습니다.
+- 맥에서 쓴 점검: 격리 사본(akashi iso.py) + 로컬 시험 사이트(지연 그림·IntersectionObserver·다른 출처 그림·엄격한 CSP·열 수 없는 주소·
+  느린 그림)로 크롤 중지(받는 도중 3회), 유튜브 장부 분리, 받는 도중 앱 강제 종료 뒤 잘린 파일 없음, SingleFile 5페이지를 확인했습니다.
+
+### 6. 범위 밖으로 본 것
+
+- `windows/resources/tools/twitter_tid.py` 는 문법 오류입니다 — 7행이 `async def _load_init_args()`, 21행이 `def main()` 이라
+  47행 `await` 가 함수 밖입니다. 데몬 기동이 실패했을 때의 TID 폴백(`TwitterCollector.cpp:486, 2162, 2251, 2650`)에서만 씁니다.
