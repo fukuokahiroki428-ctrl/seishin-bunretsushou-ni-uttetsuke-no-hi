@@ -1412,3 +1412,56 @@ git show origin/ueno:mac/chernobyl/resources/tools/twitter_viewer.py
   있습니다. 위 절의 '옮기는 법' 대로 손으로 옮기는 것이 맞습니다.
 - 맥에서 낸 판 확인: 빌드본으로 akashi `inspect_all`(6가지) 통과, 크롤러 중지 · 옛 트위터 보기 · 이어받기 · SingleFile 시험을
   모두 가짜 자료로 다시 돌려 통과했습니다.
+
+## 2026-10-05 (3) · 맥 → 윈도우 · PEN(크롤링 탭) Chrome 이 수집 캡처 Chrome 과 포트·프로필을 같이 쓴다 — 윈도우에서만 실제로 일어남
+
+위 10-05 절 S6 의 자세한 판입니다. **맥은 PenBackend 를 아무 데서도 만들지 않아(MainWindow 에서 걷어냄) 이 일이 일어나지 않고,
+윈도우는 크롤링 탭이 `penBackend.crawlStart` 로 PEN 을 띄우므로 실제로 일어납니다.** 맥은 잠든 PEN 코드를 같은 방식으로 고쳐
+본보기로 두었습니다(`ueno` 커밋 0aa09aa — **아직 origin 에 올리지 않음, 사용자 승인 대기**. 올라가기 전까지는 아래 설명으로 옮기십시오). **윈도우는 사용자가 시작하라고 할 때까지 손대지 마십시오.**
+
+### 무엇이 겹치나 (윈도우 `origin/main` 15c0628 기준, 읽기만 함)
+
+| # | 무엇 | 윈도우 위치 |
+|---|---|---|
+| P1 | PEN 포트가 9223 고정 — 수집 캡처 Chrome(단일 수집 = 9223)과 같다 | `PenChromeCrawler.h:121` `m_debugPort = 9223` |
+| P2 | PEN 프로필이 수집 캡처와 같은 `chrome_capture_profile` | `PenChromeCrawler.cpp:190` |
+| P3 | PEN 이 뜰 때 9223 을 LISTEN 하는 프로세스를 주인을 묻지 않고 taskkill — **수집 중이던 캡처 Chrome 이 꺼진다**. 반대로 캡처 Chrome 이 뜰 때도 PEN 의 Chrome 을 '좀비' 로 끈다 | `PenChromeCrawler.cpp:198-213` · `RealChromeCrawler.cpp:235` |
+| P4 | 프로필 정리가 폴더 이름(`chrome_capture_profile`) 부분 일치 — 트랙 프로필(`…_<b64>`)의 Chrome 까지 끈다 | `PenChromeCrawler.cpp:214-236` (RealChromeCrawler 도 같음 — 위 S5) |
+| (참고) | '사용자 Chrome 로그인 가져오기' 가 사용자 쿠키를 수집 캡처 프로필에 덮어쓰는 코드 — `#ifdef Q_OS_MACOS` 갈래라 **윈도우에서는 돌지 않는다**. 프로필을 나눌 때 경로만 같이 바꾸면 된다 | `PenBackend.cpp:425` |
+
+크롤링 탭을 켠 채 수집을 돌리거나(또는 반대) 하면, 둘 중 먼저 뜬 Chrome 이 다른 쪽에 의해 꺼지고, 같은 프로필을 두 Chrome 이
+잡으려다 나중 것이 바로 꺼집니다(기존 인스턴스로 핸드오프).
+
+### 맥에서 고친 방식 (`ueno` 0aa09aa — `git show 0aa09aa -- mac/chernobyl/src/platforms/PenChromeCrawler.cpp`)
+
+1. **프로필 분리** — `PenChromeCrawler::defaultProfileDir()` = `<AppData>/chrome_capture_profile_pen`. 접두를 같게 두어 앱 시작 때
+   좀비 정리 · 캐시 다듬기에 함께 걸린다. `PenBackend` 의 로그인 가져오기도 이 경로로.
+2. **포트 자동** — 자체 프로필 모드는 `--remote-debugging-port=0` 으로 띄우고, Chrome 이 고른 포트를 프로필의
+   `DevToolsActivePort` 첫 줄에서 읽는다(500ms 탐침 안에서, 띄우기 전에 옛 파일은 지운다). 어느 고정 포트와도 겹치지 않는다.
+   사용자 프로필 모드(떠 있는 Chrome 에 붙기)는 번호가 필요하니 9222. 맥 실측: 번들 Chrome for Testing 이 6초 안에 파일을 쓰고
+   `/json/list` 에 page 타겟이 나왔다. **윈도우 Edge/Chrome 도 같은 파일을 쓰는지 한 번 확인하십시오**(크로미움 공통 기능).
+3. **포트로 끄지 않는다** — 고정 포트를 받은 경우에도 LISTEN 주인이 남의 것이면 끄지 않고 **띄우지 않는다**(띄우면 포트를 못 얻고
+   탐침이 남의 Chrome 에 붙는다). 끄는 것은 `--user-data-dir=<전체 경로>` 가 정확히 같은 Chrome 뿐.
+4. **첫 시작 때 로그인 옮김** — PEN 프로필이 아직 없으면 공용 프로필의 `Default/Cookies · Login Data · Web Data`(+ journal)와
+   `Local State` 만 복사(이미 있으면 안 함). 지금까지 크롤링 탭에서 해 둔 로그인이 사라지지 않게.
+   **윈도우 주의: 쿠키 암호화 키가 `Local State` 의 os_crypt 에 있다**(맥은 키체인) — `Local State` 를 꼭 같이 옮겨야 복사한 쿠키가 읽힌다.
+   '사용자 Chrome 로그인 가져오기' 가 폴더를 먼저 만드는 경로에서는 이 옮기기를 **그보다 앞에서** 불러야 한다(뒤에 부르면 '이미 있음' 으로 건너뜀 — 맥 리뷰에서 잡힘).
+5. **언제나 Default 로 연다** — `--profile-directory=Default`. 남의 `Local State` 를 옮기면 그 안의 `profile.last_used`(예: "Profile 1")
+   때문에 쿠키를 넣은 Default 가 아닌 다른 프로필로 열릴 수 있다(맥은 사용자 Chrome 의 Local State 복사도 뺐다 — 맥은 키가 키체인이라 필요 없음).
+
+### 윈도우에서 함께 해야 할 것
+
+- **P4 를 먼저(또는 같이)** — 프로필 이름을 `chrome_capture_profile_pen` 으로 하면, 지금의 부분 일치 정리(`-like '*chrome_capture_profile*'`)가
+  캡처 Chrome 이 뜰 때 PEN 의 Chrome 을 여전히 끈다. RealChromeCrawler · PenChromeCrawler 의 프로필 정리를 `--user-data-dir=<전체 경로>`
+  다음 글자가 `"` · 빈칸 · 끝일 때만으로 좁히십시오(맥 `Common::captureChromePids` 참고 — 윈도우는 경로가 따옴표로 감싸일 수 있다).
+  아니면 PEN 프로필을 접두가 다른 이름(`chrome_pen_profile`)으로 두고 시작 정리(`MiyoBackend.cpp:364` · `5157`)에 그 이름을 더한다.
+- 포트 0 으로 바꾸면 `PenChromeCrawler.cpp:198-213` 의 netstat/taskkill 블록은 고정 포트일 때만 돌게.
+
+### 맥에서 같이 고친 것 (윈도우 참고)
+
+앱 시작 때 · 설정의 '좀비 정리' 단추가 `pkill -f chrome_capture_profile`(이름만)이라, 같은 맥의 다른 사본(공작함 격리 사본)이 켜지는
+순간 사용자 앱이 수집 중이던 Chrome 까지 껐습니다. 이제 이 앱 데이터 폴더의 전체 경로로만 고릅니다(`Common::killCaptureChromes`).
+전체 경로로 좁히면 **앱 이름이 바뀌어 옮겨진 옛 데이터 폴더의 고아 Chrome**(옛 판이 죽으며 남긴 것)을 놓치므로, '이 홈의 Application
+Support 아래이면서 데이터 폴더가 이제 없는' 캡처 Chrome 도 함께 끕니다(`Common::killOrphanedCaptureChromes` — 맥 리뷰에서 잡힘).
+윈도우 `killCaptureBrowsers("chrome_capture_profile")`(`MiyoBackend.cpp:364` · `5157`)도 이름만 보는 같은 모양이지만, 윈도우에서 앱을 둘
+띄우는 일이 드물어 급하지 않습니다. 좁힌다면 위 고아 정리도 같이 넣으십시오.
