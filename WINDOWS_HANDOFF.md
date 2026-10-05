@@ -1417,7 +1417,7 @@ git show origin/ueno:mac/chernobyl/resources/tools/twitter_viewer.py
 
 위 10-05 절 S6 의 자세한 판입니다. **맥은 PenBackend 를 아무 데서도 만들지 않아(MainWindow 에서 걷어냄) 이 일이 일어나지 않고,
 윈도우는 크롤링 탭이 `penBackend.crawlStart` 로 PEN 을 띄우므로 실제로 일어납니다.** 맥은 잠든 PEN 코드를 같은 방식으로 고쳐
-본보기로 두었습니다(`ueno` 커밋 0aa09aa — **아직 origin 에 올리지 않음, 사용자 승인 대기**. 올라가기 전까지는 아래 설명으로 옮기십시오). **윈도우는 사용자가 시작하라고 할 때까지 손대지 마십시오.**
+본보기로 두었습니다(`ueno` 커밋 0aa09aa — **origin 에 올라가 있음, 맥 판 `mac-4.0.0-r38`**. `git fetch origin ueno` 뒤 아래 `git show` 로 바로 볼 수 있습니다). **윈도우는 사용자가 시작하라고 할 때까지 손대지 마십시오.**
 
 ### 무엇이 겹치나 (윈도우 `origin/main` 15c0628 기준, 읽기만 함)
 
