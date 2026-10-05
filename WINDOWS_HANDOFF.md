@@ -1381,3 +1381,34 @@ PEN 중지 경로는 정적으로만 봤는데, 미러 chunk 람다(2020/2035)�
 
 - `windows/resources/tools/twitter_tid.py` 는 문법 오류입니다 — 7행이 `async def _load_init_args()`, 21행이 `def main()` 이라
   47행 `await` 가 함수 밖입니다. 데몬 기동이 실패했을 때의 TID 폴백(`TwitterCollector.cpp:486, 2162, 2251, 2650`)에서만 씁니다.
+
+## 2026-10-05 (2) · 맥 → 윈도우 · 위 절의 맥 커밋을 올렸습니다 — 맥 r37
+
+위 절에서 '아직 origin 에 올리지 않았다' 고 한 맥 커밋을 사용자 승인으로 올렸고, 맥 판 **`mac-4.0.0-r37`** 을 냈습니다(latest).
+이제 위 표의 맥 쪽 수정은 커밋으로 바로 볼 수 있습니다. **윈도우는 여전히 사용자가 시작하라고 할 때까지 손대지 마십시오.**
+
+`origin/ueno` = `3b39b2b`. 위 절의 항목이 어느 커밋에 있는지:
+
+| 맥 커밋 | 담긴 것(위 절 번호) |
+|---|---|
+| `c9f785d` | S5 앞 절반 — 캡쳐 Chrome 플래그 정리(`--disable-features` 하나로 · WebRTC 정책) · 포트 주인이 '우리 캡처 프로필' 을 쓸 때만 끄기 · 포트 기준 `HANISHIKI_CAPTURE_PORT` · 수집 Chrome 최소화 · 앱 안 터미널 창 |
+| `a8eb4ce` | X1–X5 · R1–R7 · S1–S4 · S5 뒤 절반(프로필 이름 부분 일치 → `--user-data-dir` 전체 값이 같을 때만 끄기) · S7 · S8 · 4절 크롤러 · 5절 옛 트위터 보기(`resources/tools/twitter_viewer.py`) |
+| `4bbcf56` | R8(중지한 판의 수 — 중지 단추 쪽과 스레드 끝 쪽 두 곳) · X3 의 Phase 2(UserTweets) 오류 상한 |
+| `3b39b2b` | 좁은 창에서 위 띠 단추 칸이 삐져나오던 CSS — **윈도우에는 해당 없음**(윈도우 화면에는 `.fx-bar` 반응형 배치가 없다) |
+
+**S6(PEN 크롤 Chrome 과 수집 캡쳐 Chrome 이 포트·프로필을 같이 씀)은 맥도 아직 같습니다** — 맥 `PenChromeCrawler.cpp:144` 도 같은
+`chrome_capture_profile` 을 씁니다. 이번 판에서 고치지 않았습니다.
+
+보는 법(읽기만):
+
+```
+git fetch origin ueno
+git show 4bbcf56 -- mac/chernobyl/src/core/HanishikiBackend.cpp
+git show origin/ueno:mac/chernobyl/resources/tools/twitter_viewer.py
+```
+
+- 맥 `mac/chernobyl/src/core/HanishikiBackend.cpp` 가 윈도우 `MiyoBackend.cpp` 자리입니다. 줄 번호는 위 절의 윈도우 위치를 쓰십시오.
+- **`ueno` 를 `main` 에 합치거나 cherry-pick 하지 마십시오.** `main` 의 `mac/chernobyl` 은 옛 트리이고 `ueno` 는 많이 갈라져
+  있습니다. 위 절의 '옮기는 법' 대로 손으로 옮기는 것이 맞습니다.
+- 맥에서 낸 판 확인: 빌드본으로 akashi `inspect_all`(6가지) 통과, 크롤러 중지 · 옛 트위터 보기 · 이어받기 · SingleFile 시험을
+  모두 가짜 자료로 다시 돌려 통과했습니다.
