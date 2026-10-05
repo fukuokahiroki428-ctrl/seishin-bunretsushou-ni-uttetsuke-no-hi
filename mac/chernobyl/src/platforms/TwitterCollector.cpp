@@ -5312,6 +5312,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         bool hasMore = true;
         int emptyRetries = 0;
         int phase2Pages = 0;
+        int phase2Err = 0;   // ★ 검색 단계와 같은 상한 — 오류가 5번 이어지면 이 단계를 멈춘다(끝없이 같은 요청을 보냈다)
 
         while (isRunning && !capReached() && hasMore) {
             auto [tweets, nextCursor] = getUserTweets(userId, cursor);
@@ -5321,10 +5322,15 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 continue;
             }
             if (nextCursor == "ERROR") {
-                m_backend->log("API 오류 — 5초 후 재시도", "warning", "twitter");
+                if (++phase2Err >= 5) {
+                    m_backend->log("API 오류가 5번 이어졌습니다 — 타임라인 단계를 멈춥니다", "error", "twitter");
+                    break;
+                }
+                m_backend->log(QString("API 오류 — 5초 후 재시도 (%1/5)").arg(phase2Err), "warning", "twitter");
                 for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1);
                 continue;
             }
+            phase2Err = 0;
 
             if (tweets.isEmpty()) {
                 emptyRetries++;

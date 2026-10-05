@@ -5292,7 +5292,9 @@ void HanishikiBackend::startCollection(const QString &configJson)
                                  || m_stopRequested.value(platformName, false);
             const QString statsKey = isParallel ? trackKey : platformName;
             if (wasStopped) {
-                runJsAll(QString("updateStats(0, 0, '중단됨', '%1')").arg(statsKey));
+                // ★ 센 값은 그대로 둔다(stopCollection 과 같다) — 스레드가 끝나는 순간 0 으로 다시 지워졌다
+                runJsAll(QString("(function(p){var s=(typeof platformStats!=='undefined'&&platformStats[p])||{};"
+                                 "updateStats(s.posts||0, s.media||0, '중단됨', p);})('%1')").arg(statsKey));
                 m_lastStatsUpdate[statsKey] = QDateTime::currentMSecsSinceEpoch();
                 log(QString("⏹ 수집이 사용자 요청으로 중단되었습니다. (%1)").arg(trackKey), "warning", platformName);
             } else {
