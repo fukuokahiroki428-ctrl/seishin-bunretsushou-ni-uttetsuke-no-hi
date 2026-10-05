@@ -9316,8 +9316,9 @@ body .tab-content.fx.active[data-fxmode="narrow"] { display: block !important; }
 .tab-content.fx[data-fxmode="narrow"] .fx-status { order: 3; flex-basis: 100%; }
 .tab-content.fx[data-fxmode="narrow"] .fx-status:empty { display: none; }
 .fx-status .log-time { display: none; }
-.fx-bar-btns { flex: none; margin-left: auto; }
-.fx-bar-btns > .btn-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 !important; padding: 0 !important; border: 0 !important; }
+/* 단추가 넷인 화면(트위터: 옛 트위터로 보기)은 좁을 때 띠보다 넓다 — 띠 폭까지만 차지하고 안에서 줄을 바꾼다 */
+.fx-bar-btns { flex: 0 1 auto; min-width: 0; max-width: 100%; margin-left: auto; }
+.fx-bar-btns > .btn-row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin: 0 !important; padding: 0 !important; border: 0 !important; }
 .fx-bar-btns > .btn-row > .btn { flex: none; min-width: 0; height: 32px; padding: 0 14px; font-size: 12.5px; }
 
 /* 아래 패널(보통) — 위쪽 손잡이로 높이, 「로그」 이름표나 손잡이 두 번 누르기로 접기/펴기.
