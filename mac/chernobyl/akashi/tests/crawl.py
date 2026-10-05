@@ -30,7 +30,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _common as C  # noqa: E402
 import fixtures  # noqa: E402
-from lib.cdp import Page  # noqa: E402
 
 
 def wait_finished(p, secs):
@@ -57,8 +56,7 @@ def main() -> int:
             return 2
         out = C.ISO / 'tmp' / 'crawl-out'
         out.mkdir(parents=True, exist_ok=True)
-        with Page.attach(C.PORT) as p:
-            C.watch_errors(p)
+        with C.page() as p:
             time.sleep(1.5)
             vis = p.eval("(function(){var n=[...document.querySelectorAll('.nav-item')].find(e=>(e.getAttribute('onclick')||'').indexOf(\"'crawl'\")>=0);"
                          "return n? (n.offsetParent!==null) : null})()")

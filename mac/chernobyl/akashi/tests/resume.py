@@ -29,7 +29,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _common as C  # noqa: E402
 import fixtures  # noqa: E402
-from lib.cdp import Page  # noqa: E402
 
 BIG = 3_000_000
 DONE = ('완료', 'Done', '중단됨', '오류', 'Error', 'Ready', '대기')
@@ -83,7 +82,7 @@ def main() -> int:
             return 2
         yt = C.ISO / 'tmp' / 'yt'
         out = C.ISO / 'tmp' / 'crawl-out'
-        with Page.attach(C.PORT) as p:
+        with C.page() as p:
             time.sleep(1.5)
             # ── A) 유튜브 장부 ──
             base = dict(url='http://127.0.0.1:%d/clip.mp4' % hp, path=str(yt), quality='best', subs=False, thumb=False,

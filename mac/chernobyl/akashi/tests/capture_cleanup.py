@@ -29,7 +29,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _common as C  # noqa: E402
-from lib.cdp import Page  # noqa: E402
 
 
 def main() -> int:
@@ -88,8 +87,7 @@ def main() -> int:
         kill2 = {'이 사본 캡처(2)': fake(own / 'chrome_capture_profile'),
                  '이 사본 PEN(2)': fake(own / 'chrome_capture_profile_pen')}
         time.sleep(0.5)
-        with Page.attach(C.PORT) as pg:
-            C.watch_errors(pg)
+        with C.page() as pg:
             time.sleep(1)
             pg.eval("window.__akashiDiag=''; window.__akashiOnDiag=window.onDiagInfo;"
                     "window.onDiagInfo=function(t){window.__akashiDiag=String(t)}; backend.getDiagnosticInfo()")

@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import socket
@@ -33,6 +34,7 @@ AKASHI = TESTS.parent
 sys.path.insert(0, str(AKASHI))
 import iso  # noqa: E402
 from lib import paths  # noqa: E402
+from lib.cdp import CdpError, Page  # noqa: E402
 
 PORT = int(os.environ.get("AKASHI_PORT") or 9334)
 USER_CAPTURE_PORT = 9223            # 사용자 앱의 캡처 Chrome 기본 포트(Common::capturePortBase)
@@ -70,6 +72,18 @@ def test_app():
     if env:
         return Path(env) if paths.is_our_app(env) else None
     return paths.find_build_app()
+
+
+def user_idle_seconds() -> int:
+    """사람이 키보드 · 마우스를 마지막으로 쓴 뒤 지난 초(ioreg HIDIdleTime — 읽기만). 모르면 0."""
+    out = subprocess.run(["/usr/sbin/ioreg", "-c", "IOHIDSystem"], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        if "HIDIdleTime" in line:
+            try:
+                return int(line.split("=")[-1].strip()) // 1_000_000_000
+            except ValueError:
+                return 0
+    return 0
 
 
 def free_port() -> int:
@@ -113,6 +127,40 @@ def watch_errors(page) -> None:
     page.cmd("Log.enable")
     page.pump(0.4)
     page.events.clear()
+
+
+@contextlib.contextmanager
+def page(retries: int = 3):
+    """사본의 본 화면에 붙어 오류 받기를 켜고(watch_errors) 한 번 대 본 뒤 넘긴다. 끊기면 잠깐 뒤 다시 붙는다.
+
+    ★ 왜 다시 붙나 — 사본이 막 뜬 뒤(자가진단 · 꾸러미 맞추기 직후) 붙는 순간 CDP 가 끊기거나(Connection reset)
+      시간 초과로 끝나는 일이 가끔 있다. 시험은 아직 아무것도 하지 않은 때라 다시 붙어도 판정이 바뀌지 않는다."""
+    last = None
+    for i in range(retries):
+        pg = None
+        try:
+            pg = Page.attach(PORT)
+            watch_errors(pg)
+            pg.eval("document.readyState")
+            break
+        except (OSError, CdpError) as e:              # socket.timeout · ConnectionReset 은 OSError
+            last = e
+            print("   (화면에 붙다 끊김 %d/%d — %s: %s · 3초 뒤 다시)" % (i + 1, retries, type(e).__name__, e), flush=True)
+            if pg is not None:
+                try:
+                    pg.close()
+                except OSError:
+                    pass
+            time.sleep(3)
+    else:
+        raise last
+    try:
+        yield pg
+    finally:
+        try:
+            pg.close()
+        except OSError:
+            pass
 
 
 def page_errors(page) -> list:
@@ -161,7 +209,8 @@ def iso_start(*extra, wipe_first: bool = True) -> bool:
         return False
     if wipe_first:
         _iso("stop", "--wipe")
-    args = ["start"] + (["--app", str(app)] if os.environ.get("AKASHI_TEST_APP") else []) + list(extra)
+    # 새로 구운 번들은 첫 실행이 느리다(복제본마다 macOS 가 새 앱으로 살핀다) — iso.py 의 45초 대신 넉넉히
+    args = ["start", "--wait", "150"] + (["--app", str(app)] if os.environ.get("AKASHI_TEST_APP") else []) + list(extra)
     r = _iso(*args)
     last = (r.stdout.strip().splitlines() or ["?"])[-1]
     print("[사본] " + last, flush=True)

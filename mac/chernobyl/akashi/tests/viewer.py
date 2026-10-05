@@ -28,7 +28,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _common as C  # noqa: E402
 import fixtures  # noqa: E402
 from lib import paths  # noqa: E402
-from lib.cdp import Page  # noqa: E402
 
 
 def main() -> int:
@@ -45,8 +44,7 @@ def main() -> int:
         base = C.ISO / 'tmp' / 'arch'
         shutil.rmtree(base, ignore_errors=True)
         shutil.copytree(arch, base / 'twitter')
-        with Page.attach(C.PORT) as p:
-            C.watch_errors(p)
+        with C.page() as p:
             time.sleep(1.5)
             p.eval("switchTab('twitter')")
             time.sleep(0.6)

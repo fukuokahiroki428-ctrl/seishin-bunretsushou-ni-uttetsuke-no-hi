@@ -30,7 +30,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _common as C  # noqa: E402
 import fixtures  # noqa: E402
-from lib.cdp import Page  # noqa: E402
 
 XORIGIN_CSP = "default-src 'self'; img-src *; connect-src 'self'; script-src 'unsafe-inline'"
 PAGES = ['index.html', 'gallery.html', 'io.html', 'xorigin.html', 'csp.html']
@@ -38,8 +37,14 @@ PAGES = ['index.html', 'gallery.html', 'io.html', 'xorigin.html', 'csp.html']
 
 def main() -> int:
     check = C.Checks()
+    shutil.rmtree(C.work_dir('singlefile_captures'), ignore_errors=True)   # 지난 판의 결과가 남아 '이번 결과' 로 읽히지 않게
     user_chrome = C.listen_pids(C.USER_CAPTURE_PORT)
     print('[사용자 앱 Chrome %d] %s' % (C.USER_CAPTURE_PORT, user_chrome or '없음'))
+    idle = C.user_idle_seconds()
+    if idle > 300:
+        # 화면이 잠들면 macOS 가 그리기를 멈춰, 최소화된 캡처 Chrome 의 IntersectionObserver 가 한 번도 판정하지 않는다
+        # (2026-10-06 실측: 옛 판 1.22.98 · 새 판 1.28.1 모두 io.html 0/6, 나머지 쪽은 그대로). 판의 문제가 아니다.
+        print('   주의: 사람 입력 없이 %d분 — 화면이 꺼져 있으면 지연 그림 쪽(io.html)이 0/6 로 실패한다(판과 무관)' % (idle // 60))
     site = fixtures.build_site(C.work_dir('testsite_sf'))
     sb, b = fixtures.serve(site)                                   # 다른 출처 — 그림만
     (site / 'io.html').write_text(
@@ -60,8 +65,7 @@ def main() -> int:
         out = C.ISO / 'tmp' / 'sf-out'
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir(parents=True, exist_ok=True)
-        with Page.attach(C.PORT) as p:
-            C.watch_errors(p)
+        with C.page() as p:
             time.sleep(1.5)
             p.eval("""(function(){var g=function(i){return document.getElementById(i)}; switchTab('crawl');
               g('crawl-url').value=%s; g('crawl-path').value=%s; g('crawl-real-chrome').checked=true;
@@ -83,6 +87,12 @@ def main() -> int:
             check('화면 JS 오류 없음', not errs, errs[:2])
         files = sorted(glob.glob(str(out) + '/**/captures/*.html', recursive=True))
         print('   저장된 파일:', [Path(f).name for f in files])
+        # 사본은 끝나면 지워지므로 결과를 작업 폴더에 남긴다 — 판을 바꿀 때 앞뒤를 견주거나 실패를 볼 때
+        keep = C.work_dir('singlefile_captures')
+        shutil.rmtree(keep, ignore_errors=True)
+        keep.mkdir(parents=True)
+        for f in files:
+            shutil.copy(f, keep / Path(f).name)
         check('쪽마다 파일 하나(오류 화면은 저장 안 됨)', len(files) == len(PAGES), len(files))
         for f in files:
             h = Path(f).read_text(encoding='utf-8', errors='replace')
