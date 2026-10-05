@@ -70,13 +70,16 @@
 						being unloaded if not). </li>
 					<li>Select "Save Selection" from the context menu without selecting any content first to display a
 						selector that will help you choose content by hovering over it with the mouse.</li>
+					<li>You can customize the entries of the menus and their order in the "Menus" section of the
+						options page.</li>
 					<li>Right-click on the SingleFile button and select "Options" to open the options page.</li>
 					<li id="saveToGDriveHint">Enable the option "Destination &gt; upload to Google Drive" to upload
 						pages to Google Drive</li>
 					<li id="shortcutsSection">You can use the customizable shortcut Ctrl+Shift+Y to save the current tab
-						or the selected tabs.
+						or the highlighted tabs. Note that if text is selected in the page, this shortcut saves only
+						the selected content instead of the entire page.
 						Go to about:addons and select "Manage extension shortcuts" in the cogwheel menu to change it in
-						Firefox. Go to chrome://extensions/shortcuts to change it in Chrome..</li>
+						Firefox. Go to chrome://extensions/shortcuts to change it in Chrome.</li>
 					<li>The default save folder is the download folder configured in your browser, cf. about:preferences
 						in Firefox, chrome://settings in Chrome, and Settings > General > File download location in
 						Safari.</li>
@@ -111,6 +114,8 @@
 						<p>Check this option to display an entry for SingleFile in the context menu of the webpage. The
 							context menu of the SingleFile button <img src="../resources/icon_16.png" class="icon"> in
 							the extension toolbar is displayed whether this option is checked or not. </p>
+						<p>The entries of the menus can be customized in the "Menus" section of the options page, see <a
+								href="#menus">Menus</a>.</p>
 						<p class="notice">It is recommended to <u>check</u> this option</p>
 					</li>
 					<li data-options-label="shadowEnabledLabel"> <span class="option">Option: overlay a shadow on the
@@ -132,7 +137,9 @@
 						<span class="option">Option: keyboard shortcut command</span>
 						<p>Use this option to select which custom keyboard shortcut command (defined in the extension
 							shortcuts page of your browser) will trigger the current profile. When a shortcut is
-							assigned here, using it will save the page with the settings of this profile.</p>
+							assigned here, using it will save the page with the settings of this profile. Unlike
+							Ctrl+Shift+Y, custom shortcut commands always save the entire page, even when text is
+							selected in the page.</p>
 					</li>
 				</ul>
 				<p>File name</p>
@@ -172,6 +179,15 @@
 					<li data-options-label="filenameReplacementCharacterLabel"> <span class="option">Option: replacement
 							character</span>
 						<p>Enter the character used to replace invalid characters in the filename.</p>
+					</li>
+					<li data-options-label="filenameReplacementsLabel">
+						<span class="option">Option: characters replaced in file names</span>
+						<p>Each row of the table replaces one character of the file name with another one. Edit the
+							second column to change what a character becomes, leave it empty to use the replacement
+							character above, and delete a row to keep the character as it is. The first column also
+							accepts a range of characters (e.g. <code>\x00-\x1f</code>) and the escape sequences
+							<code>\x00</code> to <code>\xff</code>. Type a file name in the preview field to see the
+							result.</p>
 					</li>
 					<li data-options-label="replaceEmojisInFilenameLabel">
 						<span class="option">Option: replace emojis with text</span>
@@ -292,6 +308,13 @@
 							loaded.</p>
 						<p class="notice">It is recommended to <u>check</u> this option</p>
 					</li>
+					<li data-options-label="insertCanonicalLinkLabel"> <span class="option">Option: save the canonical
+							link of the page</span>
+						<p>Check this option to insert a link element pointing at the address the page was saved from, so
+							that the saved copy still declares where it came from. A canonical link already present in the
+							page is left as it is, and nothing is inserted when the page is not saved from an HTTP(S)
+							address.</p>
+					</li>
 					<li data-options-label="removeFramesLabel"> <span class="option">Option: remove frames</span>
 						<p>Check this option to remove all frame and iframe elements. Checking this option can
 							considerably reduce the size of the file without altering the document most of the time. It
@@ -355,6 +378,12 @@
 							open</span>
 						<p>Check this option to keep the infobar open when viewing a saved page.</p>
 					</li>
+					<li data-options-label="animateInfobarLabel"> <span class="option">Option: animate the
+							infobar</span>
+						<p>Check this option to make the infobar blink and display an expanding ring when a saved page
+							is opened. The animation stops when the infobar is opened, and does not run when the system
+							is set to reduce motion.</p>
+					</li>
 				</ul>
 				<p>Stylesheets</p>
 				<ul>
@@ -371,12 +400,6 @@
 						<p>Check this option to remove stylesheets that are not used for the screen display like
 							stylesheets for print preview and speech synthesizers. Checking this option can help to
 							reduce the size of the file.</p>
-					</li>
-					<li data-options-label="compressCSSLabel"> <span class="option">Option: compress CSS content</span>
-						<p>Check this option to minify CSS stylesheets. Checking this option can reduce size of the file
-							without altering the document. It may also increase the CPU consumption and the time needed
-							to save a page.</p>
-						<p class="notice">It is recommended to <u>uncheck</u> this option</p>
 					</li>
 					<li data-options-label="groupDuplicateStylesheetsLabel"> <span class="option">Option: group
 							duplicate stylesheets together</span>
@@ -404,39 +427,41 @@
 							file. This option is ignored with archive formats based on ZIP files.</p>
 						<p class="notice">It is recommended to <u>check</u> this option</p>
 					</li>
-					<li data-options-label="loadDeferredImagesLabel"> <span class="option">Option: save deferred
-							images</span>
-						<p>Check this option to save all the deferred images (or frames) that are not yet displayed.
+					<li data-options-label="loadDeferredContentLabel"> <span class="option">Option: save content loaded while
+							scrolling</span>
+						<p>Check this option to save all the deferred content (images, frames, and the messages a page
+							unmounts while you scroll) that is not yet displayed.
 							This may help to save all the images without scrolling the page. This feature does its best
 							effort and is not guaranteed to work on all sites. It will also increase the time needed to
 							save a page.
 						</p>
 						<p class="notice">It is recommended to <u>check</u> this option</p>
 					</li>
-					<li data-options-label="loadDeferredImagesMaxIdleTimeLabel"> <span class="option">Option: maximum
+					<li data-options-label="loadDeferredContentMaxIdleTimeLabel"> <span class="option">Option: maximum
 							idle time (ms)</span>
-						<p>Enter the maximum delay of time to wait for deferred images. You can increase this value if
+						<p>Enter the maximum delay of time to wait for deferred content. You can increase this value if
 							for example the network or system conditions are degraded. You can also decrease this value
 							otherwise.</p>
 					</li>
-					<li data-options-label="loadDeferredImagesDispatchScrollEventLabel"> <span class="option">Option:
-							dispatch "scroll" event</span>
+					<li data-options-label="loadDeferredContentDispatchScrollEventLabel"> <span class="option">Option: simulate
+							scrolling</span>
 						<p>Check this option to dispatch the <a
 								href="https://developer.mozilla.org/docs/Web/API/Document/scroll_event"
 								target="_blank">"scroll"
-								event</a> when waiting for deferred images. This can improve the loading of images
-							on some sites but it can also cause unexpected scrolling problems on some other sites.</p>
-						<p class="notice">It is recommended to <u>uncheck</u> this option</p>
+								event</a> when waiting for deferred content. Some sites reveal their content from a scroll
+							listener and load nothing without it, but it can also cause unexpected scrolling problems on
+							some other sites.</p>
+						<p class="notice">It is recommended to <u>check</u> this option</p>
 					</li>
-					<li data-options-label="loadDeferredImagesKeepZoomLevelLabel"> <span class="option">Option: zoom out
-							the page</span>
+					<li data-options-label="loadDeferredContentKeepZoomLevelLabel"> <span class="option">Option: zoom out the page during
+							the capture</span>
 						<p>Check this option to save the entire content of a page by zooming out the page. This can help
 							saving pages using infinite virtual lists for example. </p>
 						<p class="notice">It is recommended to <u>uncheck</u> this option</p>
 					</li>
-					<li data-options-label="loadDeferredImagesBeforeFramesLabel"> <span class="option">Option: load
-							deferred frames</span>
-						<p>Check this option to load deferred frames and images before saving frame contents. It will
+					<li data-options-label="loadDeferredContentBeforeFramesLabel"> <span class="option">Option: load in frames
+							first</span>
+						<p>Check this option to load the deferred content of frames before saving their contents. It will
 							increase the time needed to save a page.
 						</p>
 						<p class="notice">It is recommended to <u>uncheck</u> this option</p>
@@ -448,8 +473,15 @@
 							For example, if you set this value to 2, the dimensions of the images will be halved; if you
 							set it to 4, they will be quartered, and so on. This only applies to PNG, JPEG, and WEBP
 							images. This can help reduce the final file size, but may also reduce the image quality. The
-							default value is 1 (no reduction).
+							default value is 1 (no reduction). Images whose size is not set by the page (e.g. icons, logos)
+							are displayed smaller.
 						</p>
+					</li>
+					<li data-options-label="imageQualityLabel"> <span class="option">Option: quality of resized images</span>
+						<p>Quality of the JPEG and WEBP images resized with the image reduction factor, between 0 and 1. A
+							lower value gives a smaller file and a less sharp image. With 1, WEBP images are saved without
+							loss. This option has no effect on PNG images, or when the image reduction factor is 1. The
+							default value is 0.8.</p>
 					</li>
 					<li data-options-label="removeAlternativeImagesLabel"> <span class="option">Option: remove images
 							for alternative screen resolutions</span>
@@ -553,6 +585,10 @@
 						<p>Enter the URL of your MCP server (e.g. <code>http://localhost:3000/mcp</code>).</p>
 						<p>The server must implement the HTTP transport as specified in the MCP protocol and provide
 							the <code>write_file</code> and <code>get_file_info</code> tools.</p>
+						<p>Compressed archives are sent as base64 through the <code>encoding</code> argument of
+							<code>write_file</code>, which the server must accept, like the server bundled in the
+							<code>tools/mcp-server</code> folder of the SingleFile repository. Servers without it can only
+							receive uncompressed pages.</p>
 					</li>
 					<li data-options-label="mcpAuthTokenLabel"> <span class="option">Option: authentication token</span>
 						<p>Enter the Bearer authentication token for your MCP server (optional).</p>
@@ -867,6 +903,30 @@
 						based on regular expressions match a URL, the longest rule based on regular expression will be
 						chosen. </li>
 				</ul>
+				<p id="menus">Menus</p>
+				<ul>
+					<li data-options-label="menusEditorLabel" id="menusOption"> <span class="option">Option: choose the
+							entries displayed in the menus and their order</span>
+						<p>The menu editor lets you choose which entries appear in the context menu of the webpage, in
+							the menu of the SingleFile button <img src="../resources/icon_16.png" class="icon"> and in
+							the menu of the tabs, and in which order. These settings are shared by all profiles. The
+							option "add entry in the context menu of the webpage" of each profile still decides whether
+							the menu is displayed at all.</p>
+						<p>Select the menu to edit, then add entries with the "Add" list. Drag an entry to reorder it or
+							to nest it into a submenu, double-click a label to rename it, press Delete to remove it. The
+							details of the selected entry are displayed below the list.</p>
+						<p>An entry can be bound to a profile to save with it in one click, whatever the current profile
+							is. On Windows and Linux, an "&amp;" before a letter of a custom label makes it the keyboard
+							accelerator.</p>
+						<p>Dimmed entries are not displayed by the browser, for example the entries related to profiles
+							when only one profile exists, or an entry whose contexts do not match the selected context.
+						</p>
+						<p>The browser limits the number of top-level entries in the menu of the SingleFile button. The
+							editor shows this limit and can move the extra entries into a submenu.</p>
+						<p>The layout can be edited as JSON to copy it or share it. "Reset to default" restores the
+							default menus. The layout is included when exporting the options.</p>
+					</li>
+				</ul>
 				<p>Form buttons</p>
 				<ul>
 					<li><span class="option">synchronize options</span>
@@ -976,6 +1036,14 @@
 					<li><code>{minutes-locale}</code>: the localized value of the minutes (e.g. "38")</li>
 					<li><code>{seconds-utc}</code>: the seconds of the save date in UTC format (e.g. "31")</li>
 					<li><code>{seconds-locale}</code>: the localized value of the seconds (e.g. "31")</li>
+					<li><code>{weekday-locale}</code>: the localized name of the weekday of the save date (e.g.
+						"Saturday")</li>
+					<li><code>{weekday-short-locale}</code>: the localized short name of the weekday of the save date
+						(e.g. "Sat")</li>
+					<li><code>{weekday-utc}</code>: the localized name of the weekday of the save date in UTC (e.g.
+						"Saturday")</li>
+					<li><code>{weekday-short-utc}</code>: the localized short name of the weekday of the save date in
+						UTC (e.g. "Sat")</li>
 					<li><code>{visit-datetime-iso}</code>: the visit date and time in the ISO format (e.g.
 						"2018-09-15T22_38_26_317Z")</li>
 					<li><code>{visit-datetime-utc}</code>: the visit date and time in UTC format (e.g. "Sat, 15 Sep 2018
@@ -1000,6 +1068,14 @@
 					<li><code>{visit-minutes-locale}</code>: the localized value of the minutes (e.g. "38")</li>
 					<li><code>{visit-seconds-utc}</code>: the seconds of the visit date in UTC format (e.g. "31")</li>
 					<li><code>{visit-seconds-locale}</code>: the localized value of the seconds (e.g. "31")</li>
+					<li><code>{visit-weekday-locale}</code>: the localized name of the weekday of the visit date (e.g.
+						"Saturday")</li>
+					<li><code>{visit-weekday-short-locale}</code>: the localized short name of the weekday of the visit
+						date (e.g. "Sat")</li>
+					<li><code>{visit-weekday-utc}</code>: the localized name of the weekday of the visit date in UTC
+						(e.g. "Saturday")</li>
+					<li><code>{visit-weekday-short-utc}</code>: the localized short name of the weekday of the visit
+						date in UTC (e.g. "Sat")</li>
 					<li><code>{url-href}</code>: the URL of the page (e.g. "http://example.com/category/index.html")
 					</li>
 					<li><code>{url-href-digest-sha-1}</code>: the SHA-1 hash value of the URL of the page (e.g.
@@ -1262,7 +1338,10 @@
 			<li>
 				<a id="external-messages">Integration with other extensions</a>
 				<p>SingleFile can receive messages from other extensions. The messages must be sent to the extension ID
-					of SingleFile and must be a string containing one of the following values:
+					of SingleFile. This allows other extensions to integrate with SingleFile and request HTML captures
+					without triggering browser downloads.
+				</p>
+				<p>To run one of the built-in save actions, send a string containing one of the following values:</p>
 				<ul>
 					<li>
 						<code>"save-page"</code>: save the current page
@@ -1286,6 +1365,23 @@
 						<code>"save-all-tabs"</code>: save all the tabs
 					</li>
 				</ul>
+				<p>To capture the current page and receive the saved HTML, send an object message with
+					<code>{ method: "capture-page" }</code>. The promise resolves with the captured page data, including
+					<code>content</code>, without starting a browser download. Include <code>tabId</code> to capture a
+					specific tab. Include <code>config</code> to pass SingleFile options for that capture request, for
+					example <code>{ method: "capture-page", config: { removeFrames: true } }</code>. Only the options
+					defining the content of the captured page are taken into account, the other options are ignored:
+					the destination, the filename confirmation, the delays and the credentials always come from the
+					user settings.
+				</p>
+				<p>The first capture request from a caller extension opens the options page so the user can approve or
+					block future capture requests from that extension. Approved entries are stored with the extension ID
+					and display name; blocked extensions are rejected without prompting again. Both lists can be edited
+					in the "External capture API" section of the options page. Note that approving an extension lets it
+					capture any tab, not only the active one, until it is removed from the allowed list.
+				</p>
+				<p>Requests from an extension that is neither allowed nor blocked stay pending until the user answers;
+					closing the approval tab or leaving it unanswered rejects the request.
 				</p>
 			</li>
 			<li><a id="notes">Technical notes</a>
@@ -1373,9 +1469,8 @@
 							target="_blank">GitHub profile</a>) </li>
 					<li>Traditional Chinese translation done by frostblazergit (<a
 							href="https://github.com/frostblazergit" target="_blank">GitHub profile</a>), lqzhgood (<a
-							href="https://github.com/lqzhgood" target="_blank">GitHub profile</a>)</li>
-					<li>Dutch translation done by jooleer (<a href="https://github.com/jooleer" target="_blank">GitHub
-							profile</a>)</li>
+							href="https://github.com/lqzhgood" target="_blank">GitHub profile</a>), notlin4 (<a
+							href="https://github.com/notlin4" target="_blank">GitHub profile</a>)</li>
 					<li>Dutch translation done by jooleer (<a href="https://github.com/jooleer" target="_blank">GitHub
 							profile</a>)</li>
 					<li>German translation done by womotroll (<a href="https://github.com/womotroll"

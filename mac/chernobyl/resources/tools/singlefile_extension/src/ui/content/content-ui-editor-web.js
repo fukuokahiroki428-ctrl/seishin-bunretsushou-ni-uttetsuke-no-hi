@@ -21,13 +21,13 @@
  *   Source.
  */
 
-/* global window, document, fetch, DOMParser, getComputedStyle, setTimeout, clearTimeout, NodeFilter, Readability, isProbablyReaderable, matchMedia, TextDecoder, Node, prompt, MutationObserver, FileReader */
+/* global window, document, fetch, DOMParser, getComputedStyle, setTimeout, clearTimeout, NodeFilter, Readability, isProbablyReaderable, matchMedia, TextDecoder, Node, prompt, MutationObserver, btoa, ResizeObserver, requestAnimationFrame */
 
 import { setLabels } from "./../../ui/common/common-content-ui.js";
 import { downloadPageForeground } from "../../core/common/download.js";
 import { convert } from "../../lib/mhtml-to-html/mod.js";
 
-(globalThis => {
+(() => {
 
 	const singlefile = globalThis.singlefile;
 
@@ -37,6 +37,13 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 	const SHADOWROOT_ATTRIBUTE_NAME = "shadowrootmode";
 	const SCRIPT_TEMPLATE_SHADOW_ROOT = "data-template-shadow-root";
 	const SCRIPT_OPTIONS = "data-single-file-options";
+	const RESERVED_FILES_PREFIX = "sfz-";
+	const PAGES_FILENAME = "sfz-pages.json";
+	const TOC_FILENAME = "sfz-toc.html";
+	const PAGES_PREFIX = "pages/";
+	const INDEX_FILENAME = "index.html";
+	const MODIFIED_PAGE_CLASS = "sfz-modified-page";
+	const MODIFIED_PAGE_STYLE = "." + MODIFIED_PAGE_CLASS + "::after{content:\" \\25CF\";font-size:.75em;opacity:.7}";
 	const NOTE_TAGNAME = "single-file-note";
 	const NOTE_CLASS = "note";
 	const NOTE_MASK_CLASS = "note-mask";
@@ -66,10 +73,12 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 	const DISABLED_NOSCRIPT_ATTRIBUTE_NAME = "data-single-file-disabled-noscript";
 	const COMMENT_HEADER = "Page saved with SingleFile";
 	const COMMENT_HEADER_LEGACY = "Archive processed by SingleFile";
+	const EDIT_MESSAGE_METHODS = ["addNote", "displayNotes", "hideNotes", "enableHighlight", "disableHighlight", "displayHighlights", "hideHighlights", "enableRemoveHighlights", "disableRemoveHighlights", "enableEditPage", "disableEditPage", "formatPage", "cancelFormatPage", "enableCutInnerPage", "enableCutOuterPage", "disableCutInnerPage", "disableCutOuterPage", "undoCutPage", "undoAllCutPage", "redoCutPage"];
 
 	let NOTES_WEB_STYLESHEET, MASK_WEB_STYLESHEET, HIGHLIGHTS_WEB_STYLESHEET;
 	let selectedNote, anchorElement, maskNoteElement, maskPageElement, highlightSelectionMode, removeHighlightMode, resizingNoteMode, movingNoteMode, highlightColor, collapseNoteTimeout, cuttingOuterMode, cuttingMode, cuttingTouchTarget, cuttingPath, cuttingPathIndex, previousContent;
-	let removedElements = [], removedElementIndex = 0, pageResources, pageUrl, pageCompressContent, includeInfobar, openInfobar, infobarPositionAbsolute, infobarPositionTop, infobarPositionBottom, infobarPositionLeft, infobarPositionRight;
+	let removedElements = [], removedElementIndex = 0, pageResources, pageUrl, pageCompressContent, includeInfobar, openInfobar, animateInfobar, infobarPositionAbsolute, infobarPositionTop, infobarPositionBottom, infobarPositionLeft, infobarPositionRight;
+	let pageArchiveContent, archivePages, archiveManifest, archivePassword, archiveUrlToPath, archiveTocContent, archiveTocPresent, stashedArchivePages, modifiedArchivePagePaths, currentArchivePagePath, archiveTocDisplayed, droppedArchiveContent;
 
 	globalThis.zip = singlefile.helper.zip;
 	initEventListeners();
@@ -81,11 +90,28 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 			if (message.method == "init") {
 				await init(message);
 			}
+			if (message.method == "displayArchivePage") {
+				await openArchivePage(message.pagePath);
+			}
+			if (message.method == "displayArchiveToc") {
+				await displayArchiveToc();
+			}
+			if (message.method == "archiveSaved") {
+				modifiedArchivePagePaths.clear();
+				if (archiveTocDisplayed) {
+					await displayArchiveToc();
+				}
+				onUpdate(true);
+			}
+			if (archiveTocDisplayed && EDIT_MESSAGE_METHODS.includes(message.method)) {
+				return;
+			}
 			if (message.method == "addNote") {
 				addNote(message);
 			}
 			if (message.method == "displayNotes") {
 				document.querySelectorAll(NOTE_TAGNAME).forEach(noteElement => noteElement.shadowRoot.querySelector("." + NOTE_CLASS).classList.remove(NOTE_HIDDEN_CLASS));
+				reflowNotes();
 			}
 			if (message.method == "hideNotes") {
 				document.querySelectorAll(NOTE_TAGNAME).forEach(noteElement => noteElement.shadowRoot.querySelector("." + NOTE_CLASS).classList.add(NOTE_HIDDEN_CLASS));
@@ -163,14 +189,19 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 				redoCutPage();
 			}
 			if (message.method == "getContent") {
-				onUpdate(true);
 				includeInfobar = message.includeInfobar;
 				openInfobar = message.openInfobar;
+				animateInfobar = message.animateInfobar;
 				infobarPositionAbsolute = message.infobarPositionAbsolute;
 				infobarPositionTop = message.infobarPositionTop;
 				infobarPositionBottom = message.infobarPositionBottom;
 				infobarPositionLeft = message.infobarPositionLeft;
 				infobarPositionRight = message.infobarPositionRight;
+				if (archivePages) {
+					await sendArchiveContent(message);
+					return;
+				}
+				onUpdate(true);
 				let content = getContent(message.compressHTML, message.updatedResources);
 				let filename;
 				const pageOptions = loadOptionsFromPage(document);
@@ -194,12 +225,13 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 						url: pageUrl,
 						viewport: viewport ? viewport.content : null,
 						compressContent: true,
+						archiveContent: droppedArchiveContent,
 						foregroundSave: message.foregroundSave,
 						sharePage: message.sharePage,
 						documentHeight: document.documentElement.offsetHeight
 					}), "*");
 				} else {
-					if (message.foregroundSave || message.sharePage) {
+					if (message.foregroundSave && !message.sharePage) {
 						try {
 							await downloadPageForeground({
 								content,
@@ -233,6 +265,7 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 			if (message.method == "displayInfobar") {
 				singlefile.helper.displayIcon(document, true, {
 					openInfobar: message.openInfobar,
+					animateInfobar: message.animateInfobar,
 					infobarPositionAbsolute: message.infobarPositionAbsolute,
 					infobarPositionTop: message.infobarPositionTop,
 					infobarPositionBottom: message.infobarPositionBottom,
@@ -271,6 +304,7 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 				const compressContent = /<html[^>]* data-sfz[^>]*>/i.test(content);
 				if (compressContent) {
 					await init({ content: file, compressContent }, { filename: file.name });
+					droppedArchiveContent = Array.from(new Uint8Array(await file.arrayBuffer()));
 				} else {
 					const isMHTML = /\.mhtml?$|\.mht$/i.test(file.name);
 					let filename = file.name || "Untitled.html";
@@ -288,16 +322,25 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 		};
 	}
 
-	async function init({ content, password, compressContent }, { filename, reset, isMHTML } = {}) {
+	async function init({ content, password, compressContent, url, pagePath }, { filename, reset, isMHTML } = {}) {
 		await initConstants();
 		if (compressContent) {
 			const zipOptions = {
 				useWebWorkers: false
 			};
+			if (pagePath === undefined) {
+				resetArchive();
+				if (await initArchive(content, password, zipOptions, filename)) {
+					return;
+				}
+			}
 			const { docContent, origDocContent, resources, url } = await singlefile.helper.extract(content, {
 				password,
 				prompt,
-				zipOptions
+				zipOptions,
+				pagePath,
+				excludedPaths: archivePages && !pagePath ? [PAGES_PREFIX, RESERVED_FILES_PREFIX] : undefined,
+				aliases: archivePages && pagePath !== undefined ? archiveManifest.aliases : undefined
 			});
 			pageResources = resources;
 			pageUrl = url;
@@ -307,40 +350,39 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 				const { saveUrl } = singlefile.helper.extractInfobarData(contentDocument);
 				pageUrl = saveUrl;
 				await singlefile.helper.display(document, docContent, { disableFramePointerEvents: true });
-				singlefile.helper.fixInvalidNesting(document);
 				const infobarElement = document.querySelector(singlefile.helper.INFOBAR_TAGNAME);
 				if (infobarElement) {
 					infobarElement.remove();
 				}
-				await initPage();
-				let icon;
-				const origContentDocument = (new DOMParser()).parseFromString(origDocContent, "text/html");
-				const iconElement = origContentDocument.querySelector("link[rel*=icon]");
-				if (iconElement) {
-					const iconResource = resources.find(resource => resource.filename == iconElement.getAttribute("href"));
-					if (iconResource && iconResource.content) {
-						const reader = new FileReader();
-						reader.readAsDataURL(await (await fetch(iconResource.content)).blob());
-						icon = await new Promise((resolve, reject) => {
-							reader.addEventListener("load", () => resolve(reader.result), false);
-							reader.addEventListener("error", reject, false);
-						});
-					} else {
-						icon = iconElement.href;
+				initPage();
+				if (!archivePages) {
+					let icon;
+					const origContentDocument = (new DOMParser()).parseFromString(origDocContent, "text/html");
+					const iconElement = origContentDocument.querySelector("link[rel*=icon]");
+					if (iconElement) {
+						const iconResource = resources.find(resource => resource.filename == iconElement.getAttribute("href"));
+						if (iconResource && iconResource.content) {
+							icon = await getDataURI(await (await fetch(iconResource.content)).blob());
+						} else {
+							icon = iconElement.href;
+						}
 					}
+					window.parent.postMessage(JSON.stringify({
+						method: "onInit",
+						title: document.title,
+						icon,
+						filename,
+						reset,
+						formatPageEnabled: isProbablyReaderable(document)
+					}), "*");
 				}
-				window.parent.postMessage(JSON.stringify({
-					method: "onInit",
-					title: document.title,
-					icon,
-					filename,
-					reset,
-					formatPageEnabled: isProbablyReaderable(document)
-				}), "*");
 			}
 		} else {
 			const contentDocument = (new DOMParser()).parseFromString(content, "text/html");
 			if (detectSavedPage(contentDocument) || isMHTML) {
+				resetArchive();
+				pageCompressContent = false;
+				droppedArchiveContent = undefined;
 				if (!isMHTML) {
 					const { saveUrl } = singlefile.helper.extractInfobarData(contentDocument);
 					pageUrl = saveUrl;
@@ -362,26 +404,9 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 					element.setAttribute(DISABLED_NOSCRIPT_ATTRIBUTE_NAME, element.innerHTML);
 					element.textContent = "";
 				});
-				contentDocument.querySelectorAll("iframe").forEach(element => {
-					const pointerEvents = "pointer-events";
-					element.style.setProperty("-sf-" + pointerEvents, element.style.getPropertyValue(pointerEvents), element.style.getPropertyPriority(pointerEvents));
-					element.style.setProperty(pointerEvents, "none", "important");
-				});
+				disableFramePointerEvents(contentDocument);
 				document.replaceChild(contentDocument.documentElement, document.documentElement);
-				singlefile.helper.fixInvalidNesting(document);
-				document.querySelectorAll("[data-single-file-note-refs]").forEach(noteRefElement => noteRefElement.dataset.singleFileNoteRefs = noteRefElement.dataset.singleFileNoteRefs.replace(/,/g, " "));
-				deserializeShadowRoots(document);
-				document.querySelectorAll(NOTE_TAGNAME).forEach(containerElement => attachNoteListeners(containerElement, true));
-				insertHighlightStylesheet(document);
-				maskPageElement = getMaskElement(PAGE_MASK_CLASS, PAGE_MASK_CONTAINER_CLASS);
-				maskNoteElement = getMaskElement(NOTE_MASK_CLASS);
-				document.documentElement.onmousedown = onMouseDown;
-				document.documentElement.onmouseup = document.documentElement.ontouchend = onMouseUp;
-				document.documentElement.onmouseover = onMouseOver;
-				document.documentElement.onmouseout = onMouseOut;
-				document.documentElement.onkeydown = onKeyDown;
-				document.documentElement.ontouchstart = document.documentElement.ontouchmove = onTouchMove;
-				window.onclick = event => event.preventDefault();
+				initPageContent();
 				const iconElement = document.querySelector("link[rel*=icon]");
 				window.parent.postMessage(JSON.stringify({
 					method: "onInit",
@@ -393,6 +418,180 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 				}), "*");
 			}
 		}
+		if (!pageUrl && url) {
+			pageUrl = url;
+		}
+	}
+
+	async function initArchive(content, password, zipOptions, filename) {
+		const { resources } = await singlefile.helper.extract(content, { password, prompt, zipOptions, pagePath: RESERVED_FILES_PREFIX });
+		const pagesResource = resources.find(resource => RESERVED_FILES_PREFIX + resource.filename == PAGES_FILENAME);
+		if (!pagesResource) {
+			return false;
+		}
+		const manifest = JSON.parse(await (await fetch(pagesResource.content)).text());
+		archiveManifest = manifest;
+		pageArchiveContent = content;
+		archivePassword = password;
+		archivePages = manifest.pages || [];
+		archiveUrlToPath = new Map();
+		archivePages.forEach(page => {
+			if (page.url) {
+				archiveUrlToPath.set(page.url, page.path);
+			}
+			if (page.originalUrls) {
+				page.originalUrls.forEach(originalUrl => archiveUrlToPath.set(originalUrl, page.path));
+			}
+		});
+		const tocResource = resources.find(resource => RESERVED_FILES_PREFIX + resource.filename == TOC_FILENAME);
+		archiveTocPresent = Boolean(tocResource);
+		archiveTocContent = tocResource ? await (await fetch(tocResource.content)).text() : getDefaultArchiveTocContent();
+		stashedArchivePages = new Map();
+		modifiedArchivePagePaths = new Set();
+		window.parent.postMessage(JSON.stringify({
+			method: "onInitArchive",
+			pages: archivePages.map(page => ({ path: page.path, url: page.url, title: page.title })),
+			filename
+		}), "*");
+		return true;
+	}
+
+	function resetArchive() {
+		pageArchiveContent = archivePages = archiveManifest = archivePassword = archiveUrlToPath = archiveTocContent = stashedArchivePages = modifiedArchivePagePaths = currentArchivePagePath = undefined;
+		archiveTocDisplayed = archiveTocPresent = false;
+	}
+
+	async function openArchivePage(pagePath) {
+		stashArchivePage();
+		archiveTocDisplayed = false;
+		currentArchivePagePath = pagePath;
+		removedElements = [];
+		removedElementIndex = 0;
+		previousContent = null;
+		const stashedPage = stashedArchivePages.get(pagePath);
+		if (stashedPage) {
+			stashedArchivePages.delete(pagePath);
+			pageResources = stashedPage.resources;
+			pageUrl = stashedPage.url;
+			pageCompressContent = true;
+			document.replaceChild(stashedPage.content, document.documentElement);
+			initPage();
+		} else {
+			await init({ content: pageArchiveContent, password: archivePassword, compressContent: true, pagePath });
+		}
+		document.addEventListener("click", onArchiveLinkClick, true);
+		window.parent.postMessage(JSON.stringify({
+			method: "onArchivePageDisplayed",
+			pagePath,
+			title: document.title,
+			formatPageEnabled: isProbablyReaderable(document),
+			modified: modifiedArchivePagePaths.size > 0
+		}), "*");
+	}
+
+	async function displayArchiveToc() {
+		stashArchivePage();
+		archiveTocDisplayed = true;
+		currentArchivePagePath = undefined;
+		const tocDocument = (new DOMParser()).parseFromString(archiveTocContent, "text/html");
+		const styleElement = tocDocument.createElement("style");
+		styleElement.textContent = MODIFIED_PAGE_STYLE;
+		tocDocument.head.appendChild(styleElement);
+		tocDocument.querySelectorAll("a[href]").forEach(anchorElement => {
+			const pagePath = getArchivePagePath(anchorElement.getAttribute("href"));
+			if (pagePath !== undefined && modifiedArchivePagePaths.has(pagePath)) {
+				anchorElement.classList.add(MODIFIED_PAGE_CLASS);
+			}
+		});
+		document.replaceChild(document.importNode(tocDocument.documentElement, true), document.documentElement);
+		document.addEventListener("click", onArchiveLinkClick, true);
+		window.parent.postMessage(JSON.stringify({
+			method: "onArchiveTocDisplayed",
+			modified: modifiedArchivePagePaths.size > 0
+		}), "*");
+	}
+
+	async function sendArchiveContent(message) {
+		const displayedPagePath = currentArchivePagePath;
+		const displayedToc = archiveTocDisplayed;
+		const pages = [];
+		for (const page of archivePages) {
+			if (modifiedArchivePagePaths.has(page.path)) {
+				if (page.path !== currentArchivePagePath || archiveTocDisplayed) {
+					await openArchivePage(page.path);
+				}
+				pages.push({
+					path: page.path,
+					content: getContent(message.compressHTML, message.updatedResources),
+					title: document.title
+				});
+			}
+		}
+		if (displayedToc) {
+			await displayArchiveToc();
+		} else if (displayedPagePath !== undefined && displayedPagePath !== currentArchivePagePath) {
+			await openArchivePage(displayedPagePath);
+		}
+		const archiveContent = Array.isArray(pageArchiveContent) ? pageArchiveContent : Array.from(new Uint8Array(await pageArchiveContent.arrayBuffer()));
+		window.parent.postMessage(JSON.stringify({
+			method: "setContent",
+			compressContent: true,
+			multiPageArchive: true,
+			archiveContent,
+			pages,
+			manifest: archiveManifest,
+			tocPage: archiveTocPresent,
+			foregroundSave: message.foregroundSave
+		}), "*");
+	}
+
+	function stashArchivePage() {
+		if (archivePages && !archiveTocDisplayed && currentArchivePagePath !== undefined) {
+			serializeShadowRoots(document);
+			stashedArchivePages.set(currentArchivePagePath, {
+				content: document.documentElement,
+				resources: pageResources,
+				url: pageUrl
+			});
+		}
+	}
+
+	function getArchivePagePath(href) {
+		if (archiveUrlToPath.has(href)) {
+			return archiveUrlToPath.get(href);
+		}
+		if (href.endsWith(INDEX_FILENAME)) {
+			const pagePath = href.substring(0, href.length - INDEX_FILENAME.length);
+			if (archivePages.some(page => page.path == pagePath)) {
+				return pagePath;
+			}
+		}
+	}
+
+	function onArchiveLinkClick(event) {
+		if (archivePages && event.target.closest) {
+			const anchorElement = event.target.closest("a[href]");
+			if (anchorElement) {
+				const pagePath = getArchivePagePath(anchorElement.getAttribute("href"));
+				if (pagePath !== undefined) {
+					event.preventDefault();
+					event.stopPropagation();
+					window.parent.postMessage(JSON.stringify({ method: "onNavigateArchivePage", pagePath }), "*");
+				} else if (archiveTocDisplayed) {
+					event.preventDefault();
+				}
+			}
+		}
+	}
+
+	function getDefaultArchiveTocContent() {
+		return "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Table of contents</title></head><body><main><ul>" +
+			archivePages.map(page => "<li><a href=\"" + escapeArchiveHTML(page.path + INDEX_FILENAME) + "\">" + escapeArchiveHTML(page.title || page.url || page.path) + "</a></li>").join("") +
+			"</ul></main></body></html>";
+	}
+
+	function escapeArchiveHTML(value) {
+		return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 	}
 
 	function loadOptionsFromPage(doc) {
@@ -402,17 +601,28 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 		}
 	}
 
-	async function initPage() {
-		document.querySelectorAll("iframe").forEach(element => {
+	function initPage() {
+		disableFramePointerEvents(document);
+		initPageContent();
+	}
+
+	function disableFramePointerEvents(doc) {
+		doc.querySelectorAll("iframe").forEach(element => {
 			const pointerEvents = "pointer-events";
-			element.style.setProperty("-sf-" + pointerEvents, element.style.getPropertyValue(pointerEvents), element.style.getPropertyPriority(pointerEvents));
+			if (element.style.getPropertyValue(pointerEvents) != "none" || element.style.getPropertyPriority(pointerEvents) != "important") {
+				element.style.setProperty("--sf-" + pointerEvents, element.style.getPropertyValue(pointerEvents), element.style.getPropertyPriority(pointerEvents));
+			}
 			element.style.setProperty(pointerEvents, "none", "important");
 		});
+	}
+
+	function initPageContent() {
 		document.querySelectorAll("[data-single-file-note-refs]").forEach(noteRefElement => noteRefElement.dataset.singleFileNoteRefs = noteRefElement.dataset.singleFileNoteRefs.replace(/,/g, " "));
 		deserializeShadowRoots(document);
+		singlefile.helper.fixInvalidNesting(document);
 		reflowNotes();
-		await waitResourcesLoad();
-		reflowNotes();
+		waitResourcesLoad().then(reflowNotes);
+		watchNotesLayout();
 		document.querySelectorAll(NOTE_TAGNAME).forEach(containerElement => attachNoteListeners(containerElement, true));
 		insertHighlightStylesheet(document);
 		maskPageElement = getMaskElement(PAGE_MASK_CLASS, PAGE_MASK_CONTAINER_CLASS);
@@ -483,6 +693,7 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 		document.documentElement.insertBefore(containerElement, maskPageElement.getRootNode().host);
 		noteElement.classList.add(NOTE_SELECTED_CLASS);
 		selectedNote = noteElement;
+		saveNoteOffset(containerElement);
 		onUpdate(false);
 	}
 
@@ -554,6 +765,7 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 				deleteNoteRef(containerElement, noteId);
 				addNoteRef(document.documentElement, noteId);
 			}
+			saveNoteOffset(containerElement);
 			onUpdate(false);
 		};
 		removeNoteElement.ontouchend = removeNoteElement.onclick = event => {
@@ -985,6 +1197,7 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 		noteElement.style.setProperty("position", "absolute");
 		noteElement.style.setProperty("left", (clientX - boundingRectPositionedElement.x - deltaX - borderX) + "px");
 		noteElement.style.setProperty("top", (clientY - boundingRectPositionedElement.y - deltaY - borderY) + "px");
+		saveNoteOffset(containerElement);
 	}
 
 	function resetAnchorNote(containerElement) {
@@ -994,6 +1207,7 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 		deleteNoteRef(containerElement, noteId);
 		addNoteRef(document.documentElement, noteId);
 		document.documentElement.insertBefore(containerElement, maskPageElement.getRootNode().host);
+		saveNoteOffset(containerElement);
 	}
 
 	function getPosition(event) {
@@ -1102,9 +1316,11 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 			previousContent = getContent(false, []);
 		}
 		const shadowRoots = {};
+		const noteOffsets = {};
 		const classesToPreserve = ["single-file-highlight", "single-file-highlight-yellow", "single-file-highlight-green", "single-file-highlight-pink", "single-file-highlight-blue"];
 		document.querySelectorAll(NOTE_TAGNAME).forEach(containerElement => {
 			shadowRoots[containerElement.dataset.noteId] = containerElement.shadowRoot;
+			noteOffsets[containerElement.dataset.noteId] = { x: containerElement.dataset.noteOffsetX, y: containerElement.dataset.noteOffsetY };
 			const className = "singlefile-note-id-" + containerElement.dataset.noteId;
 			containerElement.classList.add(className);
 			classesToPreserve.push(className);
@@ -1133,6 +1349,11 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 			const noteId = (Array.from(containerElement.classList).find(className => /singlefile-note-id-\d+/.test(className))).split("singlefile-note-id-")[1];
 			containerElement.classList.remove("singlefile-note-id-" + noteId);
 			containerElement.dataset.noteId = noteId;
+			const noteOffset = noteOffsets[noteId];
+			if (noteOffset && noteOffset.x !== undefined && noteOffset.y !== undefined && document.querySelector("[data-single-file-note-refs~=\"" + noteId + "\"]")) {
+				containerElement.dataset.noteOffsetX = noteOffset.x;
+				containerElement.dataset.noteOffsetY = noteOffset.y;
+			}
 			if (!containerElement.shadowRoot) {
 				containerElement.attachShadow({ mode: "open" });
 				containerElement.shadowRoot.appendChild(shadowRoots[noteId]);
@@ -1188,7 +1409,7 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 			if (pageCompressContent) {
 				document.replaceChild(previousContent, document.documentElement);
 				deserializeShadowRoots(document);
-				await initPage();
+				initPage();
 			} else {
 				await init({ content: previousContent }, { reset: true });
 			}
@@ -1207,9 +1428,10 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 	}
 
 	function getContent(compressHTML, updatedResources) {
+		saveNoteOffsets();
 		unhighlightCutElement();
-		serializeShadowRoots(document);
 		singlefile.helper.markInvalidNesting(document);
+		serializeShadowRoots(document);
 		const doc = document.cloneNode(true);
 		disableHighlight(doc);
 		resetSelectedElements(doc);
@@ -1224,6 +1446,7 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 		if (includeInfobar) {
 			const options = singlefile.helper.extractInfobarData(doc);
 			options.openInfobar = openInfobar;
+			options.animateInfobar = animateInfobar;
 			options.infobarPositionAbsolute = infobarPositionAbsolute;
 			options.infobarPositionTop = infobarPositionTop;
 			options.infobarPositionRight = infobarPositionRight;
@@ -1244,8 +1467,14 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 		});
 		doc.querySelectorAll("iframe").forEach(element => {
 			const pointerEvents = "pointer-events";
-			element.style.setProperty(pointerEvents, element.style.getPropertyValue("-sf-" + pointerEvents), element.style.getPropertyPriority("-sf-" + pointerEvents));
-			element.style.removeProperty("-sf-" + pointerEvents);
+			const savedProperty = "--sf-" + pointerEvents;
+			const savedValue = element.style.getPropertyValue(savedProperty);
+			if (savedValue) {
+				element.style.setProperty(pointerEvents, savedValue, element.style.getPropertyPriority(savedProperty));
+				element.style.removeProperty(savedProperty);
+			} else {
+				element.style.removeProperty(pointerEvents);
+			}
 		});
 		doc.body.removeAttribute("contentEditable");
 		const newResources = Object.keys(updatedResources).filter(url => updatedResources[url].type == "stylesheet").map(url => updatedResources[url]);
@@ -1274,6 +1503,9 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 	}
 
 	function onUpdate(saved) {
+		if (archivePages && !saved && !archiveTocDisplayed && currentArchivePagePath !== undefined) {
+			modifiedArchivePagePaths.add(currentArchivePagePath);
+		}
 		window.parent.postMessage(JSON.stringify({ "method": "onUpdate", saved }), "*");
 	}
 
@@ -1302,30 +1534,67 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 		document.querySelectorAll(NOTE_TAGNAME).forEach(containerElement => {
 			const noteElement = containerElement.shadowRoot.querySelector("." + NOTE_CLASS);
 			const noteBoundingRect = noteElement.getBoundingClientRect();
-			const anchorElement = getAnchorElement(containerElement);
-			const anchorBoundingRect = anchorElement.getBoundingClientRect();
-			const maxX = anchorBoundingRect.x + Math.max(0, anchorBoundingRect.width - noteBoundingRect.width);
-			const minX = anchorBoundingRect.x;
-			const maxY = anchorBoundingRect.y + Math.max(0, anchorBoundingRect.height - NOTE_HEADER_HEIGHT);
-			const minY = anchorBoundingRect.y;
-			let left = parseInt(noteElement.style.getPropertyValue("left"));
-			let top = parseInt(noteElement.style.getPropertyValue("top"));
-			if (noteBoundingRect.x > maxX) {
-				left -= noteBoundingRect.x - maxX;
+			if ((noteBoundingRect.width || noteBoundingRect.height) && !noteElement.classList.contains(NOTE_MOVING_CLASS)) {
+				const anchorElement = getAnchorElement(containerElement);
+				const anchorBoundingRect = anchorElement.getBoundingClientRect();
+				const offsetX = Number(containerElement.dataset.noteOffsetX);
+				const offsetY = Number(containerElement.dataset.noteOffsetY);
+				const savedOffset = anchorElement != document.documentElement && !isNaN(offsetX) && !isNaN(offsetY);
+				const maxX = anchorBoundingRect.x + Math.max(0, anchorBoundingRect.width - noteBoundingRect.width);
+				const minX = anchorBoundingRect.x;
+				const maxY = anchorBoundingRect.y + Math.max(0, anchorBoundingRect.height - NOTE_HEADER_HEIGHT);
+				const minY = anchorBoundingRect.y;
+				const positionX = Math.min(maxX, Math.max(minX, savedOffset ? anchorBoundingRect.x + offsetX : noteBoundingRect.x));
+				const positionY = Math.min(maxY, Math.max(minY, savedOffset ? anchorBoundingRect.y + offsetY : noteBoundingRect.y));
+				const left = parseFloat(noteElement.style.getPropertyValue("left"));
+				const top = parseFloat(noteElement.style.getPropertyValue("top"));
+				noteElement.style.setProperty("position", "absolute");
+				if (Math.abs(positionX - noteBoundingRect.x) > 0.5) {
+					noteElement.style.setProperty("left", (left + positionX - noteBoundingRect.x) + "px");
+				}
+				if (Math.abs(positionY - noteBoundingRect.y) > 0.5) {
+					noteElement.style.setProperty("top", (top + positionY - noteBoundingRect.y) + "px");
+				}
 			}
-			if (noteBoundingRect.x < minX) {
-				left += minX - noteBoundingRect.x;
-			}
-			if (noteBoundingRect.y > maxY) {
-				top -= noteBoundingRect.y - maxY;
-			}
-			if (noteBoundingRect.y < minY) {
-				top += minY - noteBoundingRect.y;
-			}
-			noteElement.style.setProperty("position", "absolute");
-			noteElement.style.setProperty("left", left + "px");
-			noteElement.style.setProperty("top", top + "px");
 		});
+	}
+
+	function watchNotesLayout() {
+		if (globalThis.ResizeObserver) {
+			let reflowPending;
+			new ResizeObserver(() => {
+				if (!reflowPending) {
+					reflowPending = requestAnimationFrame(() => {
+						reflowPending = null;
+						reflowNotes();
+					});
+				}
+			}).observe(document.documentElement);
+		}
+		if (document.fonts) {
+			document.fonts.ready.then(() => reflowNotes());
+		}
+	}
+
+
+	function saveNoteOffset(containerElement) {
+		const noteElement = containerElement.shadowRoot.querySelector("." + NOTE_CLASS);
+		if (noteElement) {
+			const anchorElement = getAnchorElement(containerElement);
+			const noteBoundingRect = noteElement.getBoundingClientRect();
+			if (anchorElement == document.documentElement) {
+				delete containerElement.dataset.noteOffsetX;
+				delete containerElement.dataset.noteOffsetY;
+			} else if (noteBoundingRect.width || noteBoundingRect.height) {
+				const anchorBoundingRect = anchorElement.getBoundingClientRect();
+				containerElement.dataset.noteOffsetX = Math.round(noteBoundingRect.x - anchorBoundingRect.x);
+				containerElement.dataset.noteOffsetY = Math.round(noteBoundingRect.y - anchorBoundingRect.y);
+			}
+		}
+	}
+
+	function saveNoteOffsets() {
+		document.querySelectorAll(NOTE_TAGNAME).forEach(containerElement => saveNoteOffset(containerElement));
 	}
 
 	function resetHighlightedElement(element) {
@@ -1363,6 +1632,9 @@ import { convert } from "../../lib/mhtml-to-html/mod.js";
 						const contentDocument = (new DOMParser()).parseFromString(element.innerHTML, "text/html");
 						Array.from(contentDocument.head.childNodes).forEach(node => shadowRoot.appendChild(node));
 						Array.from(contentDocument.body.childNodes).forEach(node => shadowRoot.appendChild(node));
+						if (!element.childNodes.length) {
+							element.remove();
+						}
 						// eslint-disable-next-line no-unused-vars
 					} catch (error) {
 						// ignored
@@ -2344,7 +2616,9 @@ pre code {
 			const PAGE_MASK_ACTIVE_CLASS = ${JSON.stringify(PAGE_MASK_ACTIVE_CLASS)};
 			const REMOVED_CONTENT_CLASS = ${JSON.stringify(REMOVED_CONTENT_CLASS)};
 			const NESTING_TRACK_ID_ATTRIBUTE_NAME = ${JSON.stringify(singlefile.helper.NESTING_TRACK_ID_ATTRIBUTE_NAME)};
-			const reflowNotes = ${minifyText(reflowNotes.toString())};			
+			const reflowNotes = ${minifyText(reflowNotes.toString())};
+			const saveNoteOffset = ${minifyText(saveNoteOffset.toString())};
+			const watchNotesLayout = ${minifyText(watchNotesLayout.toString())};
 			const addNoteRef = ${minifyText(addNoteRef.toString())};
 			const deleteNoteRef = ${minifyText(deleteNoteRef.toString())};
 			const getNoteRefs = ${minifyText(getNoteRefs.toString())};
@@ -2367,9 +2641,8 @@ pre code {
 			processNode(document);
 			reflowNotes();
 			document.querySelectorAll(${JSON.stringify(NOTE_TAGNAME)}).forEach(noteElement => attachNoteListeners(noteElement));
-			if (document.documentElement.dataset && document.documentElement.dataset.sfz !== undefined) {
-				waitResourcesLoad().then(reflowNotes);
-			}
+			waitResourcesLoad().then(reflowNotes);
+			watchNotesLayout();
 			const trackIds = {};
 			document.querySelectorAll("[" + NESTING_TRACK_ID_ATTRIBUTE_NAME + "]").forEach(element => trackIds[element.getAttribute(NESTING_TRACK_ID_ATTRIBUTE_NAME)] = element);
 			Object.keys(trackIds).forEach(id => {
@@ -2445,10 +2718,28 @@ pre code {
 		}
 	}
 
+	async function getDataURI(blob) {
+		if (globalThis.FileReader) {
+			const reader = new globalThis.FileReader();
+			reader.readAsDataURL(blob);
+			return new Promise((resolve, reject) => {
+				reader.addEventListener("load", () => resolve(reader.result), false);
+				reader.addEventListener("error", reject, false);
+			});
+		} else {
+			const bytes = new Uint8Array(await blob.arrayBuffer());
+			let content = "";
+			for (let offset = 0; offset < bytes.length; offset += 8192) {
+				content += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+			}
+			return "data:" + (blob.type || "application/octet-stream") + ";base64," + btoa(content);
+		}
+	}
+
 	function detectSavedPage(document) {
 		const firstDocumentChild = document.documentElement.firstChild;
 		return firstDocumentChild.nodeType == Node.COMMENT_NODE &&
 			(firstDocumentChild.textContent.includes(COMMENT_HEADER) || firstDocumentChild.textContent.includes(COMMENT_HEADER_LEGACY));
 	}
 
-})(typeof globalThis == "object" ? globalThis : window);
+})();

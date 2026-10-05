@@ -21,7 +21,7 @@
  *   Source.
  */
 
-/* global browser, window, document, CustomEvent */
+/* global browser, window, document, CustomEvent, Headers, URL */
 
 const FETCH_SUPPORTED_REQUEST_EVENT = "single-file-request-fetch-supported";
 const FETCH_SUPPORTED_RESPONSE_EVENT = "single-file-response-fetch-supported";
@@ -29,6 +29,9 @@ const FETCH_REQUEST_EVENT = "single-file-request-fetch";
 const FETCH_RESPONSE_EVENT = "single-file-response-fetch";
 const ERR_HOST_FETCH = "Host fetch error (SingleFile)";
 const USE_HOST_FETCH = Boolean(window.wrappedJSObject);
+const HTTP_PROTOCOLS = ["http:", "https:"];
+const DOWNGRADE_EMPTY_POLICIES = ["no-referrer-when-downgrade", "strict-origin", "strict-origin-when-cross-origin"];
+const REFERRER_POLICIES = ["no-referrer", "no-referrer-when-downgrade", "origin", "origin-when-cross-origin", "same-origin", "strict-origin", "strict-origin-when-cross-origin", "unsafe-url"];
 
 const fetch = window.fetch.bind(window);
 
@@ -79,7 +82,7 @@ async function onFetchResponse(message) {
 			if (!message.truncated || message.finished) {
 				pendingResponse.resolve({
 					status: message.status,
-					headers: { get: headerName => message.headers && message.headers[headerName] },
+					headers: getHeaders(message.headers),
 					arrayBuffer: async () => new Uint8Array(message.array).buffer
 				});
 				pendingResponses.delete(message.requestId);
@@ -97,8 +100,8 @@ async function hostFetch(url, options) {
 	}
 	if (hostFetchSupported) {
 		const result = new Promise((resolve, reject) => {
-			document.dispatchEvent(new CustomEvent(FETCH_REQUEST_EVENT, { detail: JSON.stringify({ url, options }) }));
 			document.addEventListener(FETCH_RESPONSE_EVENT, onResponseFetch, false);
+			document.dispatchEvent(new CustomEvent(FETCH_REQUEST_EVENT, { detail: JSON.stringify({ url, options }) }));
 
 			function onResponseFetch(event) {
 				if (event.detail) {
@@ -107,15 +110,16 @@ async function hostFetch(url, options) {
 						if (event.detail.response) {
 							resolve({
 								status: event.detail.status,
-								headers: new Map(event.detail.headers),
+								headers: getHeaders(event.detail.headers),
 								arrayBuffer: async () => event.detail.response
 							});
 						} else {
-							reject(event.detail.error);
+							reject(new Error(event.detail.error));
 						}
 					}
 				} else {
-					reject();
+					document.removeEventListener(FETCH_RESPONSE_EVENT, onResponseFetch, false);
+					reject(new Error(ERR_HOST_FETCH));
 				}
 			}
 		});
@@ -135,7 +139,7 @@ async function fetchResource(url, options = {}, useHostFetch = true) {
 		const fetchOptions = {
 			cache: options.cache || "force-cache",
 			headers: options.headers,
-			referrerPolicy: options.referrerPolicy || "strict-origin-when-cross-origin"
+			referrerPolicy: isStylesheetReferrerEmpty(url, options) ? "no-referrer" : options.referrerPolicy || "strict-origin-when-cross-origin"
 		};
 		let response;
 		try {
@@ -172,9 +176,40 @@ async function frameFetch(url, options) {
 	const response = await sendMessage({ method: "singlefile.fetchFrame", url, frameId: options.frameId, referrer: options.referrer, headers: options.headers });
 	return {
 		status: response.status,
-		headers: new Map(response.headers),
+		headers: getHeaders(response.headers),
 		arrayBuffer: async () => new Uint8Array(response.array).buffer
 	};
+}
+
+function isStylesheetReferrerEmpty(url, { stylesheetURL, stylesheetReferrerPolicy } = {}) {
+	if (!stylesheetURL) {
+		return false;
+	}
+	let stylesheetLocation, location;
+	try {
+		stylesheetLocation = new URL(stylesheetURL);
+		location = new URL(url, stylesheetURL);
+	} catch {
+		return false;
+	}
+	if (!HTTP_PROTOCOLS.includes(stylesheetLocation.protocol) || !HTTP_PROTOCOLS.includes(location.protocol)) {
+		return true;
+	}
+	let policy = "strict-origin-when-cross-origin";
+	String(stylesheetReferrerPolicy || "").split(",").forEach(value => {
+		value = value.trim().toLowerCase();
+		if (REFERRER_POLICIES.includes(value)) {
+			policy = value;
+		}
+	});
+	const downgrade = stylesheetLocation.protocol == "https:" && location.protocol != "https:";
+	return policy == "no-referrer" ||
+		(policy == "same-origin" && location.origin != stylesheetLocation.origin) ||
+		(downgrade && DOWNGRADE_EMPTY_POLICIES.includes(policy));
+}
+
+function getHeaders(headers) {
+	return new Headers(headers ? Array.from(headers, header => [header[0], header[1]]) : []);
 }
 
 async function sendMessage(message) {

@@ -355,6 +355,81 @@ h3 a {
     align-self: center;
 }
 
+.replacements-table-container {
+    margin-top: 4px;
+    margin-left: 0;
+    width: 100%;
+}
+
+.replacements-table-container .tr {
+    grid-template-columns: 1fr 1fr 26px;
+}
+
+.replacements-table-container .td:last-of-type {
+    padding-left: 0;
+}
+
+.replacements-table-container .td:last-of-type button {
+    margin-left: 0;
+}
+
+.replacements-data {
+    max-height: 184px;
+    overflow-y: auto;
+    padding-top: 2px;
+    padding-bottom: 2px;
+    scrollbar-width: thin;
+}
+
+.preview-table-container {
+    margin-top: 8px;
+    margin-left: 0;
+    width: 100%;
+}
+
+.preview-table-container .tr {
+    grid-template-columns: 1fr 1fr 26px;
+}
+
+.preview-table-container>.tr {
+    margin-top: 2px;
+    margin-bottom: 3px;
+}
+
+.preview-table-container .td:first-of-type {
+    padding-right: 8px;
+}
+
+.preview-table-container .thead .th:last-of-type {
+    text-align: left;
+}
+
+.option.vertical .rules-table-container input {
+    width: 100%;
+    min-width: 0;
+    height: 20px;
+    margin: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    padding-left: 2px;
+    padding-right: 2px;
+    align-self: auto;
+}
+
+.replacements-table-container input.invalid-characters {
+    border-color: rgb(180, 35, 24);
+}
+
+.replacements-table-container .replacement-create {
+    margin-top: 8px;
+    margin-bottom: 3px;
+}
+
+.option.replacements-reset:not([hidden]) {
+    justify-content: flex-end;
+    padding-right: 6px;
+}
+
 #profilesLabel {
     font-weight: normal;
     padding-top: 5px;
@@ -422,6 +497,30 @@ a {
     width: calc(100% - 6px);
     margin-bottom: 2px;
     padding: 2px;
+}
+
+.external-capture-request {
+    margin: 8px;
+    padding: 10px;
+    border: 2px solid rgb(180, 35, 24);
+    border-radius: 4px;
+    background-color: #fff1f0;
+    color: rgb(91, 18, 12);
+    line-height: 18px;
+}
+
+.external-capture-permissions--pending > summary {
+    padding: 8px;
+    border: 2px solid rgb(180, 35, 24);
+    border-radius: 4px;
+    background-color: #fee4e2;
+    color: rgb(91, 18, 12);
+    font-weight: bold;
+}
+
+.external-capture-request .buttons {
+    margin-top: 8px;
+    text-align: right;
 }
 
 .option:last-of-type {
@@ -701,6 +800,18 @@ html.maximized {
         background-color: rgb(85, 85, 97);
     }
 
+    .external-capture-request {
+        background-color: rgb(84, 28, 28);
+        border-color: rgb(248, 113, 113);
+        color: rgb(254, 226, 226);
+    }
+
+    .external-capture-permissions--pending > summary {
+        background-color: rgb(127, 29, 29);
+        border-color: rgb(248, 113, 113);
+        color: rgb(254, 226, 226);
+    }
+
     .rules-table-container,
     .rules-table-container .thead {
         border-color: rgb(85, 85, 97);
@@ -719,4 +830,16 @@ html.maximized {
         box-shadow: 5px 5px #000000;
     }
 
+}
+
+.option.menus-editor-link {
+    justify-content: flex-end;
+    padding-right: 6px;
+}
+
+#menusStateLabel {
+    align-self: center;
+    padding-right: 6px;
+    white-space: nowrap;
+    opacity: 0.7;
 }

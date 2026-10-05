@@ -27,6 +27,7 @@ import * as yabson from "./../../lib/yabson/yabson.js";
 
 const OFFSCREEN_DOCUMENT_URL = "/src/ui/pages/offscreen-document.html";
 const MAX_CONTENT_SIZE = 16 * (1024 * 1024);
+const SINGLE_DOCUMENT_ERROR = "Only a single offscreen document";
 
 let creating, requestId = 0;
 
@@ -91,12 +92,17 @@ async function createOffscreenDocument() {
 		return;
 	}
 
-	if (creating) {
-		await creating;
-	} else {
-		creating = await browser.offscreen.createDocument({ url: OFFSCREEN_DOCUMENT_URL, justification: "Auto-save/Compression features", reasons: ["DOM_PARSER", "WORKERS", "CLIPBOARD", "BLOBS"] });
-		creating = null;
+	if (!creating) {
+		creating = browser.offscreen
+			.createDocument({ url: OFFSCREEN_DOCUMENT_URL, justification: "Auto-save/Compression features", reasons: ["DOM_PARSER", "WORKERS", "CLIPBOARD", "BLOBS"] })
+			.catch(error => {
+				if (!error || !error.message || !error.message.includes(SINGLE_DOCUMENT_ERROR)) {
+					throw error;
+				}
+			})
+			.finally(() => creating = null);
 	}
+	await creating;
 }
 
 async function sendMessageData(message, data) {
@@ -105,7 +111,7 @@ async function sendMessageData(message, data) {
 	for (let blockIndex = 0; blockIndex * MAX_CONTENT_SIZE < data.length; blockIndex++) {
 		message.truncated = data.length > MAX_CONTENT_SIZE;
 		if (message.truncated) {
-			message.finished = (blockIndex + 1) * MAX_CONTENT_SIZE > data.length;
+			message.finished = (blockIndex + 1) * MAX_CONTENT_SIZE >= data.length;
 			message.data = data.slice(blockIndex * MAX_CONTENT_SIZE, (blockIndex + 1) * MAX_CONTENT_SIZE);
 		} else {
 			message.data = data;

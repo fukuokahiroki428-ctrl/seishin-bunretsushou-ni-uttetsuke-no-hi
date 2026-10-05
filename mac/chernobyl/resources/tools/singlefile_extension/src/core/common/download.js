@@ -55,7 +55,7 @@ export {
 };
 
 async function downloadPage(pageData, options) {
-	if (options.includeBOM) {
+	if (options.includeBOM && typeof pageData.content == "string") {
 		pageData.content = "\ufeff" + pageData.content;
 	}
 	const embeddedImage = options.embeddedImage;
@@ -96,12 +96,14 @@ async function downloadPage(pageData, options) {
 		defaultEditorMode: options.defaultEditorMode,
 		includeInfobar: options.includeInfobar,
 		openInfobar: options.openInfobar,
+		animateInfobar: options.animateInfobar,
 		warnUnsavedPage: options.warnUnsavedPage,
 		createRootDirectory: options.createRootDirectory,
 		selfExtractingArchive: options.selfExtractingArchive,
 		disableCompression: options.disableCompression,
 		embeddedImage: embeddedImage ? Array.from(embeddedImage) : null,
 		preventAppendedData: options.preventAppendedData,
+		maxAppendedDataLength: options.maxAppendedDataLength,
 		extractDataFromPage: options.extractDataFromPage,
 		insertCanonicalLink: options.insertCanonicalLink,
 		insertMetaNoIndex: options.insertMetaNoIndex,
@@ -190,7 +192,7 @@ async function downloadPage(pageData, options) {
 					for (let blockIndex = 0; blockIndex * MAX_CONTENT_SIZE < pageData.content.length; blockIndex++) {
 						message.truncated = pageData.content.length > MAX_CONTENT_SIZE;
 						if (message.truncated) {
-							message.finished = (blockIndex + 1) * MAX_CONTENT_SIZE > pageData.content.length;
+							message.finished = (blockIndex + 1) * MAX_CONTENT_SIZE >= pageData.content.length;
 							message.content = pageData.content.substring(blockIndex * MAX_CONTENT_SIZE, (blockIndex + 1) * MAX_CONTENT_SIZE);
 						} else {
 							message.content = pageData.content;
@@ -248,7 +250,7 @@ async function downloadPageForeground(pageData, options) {
 
 async function sharePage(pageData, options) {
 	sharePageBar = getSharePageBar();
-	const cancelled = await sharePageBar.display(options.selected);
+	const cancelled = navigator.userActivation && navigator.userActivation.isActive ? false : await sharePageBar.display(options.selected);
 	if (!cancelled) {
 		const data = { files: [new File([pageData.content], pageData.filename, { type: pageData.mimeType })] };
 		try {
@@ -256,9 +258,7 @@ async function sharePage(pageData, options) {
 			sharePageBar.hide();
 		} catch (error) {
 			sharePageBar.hide();
-			if (error.name === "AbortError") {
-				await sharePage(pageData, options);
-			} else {
+			if (error.name !== "AbortError") {
 				throw error;
 			}
 		}

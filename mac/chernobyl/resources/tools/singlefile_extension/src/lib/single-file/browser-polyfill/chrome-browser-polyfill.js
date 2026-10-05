@@ -30,6 +30,16 @@ if (typeof globalThis == "undefined") {
 (() => {
 
 	const nativeAPI = globalThis.chrome;
+
+	function respond(sendResponse, response) {
+		try {
+			sendResponse(response);
+			// eslint-disable-next-line no-unused-vars
+		} catch (error) {
+			// ignored
+		}
+	}
+
 	globalThis.__defineGetter__("browser", () => ({
 		action: {
 			onClicked: {
@@ -74,14 +84,32 @@ if (typeof globalThis == "undefined") {
 			getMessage: (messageName, substitutions) => nativeAPI.i18n.getMessage(messageName, substitutions)
 		},
 		identity: {
+			// "identity" is an optional permission, so nativeAPI.identity is undefined
+			// until it is granted. The getters below allow callers to feature-detect it
+			// instead of throwing a TypeError when the permission is missing.
 			getRedirectURL: () => nativeAPI.identity.getRedirectURL(),
-			getAuthToken: details => nativeAPI.identity.getAuthToken(details),
-			launchWebAuthFlow: details => nativeAPI.identity.launchWebAuthFlow(details),
-			removeCachedAuthToken: details => nativeAPI.identity.removeCachedAuthToken(details)
+			get getAuthToken() {
+				return nativeAPI.identity && nativeAPI.identity.getAuthToken &&
+					(details => nativeAPI.identity.getAuthToken(details));
+			},
+			get launchWebAuthFlow() {
+				return nativeAPI.identity && nativeAPI.identity.launchWebAuthFlow &&
+					(details => nativeAPI.identity.launchWebAuthFlow(details));
+			},
+			get removeCachedAuthToken() {
+				return nativeAPI.identity && nativeAPI.identity.removeCachedAuthToken &&
+					(details => nativeAPI.identity.removeCachedAuthToken(details));
+			}
 		},
-		contextMenus: {
+		contextMenus: nativeAPI.contextMenus && {
 			onClicked: {
 				addListener: listener => nativeAPI.contextMenus.onClicked.addListener(listener)
+			},
+			get ACTION_MENU_TOP_LEVEL_LIMIT() {
+				return nativeAPI.contextMenus.ACTION_MENU_TOP_LEVEL_LIMIT;
+			},
+			get ContextType() {
+				return nativeAPI.contextMenus.ContextType;
 			},
 			create: options => nativeAPI.contextMenus.create(options),
 			update: (menuItemId, options) => nativeAPI.contextMenus.update(menuItemId, options),
@@ -124,20 +152,24 @@ if (typeof globalThis == "undefined") {
 				removeListener: listener => nativeAPI.runtime.onMessage.removeListener(listener)
 			},
 			onMessageExternal: {
+				// Returning true promises the caller a reply, so one has to be sent on every
+				// path. Firefox reports a rejected handler through runtime.lastError; Chrome
+				// gives a listener no way to set it, so the reason can only travel as the
+				// response value, and { error } is the shape SingleFile answers with. That
+				// asymmetry is documented rather than papered over: it is the one part of the
+				// behavior Chrome cannot reproduce.
+				//
+				// The catch is deliberately here and not on onMessage above. This event has a
+				// single listener, so nothing can be pre-empted by answering. onMessage is
+				// shared — singlefile.fetchResponse alone has two listeners in the content
+				// scripts — and there a rejecting listener that answered would beat the one
+				// that actually handles the message and turn a working save into a failed one.
 				addListener: listener => nativeAPI.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
 					const response = listener(message, sender);
 					if (response && typeof response.then == "function") {
 						response
-							.then(response => {
-								if (response !== undefined) {
-									try {
-										sendResponse(response);
-										// eslint-disable-next-line no-unused-vars
-									} catch (error) {
-										// ignored
-									}
-								}
-							});
+							.then(response => respond(sendResponse, response === undefined ? null : response))
+							.catch(error => respond(sendResponse, { error: error && error.message }));
 						return true;
 					}
 				})
@@ -169,6 +201,10 @@ if (typeof globalThis == "undefined") {
 				get: keys => nativeAPI.storage.local.get(keys),
 				clear: () => nativeAPI.storage.local.clear(),
 				remove: keys => nativeAPI.storage.local.remove(keys)
+			},
+			onChanged: {
+				addListener: listener => nativeAPI.storage.onChanged.addListener(listener),
+				removeListener: listener => nativeAPI.storage.onChanged.removeListener(listener)
 			},
 			sync: {
 				set: value => nativeAPI.storage.sync.set(value),

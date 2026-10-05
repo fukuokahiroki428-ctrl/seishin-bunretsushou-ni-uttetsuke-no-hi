@@ -21,7 +21,7 @@
  *   Source.
  */
 
-/* global browser, document, location, setTimeout, URL, setInterval, clearInterval */
+/* global browser, document, location, setTimeout, addEventListener, URL, setInterval, clearInterval */
 
 import * as download from "./../common/download.js";
 import { fetch, frameFetch } from "./../../lib/single-file/fetch/content/content-fetch.js";
@@ -55,6 +55,7 @@ if (!bootstrap || !bootstrap.initializedSingleFile) {
 	singlefile.init({ fetch, frameFetch });
 	browser.runtime.onMessage.addListener(message => {
 		if (message.method == "content.save" ||
+			message.method == "content.capture" ||
 			message.method == "content.cancelSave" ||
 			message.method == "content.download" ||
 			message.method == "content.getSelectedLinks" ||
@@ -70,6 +71,8 @@ if (!bootstrap || !bootstrap.initializedSingleFile) {
 		bootstrap.initializedSingleFile = true;
 	} else {
 		globalThis.singlefileBootstrap = { initializedSingleFile: true };
+		addEventListener("keydown", cancelSaveKeyListener, true);
+		addEventListener("keyup", cancelSaveKeyListener, true);
 	}
 }
 
@@ -78,6 +81,9 @@ async function onMessage(message) {
 		if (message.method == "content.save") {
 			await savePage(message);
 			return {};
+		}
+		if (message.method == "content.capture") {
+			return capturePage(message);
 		}
 		if (message.method == "content.cancelSave") {
 			if (processor) {
@@ -89,7 +95,7 @@ async function onMessage(message) {
 				}
 				browser.runtime.sendMessage({ method: "ui.processCancelled" });
 			}
-			if (message.options.loadDeferredImages) {
+			if (message.options.loadDeferredContent) {
 				singlefile.processors.lazy.resetZoomLevel(message.options);
 			}
 			return {};
@@ -184,6 +190,8 @@ async function savePage(message) {
 					browser.runtime.sendMessage({ method: "ui.processError", error: errorMessage });
 					onError(errorMessage);
 				}
+			} finally {
+				ui.onEndPage();
 			}
 		} else {
 			browser.runtime.sendMessage({ method: "ui.processCancelled" });
@@ -196,14 +204,65 @@ async function savePage(message) {
 	clearInterval(pingInterval);
 }
 
+function cancelSave() {
+	browser.runtime.sendMessage({ method: "downloads.cancel" });
+}
+
+function cancelSaveKeyListener(event) {
+	if (event.key == "Escape" && globalThis.singlefileBootstrap.cancelSave) {
+		event.preventDefault();
+		event.stopPropagation();
+		if (event.type == "keyup") {
+			globalThis.singlefileBootstrap.cancelSave();
+		}
+	}
+}
+
+async function capturePage(message) {
+	const pingInterval = setInterval(() => {
+		browser.runtime.sendMessage({ method: "ping" }).then(() => { });
+	}, 15000);
+	const options = message.options;
+	let selectionFound;
+	if (options.selected || options.optionallySelected) {
+		selectionFound = await ui.markSelection(options.optionallySelected);
+	}
+	if (processing || bootstrap && bootstrap.pageInfo.processing) {
+		clearInterval(pingInterval);
+		throw new Error("SingleFile is already processing this page");
+	}
+	options.updatedResources = bootstrap ? bootstrap.pageInfo.updatedResources : {};
+	options.visitDate = bootstrap ? bootstrap.pageInfo.visitDate : new Date();
+	Object.keys(options.updatedResources).forEach(url => options.updatedResources[url].retrieved = false);
+	if (options.optionallySelected && selectionFound) {
+		options.selected = true;
+	}
+	if (options.selected && !selectionFound) {
+		clearInterval(pingInterval);
+		throw new Error("No selected content found");
+	}
+	if (bootstrap) {
+		bootstrap.pageInfo.processing = true;
+	}
+	processing = true;
+	try {
+		return await processPage(options);
+	} finally {
+		processing = false;
+		if (bootstrap) {
+			bootstrap.pageInfo.processing = false;
+		}
+		clearInterval(pingInterval);
+	}
+}
+
 async function processPage(options) {
 	const frames = singlefile.processors.frameTree;
 	let framesSessionId;
 	singlefile.helper.initDoc(document);
-	ui.onStartPage(options);
+	ui.onStartPage(options, cancelSave);
 	processor = new singlefile.SingleFile(options);
 	const preInitializationPromises = [];
-	options.insertCanonicalLink = true;
 	let index = 0, maxIndex = 0, initializing;
 	options.onprogress = async event => {
 		const { options } = event.detail;
@@ -227,7 +286,7 @@ async function processPage(options) {
 			}
 			if (event.type == event.RESOURCES_INITIALIZED) {
 				maxIndex = event.detail.max;
-				if (options.loadDeferredImages) {
+				if (options.loadDeferredContent) {
 					singlefile.processors.lazy.resetZoomLevel(options);
 				}
 			}
@@ -235,7 +294,9 @@ async function processPage(options) {
 				if (event.type == event.RESOURCE_LOADED) {
 					index++;
 				}
-				await browser.runtime.sendMessage({ method: "ui.processProgress", index, maxIndex });
+				if (!options.silent) {
+					await browser.runtime.sendMessage({ method: "ui.processProgress", index, maxIndex });
+				}
 				ui.onLoadResource(index, maxIndex, options);
 			} else if (!event.detail.frame) {
 				if (event.type == event.PAGE_LOADING) {
@@ -271,7 +332,7 @@ async function processPage(options) {
 	}
 	if (!options.saveRawPage && !processor.cancelled) {
 		let lazyLoadPromise;
-		if (options.loadDeferredImages) {
+		if (options.loadDeferredContent) {
 			lazyLoadPromise = singlefile.processors.lazy.process(options);
 			ui.onLoadingDeferResources(options);
 			lazyLoadPromise.then(() => {
@@ -279,14 +340,14 @@ async function processPage(options) {
 					ui.onLoadDeferResources(options);
 				}
 			});
-			if (options.loadDeferredImagesBeforeFrames) {
+			if (options.loadDeferredContentBeforeFrames) {
 				await lazyLoadPromise;
 			}
 		}
 		if (!options.removeFrames && frames && globalThis.frames) {
 			let frameTreePromise;
-			if (options.loadDeferredImages) {
-				frameTreePromise = new Promise(resolve => globalThis.setTimeout(() => resolve(frames.getAsync(options)), options.loadDeferredImagesBeforeFrames || !options.loadDeferredImages ? 0 : options.loadDeferredImagesMaxIdleTime));
+			if (options.loadDeferredContent) {
+				frameTreePromise = new Promise(resolve => globalThis.setTimeout(() => resolve(frames.getAsync(options)), options.loadDeferredContentBeforeFrames || !options.loadDeferredContent ? 0 : options.loadDeferredContentMaxIdleTime));
 			} else {
 				frameTreePromise = frames.getAsync(options);
 			}
@@ -296,7 +357,7 @@ async function processPage(options) {
 					ui.onLoadFrames(options);
 				}
 			});
-			if (options.loadDeferredImagesBeforeFrames) {
+			if (options.loadDeferredContentBeforeFrames) {
 				options.frames = await new Promise(resolve => {
 					processor.cancel = function () {
 						cancelProcessor();
@@ -308,11 +369,11 @@ async function processPage(options) {
 				preInitializationPromises.push(frameTreePromise);
 			}
 		}
-		if (options.loadDeferredImages && !options.loadDeferredImagesBeforeFrames) {
+		if (options.loadDeferredContent && !options.loadDeferredContentBeforeFrames) {
 			preInitializationPromises.push(lazyLoadPromise);
 		}
 	}
-	if (!options.loadDeferredImagesBeforeFrames && !processor.cancelled) {
+	if (!options.loadDeferredContentBeforeFrames && !processor.cancelled) {
 		[options.frames] = await new Promise(resolve => {
 			const preInitializationAllPromises = Promise.all(preInitializationPromises);
 			processor.cancel = function () {

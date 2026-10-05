@@ -21,23 +21,37 @@
  *   Source.
  */
 
-/* global browser, window, document, localStorage, FileReader, location, fetch, TextDecoder, DOMParser, HTMLElement, MouseEvent, btoa */
+/* global browser, window, document, localStorage, location, fetch, TextDecoder, DOMParser, HTMLElement, MouseEvent, btoa, URLSearchParams, setInterval, clearInterval, navigator, File, Blob */
 
+import {
+	getReplacements,
+	getReplacedCharactersOptions,
+	replaceCharacters,
+	formatCharacters,
+	parseCharacters,
+	testCharacters
+} from "./../common/filename-replacement.js";
+
+const EXTERNAL_CAPTURE_PING_DELAY = 15000;
+const EXTERNAL_CAPTURE_PENDING_REQUEST_TIMEOUT = 300000;
 const HELP_ICON_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAABIUlEQVQ4y+2TsarCMBSGvxTBRdqiUZAWOrhJB9EXcPKFfCvfQYfulUKHDqXg4CYUJSioYO4mSDX3ttzt3n87fMlHTpIjlsulxpDZbEYYhgghSNOUOI5Ny2mZYBAELBYLer0eAJ7ncTweKYri4x7LJJRS0u12n7XrukgpjSc0CpVSXK/XZ32/31FKNW85z3PW6zXT6RSAJEnIsqy5UGvNZrNhu90CcDqd+C6tT6J+v//2Th+PB2VZ1hN2Oh3G4zGTyQTbtl/YbrdjtVpxu91+Ljyfz0RRhG3bzOfzF+Y4TvNXvlwuaK2pE4tfzr/wzwsty0IIURlL0998KxRCMBqN8H2/wlzXJQxD2u12vVkeDoeUZUkURRU+GAw4HA7s9/sK+wK6CWHasQ/S/wAAAABJRU5ErkJggg==";
 const HELP_PAGE_PATH_PREFIX = "/src/ui/pages/help";
 const HELP_PAGE_PATH_DEFAULT = "/src/ui/pages/help.html";
+const SHARE_API_SUPPORTED = navigator.canShare && navigator.canShare({ files: [new File([new Blob([""], { type: "text/html" })], "test.html")] });
 let DEFAULT_PROFILE_NAME,
 	DISABLED_PROFILE_NAME,
 	CURRENT_PROFILE_NAME,
 	BACKGROUND_SAVE_SUPPORTED,
-	SHARE_API_SUPPORTED;
+	DEFAULT_FILENAME_REPLACED_CHARACTERS,
+	DEFAULT_FILENAME_REPLACEMENT_CHARACTERS;
 browser.runtime.sendMessage({ method: "config.getConstants" }).then(data => {
 	({
 		DEFAULT_PROFILE_NAME,
 		DISABLED_PROFILE_NAME,
 		CURRENT_PROFILE_NAME,
 		BACKGROUND_SAVE_SUPPORTED,
-		SHARE_API_SUPPORTED
+		DEFAULT_FILENAME_REPLACED_CHARACTERS,
+		DEFAULT_FILENAME_REPLACEMENT_CHARACTERS
 	} = data);
 	init();
 });
@@ -61,6 +75,7 @@ const acceptHeaderStylesheetLabel = document.getElementById("acceptHeaderStylesh
 const acceptHeaderImageLabel = document.getElementById("acceptHeaderImageLabel");
 const saveRawPageLabel = document.getElementById("saveRawPageLabel");
 const insertMetaCSPLabel = document.getElementById("insertMetaCSPLabel");
+const insertCanonicalLinkLabel = document.getElementById("insertCanonicalLinkLabel");
 const saveToClipboardLabel = document.getElementById("saveToClipboardLabel");
 const saveToFilesystemLabel = document.getElementById("saveToFilesystemLabel");
 const sharePageLabel = document.getElementById("sharePageLabel");
@@ -92,21 +107,26 @@ const insertTextBodyLabel = document.getElementById("insertTextBodyLabel");
 const insertEmbeddedImageLabel = document.getElementById("insertEmbeddedImageLabel");
 const insertEmbeddedCustomImageLabel = document.getElementById("insertEmbeddedCustomImageLabel");
 const insertEmbeddedScreenshotImageLabel = document.getElementById("insertEmbeddedScreenshotImageLabel");
-const compressCSSLabel = document.getElementById("compressCSSLabel");
 const groupDuplicateStylesheetsLabel = document.getElementById("groupDuplicateStylesheetsLabel");
 const moveStylesInHeadLabel = document.getElementById("moveStylesInHeadLabel");
 const imageReductionFactorLabel = document.getElementById("imageReductionFactorLabel");
-const loadDeferredImagesLabel = document.getElementById("loadDeferredImagesLabel");
-const loadDeferredImagesMaxIdleTimeLabel = document.getElementById("loadDeferredImagesMaxIdleTimeLabel");
-const loadDeferredImagesKeepZoomLevelLabel = document.getElementById("loadDeferredImagesKeepZoomLevelLabel");
-const loadDeferredImagesDispatchScrollEventLabel = document.getElementById("loadDeferredImagesDispatchScrollEventLabel");
-const loadDeferredImagesBeforeFramesLabel = document.getElementById("loadDeferredImagesBeforeFramesLabel");
+const imageQualityLabel = document.getElementById("imageQualityLabel");
+const loadDeferredContentLabel = document.getElementById("loadDeferredContentLabel");
+const loadDeferredContentMaxIdleTimeLabel = document.getElementById("loadDeferredContentMaxIdleTimeLabel");
+const loadDeferredContentKeepZoomLevelLabel = document.getElementById("loadDeferredContentKeepZoomLevelLabel");
+const loadDeferredContentDispatchScrollEventLabel = document.getElementById("loadDeferredContentDispatchScrollEventLabel");
+const loadDeferredContentBeforeFramesLabel = document.getElementById("loadDeferredContentBeforeFramesLabel");
 const addMenuEntryLabel = document.getElementById("addMenuEntryLabel");
 const filenameTemplateLabel = document.getElementById("filenameTemplateLabel");
 const filenameMaxLengthLabel = document.getElementById("filenameMaxLengthLabel");
 const filenameMaxLengthBytesUnitLabel = document.getElementById("filenameMaxLengthBytesUnitLabel");
 const filenameMaxLengthCharsUnitLabel = document.getElementById("filenameMaxLengthCharsUnitLabel");
 const filenameReplacementCharacterLabel = document.getElementById("filenameReplacementCharacterLabel");
+const filenameReplacementsLabel = document.getElementById("filenameReplacementsLabel");
+const filenameReplacedCharactersLabel = document.getElementById("filenameReplacedCharactersLabel");
+const filenameReplacementCharactersLabel = document.getElementById("filenameReplacementCharactersLabel");
+const filenameReplacementsPreviewLabel = document.getElementById("filenameReplacementsPreviewLabel");
+const filenameReplacementsPreviewResultLabel = document.getElementById("filenameReplacementsPreviewResultLabel");
 const replaceEmojisInFilenameLabel = document.getElementById("replaceEmojisInFilenameLabel");
 const saveFilenameTemplateDataLabel = document.getElementById("saveFilenameTemplateDataLabel");
 const shadowEnabledLabel = document.getElementById("shadowEnabledLabel");
@@ -145,6 +165,8 @@ const disableCompressionLabel = document.getElementById("disableCompressionLabel
 const preventAppendedDataLabel = document.getElementById("preventAppendedDataLabel");
 const passwordLabel = document.getElementById("passwordLabel");
 const titleLabel = document.getElementById("titleLabel");
+const optionsNewWindowLink = document.getElementById("optionsNewWindowLink");
+const optionsEditorLink = document.getElementById("optionsEditorLink");
 const userInterfaceLabel = document.getElementById("userInterfaceLabel");
 const filenameLabel = document.getElementById("filenameLabel");
 const htmlContentLabel = document.getElementById("htmlContentLabel");
@@ -157,6 +179,7 @@ const fileFormatSelectLabel = document.getElementById("fileFormatSelectLabel");
 const infobarLabel = document.getElementById("infobarLabel");
 const imagesLabel = document.getElementById("imagesLabel");
 const stylesheetsLabel = document.getElementById("stylesheetsLabel");
+const deferredContentLabel = document.getElementById("deferredContentLabel");
 const fontsLabel = document.getElementById("fontsLabel");
 const networkLabel = document.getElementById("networkLabel");
 const blockResourcesLabel = document.getElementById("blockResourcesLabel");
@@ -187,8 +210,12 @@ const blockMixedContentLabel = document.getElementById("blockMixedContentLabel")
 const saveOriginalURLsLabel = document.getElementById("saveOriginalURLsLabel");
 const includeInfobarLabel = document.getElementById("includeInfobarLabel");
 const openInfobarLabel = document.getElementById("openInfobarLabel");
+const animateInfobarLabel = document.getElementById("animateInfobarLabel");
 const removeInfobarSavedDateLabel = document.getElementById("removeInfobarSavedDateLabel");
 const miscLabel = document.getElementById("miscLabel");
+const externalCapturePermissionsLabel = document.getElementById("externalCapturePermissionsLabel");
+const externalCaptureAllowedIdsLabel = document.getElementById("externalCaptureAllowedIdsLabel");
+const externalCaptureDeniedIdsLabel = document.getElementById("externalCaptureDeniedIdsLabel");
 const helpLabel = document.getElementById("helpLabel");
 const synchronizeLabel = document.getElementById("synchronizeLabel");
 const customShortcutLabel = document.getElementById("customShortcutLabel");
@@ -232,6 +259,7 @@ const acceptHeaderStylesheetInput = document.getElementById("acceptHeaderStylesh
 const acceptHeaderImageInput = document.getElementById("acceptHeaderImageInput");
 const saveRawPageInput = document.getElementById("saveRawPageInput");
 const insertMetaCSPInput = document.getElementById("insertMetaCSPInput");
+const insertCanonicalLinkInput = document.getElementById("insertCanonicalLinkInput");
 const saveToClipboardInput = document.getElementById("saveToClipboardInput");
 const addProofInput = document.getElementById("addProofInput");
 const woleetKeyInput = document.getElementById("woleetKeyInput");
@@ -258,20 +286,30 @@ const insertTextBodyInput = document.getElementById("insertTextBodyInput");
 const insertEmbeddedImageInput = document.getElementById("insertEmbeddedImageInput");
 const insertEmbeddedCustomImageInput = document.getElementById("insertEmbeddedCustomImageInput");
 const insertEmbeddedScreenshotImageInput = document.getElementById("insertEmbeddedScreenshotImageInput");
-const compressCSSInput = document.getElementById("compressCSSInput");
 const groupDuplicateStylesheetsInput = document.getElementById("groupDuplicateStylesheetsInput");
 const imageReductionFactorInput = document.getElementById("imageReductionFactorInput");
+const imageQualityInput = document.getElementById("imageQualityInput");
 const moveStylesInHeadInput = document.getElementById("moveStylesInHeadInput");
-const loadDeferredImagesInput = document.getElementById("loadDeferredImagesInput");
-const loadDeferredImagesMaxIdleTimeInput = document.getElementById("loadDeferredImagesMaxIdleTimeInput");
-const loadDeferredImagesKeepZoomLevelInput = document.getElementById("loadDeferredImagesKeepZoomLevelInput");
-const loadDeferredImagesDispatchScrollEventInput = document.getElementById("loadDeferredImagesDispatchScrollEventInput");
-const loadDeferredImagesBeforeFramesInput = document.getElementById("loadDeferredImagesBeforeFramesInput");
+const loadDeferredContentInput = document.getElementById("loadDeferredContentInput");
+const loadDeferredContentMaxIdleTimeInput = document.getElementById("loadDeferredContentMaxIdleTimeInput");
+const loadDeferredContentKeepZoomLevelInput = document.getElementById("loadDeferredContentKeepZoomLevelInput");
+const loadDeferredContentDispatchScrollEventInput = document.getElementById("loadDeferredContentDispatchScrollEventInput");
+const loadDeferredContentBeforeFramesInput = document.getElementById("loadDeferredContentBeforeFramesInput");
 const contextMenuEnabledInput = document.getElementById("contextMenuEnabledInput");
 const filenameTemplateInput = document.getElementById("filenameTemplateInput");
 const filenameMaxLengthInput = document.getElementById("filenameMaxLengthInput");
 const filenameMaxLengthUnitInput = document.getElementById("filenameMaxLengthUnitInput");
 const filenameReplacementCharacterInput = document.getElementById("filenameReplacementCharacterInput");
+const replacementsContainerElement = document.querySelector(".replacements-table-container");
+const replacementsDataElement = replacementsContainerElement.querySelector(".replacements-data");
+const replacementViewElement = replacementsContainerElement.querySelector(".replacement-view");
+const replacementCreateElement = replacementsContainerElement.querySelector(".replacement-create");
+const replacementCharactersInput = document.getElementById("replacementCharactersInput");
+const replacementCharacterInput = document.getElementById("replacementCharacterInput");
+const replacementAddButton = document.getElementById("replacementAddButton");
+const filenameReplacementsPreviewInput = document.getElementById("filenameReplacementsPreviewInput");
+const filenameReplacementsPreviewOutput = document.getElementById("filenameReplacementsPreviewOutput");
+const filenameReplacementsResetButton = document.getElementById("filenameReplacementsResetButton");
 const replaceEmojisInFilenameInput = document.getElementById("replaceEmojisInFilenameInput");
 const saveFilenameTemplateDataInput = document.getElementById("saveFilenameTemplateDataInput");
 const shadowEnabledInput = document.getElementById("shadowEnabledInput");
@@ -283,6 +321,14 @@ const confirmFilenameInput = document.getElementById("confirmFilenameInput");
 const filenameConflictActionInput = document.getElementById("filenameConflictActionInput");
 const displayInfobarInput = document.getElementById("displayInfobarInput");
 const displayStatsInput = document.getElementById("displayStatsInput");
+const externalCapturePermissionsSection = document.getElementById("externalCapturePermissionsSection");
+const externalCapturePendingRequest = document.getElementById("externalCapturePendingRequest");
+const externalCapturePendingRequestLabel = document.getElementById("externalCapturePendingRequestLabel");
+const externalCaptureApproveButton = document.getElementById("externalCaptureApproveButton");
+const externalCaptureDenyButton = document.getElementById("externalCaptureDenyButton");
+const externalCaptureAllowedIdsInput = document.getElementById("externalCaptureAllowedIdsInput");
+const externalCaptureDeniedIdsInput = document.getElementById("externalCaptureDeniedIdsInput");
+let externalCapturePingInterval;
 const backgroundSaveInput = document.getElementById("backgroundSaveInput");
 const autoSaveDelayInput = document.getElementById("autoSaveDelayInput");
 const autoSaveLoadInput = document.getElementById("autoSaveLoadInput");
@@ -312,6 +358,7 @@ const blockMixedContentInput = document.getElementById("blockMixedContentInput")
 const saveOriginalURLsInput = document.getElementById("saveOriginalURLsInput");
 const includeInfobarInput = document.getElementById("includeInfobarInput");
 const openInfobarInput = document.getElementById("openInfobarInput");
+const animateInfobarInput = document.getElementById("animateInfobarInput");
 const removeInfobarSavedDateInput = document.getElementById("removeInfobarSavedDateInput");
 const confirmInfobarInput = document.getElementById("confirmInfobarInput");
 const autoCloseInput = document.getElementById("autoCloseInput");
@@ -337,8 +384,8 @@ const ruleEditProfileInput = document.getElementById("ruleEditProfileInput");
 const ruleEditAutoSaveProfileInput = document.getElementById("ruleEditAutoSaveProfileInput");
 const ruleAddButton = document.getElementById("ruleAddButton");
 const ruleCancelButton = document.getElementById("ruleCancelButton");
-const rulesElement = document.querySelector(".rules-table");
-const rulesContainerElement = document.querySelector(".rules-table-container");
+const rulesElement = document.querySelector("#autoSettingsSection .rules-table");
+const rulesContainerElement = document.querySelector("#autoSettingsSection .rules-table-container");
 const ruleEditUrlInput = document.getElementById("ruleEditUrlInput");
 const ruleEditButton = document.getElementById("ruleEditButton");
 const createURLElement = rulesElement.querySelector(".rule-create");
@@ -531,13 +578,7 @@ exportButton.addEventListener("click", async () => {
 importButton.addEventListener("click", () => {
 	fileInput.onchange = async () => {
 		if (fileInput.files.length) {
-			const reader = new FileReader();
-			reader.readAsText(fileInput.files[0]);
-			const serializedConfig = await new Promise((resolve, reject) => {
-				reader.addEventListener("load", () => resolve(reader.result), false);
-				reader.addEventListener("error", reject, false);
-			});
-			const config = JSON.parse(serializedConfig);
+			const config = JSON.parse(await getText(fileInput.files[0]));
 			Object.keys(config.profiles).forEach(profileName => {
 				const profile = config.profiles[profileName];
 				if (profile.saveToGDrive && !profile.forceWebAuthFlow) {
@@ -595,6 +636,7 @@ autoSaveExternalSaveInput.addEventListener("click", () => enableExternalSave(aut
 saveWithCompanionInput.addEventListener("click", () => enableExternalSave(saveWithCompanionInput), false);
 saveToClipboardInput.addEventListener("click", onClickSaveToClipboard, false);
 saveToGDriveInput.addEventListener("click", onClickSaveToGDrive, false);
+saveToDropboxInput.addEventListener("click", onClickSaveToDropbox, false);
 addProofInput.addEventListener("click", async event => {
 	if (addProofInput.checked) {
 		addProofInput.checked = false;
@@ -605,6 +647,10 @@ addProofInput.addEventListener("click", async event => {
 		await update();
 	}
 });
+externalCaptureAllowedIdsInput.addEventListener("change", updateExternalCapturePermissions, false);
+externalCaptureDeniedIdsInput.addEventListener("change", updateExternalCapturePermissions, false);
+externalCaptureApproveButton.addEventListener("click", () => respondExternalCaptureRequest(true), false);
+externalCaptureDenyButton.addEventListener("click", () => respondExternalCaptureRequest(false), false);
 browser.runtime.sendMessage({ method: "config.isSync" }).then(data => synchronizeInput.checked = data.sync);
 synchronizeInput.addEventListener("click", async () => {
 	if (synchronizeInput.checked) {
@@ -629,8 +675,46 @@ fileFormatSelectInput.addEventListener("change", () => {
 		insertEmbeddedCustomImageInput.checked = false;
 	}
 }, false);
+replacementCharactersInput.addEventListener("input", () => {
+	const validCharacters = testReplacedCharacters(replacementCharactersInput.value);
+	replacementCharactersInput.classList.toggle("invalid-characters", Boolean(replacementCharactersInput.value) && !validCharacters);
+	replacementAddButton.disabled = !validCharacters;
+}, false);
+replacementCreateElement.onsubmit = async event => {
+	event.preventDefault();
+	if (testReplacedCharacters(replacementCharactersInput.value)) {
+		const replacementElement = replacementViewElement.cloneNode(true);
+		replacementElement.querySelector(".replacement-characters-input").value = replacementCharactersInput.value;
+		replacementElement.querySelector(".replacement-character-input").value = replacementCharacterInput.value;
+		replacementElement.hidden = false;
+		replacementElement.className = "tr data";
+		replacementsDataElement.appendChild(replacementElement);
+		replacementCharactersInput.value = replacementCharacterInput.value = "";
+		replacementCharactersInput.classList.remove("invalid-characters");
+		replacementAddButton.disabled = true;
+		await update();
+		await refresh();
+		replacementCharactersInput.focus();
+	}
+};
+filenameReplacementsPreviewInput.addEventListener("input", displayReplacementsPreview, false);
+filenameReplacementCharacterInput.addEventListener("input", () => {
+	displayReplacementCharacterPlaceholders();
+	displayReplacementsPreview();
+}, false);
+filenameReplacementsResetButton.addEventListener("click", async () => {
+	displayReplacements(getReplacements({
+		filenameReplacedCharacters: DEFAULT_FILENAME_REPLACED_CHARACTERS,
+		filenameReplacementCharacters: DEFAULT_FILENAME_REPLACEMENT_CHARACTERS
+	}));
+	await update();
+	await refresh();
+}, false);
 document.body.onchange = async event => {
 	let target = event.target;
+	if (target.classList.contains("replacement-input")) {
+		return;
+	}
 	if (target != ruleUrlInput &&
 		target != ruleProfileInput &&
 		target != ruleAutoSaveProfileInput &&
@@ -638,7 +722,9 @@ document.body.onchange = async event => {
 		target != ruleEditProfileInput &&
 		target != ruleEditAutoSaveProfileInput &&
 		target != showAutoSaveProfileInput &&
-		target != saveCreatedBookmarksInput) {
+		target != saveCreatedBookmarksInput &&
+		target != externalCaptureAllowedIdsInput &&
+		target != externalCaptureDeniedIdsInput) {
 		if (target != profileNamesInput && target != showAllProfilesInput) {
 			await update();
 		}
@@ -685,6 +771,7 @@ acceptHeaderStylesheetLabel.textContent = browser.i18n.getMessage("optionResourc
 acceptHeaderImageLabel.textContent = browser.i18n.getMessage("optionResourceImage");
 saveRawPageLabel.textContent = browser.i18n.getMessage("optionSaveRawPage");
 insertMetaCSPLabel.textContent = browser.i18n.getMessage("optionInsertMetaCSP");
+insertCanonicalLinkLabel.textContent = browser.i18n.getMessage("optionInsertCanonicalLink");
 saveToClipboardLabel.textContent = browser.i18n.getMessage("optionSaveToClipboard");
 saveToFilesystemLabel.textContent = browser.i18n.getMessage("optionSaveToFilesystem");
 sharePageLabel.textContent = browser.i18n.getMessage("optionSharePage");
@@ -716,21 +803,30 @@ insertTextBodyLabel.textContent = browser.i18n.getMessage("optionInsertTextBody"
 insertEmbeddedImageLabel.textContent = browser.i18n.getMessage("optionInsertEmbeddedImage");
 insertEmbeddedCustomImageLabel.textContent = browser.i18n.getMessage("optionInsertEmbeddedCustomImage");
 insertEmbeddedScreenshotImageLabel.textContent = browser.i18n.getMessage("optionInsertEmbeddedScreenshotImage");
-compressCSSLabel.textContent = browser.i18n.getMessage("optionCompressCSS");
 groupDuplicateStylesheetsLabel.textContent = browser.i18n.getMessage("optionGroupDuplicateStylesheets");
 moveStylesInHeadLabel.textContent = browser.i18n.getMessage("optionMoveStylesInHead");
 imageReductionFactorLabel.textContent = browser.i18n.getMessage("optionImageReductionFactor");
-loadDeferredImagesLabel.textContent = browser.i18n.getMessage("optionLoadDeferredImages");
-loadDeferredImagesMaxIdleTimeLabel.textContent = browser.i18n.getMessage("optionLoadDeferredImagesMaxIdleTime");
-loadDeferredImagesKeepZoomLevelLabel.textContent = browser.i18n.getMessage("optionLoadDeferredImagesKeepZoomLevel");
-loadDeferredImagesDispatchScrollEventLabel.textContent = browser.i18n.getMessage("optionLoadDeferredImagesDispatchScrollEvent");
-loadDeferredImagesBeforeFramesLabel.textContent = browser.i18n.getMessage("optionLoadDeferredImagesBeforeFrames");
+imageQualityLabel.textContent = browser.i18n.getMessage("optionImageQuality");
+loadDeferredContentLabel.textContent = browser.i18n.getMessage("optionLoadDeferredContent");
+loadDeferredContentMaxIdleTimeLabel.textContent = browser.i18n.getMessage("optionLoadDeferredContentMaxIdleTime");
+loadDeferredContentKeepZoomLevelLabel.textContent = browser.i18n.getMessage("optionLoadDeferredContentKeepZoomLevel");
+loadDeferredContentDispatchScrollEventLabel.textContent = browser.i18n.getMessage("optionLoadDeferredContentDispatchScrollEvent");
+loadDeferredContentBeforeFramesLabel.textContent = browser.i18n.getMessage("optionLoadDeferredContentBeforeFrames");
 addMenuEntryLabel.textContent = browser.i18n.getMessage("optionAddMenuEntry");
 filenameTemplateLabel.textContent = browser.i18n.getMessage("optionFilenameTemplate");
 filenameMaxLengthLabel.textContent = browser.i18n.getMessage("optionFilenameMaxLength");
 filenameMaxLengthBytesUnitLabel.textContent = browser.i18n.getMessage("optionFilenameMaxLengthBytesUnit");
 filenameMaxLengthCharsUnitLabel.textContent = browser.i18n.getMessage("optionFilenameMaxLengthCharsUnit");
 filenameReplacementCharacterLabel.textContent = browser.i18n.getMessage("optionFilenameReplacementCharacter");
+filenameReplacementsLabel.textContent = browser.i18n.getMessage("optionFilenameReplacements");
+filenameReplacedCharactersLabel.textContent = filenameReplacedCharactersLabel.title = browser.i18n.getMessage("optionsFilenameReplacedCharacters");
+filenameReplacementCharactersLabel.textContent = filenameReplacementCharactersLabel.title = browser.i18n.getMessage("optionsFilenameReplacementCharacters");
+filenameReplacementsPreviewLabel.textContent = filenameReplacementsPreviewLabel.title = browser.i18n.getMessage("optionsFilenameReplacementsPreviewFilename");
+filenameReplacementsPreviewResultLabel.textContent = filenameReplacementsPreviewResultLabel.title = browser.i18n.getMessage("optionsFilenameReplacementsPreviewResult");
+filenameReplacementsPreviewInput.placeholder = browser.i18n.getMessage("optionsFilenameReplacementsPreviewPlaceholder");
+filenameReplacementsResetButton.textContent = browser.i18n.getMessage("optionsFilenameReplacementsResetButton");
+replacementCharactersInput.placeholder = browser.i18n.getMessage("optionsFilenameReplacedCharactersPlaceholder");
+replacementAddButton.title = browser.i18n.getMessage("optionsAddFilenameReplacementTooltip");
 replaceEmojisInFilenameLabel.textContent = browser.i18n.getMessage("optionReplaceEmojisInFilename");
 saveFilenameTemplateDataLabel.textContent = browser.i18n.getMessage("optionSaveFilenameTemplateData");
 shadowEnabledLabel.textContent = browser.i18n.getMessage("optionDisplayShadow");
@@ -770,6 +866,8 @@ preventAppendedDataLabel.textContent = browser.i18n.getMessage("optionPreventApp
 passwordLabel.textContent = browser.i18n.getMessage("optionPassword");
 groupDuplicateImagesLabel.textContent = browser.i18n.getMessage("optionGroupDuplicateImages");
 titleLabel.textContent = browser.i18n.getMessage("optionsTitle");
+setLinkLabel(optionsNewWindowLink, "optionsNewWindowLink");
+setLinkLabel(optionsEditorLink, "optionsEditorLink");
 userInterfaceLabel.textContent = browser.i18n.getMessage("optionsUserInterfaceSubTitle");
 filenameLabel.textContent = browser.i18n.getMessage("optionsFileNameSubTitle");
 htmlContentLabel.textContent = browser.i18n.getMessage("optionsHTMLContentSubTitle");
@@ -782,6 +880,7 @@ fileFormatSelectLabel.textContent = browser.i18n.getMessage("optionFileFormat");
 infobarLabel.textContent = browser.i18n.getMessage("optionsInfobarSubTitle");
 imagesLabel.textContent = browser.i18n.getMessage("optionsImagesSubTitle");
 stylesheetsLabel.textContent = browser.i18n.getMessage("optionsStylesheetsSubTitle");
+deferredContentLabel.textContent = browser.i18n.getMessage("optionsDeferredContentSubTitle");
 fontsLabel.textContent = browser.i18n.getMessage("optionsFontsSubTitle");
 networkLabel.textContent = browser.i18n.getMessage("optionsNetworkSubTitle");
 blockResourcesLabel.textContent = browser.i18n.getMessage("optionsBlockedResources");
@@ -790,12 +889,16 @@ destinationLabel.textContent = browser.i18n.getMessage("optionsDestinationSubTit
 bookmarksLabel.textContent = browser.i18n.getMessage("optionsBookmarkSubTitle");
 autoSaveLabel.textContent = browser.i18n.getMessage("optionsAutoSaveSubTitle");
 miscLabel.textContent = browser.i18n.getMessage("optionsMiscSubTitle");
+externalCapturePermissionsLabel.textContent = browser.i18n.getMessage("optionsExternalCapturePermissionsSubTitle");
+externalCaptureAllowedIdsLabel.textContent = browser.i18n.getMessage("optionExternalCaptureAllowedIds");
+externalCaptureDeniedIdsLabel.textContent = browser.i18n.getMessage("optionExternalCaptureDeniedIds");
 helpLabel.textContent = browser.i18n.getMessage("optionsHelpLink");
 infobarTemplateLabel.textContent = browser.i18n.getMessage("optionInfobarTemplate");
 blockMixedContentLabel.textContent = browser.i18n.getMessage("optionBlockMixedContent");
 saveOriginalURLsLabel.textContent = browser.i18n.getMessage("optionSaveOriginalURLs");
 includeInfobarLabel.textContent = browser.i18n.getMessage("optionIncludeInfobar");
 openInfobarLabel.textContent = browser.i18n.getMessage("optionOpenInfobar");
+animateInfobarLabel.textContent = browser.i18n.getMessage("optionAnimateInfobar");
 removeInfobarSavedDateLabel.textContent = browser.i18n.getMessage("optionRemoveInfobarSavedDate");
 confirmInfobarLabel.textContent = browser.i18n.getMessage("optionConfirmInfobar");
 autoCloseLabel.textContent = browser.i18n.getMessage("optionAutoClose");
@@ -812,15 +915,15 @@ defaultEditorModeCutExternalLabel.textContent = browser.i18n.getMessage("optionD
 applySystemThemeLabel.textContent = browser.i18n.getMessage("optionApplySystemTheme");
 contentWidthLabel.textContent = browser.i18n.getMessage("optionContentWidth");
 warnUnsavedPageLabel.textContent = browser.i18n.getMessage("optionWarnUnsavedPage");
-displayInfobarInEditorLabel.textContent = browser.i18n.getMessage("optiondisplayInfobarInEditor");
+displayInfobarInEditorLabel.textContent = browser.i18n.getMessage("optionDisplayInfobarInEditor");
 resetButton.textContent = browser.i18n.getMessage("optionsResetButton");
 exportButton.textContent = browser.i18n.getMessage("optionsExportButton");
 importButton.textContent = browser.i18n.getMessage("optionsImportButton");
 resetButton.title = browser.i18n.getMessage("optionsResetTooltip");
 autoSettingsLabel.textContent = browser.i18n.getMessage("optionsAutoSettingsSubTitle");
-autoSettingsUrlLabel.textContent = browser.i18n.getMessage("optionsAutoSettingsUrl");
-autoSettingsProfileLabel.textContent = browser.i18n.getMessage("optionsAutoSettingsProfile");
-autoSettingsAutoSaveProfileLabel.textContent = browser.i18n.getMessage("optionsAutoSettingsAutoSaveProfile");
+autoSettingsUrlLabel.textContent = autoSettingsUrlLabel.title = browser.i18n.getMessage("optionsAutoSettingsUrl");
+autoSettingsProfileLabel.textContent = autoSettingsProfileLabel.title = browser.i18n.getMessage("optionsAutoSettingsProfile");
+autoSettingsAutoSaveProfileLabel.textContent = autoSettingsAutoSaveProfileLabel.title = browser.i18n.getMessage("optionsAutoSettingsAutoSaveProfile");
 ruleAddButton.title = browser.i18n.getMessage("optionsAddRuleTooltip");
 ruleEditButton.title = browser.i18n.getMessage("optionsValidateChangesTooltip");
 ruleCancelButton.title = browser.i18n.getMessage("optionsCancelChangesTooltip");
@@ -845,6 +948,8 @@ resetAllButton.textContent = browser.i18n.getMessage("optionsResetAllButton");
 resetCurrentButton.textContent = browser.i18n.getMessage("optionsResetCurrentButton");
 resetCancelButton.textContent = promptCancelButton.textContent = cancelButton.textContent = browser.i18n.getMessage("optionsCancelButton");
 confirmButton.textContent = promptConfirmButton.textContent = browser.i18n.getMessage("optionsOKButton");
+externalCaptureApproveButton.textContent = browser.i18n.getMessage("optionsExternalCaptureApproveButton");
+externalCaptureDenyButton.textContent = browser.i18n.getMessage("optionsExternalCaptureDenyButton");
 document.getElementById("resetConfirmLabel").textContent = browser.i18n.getMessage("optionsResetConfirm");
 saveToRestFormApiLabel.textContent = browser.i18n.getMessage("optionSaveToRestFormApi");
 saveToRestFormApiUrlLabel.textContent = browser.i18n.getMessage("optionRestFormApiUrl");
@@ -853,7 +958,7 @@ saveToRestFormApiUrlFieldNameLabel.textContent = browser.i18n.getMessage("option
 saveToRestFormApiTokenLabel.textContent = browser.i18n.getMessage("optionRestFormApiToken");
 
 if (location.href.endsWith("#")) {
-	document.querySelector(".new-window-link").remove();
+	optionsNewWindowLink.remove();
 	document.documentElement.classList.add("maximized");
 }
 let tabsData;
@@ -862,6 +967,13 @@ browser.runtime.sendMessage({ method: "tabsData.get" }).then(allTabsData => {
 	return refresh(tabsData.profileName);
 });
 getHelpContents();
+initExternalCapturePermissions();
+
+function setLinkLabel(linkElement, messageName) {
+	const label = browser.i18n.getMessage(messageName);
+	linkElement.title = label;
+	linkElement.setAttribute("aria-label", label);
+}
 
 function init() {
 	if (!BACKGROUND_SAVE_SUPPORTED) {
@@ -993,6 +1105,7 @@ async function refresh(profileName) {
 	acceptHeaderImageInput.value = profileOptions.acceptHeaders.image;
 	saveRawPageInput.checked = profileOptions.saveRawPage;
 	insertMetaCSPInput.checked = profileOptions.insertMetaCSP;
+	insertCanonicalLinkInput.checked = profileOptions.insertCanonicalLink;
 	saveToClipboardInput.checked = profileOptions.saveToClipboard;
 	addProofInput.checked = profileOptions.addProof;
 	woleetKeyInput.value = profileOptions.woleetKey;
@@ -1044,23 +1157,23 @@ async function refresh(profileName) {
 	sharePageInput.checked = profileOptions.sharePage;
 	saveToFilesystemInput.checked = !profileOptions.saveToGDrive && !profileOptions.saveToGitHub && !profileOptions.saveToS3 && !profileOptions.saveWithCompanion && !profileOptions.saveToClipboard && !profileOptions.saveWithWebDAV && !profileOptions.saveWithMCP && !profileOptions.saveToDropbox && !profileOptions.saveToRestFormApi && !profileOptions.sharePage;
 	compressHTMLInput.checked = profileOptions.compressHTML;
-	compressCSSInput.checked = profileOptions.compressCSS;
 	groupDuplicateStylesheetsInput.checked = profileOptions.groupDuplicateStylesheets;
 	moveStylesInHeadInput.checked = profileOptions.moveStylesInHead;
-	loadDeferredImagesInput.checked = profileOptions.loadDeferredImages;
-	loadDeferredImagesMaxIdleTimeInput.value = profileOptions.loadDeferredImagesMaxIdleTime;
-	loadDeferredImagesKeepZoomLevelInput.checked = profileOptions.loadDeferredImagesKeepZoomLevel;
-	loadDeferredImagesKeepZoomLevelInput.disabled = !profileOptions.loadDeferredImages;
-	loadDeferredImagesMaxIdleTimeInput.disabled = !profileOptions.loadDeferredImages;
-	loadDeferredImagesDispatchScrollEventInput.checked = profileOptions.loadDeferredImagesDispatchScrollEvent;
-	loadDeferredImagesDispatchScrollEventInput.disabled = !profileOptions.loadDeferredImages;
-	loadDeferredImagesBeforeFramesInput.checked = profileOptions.loadDeferredImagesBeforeFrames;
-	loadDeferredImagesBeforeFramesInput.disabled = !profileOptions.loadDeferredImages;
+	loadDeferredContentInput.checked = profileOptions.loadDeferredContent;
+	loadDeferredContentMaxIdleTimeInput.value = profileOptions.loadDeferredContentMaxIdleTime;
+	loadDeferredContentKeepZoomLevelInput.checked = profileOptions.loadDeferredContentKeepZoomLevel;
+	loadDeferredContentKeepZoomLevelInput.disabled = !profileOptions.loadDeferredContent;
+	loadDeferredContentMaxIdleTimeInput.disabled = !profileOptions.loadDeferredContent;
+	loadDeferredContentDispatchScrollEventInput.checked = profileOptions.loadDeferredContentDispatchScrollEvent;
+	loadDeferredContentDispatchScrollEventInput.disabled = !profileOptions.loadDeferredContent;
+	loadDeferredContentBeforeFramesInput.checked = profileOptions.loadDeferredContentBeforeFrames;
+	loadDeferredContentBeforeFramesInput.disabled = !profileOptions.loadDeferredContent;
 	contextMenuEnabledInput.checked = profileOptions.contextMenuEnabled;
 	filenameTemplateInput.value = profileOptions.filenameTemplate;
 	filenameMaxLengthInput.value = profileOptions.filenameMaxLength;
 	filenameMaxLengthUnitInput.value = profileOptions.filenameMaxLengthUnit;
 	filenameReplacementCharacterInput.value = profileOptions.filenameReplacementCharacter;
+	displayReplacements(getReplacements(profileOptions));
 	replaceEmojisInFilenameInput.checked = profileOptions.replaceEmojisInFilename;
 	saveFilenameTemplateDataInput.checked = profileOptions.saveFilenameTemplateData;
 	shadowEnabledInput.checked = profileOptions.shadowEnabled;
@@ -1092,6 +1205,8 @@ async function refresh(profileName) {
 	removeAlternativeImagesInput.checked = profileOptions.removeAlternativeImages;
 	groupDuplicateImagesInput.checked = profileOptions.groupDuplicateImages;
 	imageReductionFactorInput.value = profileOptions.imageReductionFactor;
+	imageQualityInput.value = profileOptions.imageQuality;
+	imageQualityInput.disabled = !(profileOptions.imageReductionFactor > 1);
 	customShortcutInput.value = profileOptions.customShortcut || "";
 	removeAlternativeMediasInput.checked = profileOptions.removeAlternativeMedias;
 	saveCreatedBookmarksInput.checked = profileOptions.saveCreatedBookmarks;
@@ -1125,6 +1240,7 @@ async function refresh(profileName) {
 	saveOriginalURLsInput.checked = profileOptions.saveOriginalURLs;
 	includeInfobarInput.checked = profileOptions.includeInfobar;
 	openInfobarInput.checked = profileOptions.openInfobar;
+	animateInfobarInput.checked = profileOptions.animateInfobar;
 	removeInfobarSavedDateInput.checked = profileOptions.removeSavedDate;
 	confirmInfobarInput.checked = profileOptions.confirmInfobarContent;
 	autoCloseInput.checked = profileOptions.autoClose;
@@ -1136,6 +1252,67 @@ async function refresh(profileName) {
 	contentWidthInput.value = profileOptions.contentWidth;
 	warnUnsavedPageInput.checked = profileOptions.warnUnsavedPage;
 	displayInfobarInEditorInput.checked = profileOptions.displayInfobarInEditor;
+}
+
+function displayReplacements(replacements) {
+	Array.from(replacementsDataElement.childNodes).forEach(node => node.remove());
+	replacements.forEach(replacement => {
+		const replacementElement = replacementViewElement.cloneNode(true);
+		const charactersInput = replacementElement.querySelector(".replacement-characters-input");
+		const characterInput = replacementElement.querySelector(".replacement-character-input");
+		charactersInput.value = formatCharacters(replacement.characters);
+		characterInput.value = formatCharacters(replacement.replacement);
+		charactersInput.title = browser.i18n.getMessage("optionsFilenameReplacedCharacters");
+		characterInput.title = browser.i18n.getMessage("optionsFilenameReplacementCharacters");
+		replacementElement.hidden = false;
+		replacementElement.className = "tr data";
+		replacementsDataElement.appendChild(replacementElement);
+		const replacementDeleteButton = replacementElement.querySelector(".replacement-delete-button");
+		replacementDeleteButton.title = browser.i18n.getMessage("optionsDeleteFilenameReplacementTooltip");
+		replacementDeleteButton.addEventListener("click", async () => {
+			replacementElement.remove();
+			await update();
+			await refresh();
+		}, false);
+		charactersInput.addEventListener("change", () => updateReplacement(charactersInput, replacement.characters), false);
+		characterInput.addEventListener("change", () => updateReplacement(characterInput, replacement.replacement), false);
+		charactersInput.addEventListener("input", displayReplacementsPreview, false);
+		characterInput.addEventListener("input", displayReplacementsPreview, false);
+	});
+	displayReplacementCharacterPlaceholders();
+	displayReplacementsPreview();
+}
+
+function displayReplacementCharacterPlaceholders() {
+	replacementCharacterInput.placeholder = filenameReplacementCharacterInput.value;
+	replacementsDataElement.querySelectorAll(".replacement-character-input")
+		.forEach(characterInput => characterInput.placeholder = filenameReplacementCharacterInput.value);
+}
+
+function displayReplacementsPreview() {
+	filenameReplacementsPreviewOutput.textContent = filenameReplacementsPreviewInput.value
+		? replaceCharacters(filenameReplacementsPreviewInput.value, getDisplayedReplacements(), filenameReplacementCharacterInput.value)
+		: "";
+}
+
+function getDisplayedReplacements() {
+	return Array.from(replacementsDataElement.querySelectorAll(".tr")).map(replacementElement => ({
+		characters: parseCharacters(replacementElement.querySelector(".replacement-characters-input").value),
+		replacement: parseCharacters(replacementElement.querySelector(".replacement-character-input").value)
+	}));
+}
+
+async function updateReplacement(input, previousValue) {
+	if (input.classList.contains("replacement-characters-input") && !testReplacedCharacters(input.value)) {
+		input.value = formatCharacters(previousValue);
+	}
+	await update();
+	await refresh();
+}
+
+function testReplacedCharacters(value) {
+	const characters = parseCharacters(value);
+	return Boolean(characters) && testCharacters(characters);
 }
 
 function getProfileText(profileName) {
@@ -1151,6 +1328,7 @@ async function update() {
 	}
 	const selectedProfileName = profileNamesInput.value;
 	const selectedCustomShortcut = customShortcutInput.value || null;
+	const { filenameReplacedCharacters, filenameReplacementCharacters } = getReplacedCharactersOptions(getDisplayedReplacements());
 	if (selectedCustomShortcut) {
 		try {
 			const config = await browser.runtime.sendMessage({ method: "config.get" });
@@ -1196,6 +1374,7 @@ async function update() {
 			},
 			saveRawPage: saveRawPageInput.checked,
 			insertMetaCSP: insertMetaCSPInput.checked,
+			insertCanonicalLink: insertCanonicalLinkInput.checked,
 			saveToClipboard: saveToClipboardInput.checked,
 			addProof: addProofInput.checked,
 			woleetKey: woleetKeyInput.value,
@@ -1219,19 +1398,20 @@ async function update() {
 			insertTextBody: insertTextBodyInput.checked,
 			insertEmbeddedImage: insertEmbeddedCustomImageInput.checked,
 			insertEmbeddedScreenshotImage: insertEmbeddedScreenshotImageInput.checked,
-			compressCSS: compressCSSInput.checked,
 			groupDuplicateStylesheets: groupDuplicateStylesheetsInput.checked,
 			moveStylesInHead: moveStylesInHeadInput.checked,
-			loadDeferredImages: loadDeferredImagesInput.checked,
-			loadDeferredImagesMaxIdleTime: Math.max(loadDeferredImagesMaxIdleTimeInput.value, 0),
-			loadDeferredImagesKeepZoomLevel: loadDeferredImagesKeepZoomLevelInput.checked,
-			loadDeferredImagesDispatchScrollEvent: loadDeferredImagesDispatchScrollEventInput.checked,
-			loadDeferredImagesBeforeFrames: loadDeferredImagesBeforeFramesInput.checked,
+			loadDeferredContent: loadDeferredContentInput.checked,
+			loadDeferredContentMaxIdleTime: Math.max(loadDeferredContentMaxIdleTimeInput.value, 0),
+			loadDeferredContentKeepZoomLevel: loadDeferredContentKeepZoomLevelInput.checked,
+			loadDeferredContentDispatchScrollEvent: loadDeferredContentDispatchScrollEventInput.checked,
+			loadDeferredContentBeforeFrames: loadDeferredContentBeforeFramesInput.checked,
 			contextMenuEnabled: contextMenuEnabledInput.checked,
 			filenameTemplate: filenameTemplateInput.value,
 			filenameMaxLength: filenameMaxLengthInput.value,
 			filenameMaxLengthUnit: filenameMaxLengthUnitInput.value,
 			filenameReplacementCharacter: filenameReplacementCharacterInput.value,
+			filenameReplacedCharacters,
+			filenameReplacementCharacters,
 			replaceEmojisInFilename: replaceEmojisInFilenameInput.checked,
 			saveFilenameTemplateData: saveFilenameTemplateDataInput.checked,
 			shadowEnabled: shadowEnabledInput.checked,
@@ -1269,11 +1449,13 @@ async function update() {
 			password: passwordInput.value,
 			groupDuplicateImages: groupDuplicateImagesInput.checked,
 			imageReductionFactor: imageReductionFactorInput.value,
+			imageQuality: imageQualityInput.value === "" ? 0.8 : Math.min(Math.max(imageQualityInput.value, 0), 1),
 			infobarTemplate: infobarTemplateInput.value,
 			blockMixedContent: blockMixedContentInput.checked,
 			saveOriginalURLs: saveOriginalURLsInput.checked,
 			includeInfobar: includeInfobarInput.checked,
 			openInfobar: openInfobarInput.checked,
+			animateInfobar: animateInfobarInput.checked,
 			removeSavedDate: removeInfobarSavedDateInput.checked,
 			confirmInfobarContent: confirmInfobarInput.checked,
 			autoClose: autoCloseInput.checked,
@@ -1374,6 +1556,108 @@ async function onClickSaveToClipboard() {
 	await refresh();
 }
 
+async function initExternalCapturePermissions() {
+	await refreshExternalCapturePermissions();
+	const requestId = new URLSearchParams(location.search).get("externalCaptureRequestId");
+	if (requestId) {
+		const request = await browser.runtime.sendMessage({ method: "externalCapture.getPendingRequest", requestId });
+		if (request) {
+			const requestLabel = request.displayName
+				? `${request.displayName} (${request.extensionId})`
+				: request.extensionId;
+			externalCapturePendingRequest.dataset.requestId = request.id;
+			externalCapturePendingRequest.dataset.extensionId = request.extensionId;
+			externalCapturePendingRequest.dataset.displayName = request.displayName || "";
+			// the pending request is only kept in memory, keep the background page alive
+			// while the user decides, until the request expires in the background page
+			let pingCount = 0;
+			externalCapturePingInterval = setInterval(() => {
+				pingCount++;
+				if (pingCount * EXTERNAL_CAPTURE_PING_DELAY >= EXTERNAL_CAPTURE_PENDING_REQUEST_TIMEOUT) {
+					clearInterval(externalCapturePingInterval);
+				} else {
+					browser.runtime.sendMessage({ method: "ping" }).then(() => { });
+				}
+			}, EXTERNAL_CAPTURE_PING_DELAY);
+			externalCapturePendingRequestLabel.textContent = browser.i18n.getMessage("optionsExternalCapturePendingRequest", requestLabel);
+			externalCapturePendingRequest.hidden = false;
+			externalCapturePermissionsSection.classList.add("external-capture-permissions--pending");
+			externalCapturePermissionsSection.open = true;
+			externalCapturePermissionsSection.scrollIntoView({ block: "center" });
+			externalCaptureApproveButton.focus();
+		}
+	}
+}
+
+async function refreshExternalCapturePermissions() {
+	const permissions = await browser.runtime.sendMessage({ method: "externalCapture.getPermissions" });
+	externalCaptureAllowedIdsInput.value = formatExtensionEntries(permissions.allowedExtensions);
+	externalCaptureDeniedIdsInput.value = formatExtensionEntries(permissions.deniedExtensions);
+}
+
+async function updateExternalCapturePermissions() {
+	await browser.runtime.sendMessage({
+		method: "externalCapture.setPermissions",
+		permissions: {
+			allowedExtensions: parseExtensionEntries(externalCaptureAllowedIdsInput.value),
+			deniedExtensions: parseExtensionEntries(externalCaptureDeniedIdsInput.value)
+		}
+	});
+	await refreshExternalCapturePermissions();
+}
+
+async function respondExternalCaptureRequest(approved) {
+	const { requestId, extensionId, displayName } = externalCapturePendingRequest.dataset;
+	if (requestId) {
+		clearInterval(externalCapturePingInterval);
+		const response = await browser.runtime.sendMessage({ method: "externalCapture.respondPendingRequest", requestId, approved });
+		if (response && !response.found && extensionId) {
+			// the request expired or the service worker restarted: store the decision anyway,
+			// otherwise the button would silently do nothing
+			await storeExternalCaptureDecision(extensionId, displayName, approved);
+		}
+		externalCapturePendingRequest.hidden = true;
+		externalCapturePermissionsSection.classList.remove("external-capture-permissions--pending");
+		delete externalCapturePendingRequest.dataset.requestId;
+		delete externalCapturePendingRequest.dataset.extensionId;
+		delete externalCapturePendingRequest.dataset.displayName;
+		await refreshExternalCapturePermissions();
+	}
+}
+
+async function storeExternalCaptureDecision(extensionId, displayName, approved) {
+	const permissions = await browser.runtime.sendMessage({ method: "externalCapture.getPermissions" });
+	const allowedExtensions = permissions.allowedExtensions.filter(extension => extension.id != extensionId);
+	const deniedExtensions = permissions.deniedExtensions.filter(extension => extension.id != extensionId);
+	const extension = { id: extensionId, name: displayName || "" };
+	if (approved) {
+		allowedExtensions.push(extension);
+	} else {
+		deniedExtensions.push(extension);
+	}
+	await browser.runtime.sendMessage({
+		method: "externalCapture.setPermissions",
+		permissions: { allowedExtensions, deniedExtensions }
+	});
+}
+
+function formatExtensionEntries(extensionEntries = []) {
+	return extensionEntries.map(entry => entry.name ? `${entry.id}\t${entry.name}` : entry.id).join("\n");
+}
+
+function parseExtensionEntries(value) {
+	const entries = [];
+	const knownIds = new Set();
+	value.split(/\n+/).forEach(line => {
+		const [id, ...nameParts] = line.trim().split(/\s+/);
+		if (id && !knownIds.has(id)) {
+			knownIds.add(id);
+			entries.push({ id, name: nameParts.join(" ") });
+		}
+	});
+	return entries;
+}
+
 async function onClickSaveToGDrive() {
 	if (saveToGDriveInput.checked) {
 		saveToGDriveInput.checked = false;
@@ -1390,6 +1674,28 @@ async function onClickSaveToGDrive() {
 		} catch (error) {
 			saveToGDriveInput.checked = false;
 			await browser.runtime.sendMessage({ method: "downloads.disableGDrive" });
+		}
+	}
+	await update();
+	await refresh();
+}
+
+async function onClickSaveToDropbox() {
+	if (saveToDropboxInput.checked) {
+		saveToDropboxInput.checked = false;
+		try {
+			if (requestPermissionIdentity) {
+				const permissionGranted = await browser.permissions.request({ permissions: ["identity"] });
+				if (permissionGranted) {
+					saveToDropboxInput.checked = true;
+				}
+			} else {
+				saveToDropboxInput.checked = true;
+			}
+			// eslint-disable-next-line no-unused-vars
+		} catch (error) {
+			saveToDropboxInput.checked = false;
+			await browser.runtime.sendMessage({ method: "downloads.disableDropbox" });
 		}
 	}
 	await update();
@@ -1592,6 +1898,19 @@ async function getHelpPageURL() {
 				return browser.runtime.getURL(HELP_PAGE_PATH_DEFAULT);
 			}
 		}
+	}
+}
+
+function getText(blob) {
+	if (globalThis.FileReader) {
+		const reader = new globalThis.FileReader();
+		reader.readAsText(blob);
+		return new Promise((resolve, reject) => {
+			reader.addEventListener("load", () => resolve(reader.result), false);
+			reader.addEventListener("error", reject, false);
+		});
+	} else {
+		return blob.text();
 	}
 }
 

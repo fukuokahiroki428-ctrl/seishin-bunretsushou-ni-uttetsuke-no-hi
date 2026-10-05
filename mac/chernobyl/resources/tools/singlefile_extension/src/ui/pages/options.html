@@ -16,9 +16,9 @@
 			<span class="options-title">
 				<span id="expandAllButton"></span>
 				<span id="titleLabel"></span>
-				<a href="options.html#" target="_blank" class="new-window-link"><img
+				<a id="optionsNewWindowLink" href="options.html#" target="_blank" class="new-window-link"><img alt=""
 						src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAQElEQVR42qXKwQkAIAxDUUdxtO6/RBQkQZvSi8I/pL4BoGw/XPkh4XigPmsUgh0626AjRsgxHTkUThsG2T/sIlzdTsp52kSS1wAAAABJRU5ErkJggg=="></a>
-				<a href="options-editor.html" target="_blank" class="new-window-link"><img
+				<a id="optionsEditorLink" href="options-editor.html" target="_blank" class="new-window-link"><img alt=""
 						src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAABg2lDQ1BJQ0MgcHJvZmlsZQAAKJF9kT1Iw0AcxV9TpSIVQYuoOGSoTnbRIo61CkWoEGqFVh1MLv2CJg1Jiouj4Fpw8GOx6uDirKuDqyAIfoC4C06KLlLi/5pCixgPjvvx7t7j7h0g1MtMs7pigKbbZioRFzPZVTHwCgEDGMIIojKzjDlJSsJzfN3Dx9e7CM/yPvfn6FNzFgN8InGMGaZNvEE8s2kbnPeJQ6woq8TnxJMmXZD4keuKy2+cC00WeGbITKfmiUPEYqGDlQ5mRVMjjhKHVU2nfCHjssp5i7NWrrLWPfkLgzl9ZZnrNMeQwCKWIEGEgipKKMNGhFadFAsp2o97+EebfolcCrlKYORYQAUa5KYf/A9+d2vlp6fcpGAc6H5xnI9xILALNGqO833sOI0TwP8MXOltf6UOzH6SXmtr4SOgfxu4uG5ryh5wuQMMPxmyKTclP00hnwfez+ibssDgLdC75vbW2sfpA5CmrpI3wMEhMFGg7HWPd/d09vbvmVZ/P8lTcsmmxgruAAAABmJLR0QAAAAAAAD5Q7t/AAAACXBIWXMAAAsTAAALEwEAmpwYAAAAB3RJTUUH6QISFiAoxdV/BAAAABl0RVh0Q29tbWVudABDcmVhdGVkIHdpdGggR0lNUFeBDhcAAAAkSURBVBjTY2AgEjBC6f9EqqPcROJNwmci6aaQ6mtGqpmIYhIA3lQFBjN3Og8AAAAASUVORK5CYII="></a>
 			</span>
 			<span class="profiles">
@@ -83,6 +83,56 @@
 				<label for="filenameReplacementCharacterInput" id="filenameReplacementCharacterLabel"></label>
 				<div class="option-input">
 					<input type="text" id="filenameReplacementCharacterInput" class="small-input">
+				</div>
+			</div>
+			<div class="option vertical">
+				<label id="filenameReplacementsLabel"></label>
+				<div class="rules-table-container replacements-table-container">
+					<div class="thead">
+						<div class="tr">
+							<span class="th" id="filenameReplacedCharactersLabel"></span>
+							<span class="th" id="filenameReplacementCharactersLabel"></span>
+							<span class="th"></span>
+						</div>
+					</div>
+					<div class="rules-table">
+						<div class="replacements-data">
+						</div>
+						<div hidden class="tr replacement-view">
+							<span class="td"><input type="text" class="replacement-input replacement-characters-input"></span>
+							<span class="td"><input type="text" class="replacement-input replacement-character-input"></span>
+							<span class="td"><button class="replacement-delete-button"><img
+											src="../resources/button_delete.png"></button></span>
+						</div>
+						<form class="tr replacement-create">
+							<span class="td"><input type="text" id="replacementCharactersInput"
+									class="replacement-input"></span>
+							<span class="td"><input type="text" id="replacementCharacterInput"
+									class="replacement-input"></span>
+							<span class="td"><button id="replacementAddButton" disabled type="submit"><img
+											src="../resources/button_new.png"></button></span>
+						</form>
+					</div>
+				</div>
+			</div>
+			<div class="option vertical">
+				<div class="rules-table-container preview-table-container">
+					<div class="thead">
+						<div class="tr">
+							<span class="th" id="filenameReplacementsPreviewLabel"></span>
+							<span class="th" id="filenameReplacementsPreviewResultLabel"></span>
+						</div>
+					</div>
+					<div class="tr">
+						<span class="td"><input type="text" id="filenameReplacementsPreviewInput"
+								class="replacement-input"></span>
+						<span class="td" id="filenameReplacementsPreviewOutput"></span>
+					</div>
+				</div>
+			</div>
+			<div class="option replacements-reset">
+				<div class="buttons">
+					<button id="filenameReplacementsResetButton" type="button"></button>
 				</div>
 			</div>
 			<div class="option">
@@ -171,6 +221,10 @@
 				<input type="checkbox" id="insertMetaCSPInput">
 			</div>
 			<div class="option">
+				<label for="insertCanonicalLinkInput" id="insertCanonicalLinkLabel"></label>
+				<input type="checkbox" id="insertCanonicalLinkInput">
+			</div>
+			<div class="option">
 				<label for="removeFramesInput" id="removeFramesLabel"></label>
 				<input type="checkbox" id="removeFramesInput">
 			</div>
@@ -209,6 +263,10 @@
 				<label for="openInfobarInput" id="openInfobarLabel"></label>
 				<input type="checkbox" id="openInfobarInput">
 			</div>
+			<div class="option">
+				<label for="animateInfobarInput" id="animateInfobarLabel"></label>
+				<input type="checkbox" id="animateInfobarInput">
+			</div>
 		</details>
 		<details>
 			<summary id="stylesheetsLabel"></summary>
@@ -219,10 +277,6 @@
 			<div class="option">
 				<label for="removeAlternativeMediasInput" id="removeAlternativeMediasLabel"></label>
 				<input type="checkbox" id="removeAlternativeMediasInput">
-			</div>
-			<div class="option">
-				<label for="compressCSSInput" id="compressCSSLabel"></label>
-				<input type="checkbox" id="compressCSSInput">
 			</div>
 			<div class="option">
 				<label for="groupDuplicateStylesheetsInput" id="groupDuplicateStylesheetsLabel"></label>
@@ -240,29 +294,12 @@
 				<input type="checkbox" id="groupDuplicateImagesInput">
 			</div>
 			<div class="option">
-				<label for="loadDeferredImagesInput" id="loadDeferredImagesLabel"></label>
-				<input type="checkbox" id="loadDeferredImagesInput">
-			</div>
-			<div class="option second-level">
-				<label for="loadDeferredImagesMaxIdleTimeInput" id="loadDeferredImagesMaxIdleTimeLabel"></label>
-				<input type="number" class="large-input" id="loadDeferredImagesMaxIdleTimeInput" step="100">
-			</div>
-			<div class="option second-level">
-				<label for="loadDeferredImagesDispatchScrollEventInput"
-					id="loadDeferredImagesDispatchScrollEventLabel"></label>
-				<input type="checkbox" id="loadDeferredImagesDispatchScrollEventInput">
-			</div>
-			<div class="option second-level">
-				<label for="loadDeferredImagesKeepZoomLevelInput" id="loadDeferredImagesKeepZoomLevelLabel"></label>
-				<input type="checkbox" id="loadDeferredImagesKeepZoomLevelInput">
-			</div>
-			<div class="option second-level">
-				<label for="loadDeferredImagesBeforeFramesInput" id="loadDeferredImagesBeforeFramesLabel"></label>
-				<input type="checkbox" id="loadDeferredImagesBeforeFramesInput">
-			</div>
-			<div class="option">
 				<label for="imageReductionFactorInput" id="imageReductionFactorLabel"></label>
 				<input type="number" id="imageReductionFactorInput" min="1" max="16" step=".5" value="1">
+			</div>
+			<div class="option">
+				<label for="imageQualityInput" id="imageQualityLabel"></label>
+				<input type="number" id="imageQualityInput" min="0" max="1" step=".05" value="0.8">
 			</div>
 			<div class="option">
 				<label for="removeAlternativeImagesInput" id="removeAlternativeImagesLabel"></label>
@@ -397,6 +434,30 @@
 			<div class="option second-level">
 				<label for="saveToRestFormApiUrlFieldNameInput" id="saveToRestFormApiUrlFieldNameLabel"></label>
 				<input type="text" id="saveToRestFormApiUrlFieldNameInput" class="medium-input">
+			</div>
+		</details>
+		<details>
+			<summary id="deferredContentLabel"></summary>
+			<div class="option">
+				<label for="loadDeferredContentInput" id="loadDeferredContentLabel"></label>
+				<input type="checkbox" id="loadDeferredContentInput">
+			</div>
+			<div class="option second-level">
+				<label for="loadDeferredContentMaxIdleTimeInput" id="loadDeferredContentMaxIdleTimeLabel"></label>
+				<input type="number" class="large-input" id="loadDeferredContentMaxIdleTimeInput" step="100">
+			</div>
+			<div class="option second-level">
+				<label for="loadDeferredContentDispatchScrollEventInput"
+					id="loadDeferredContentDispatchScrollEventLabel"></label>
+				<input type="checkbox" id="loadDeferredContentDispatchScrollEventInput">
+			</div>
+			<div class="option second-level">
+				<label for="loadDeferredContentKeepZoomLevelInput" id="loadDeferredContentKeepZoomLevelLabel"></label>
+				<input type="checkbox" id="loadDeferredContentKeepZoomLevelInput">
+			</div>
+			<div class="option second-level">
+				<label for="loadDeferredContentBeforeFramesInput" id="loadDeferredContentBeforeFramesLabel"></label>
+				<input type="checkbox" id="loadDeferredContentBeforeFramesInput">
 			</div>
 		</details>
 		<details>
@@ -598,7 +659,25 @@
 				<input type="checkbox" id="displayStatsInput">
 			</div>
 		</details>
-		<details>
+		<details id="externalCapturePermissionsSection">
+			<summary id="externalCapturePermissionsLabel"></summary>
+			<div id="externalCapturePendingRequest" class="external-capture-request" hidden>
+				<div id="externalCapturePendingRequestLabel"></div>
+				<div class="buttons">
+					<button id="externalCaptureApproveButton" type="button"></button>
+					<button id="externalCaptureDenyButton" type="button"></button>
+				</div>
+			</div>
+			<div class="option vertical">
+				<label for="externalCaptureAllowedIdsInput" id="externalCaptureAllowedIdsLabel"></label>
+				<textarea id="externalCaptureAllowedIdsInput"></textarea>
+			</div>
+			<div class="option vertical">
+				<label for="externalCaptureDeniedIdsInput" id="externalCaptureDeniedIdsLabel"></label>
+				<textarea id="externalCaptureDeniedIdsInput"></textarea>
+			</div>
+		</details>
+		<details id="autoSettingsSection">
 			<summary id="autoSettingsLabel"></summary>
 			<div class="rules-table-container compact">
 				<div class="thead">
@@ -647,6 +726,16 @@
 			<div class="option" id="showAutoSaveProfileOption">
 				<label for="showAutoSaveProfileInput" id="showAutoSaveProfileLabel"></label>
 				<input type="checkbox" id="showAutoSaveProfileInput">
+			</div>
+		</details>
+		<details id="menusSection">
+			<summary id="menusLabel"></summary>
+			<div class="option">
+				<label id="menusEditorLabel"></label>
+				<span id="menusStateLabel"></span>
+			</div>
+			<div class="option menus-editor-link">
+				<a href="menus.html" target="_blank" id="menusEditorLink"></a>
 			</div>
 		</details>
 		<div class="option bottom">
@@ -700,6 +789,7 @@
 	</main>
 	<script src="/lib/chrome-browser-polyfill.js"></script>
 	<script type="module" src="../bg/ui-options.js"></script>
+	<script type="module" src="../bg/ui-options-menus.js"></script>
 </body>
 
 </html>

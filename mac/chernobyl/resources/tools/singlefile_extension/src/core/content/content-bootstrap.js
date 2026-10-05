@@ -21,10 +21,10 @@
  *   Source.
  */
 
-/* global browser, document, location, setTimeout, XMLHttpRequest, Node, DOMParser, Blob, URL, Image, OffscreenCanvas, CustomEvent */
+/* global browser, document, location, setTimeout, addEventListener, XMLHttpRequest, Node, DOMParser, Blob, URL, Image, OffscreenCanvas, CustomEvent, TextDecoder */
 
 const MAX_CONTENT_SIZE = 32 * (1024 * 1024);
-const NESTING_TRACK_ID_ATTRIBUTE_NAME = "data-sf-nesting-track-id";
+const ARCHIVE_SCAN_LENGTH = 1024 * 1024;
 
 const singlefile = globalThis.singlefileBootstrap;
 const pendingResponses = new Map();
@@ -64,12 +64,24 @@ browser.runtime.onMessage.addListener(message => {
 		return onMessage(message);
 	}
 });
+addEventListener("keydown", cancelSaveKeyListener, true);
+addEventListener("keyup", cancelSaveKeyListener, true);
 document.addEventListener("DOMContentLoaded", init, false);
 if (globalThis.window == globalThis.top && location && location.href && (location.href.startsWith("file://") || location.href.startsWith("content://"))) {
 	if (document.readyState == "loading") {
 		document.addEventListener("DOMContentLoaded", extractFile, false);
 	} else {
 		extractFile();
+	}
+}
+
+function cancelSaveKeyListener(event) {
+	if (event.key == "Escape" && singlefile.cancelSave) {
+		event.preventDefault();
+		event.stopPropagation();
+		if (event.type == "keyup") {
+			singlefile.cancelSave();
+		}
 	}
 }
 
@@ -314,9 +326,10 @@ async function openEditor(document) {
 	let content;
 	if (compressContent) {
 		content = await getContent();
+		detectArchiveOptions(content);
 	} else {
+		singlefile.helper.markInvalidNesting(document);
 		serializeShadowRoots(document);
-		markInvalidNesting(document);
 		content = singlefile.helper.serialize(document);
 	}
 	for (let blockIndex = 0; blockIndex * MAX_CONTENT_SIZE < content.length; blockIndex++) {
@@ -331,7 +344,7 @@ async function openEditor(document) {
 		};
 		message.truncated = content.length > MAX_CONTENT_SIZE;
 		if (message.truncated) {
-			message.finished = (blockIndex + 1) * MAX_CONTENT_SIZE > content.length;
+			message.finished = (blockIndex + 1) * MAX_CONTENT_SIZE >= content.length;
 			if (content instanceof Uint8Array) {
 				message.content = Array.from(content.subarray(blockIndex * MAX_CONTENT_SIZE, (blockIndex + 1) * MAX_CONTENT_SIZE));
 			} else {
@@ -364,6 +377,20 @@ async function extractEmbeddedImage(content) {
 	}
 }
 
+// the markers of a self-extracting archive live in the prologue and in the data appended
+// after it, and both are removed from the document while the page extracts itself, so they
+// are read from the bytes of the file instead of from the document
+function detectArchiveOptions(content) {
+	const bytes = content instanceof Uint8Array ? content : new Uint8Array(content);
+	const decoder = new TextDecoder("windows-1252");
+	const prologue = decoder.decode(bytes.subarray(0, ARCHIVE_SCAN_LENGTH));
+	const appendedData = bytes.length > ARCHIVE_SCAN_LENGTH ?
+		decoder.decode(bytes.subarray(bytes.length - ARCHIVE_SCAN_LENGTH)) : "";
+	extractDataFromPageTags = prologue.includes("<sfz-extra-data>") || appendedData.includes("<sfz-extra-data>");
+	insertTextBody = prologue.includes("<main hidden>");
+	insertMetaCSP = prologue.includes("http-equiv=content-security-policy");
+}
+
 function detectSavedPage(document) {
 	if (savedPageDetected === undefined) {
 		const helper = singlefile.helper;
@@ -391,96 +418,4 @@ function serializeShadowRoots(node) {
 			element.appendChild(templateElement);
 		}
 	});
-}
-
-function markInvalidNesting(doc) {
-	addTrackIds(doc.body);
-	const verificationDoc = parseDocContent(serialize(doc));
-	const markedMap = buildTrackIdMap(doc.body);
-	const normalizedMap = buildTrackIdMap(verificationDoc.body);
-	const trackIds = new Set();
-	Object.keys(markedMap).forEach(id => {
-		if (id in normalizedMap) {
-			const markedParent = markedMap[id].parentElement?.getAttribute(NESTING_TRACK_ID_ATTRIBUTE_NAME) || null;
-			const normalizedParent = normalizedMap[id]?.parentElement?.getAttribute(NESTING_TRACK_ID_ATTRIBUTE_NAME) || null;
-			if (markedParent !== normalizedParent) {
-				let current = markedMap[id];
-				while (current && current !== doc.body) {
-					const currentId = current.getAttribute(NESTING_TRACK_ID_ATTRIBUTE_NAME);
-					if (currentId) {
-						trackIds.add(currentId);
-					}
-					current = current.parentElement;
-				}
-			}
-		}
-	});
-	cleanupTrackIds(doc.body, trackIds);
-
-	function addTrackIds(element, index = 0, parentTrackId = "") {
-		const trackId = parentTrackId ? `${parentTrackId}.${index + 1}` : `${index + 1}`;
-		element.setAttribute(NESTING_TRACK_ID_ATTRIBUTE_NAME, trackId);
-		Array.from(element.children).forEach((child, indexChild) => addTrackIds(child, indexChild, trackId));
-	}
-
-	function buildTrackIdMap(element) {
-		const trackIds = {};
-		traverse(element);
-		return trackIds;
-
-		function traverse(element) {
-			if (element.getAttribute) {
-				const id = element.getAttribute(NESTING_TRACK_ID_ATTRIBUTE_NAME);
-				if (id) {
-					trackIds[id] = element;
-				}
-				Array.from(element.children).forEach(traverse);
-			}
-		}
-	}
-
-	function cleanupTrackIds(element, toKeep) {
-		const id = element.getAttribute(NESTING_TRACK_ID_ATTRIBUTE_NAME);
-		if (id && !toKeep.has(id)) {
-			element.removeAttribute(NESTING_TRACK_ID_ATTRIBUTE_NAME);
-		}
-		Array.from(element.children).forEach(child => cleanupTrackIds(child, toKeep));
-	}
-}
-
-function parseDocContent(content, baseURI) {
-	const doc = (new DOMParser()).parseFromString(content, "text/html");
-	if (!doc.head) {
-		doc.documentElement.insertBefore(doc.createElement("HEAD"), doc.body);
-	}
-	let baseElement = doc.querySelector("base");
-	if (!baseElement || !baseElement.getAttribute("href")) {
-		if (baseElement) {
-			baseElement.remove();
-		}
-		baseElement = doc.createElement("base");
-		baseElement.setAttribute("href", baseURI);
-		doc.head.insertBefore(baseElement, doc.head.firstChild);
-	}
-	return doc;
-}
-
-function serialize(doc) {
-	const docType = doc.doctype;
-	let docTypeString = "";
-	if (docType) {
-		docTypeString = "<!DOCTYPE " + docType.nodeName;
-		if (docType.publicId) {
-			docTypeString += " PUBLIC \"" + docType.publicId + "\"";
-			if (docType.systemId) {
-				docTypeString += " \"" + docType.systemId + "\"";
-			}
-		} else if (docType.systemId) {
-			docTypeString += " SYSTEM \"" + docType.systemId + "\"";
-		} if (docType.internalSubset) {
-			docTypeString += " [" + docType.internalSubset + "]";
-		}
-		docTypeString += "> ";
-	}
-	return docTypeString + doc.documentElement.outerHTML;
 }

@@ -21,7 +21,7 @@
  *   Source.
  */
 
-/* global document, getComputedStyle, FileReader, Image, OffscreenCanvas, createImageBitmap */
+/* global browser, document, getComputedStyle, Image, OffscreenCanvas, createImageBitmap, btoa */
 
 const singlefile = globalThis.singlefile;
 
@@ -34,6 +34,13 @@ const SHARE_PAGE_BAR_TAGNAME = "singlefile-share-page-bar";
 let EMBEDDED_IMAGE_BUTTON_MESSAGE, SHARE_PAGE_BUTTON_MESSAGE, SHARE_SELECTION_BUTTON_MESSAGE, ERROR_TITLE_MESSAGE;
 
 const CSS_PROPERTIES = new Set(Array.from(getComputedStyle(document.documentElement)));
+let UI_DIRECTION = "ltr";
+try {
+	UI_DIRECTION = browser.i18n.getMessage("@@bidi_dir");
+	// eslint-disable-next-line no-unused-vars
+} catch (error) {
+	// ignored
+}
 
 export {
 	setLabels,
@@ -86,6 +93,10 @@ function getSharePageBar() {
 					buttonLabel: selectedContent ? SHARE_SELECTION_BUTTON_MESSAGE : SHARE_PAGE_BUTTON_MESSAGE,
 					buttonOnclick: resolve
 				});
+				const barElement = document.querySelector(SHARE_PAGE_BAR_TAGNAME);
+				if (barElement) {
+					barElement.shadowRoot.querySelector("button").focus({ preventScroll: true });
+				}
 			});
 		},
 		hide: function () {
@@ -112,36 +123,26 @@ function openFile({ accept } = { accept: "image/*" }) {
 		inputElement.addEventListener("change", async event => {
 			if (event.target.files.length) {
 				const file = event.target.files[0];
-				let mimeType = file.type;
-				if (mimeType == "image/png") {
-					const fileReader = new FileReader();
-					fileReader.addEventListener("load", async () => resolve(new Uint8Array(fileReader.result)));
-					fileReader.addEventListener("error", () => resolve());
-					fileReader.readAsArrayBuffer(file);
-				} else {
-					const dataURI = await new Promise(resolve => {
-						const fileReader = new FileReader();
-						fileReader.addEventListener("load", () => resolve(fileReader.result));
-						fileReader.addEventListener("error", () => resolve());
-						fileReader.readAsDataURL(file);
-					});
-					if (dataURI) {
+				try {
+					if (file.type == "image/png") {
+						resolve(new Uint8Array(await getArrayBuffer(file)));
+					} else {
+						const dataURI = await getDataURI(file);
 						const imageBitmap = await createImageBitmap(file);
 						const image = new Image();
 						image.src = dataURI;
-						image.addEventListener("error", () => resolve());
-						await new Promise(resolve => image.addEventListener("load", resolve));
+						await new Promise((resolve, reject) => {
+							image.addEventListener("load", resolve, false);
+							image.addEventListener("error", reject, false);
+						});
 						const canvas = new OffscreenCanvas(image.width, image.height);
 						const context = canvas.getContext("2d");
 						context.drawImage(imageBitmap, 0, 0);
 						const blob = await canvas.convertToBlob({ type: "image/png" });
-						const fileReader = new FileReader();
-						fileReader.addEventListener("load", () => resolve(new Uint8Array(fileReader.result)));
-						fileReader.addEventListener("error", () => resolve());
-						fileReader.readAsArrayBuffer(blob);
-					} else {
-						resolve();
+						resolve(new Uint8Array(await getArrayBuffer(blob)));
 					}
+				} catch {
+					resolve();
 				}
 			} else {
 				resolve();
@@ -149,6 +150,37 @@ function openFile({ accept } = { accept: "image/*" }) {
 		});
 		inputElement.addEventListener("cancel", () => resolve());
 	});
+}
+
+async function getDataURI(blob) {
+	if (globalThis.FileReader) {
+		const fileReader = new globalThis.FileReader();
+		fileReader.readAsDataURL(blob);
+		return new Promise((resolve, reject) => {
+			fileReader.addEventListener("load", () => resolve(fileReader.result), false);
+			fileReader.addEventListener("error", reject, false);
+		});
+	} else {
+		const bytes = new Uint8Array(await blob.arrayBuffer());
+		let content = "";
+		for (let offset = 0; offset < bytes.length; offset += 8192) {
+			content += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+		}
+		return "data:" + (blob.type || "application/octet-stream") + ";base64," + btoa(content);
+	}
+}
+
+function getArrayBuffer(blob) {
+	if (globalThis.FileReader) {
+		const fileReader = new globalThis.FileReader();
+		fileReader.readAsArrayBuffer(blob);
+		return new Promise((resolve, reject) => {
+			fileReader.addEventListener("load", () => resolve(fileReader.result), false);
+			fileReader.addEventListener("error", reject, false);
+		});
+	} else {
+		return blob.arrayBuffer();
+	}
 }
 
 function displayBar(tagName, message, { link, buttonLabel, buttonOnclick } = {}) {
@@ -203,7 +235,7 @@ function displayBar(tagName, message, { link, buttonLabel, buttonOnclick } = {})
 					cursor: pointer;
 					transition: opacity 250ms;
 					height: 16px;
-					font-size: .8rem;
+					font-size: 13px;
 					align-self: center;
 				}
 				.singlefile-open-file-bar button, .singlefile-share-page-bar button{
@@ -211,6 +243,18 @@ function displayBar(tagName, message, { link, buttonLabel, buttonOnclick } = {})
 				}
 				.singlefile-open-file-bar .close-button, .singlefile-share-page-bar .close-button{
 					filter: invert(1);
+				}
+				@media (prefers-color-scheme: dark) {
+					.singlefile-open-file-bar.container, .singlefile-share-page-bar.container {
+						background-color: #1c1b22;
+						border-block-end: #4a4a55 1px solid;
+					}
+					.singlefile-open-file-bar a, .singlefile-share-page-bar a {
+						color: #8ab4f8;
+					}
+					.singlefile-open-file-bar .close-button, .singlefile-share-page-bar .close-button {
+						filter: none;
+					}
 				}
 				a {
 					color: #303036;
@@ -270,5 +314,6 @@ function createElement(tagName, parentElement) {
 		parentElement.appendChild(element);
 	}
 	CSS_PROPERTIES.forEach(property => element.style.setProperty(property, "initial", "important"));
+	element.style.setProperty("direction", UI_DIRECTION, "important");
 	return element;
 }
