@@ -240,9 +240,15 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
     //   본인 Chrome 의 크래시 핸들러도 함께 죽는다 — 남의 창을 닫는 셈이다.
     //   우리 인스턴스는 명령줄에 chrome_capture_profile(전용 프로필 경로)이
     //   들어 있으므로, 그것으로만 고른다.
-    QProcess::execute("/usr/bin/pkill", {"-f", "chrome_capture_profile"});
-    QThread::msleep(300);                                    // 얌전히 끝날 틈
-    QProcess::execute("/usr/bin/pkill", {"-9", "-f", "chrome_capture_profile"});
+    // ★ 이름만이 아니라 '이 앱 데이터 폴더의' 전체 경로로 — 예전 pkill -f chrome_capture_profile 은
+    //   같은 맥의 다른 사본(공작함 격리 사본 · 옛 판)이 켜지는 순간 사용자 앱이 수집 중이던 Chrome 까지 껐다.
+    //   트랙별(_<b64>) · PEN(_pen) 프로필도 같은 접두로 함께 정리된다.
+    //   앱 이름이 바뀌어 옮겨진(이제 없는) 옛 데이터 폴더의 고아 Chrome 은 따로 — 예전 pkill 이 잡던 것을 놓치지 않게.
+    {
+        const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        Common::killCaptureChromes(appData + "/chrome_capture_profile", true);
+        Common::killOrphanedCaptureChromes(QFileInfo(appData).absolutePath());
+    }
     // ★ 앱 시작 시 이전 세션의 좀비 tail script process 청소 (Terminal window 중복 방지)
     //   사용자가 본 "터미널 2개 떠요" 의 원인 — 옛 tail.command process 가 안 죽고 남아서.
     QProcess::execute("/usr/bin/pkill", {"-f", "miyo_.*_tail.command"});
@@ -5465,10 +5471,10 @@ void HanishikiBackend::getDiagnosticInfo()
 {
     QString info;
 #ifdef Q_OS_MACOS
-    QProcess p;
-    p.start("/bin/sh", {"-c", "ps aux | grep -iE 'Chrome.*chrome_capture_profile' | grep -v grep | wc -l"});
-    p.waitForFinished(2000);
-    int chromeCount = QString::fromUtf8(p.readAllStandardOutput()).trimmed().toInt();
+    // 이 앱 데이터 폴더의 캡처 프로필을 쓰는 것만 센다(같은 맥의 다른 사본 것은 빼고 — 아래 killZombieChromes 와 같은 기준)
+    const QString diagAppData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const int chromeCount = Common::captureChromePids(diagAppData + "/chrome_capture_profile", true).size()
+                          + Common::orphanedCaptureChromePids(QFileInfo(diagAppData).absolutePath()).size();
     info += QString("● 좀비/활성 캡쳐 Chrome 프로세스: %1개\n").arg(chromeCount);
 
     QProcess vm;
@@ -5560,8 +5566,13 @@ void HanishikiBackend::killZombieChromes()
     //   사용자 일반 Chrome (/Applications/Google Chrome.app) 은 영향 없음
     int killed = 0;
 #ifdef Q_OS_MACOS
-    // 패턴 1: 우리 capture profile 사용하는 chrome
-    if (QProcess::execute("/usr/bin/pkill", {"-f", "chrome_capture_profile"}) == 0) killed++;
+    // 패턴 1: 우리 capture profile 사용하는 chrome — 이 앱 데이터 폴더의 것만(다른 사본의 Chrome 은 두고)
+    {
+        const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        if (Common::killCaptureChromes(appData + "/chrome_capture_profile", true) > 0) killed++;
+        // 이름이 바뀌어 옮겨진 옛 데이터 폴더의 고아 Chrome 도(시작 때 정리와 같은 기준)
+        if (Common::killOrphanedCaptureChromes(QFileInfo(appData).absolutePath()) > 0) killed++;
+    }
     // ★ 예전엔 여기서 "Chrome for Testing" 과 "chrome_crashpad_handler" 를 이름만 보고
     //   죽였다. 주석에도 "별도 설치 안 했으면 안전" 이라고 적혀 있었는데, 그 말은
     //   설치했으면 남의 창을 닫는다는 뜻이다. 사용자 본인 Chrome 의 크래시 핸들러도
@@ -5584,7 +5595,7 @@ void HanishikiBackend::killZombieChromes()
     log(QString("좀비 정리 완료 — capture chrome + 앱 내부 Chromium + helper/crashpad").arg(killed),
         "success", "settings");
     runJs("if(window.onDiagInfo) onDiagInfo('좀비 정리 완료.\\n"
-          "• capture chrome (chrome_capture_profile 매치)\\n"
+          "• capture chrome (이 앱 데이터 폴더의 chrome_capture_profile* 만)\\n"
           "• 앱 내부 Chromium (Chrome for Testing)\\n"
           "• Chromium helper / crashpad handler\\n"
           "사용자 일반 Chrome 은 영향 없음.');");

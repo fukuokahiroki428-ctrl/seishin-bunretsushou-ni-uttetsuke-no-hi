@@ -90,6 +90,19 @@ QString appBundlePath();
 //   HANISHIKI_CAPTURE_PORT 로 바꾼다 — 공작함의 격리 사본은 19223 부터 써서, 같은 맥에서 돌고 있는
 //   사용자 앱의 Chrome 과 포트가 겹치지 않게 한다(겹치면 서로를 '좀비' 로 보고 끈다).
 int capturePortBase();
+// ★ 이 앱이 띄운 캡처 Chrome 만 — 명령줄의 --user-data-dir 가 profileDir 와 같거나(prefix 면) profileDir_… 인
+//   프로세스(자기 자신은 뺀다). 예전엔 이름(chrome_capture_profile)만 보고 pkill 해서, 같은 맥의 다른 사본
+//   (공작함 격리 사본 · 옛 판)이 켜지는 순간 사용자 앱의 수집 Chrome 까지 꺼졌다. 앱 데이터 폴더가 다르면
+//   전체 경로가 다르니, 전체 경로로 고르면 남의 것은 걸리지 않는다. Windows 에서는 빈 목록/0.
+QList<qint64> captureChromePids(const QString &profileDir, bool prefix);
+// 위 프로세스를 SIGTERM → 0.3초 뒤 남은 것을 SIGKILL. 처음 찾은 수를 돌려준다.
+int killCaptureChromes(const QString &profileDir, bool prefix);
+// ★ 사라진 데이터 폴더의 캡처 Chrome — appSupportRoot(이 홈의 Application Support) 아래 …/chrome_capture_profile[_…]
+//   인데 그 데이터 폴더가 이제 없는 것. 앱 이름이 바뀌어 폴더가 옮겨진 뒤(main.cpp 의 이전) 옛 판이 죽으며 남긴 Chrome 이
+//   여기 걸린다 — 예전 이름만 보던 pkill 은 잡았지만 위의 전체 경로 정리는 못 잡는다. 같은 홈의 살아 있는 사본은
+//   ABIWA.lock 이 막고, 격리 사본은 홈이 달라 appSupportRoot 밖이라 걸리지 않는다.
+QList<qint64> orphanedCaptureChromePids(const QString &appSupportRoot);
+int killOrphanedCaptureChromes(const QString &appSupportRoot);
 // ★ macOS: 앱 번들 재서명 — 번들 안에 파일이 추가/변경되면(모듈 설치 등) codesign 봉인이 깨져
 //   macOS 가 앱을 SIGKILL 할 수 있다. 설치 직후 이걸 호출해 봉인을 복구한다.
 //   유효한 서명 아이덴티티가 있으면 그걸 쓰고, 없으면 ad-hoc(-) 서명. 검증까지 통과해야 true.

@@ -349,7 +349,10 @@ void PenBackend::crawlStart(const QString &startUrl, const QString &savePath, bo
     if (useUserProfile) {
 #ifdef Q_OS_MACOS
         QString userDefault = QDir::homePath() + "/Library/Application Support/Google/Chrome/Default";
-        QString penProfile  = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/chrome_capture_profile";
+        // ★ PEN 전용 프로필에 — 예전엔 수집 캡처 Chrome 의 프로필(chrome_capture_profile)에 사용자 쿠키를 덮어써,
+        //   수집이 쓰던 계정 쿠키가 바뀌고 돌고 있던 캡처 Chrome 의 쿠키 DB 를 그 아래에서 갈아 끼웠다.
+        QString penProfile  = PenChromeCrawler::defaultProfileDir();
+        PenChromeCrawler::carryLoginFromSharedProfile(penProfile, this);   // 아래 mkpath 보다 먼저 — 한 번뿐인 옮기기
         QString penDefault  = penProfile + "/Default";
         QDir().mkpath(penDefault);
 
@@ -371,10 +374,9 @@ void PenBackend::crawlStart(const QString &startUrl, const QString &savePath, bo
                 if (QFile::copy(src, dst)) copied++;
             }
         }
-        // Local State — Chrome Safe Storage 키 참조 + 프로필 메타 (한 번만 복사)
-        QString srcLS = QDir::homePath() + "/Library/Application Support/Google/Chrome/Local State";
-        QString dstLS = penProfile + "/Local State";
-        if (QFile::exists(srcLS) && !QFile::exists(dstLS)) QFile::copy(srcLS, dstLS);
+        // ★ 사용자 Chrome 의 Local State 는 옮기지 않는다. 맥에서 쿠키 암호화 키는 Local State 가 아니라 키체인에 있고,
+        //   그 파일의 profile.last_used(예: "Profile 1")와 프로필 목록(이름·메일)까지 따라와, 새 PEN 프로필에서는
+        //   쿠키를 넣은 Default 가 아닌 다른 프로필로 열릴 수 있었다(PEN 은 이제 --profile-directory=Default 로도 연다).
 
         log(QString("사용자 Chrome 로그인 가져옴: %1개 파일 복사").arg(copied), "success");
         log("프로필: 펜 전용 (사용자 Cookies/Login Data 임포트됨)", "info");

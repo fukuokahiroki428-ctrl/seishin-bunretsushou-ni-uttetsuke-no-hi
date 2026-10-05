@@ -49,8 +49,15 @@ public:
     // false면 임시 프로필 사용 (--user-data-dir=tmp).
     void setUseUserProfile(bool b) { m_useUserProfile = b; }
     bool useUserProfile() const { return m_useUserProfile; }
-    void setDebugPort(int port) { m_debugPort = port; }
+    // 0 이하 = 자동(기본) — Chrome 이 빈 포트를 스스로 고르게 한다(아래 m_portAuto 설명).
+    void setDebugPort(int port) { m_debugPort = port > 0 ? port : 0; m_portAuto = port <= 0; }
     void setUserDataDir(const QString &d) { m_userDataDir = d; }
+    // PEN 전용 영구 프로필 — 수집 캡처 Chrome(chrome_capture_profile)과 나눈다. 접두가 같아
+    //   앱 시작 때의 좀비 정리 · 캐시 다듬기에는 함께 걸린다(HanishikiBackend 생성자).
+    static QString defaultProfileDir();
+    // PEN 프로필이 아직 없으면 예전 공용 프로필의 로그인 파일만 한 번 옮긴다. '사용자 Chrome 로그인 가져오기' 는
+    //   폴더를 먼저 만들므로 그 앞에서 부른다(그 뒤에 부르면 '이미 있음' 으로 보고 건너뛴다).
+    static void carryLoginFromSharedProfile(const QString &penDir, PenBackend *backend);
 
     // 1) Chrome 시작 + CDP 연결 (콜백 ok=true면 성공)
     void start(std::function<void(bool)> done);
@@ -118,7 +125,12 @@ private:
     QPointer<QWebSocket> m_ws;
     QNetworkAccessManager *m_nam = nullptr;
 
-    int m_debugPort = 9223;
+    // ★ 예전엔 9223 고정 + chrome_capture_profile 이라, 수집 캡처 Chrome(기본 9223 · 같은 프로필)과
+    //   포트·프로필을 함께 썼다. 한쪽이 뜰 때 다른 쪽을 '좀비' 로 보고 끄고, 같은 프로필을 두 Chrome 이
+    //   잡으려다 하나가 바로 꺼졌다. 이제 자체 프로필 모드는 --remote-debugging-port=0 으로 띄워 Chrome 이
+    //   빈 포트를 고르고, 그 번호를 프로필의 DevToolsActivePort 에서 읽는다 — 어느 고정 포트와도 겹치지 않는다.
+    int m_debugPort = 0;          // 0 = 아직 모름(자동). 시작한 뒤엔 실제 포트
+    bool m_portAuto = true;       // setDebugPort 로 정하지 않았으면 자동
     bool m_useUserProfile = false;
     bool m_ready = false;
     int m_nextCmdId = 1;

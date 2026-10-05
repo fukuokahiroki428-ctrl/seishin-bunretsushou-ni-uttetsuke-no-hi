@@ -28,6 +28,7 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QThread>
 #include <QMutex>
 #include <QRegularExpression>
 #include <QJsonDocument>
@@ -1066,6 +1067,111 @@ int capturePortBase()
     bool ok = false;
     const int v = qEnvironmentVariableIntValue("HANISHIKI_CAPTURE_PORT", &ok);
     return (ok && v >= 1024 && v <= 65000) ? v : 9223;
+}
+
+QList<qint64> captureChromePids(const QString &profileDir, bool prefix)
+{
+    QList<qint64> out;
+#ifndef Q_OS_WIN
+    if (profileDir.isEmpty()) return out;
+    // pkill/pgrep -f 는 정규식이라 경로의 공백·괄호를 다루기 어렵다 — ps 를 한 번 읽어 글자 그대로 비교한다.
+    QProcess ps;
+    ps.start("/bin/ps", {"-axww", "-o", "pid=,command="});
+    if (!ps.waitForFinished(3000)) { ps.kill(); ps.waitForFinished(1000); return out; }
+    const QString key = QStringLiteral("--user-data-dir=") + profileDir;
+    const qint64 self = QCoreApplication::applicationPid();
+    const QStringList lines = QString::fromUtf8(ps.readAllStandardOutput()).split('\n', Qt::SkipEmptyParts);
+    for (const QString &raw : lines) {
+        const QString line = raw.trimmed();
+        const int sp = line.indexOf(QLatin1Char(' '));
+        if (sp <= 0) continue;
+        const qint64 pid = line.left(sp).toLongLong();
+        if (pid <= 0 || pid == self) continue;
+        const QString cmd = line.mid(sp + 1);
+        const int at = cmd.indexOf(key);
+        if (at < 0) continue;
+        const int end = at + key.size();
+        // 경로가 거기서 끝나야 한다(다음 글자가 빈칸이거나 끝). prefix 면 트랙·PEN 프로필(…_<이름>)도.
+        if (end < cmd.size()) {
+            const QChar c = cmd.at(end);
+            if (c != QLatin1Char(' ') && !(prefix && c == QLatin1Char('_'))) continue;
+        }
+        out << pid;
+    }
+#else
+    Q_UNUSED(profileDir); Q_UNUSED(prefix);
+#endif
+    return out;
+}
+
+int killCaptureChromes(const QString &profileDir, bool prefix)
+{
+#ifndef Q_OS_WIN
+    const QList<qint64> found = captureChromePids(profileDir, prefix);
+    if (found.isEmpty()) return 0;
+    for (qint64 pid : found) ::kill(static_cast<pid_t>(pid), SIGTERM);
+    QThread::msleep(300);                                    // 얌전히 끝날 틈
+    for (qint64 pid : captureChromePids(profileDir, prefix)) ::kill(static_cast<pid_t>(pid), SIGKILL);
+    return found.size();
+#else
+    Q_UNUSED(profileDir); Q_UNUSED(prefix);
+    return 0;
+#endif
+}
+
+QList<qint64> orphanedCaptureChromePids(const QString &appSupportRoot)
+{
+    QList<qint64> out;
+#ifndef Q_OS_WIN
+    if (appSupportRoot.isEmpty()) return out;
+    const QString root = QDir::cleanPath(appSupportRoot) + QLatin1Char('/');
+    QProcess ps;
+    ps.start("/bin/ps", {"-axww", "-o", "pid=,command="});
+    if (!ps.waitForFinished(3000)) { ps.kill(); ps.waitForFinished(1000); return out; }
+    const QString key = QStringLiteral("--user-data-dir=");
+    const QString mark = QStringLiteral("/chrome_capture_profile");
+    const qint64 self = QCoreApplication::applicationPid();
+    const QStringList lines = QString::fromUtf8(ps.readAllStandardOutput()).split('\n', Qt::SkipEmptyParts);
+    for (const QString &raw : lines) {
+        const QString line = raw.trimmed();
+        const int sp = line.indexOf(QLatin1Char(' '));
+        if (sp <= 0) continue;
+        const qint64 pid = line.left(sp).toLongLong();
+        if (pid <= 0 || pid == self) continue;
+        const QString cmd = line.mid(sp + 1);
+        const int at = cmd.indexOf(key);
+        if (at < 0) continue;
+        const int vs = at + key.size();
+        const int mk = cmd.indexOf(mark, vs);
+        if (mk < 0) continue;
+        // 경로가 …/chrome_capture_profile 또는 …/chrome_capture_profile_<이름> 에서 끝나야 한다(경로엔 빈칸이 있을 수 있다)
+        int end = mk + mark.size();
+        if (end < cmd.size() && cmd.at(end) == QLatin1Char('_'))
+            while (end < cmd.size() && cmd.at(end) != QLatin1Char(' ') && cmd.at(end) != QLatin1Char('/')) ++end;
+        if (end < cmd.size() && cmd.at(end) != QLatin1Char(' ')) continue;
+        if (!cmd.mid(vs, end - vs).startsWith(root)) continue;        // 이 홈의 Application Support 밖(격리 사본 등)은 두고
+        if (QFileInfo::exists(cmd.mid(vs, mk - vs))) continue;        // 데이터 폴더가 살아 있으면 고아가 아니다
+        out << pid;
+    }
+#else
+    Q_UNUSED(appSupportRoot);
+#endif
+    return out;
+}
+
+int killOrphanedCaptureChromes(const QString &appSupportRoot)
+{
+#ifndef Q_OS_WIN
+    const QList<qint64> found = orphanedCaptureChromePids(appSupportRoot);
+    if (found.isEmpty()) return 0;
+    for (qint64 pid : found) ::kill(static_cast<pid_t>(pid), SIGTERM);
+    QThread::msleep(300);
+    for (qint64 pid : orphanedCaptureChromePids(appSupportRoot)) ::kill(static_cast<pid_t>(pid), SIGKILL);
+    return found.size();
+#else
+    Q_UNUSED(appSupportRoot);
+    return 0;
+#endif
 }
 
 SealState checkAppSeal(QString *detail)

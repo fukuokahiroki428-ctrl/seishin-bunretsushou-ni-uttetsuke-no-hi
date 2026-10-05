@@ -38,6 +38,35 @@ PenChromeCrawler::~PenChromeCrawler()
     stop();
 }
 
+QString PenChromeCrawler::defaultProfileDir()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/chrome_capture_profile_pen";
+}
+
+// ★ PEN 이 수집 캡처와 프로필을 같이 쓰던 때의 로그인을 잃지 않게 — PEN 전용 프로필을 처음 만들 때 한 번,
+//   공용 프로필(chrome_capture_profile)의 로그인 파일만 복사한다. 이미 있으면(한 번 옮겼거나 '사용자 Chrome
+//   로그인 가져오기' 로 만들었으면) 건드리지 않는다. 쿠키 암호화 키는 프로필이 아니라 키체인(브라우저마다 하나)에
+//   있어 같은 Chrome 이면 복사본도 읽힌다. 캐시 · 확장 상태는 옮기지 않는다.
+void PenChromeCrawler::carryLoginFromSharedProfile(const QString &penDir, PenBackend *backend)
+{
+    if (QDir(penDir).exists()) return;
+    const QString shared = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/chrome_capture_profile";
+    if (!QDir(shared + "/Default").exists()) return;
+    QDir().mkpath(penDir + "/Default");
+    int copied = 0;
+    const QStringList files = {"Cookies", "Cookies-journal", "Login Data", "Login Data-journal",
+                               "Web Data", "Web Data-journal"};
+    for (const QString &name : files) {
+        const QString src = shared + "/Default/" + name;
+        if (QFile::exists(src) && QFile::copy(src, penDir + "/Default/" + name)) copied++;
+    }
+    if (QFile::exists(shared + "/Local State") && QFile::copy(shared + "/Local State", penDir + "/Local State"))
+        copied++;
+    if (backend)
+        backend->log(QString("PEN 전용 프로필을 만들며 예전 공용 프로필의 로그인 파일 %1개를 옮겼습니다").arg(copied),
+                     "info", "penmirror");
+}
+
 QString PenChromeCrawler::findChromeExecutable() const
 {
     // 후보 경로 — 사용자가 어떤 Chromium 계열 브라우저든 깔려있을 가능성을 모두 검사
@@ -140,15 +169,20 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
     // ★ 앱 전용 영구 프로필 — 임시 폴더에 매번 새로 만들지 않고 한 곳에 고정.
     //   m_userDataDir이 외부에서 setUserDataDir로 미리 설정됐으면 그 경로 사용 (병렬 trackKey별 분리).
     if (!m_useUserProfile && m_userDataDir.isEmpty()) {
-        QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-        m_userDataDir = appData + "/chrome_capture_profile";
+        m_userDataDir = defaultProfileDir();
+        carryLoginFromSharedProfile(m_userDataDir, m_backend);
         QDir().mkpath(m_userDataDir);
     }
+    // 포트 — 자체 프로필 모드에서 자동이면 Chrome 이 고르게(0). 사용자 프로필 모드(이미 떠 있는 Chrome 에 붙기)는
+    //   번호를 알아야 하니 크롬 관례인 9222 — 수집 캡처(기본 9223 · 트랙 9224~)와 겹치지 않는다.
+    if (m_portAuto) m_debugPort = m_useUserProfile ? 9222 : 0;
+    const bool discoverPort = !m_useUserProfile && m_debugPort == 0;
 
     // ★ 이전 실행에서 좀비 Chrome이 같은 포트에 남아있을 수 있음 → 깨진 세션 재사용 방지.
     //   임시 프로필 모드에서는 항상 fresh start.
     if (!m_useUserProfile) {
 #ifdef Q_OS_WIN
+        if (m_debugPort > 0) {
         // Windows: netstat → PID → taskkill
         QProcess netstat;
         netstat.start("netstat", {"-ano"});
@@ -165,33 +199,35 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
                 }
             }
         }
+        }
 #else
-        QProcess lsof;
-        lsof.start("lsof", {"-ti", QString(":%1").arg(m_debugPort)});
-        lsof.waitForFinished(2000);
-        QString out = QString::fromUtf8(lsof.readAllStandardOutput()).trimmed();
-        for (const QString &pidStr : out.split('\n', Qt::SkipEmptyParts)) {
-            qint64 pid = pidStr.toLongLong();
-            if (pid > 0) {
-                ::kill(static_cast<pid_t>(pid), SIGTERM);
-                if (m_backend) m_backend->log(QString("이전 Chrome 좀비 종료 (PID %1)").arg(pid), "info", "penmirror");
+        // ★ 고정 포트를 받았을 때만 그 포트를 본다 — 그리고 '듣고 있는(LISTEN)' 쪽만, 끄지 않는다.
+        //   예전엔 lsof -ti :포트 로 그 포트에 '이어진' 프로세스까지 모두 SIGTERM 했다. 수집 캡처 Chrome
+        //   (같은 9223)에 CDP 로 붙어 있던 이 앱 자신도 거기 걸렸다. 우리 프로필의 Chrome 이면 아래에서 끈다.
+        //   남의 것이 그 포트를 쥐고 있으면 띄우지 않는다 — 띄우면 포트를 못 얻고, 탐침은 남의 Chrome 에 붙는다.
+        if (m_debugPort > 0) {
+            QProcess lsof;
+            lsof.start("lsof", {"-nP", "-t", QString("-iTCP:%1").arg(m_debugPort), "-sTCP:LISTEN"});
+            lsof.waitForFinished(2000);
+            const QList<qint64> ours = Common::captureChromePids(m_userDataDir, false);
+            const QStringList holders = QString::fromUtf8(lsof.readAllStandardOutput()).split('\n', Qt::SkipEmptyParts);
+            for (const QString &pidStr : holders) {
+                const qint64 pid = pidStr.trimmed().toLongLong();
+                if (pid <= 0 || ours.contains(pid)) continue;
+                if (m_backend)
+                    m_backend->log(QString("포트 %1 을 다른 프로그램(PID %2)이 쓰고 있어 Chrome 을 띄우지 않습니다")
+                                       .arg(m_debugPort).arg(pid), "error", "penmirror");
+                if (done) done(false);
+                return;
             }
         }
-        // ★ 포트뿐 아니라 '같은 캡쳐 프로필'을 쓰는 잔존 Chrome 도 정리.
-        //   (포트가 안 열린 좀비가 프로필을 쥐고 있으면, 새 Chrome 이 그 인스턴스로 핸드오프되며 즉시 종료됨)
-        //   개인 Chrome 은 user-data-dir 경로가 달라 매칭되지 않아 안전.
+        // ★ '같은 프로필' 을 쥔 잔존 Chrome 정리 — 포트가 안 열린 좀비가 프로필을 쥐고 있으면 새 Chrome 이
+        //   그 인스턴스로 핸드오프되며 바로 꺼진다. --user-data-dir 전체 값이 같을 때만 끈다(예전 pgrep -f 는
+        //   부분 일치라, 프로필이 chrome_capture_profile 이던 때 수집 캡처 · 트랙 Chrome 까지 걸렸다).
         if (!m_userDataDir.isEmpty()) {
-            QProcess pg;
-            pg.start("pgrep", {"-f", m_userDataDir});
-            pg.waitForFinished(2000);
-            const QString pgo = QString::fromUtf8(pg.readAllStandardOutput()).trimmed();
-            for (const QString &pidStr : pgo.split('\n', Qt::SkipEmptyParts)) {
-                qint64 pid = pidStr.toLongLong();
-                if (pid > 0) {
-                    ::kill(static_cast<pid_t>(pid), SIGTERM);
-                    if (m_backend) m_backend->log(QString("이전 Chrome(프로필) 좀비 종료 (PID %1)").arg(pid), "info", "penmirror");
-                }
-            }
+            const int n = Common::killCaptureChromes(m_userDataDir, false);
+            if (n > 0 && m_backend)
+                m_backend->log(QString("이전 Chrome(프로필) 좀비 종료 (%1개)").arg(n), "info", "penmirror");
         }
 #endif
         QThread::msleep(500);
@@ -212,7 +248,9 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
             //   자격증명이 크로미움 명령줄에 실리지 않는 이점도 있다.
             { const QString relay = Common::proxyLocalRelayUrl();
               if (!relay.isEmpty()) args << "--proxy-server=" + relay; }
-            args << "--user-data-dir=" + m_userDataDir;
+            args << "--user-data-dir=" + m_userDataDir
+                 // 쿠키를 넣는 곳이 Default 다 — Local State 의 last_used 가 다른 프로필을 가리켜도 Default 로 연다
+                 << "--profile-directory=Default";
         }
         // ★ --disable-blink-features=AutomationControlled 제거 — Chrome이 보안 경고 띄움.
         //   대신 onWsConnected에서 Page.addScriptToEvaluateOnNewDocument로 JS 단에서 webdriver 가림.
@@ -263,6 +301,9 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
             if (m_backend) m_backend->log(QString("SingleFile 확장 로드: %1").arg(sfDir), "info", "penmirror");
         }
 
+        // 지난 실행이 남긴 포트 파일을 먼저 지운다 — 남아 있으면 죽은 포트를 읽게 된다
+        if (discoverPort) QFile::remove(m_userDataDir + "/DevToolsActivePort");
+
         m_chromeProc = new QProcess(this);
         m_chromeProc->setProgram(chrome);
         m_chromeProc->setArguments(args);
@@ -272,7 +313,9 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
             if (done) done(false);
             return;
         }
-        if (m_backend) m_backend->log(QString("Chrome 시작 (포트 %1)").arg(m_debugPort), "success", "penmirror");
+        if (m_backend) m_backend->log(discoverPort ? QString("Chrome 시작 (포트는 Chrome 이 빈 것으로 고름)")
+                                                   : QString("Chrome 시작 (포트 %1)").arg(m_debugPort),
+                                      "success", "penmirror");
     } else {
         if (m_backend) m_backend->log(QString("기존 Chrome CDP 세션에 연결 (포트 %1)").arg(m_debugPort),
                                        "info", "penmirror");
@@ -285,7 +328,18 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
     QString *wsUrl = new QString();
     QObject::connect(probe, &QTimer::timeout, this, [this, probe, wsUrl, done, attempts]() mutable {
         attempts++;
-        QString u = resolveDebuggerWsUrl(m_debugPort);
+        if (m_debugPort == 0) {
+            // Chrome 이 고른 포트 — 포트를 연 뒤 프로필에 DevToolsActivePort 를 쓴다(첫 줄 포트, 둘째 줄 ws 경로)
+            QFile pf(m_userDataDir + "/DevToolsActivePort");
+            if (pf.open(QIODevice::ReadOnly)) {
+                const int p = QString::fromUtf8(pf.readLine()).trimmed().toInt();
+                if (p > 0 && p < 65536) {
+                    m_debugPort = p;
+                    if (m_backend) m_backend->log(QString("CDP 포트 %1 (Chrome 이 고른 빈 포트)").arg(p), "info", "penmirror");
+                }
+            }
+        }
+        QString u = m_debugPort > 0 ? resolveDebuggerWsUrl(m_debugPort) : QString();
         if (!u.isEmpty()) {
             *wsUrl = u;
             probe->stop();
