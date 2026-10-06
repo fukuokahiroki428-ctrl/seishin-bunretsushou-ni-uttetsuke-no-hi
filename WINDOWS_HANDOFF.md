@@ -1506,3 +1506,35 @@ Support 아래이면서 데이터 폴더가 이제 없는' 캡처 Chrome 도 함
 `akashi/tests/youtube_layout.py` — 한 폴더에 첫째는 채널별, 둘째는 폴더 없이(화면에서 고르고 '다운로드'), 판마다 앱의 끝 신호
 (onCollectionEnded)를 기다린 뒤: 위치 · 이름(`[ID]`) · info.json · **`_complete` 두 개뿐** · 엑셀, 그리고 니코동 탭 폴더 없이 한 번.
 고치기 전 빌드로 돌리면 이름 · `_complete` 두 판정이 실패한다(시험이 그 버그를 잡는다는 확인).
+
+## 2026-10-06 (2) · 맥 → 윈도우 · 앱을 끄는 순간 뒷일 스레드가 네트워크를 붙든 채 죽던 것 — 윈도우에도 같은 짜임
+
+**맥에서 실제로 난 충돌**(사용자가 붙여 준 보고서, 격리 사본 · SIGSEGV): 주 스레드는 `~QApplication` 안, 다른 스레드는
+`HttpClient::get` → `QNetworkAccessManager::get` → TLS 준비(`QSslSocketPrivate::ensureInitialized` →
+`ensureCiphersAndCertsLoaded` → `systemCaCertificates` → `QSslCertificate` → `findBackend` → `QFactoryLoader::update`)에서
+0x8 을 읽고 죽음. 맥의 고침 꾸러미 확인(켠 지 20초 뒤 떨어져 나간 스레드)이 **앱이 끝나는 순간 첫 HTTPS 를 시작**했고,
+앱은 끝날 때 그 스레드를 기다리지 않았다. **고침 꾸러미 확인은 맥에만 있어 그 길 자체는 윈도우에 없지만**, 짜임은 같다:
+뒷일 스레드(윈도우 `MiyoBackend.cpp` 에 `QThread::create` 40곳)가 `HttpClient` 로 네트워크를 쓰는데, 끝날 때
+(`MiyoBackend.cpp:519` aboutToQuit — 자식 프로세스만 정리) 아무도 기다리지 않는다.
+
+### 맥에서 고친 것 (`ueno` 42e3b12 · **아직 origin 에 올리지 않음, 사용자 승인 대기** · 올라가기 전까지는 아래 설명대로)
+
+| # | 무엇 | 까닭 |
+|---|---|---|
+| Q1 | `Common::markAppQuitting()` / `appQuitting()`(atomic) — aboutToQuit 에서 **맨 먼저** 켠다 | 아래 모두의 신호 |
+| Q2 | `HttpClient` get · post · downloadFile · downloadFileEx 는 끝나는 중이면 **요청을 시작하지 않는다**. 기다림 세 군데의 중지 폴링(100ms)이 `m_runFlag` 가 없어도 **늘** 돌고 `appQuitting()` 도 본다 | 윈도우 `HttpClient.cpp:156 · 270 · 395` 의 `if (m_runFlag) {` 가 그 자리 — run flag 없는 호출(감시 · 시험 · 확인 …)은 끝날 때 멈출 길이 없었다 |
+| Q3 | `HttpClient::waitIdle(ms)` — 진행 중인 요청 수(atomic, 요청마다 RAII)를 0 이 될 때까지 기다림. aboutToQuit 에서 합쳐 **최대 3초** | Q2 로 0.1초 안에 멈추므로 보통 곧 끝난다. 기다리지 않으면 Qt 가 치워지는 동안 그 스레드가 남는다 |
+| Q4 | **TLS 를 켤 때 주 스레드에서 시스템 인증서까지** 미리 읽는다: `QTimer::singleShot(0, …)` 안에서 `QSslSocket::activeBackend()` · `supportsSsl()` · `QSslConfiguration::defaultConfiguration()` | 플러그인만 올려 두면 소용없다 — Qt 는 앱이 끝날 때 TLS 플러그인 모음을 다시 치우고(Q_APPLICATION_STATIC), 그 사이 뒷일 스레드가 인증서를 읽고 있으면 플러그인을 다시 찾다(`QFactoryLoader::update`) 죽는다(맥 리뷰가 Qt 6.11 바이너리로 확인). 인증서를 주 스레드에서 다 읽어 두면 뒷일 스레드의 TLS 준비는 순식간이다. 윈도우는 백엔드가 schannel 일 수 있으나 같은 정적 모음을 쓴다 |
+| Q5 | 주 스레드 루프가 받기도 시간 초과도 아닌데 끝났으면(앱 종료가 주 스레드의 모든 루프를 끝냄) **취소**로 — `reply->isFinished()` 가 아니면 abort | 예전엔 그때를 '다 받음' 으로 읽어 잘린 자료가 성공이 될 수 있었다 |
+| Q6 | `FileHelper::capturePageHtml` — 끝나는 중이면 반쪽 캡처를 저장하지 않는다 | 그림 · CSS 받기가 멈춘 반쪽이 진짜 이름으로 남으면 '이미 캡처됨' 으로 다시는 안 받는다 |
+| Q7 | `main` 에서 `QApplication` 보다 **먼저** 만든 지역 객체의 소멸자가 `[exit] 정상 종료` 를 찍는다(Qt 를 다 치운 뒤) | 충돌 보고서는 몇 분 늦게 써지기도 해(맥 실측 3분) 시험이 '깨끗이 끝났나' 를 그 줄로 잰다 |
+
+맥 시험: `akashi/tests/quit_during_hotfix.py` — 고침 꾸러미 확인을 이 맥 안의 '답하지 않는' 서버로 돌려 요청이 붙들린 채 끄고,
+SIGKILL 없이 · `[exit] 정상 종료` · 충돌 보고서 없음 · `[TLS] … 인증서 N개`(N>0)를 본다. **정직하게:** 실제 충돌은 첫 TLS 준비와
+끄기가 수십 밀리초 안에서 겹쳐야 나서, 고치기 전 판으로 이 시험을 돌려도 죽지는 않았다(240초 지켜봄). 시험은 고친 길이 도는지를 잰다.
+
+### 윈도우에서 할 것 (사용자가 시작하라고 할 때)
+
+- Q1–Q6 을 같은 자리에 — `windows/src/utils/HttpClient.cpp`(80 get · 91 post · 113 downloadFile · 204 downloadFileEx ·
+  기다림 156 · 270 · 395), `MiyoBackend.cpp:519` aboutToQuit, `windows/src/main.cpp:143`(QApplication 바로 앞에 Q7 · 뒤에 Q4).
+- 윈도우 main 에는 aboutToQuit 연결이 따로 없다 — Q1 은 `MiyoBackend.cpp:519` 의 맨 앞에서 켜도 된다(다른 aboutToQuit 처리보다 먼저).
