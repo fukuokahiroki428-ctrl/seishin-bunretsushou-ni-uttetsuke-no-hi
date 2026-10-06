@@ -11286,6 +11286,20 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     QString ytCompleteDir = FileHelper::typeFolder(ytBaseDir, "complete");
     QString ytExcelDir = ytBaseDir + "/excel";
     QDir().mkpath(ytExcelDir);
+    // ★ 저장 방식(화면 '저장 방식' → saveLayout). 'channel'(기본 · 예전 그대로): <유형>/<채널>/<날짜>_<제목>.
+    //   'flat': 폴더 없이 <유형>/<날짜>_<채널>_<제목> — 영상 파일을 바로 보고 싶을 때. _complete 미러도 같은 모양.
+    //   ★ 폴더 없이 둘 때는 이름 끝에 영상 ID 를 붙인다. 이름이 겹치면 --no-overwrites 가 둘째 영상을 '이미 받음' 으로
+    //     건너뛰고 장부에까지 적어 다시는 받지 않는다(2026-10-06 실측: 두 영상 → 파일 하나 · 장부 두 줄). 채널별 폴더에서는
+    //     채널이 폴더로 갈라 주지만, 한 폴더에 모으면 다른 채널의 같은 날 · 같은 제목이 부딪힌다.
+    //   ★ 바이트로 자른다(.NB — yt-dlp 가 글자를 쪼개지 않게 자른다). 맥 디스크(APFS)는 255 '글자' 까지 받지만
+    //     NAS(리눅스 파일 서버 · SMB)는 255 '바이트' 라, 채널 이름까지 붙은 한글 · 일본어 이름이 넘칠 수 있다.
+    //     9 + 50 + 1 + 140 + 14(" [ID]") = 214바이트 — '.f251-drc.webm.part' · '.comments.txt' 가 붙어도 255 안쪽.
+    //     잘린 두 제목이 같아도 ID 가 갈라 준다. 'channel' 의 이름은 예전 그대로 둔다.
+    //   니코동 · 内閣会는 이 값을 보내지 않으므로 늘 'channel' 이다.
+    const bool flatLayout = config.value("saveLayout").toString() == QLatin1String("flat");
+    const QString ytOutTemplate = flatLayout
+        ? ytTypeDir + "/%(upload_date)s_%(channel,uploader).50B_%(title).140B [%(id)s].%(ext)s"
+        : ytTypeDir + "/%(channel,uploader)s/%(upload_date)s_%(title)s.%(ext)s";
 
     QStringList urls;
     for (const auto &line : url.split('\n')) {
@@ -11507,7 +11521,7 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
         script += "echo -----------------------------------------\r\n";
         script += "set RETRY=0\r\n";
         script += ":RETRY_LOOP_" + QString::number(i) + "\r\n";
-        script += esc(ytdlpPath) + " -o " + esc(ytTypeDir + "/%(channel,uploader)s/%(upload_date)s_%(title)s.%(ext)s") + " " + argsStr + esc(urls[i]) + "\r\n";
+        script += esc(ytdlpPath) + " -o " + esc(ytOutTemplate) + " " + argsStr + esc(urls[i]) + "\r\n";
         script += "if %errorlevel%==0 (\r\n  set /a SUCCESS+=1\r\n  echo >> 완료\r\n) else (\r\n";
         script += "  set /a RETRY+=1\r\n";
         script += "  if %RETRY% LEQ 3 (\r\n";
@@ -11578,7 +11592,7 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
         script += "RETRY=0\n";
         script += "MAX_RETRY=3\n";
         script += "while [ $RETRY -le $MAX_RETRY ]; do\n";
-        script += "  " + esc(ytdlpPath) + " -o " + esc(ytTypeDir + "/%(channel,uploader)s/%(upload_date)s_%(title)s.%(ext)s") + " " + argsStr + esc(urls[i]) + " &\n";
+        script += "  " + esc(ytdlpPath) + " -o " + esc(ytOutTemplate) + " " + argsStr + esc(urls[i]) + " &\n";
         script += "  YT_PID=$!\n";
         script += "  while kill -0 $YT_PID 2>/dev/null; do\n";
         script += "    if [ -f \"$STOP_MARKER\" ]; then\n";
@@ -11825,13 +11839,18 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
                     if (!descr.isEmpty()) ytComment += "\n\n" + descr.left(1800);
                     FileHelper::setFinderComment(mediaPath, ytComment);
                     FileHelper::applyPostMetadata(mediaPath, dt, ytUrl);
-                    // _complete 미러 (채널별 서브폴더 유지)
+                    // _complete 미러 — 받은 쪽과 같은 모양(채널별 서브폴더 · 폴더 없이)
                     QString channelName = info["channel"].toString();
                     if (channelName.isEmpty()) channelName = info["uploader"].toString();
                     if (channelName.isEmpty()) channelName = "_unknown";
                     // 파일시스템 안전 문자로 치환
                     channelName.replace(QRegularExpression("[\\\\/:*?\"<>|]"), "_");
-                    QString mirrorChannelDir = ytCompleteDir + "/" + channelName;
+                    // ★ 미러 자리는 이번 설정이 아니라 '그 파일이 실제로 있는 모양' 으로 정한다. 후처리는 유형 폴더의 info.json 을
+                    //   예전 것까지 모두 다시 도는데, 설정을 따르면 저장 방식을 바꾼 첫 판에 지난 영상 전부를 _complete 에
+                    //   한 벌 더 복사했다(700개면 700개 — 리뷰에서 잡힘). 채널 폴더 안의 것은 _complete/<채널>/,
+                    //   유형 폴더 바로 아래의 것은 _complete/ 로.
+                    const bool fileIsFlat = !QDir(ytTypeDir).relativeFilePath(mediaPath).contains(QLatin1Char('/'));
+                    QString mirrorChannelDir = fileIsFlat ? ytCompleteDir : ytCompleteDir + "/" + channelName;
                     QDir().mkpath(mirrorChannelDir);
                     QString mirrorPath = mirrorChannelDir + "/" + QFileInfo(mediaPath).fileName();
                     if (!QFile::exists(mirrorPath)) QFile::copy(mediaPath, mirrorPath);

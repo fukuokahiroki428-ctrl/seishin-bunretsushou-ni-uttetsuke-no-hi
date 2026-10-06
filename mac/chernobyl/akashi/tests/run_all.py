@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """기능 시험 — 격리 사본으로 기능을 실제로 돌려 보는 시험들을 차례로 돌리고 표로 알린다(약 8분).
 
-    python3 akashi/tests/run_all.py                         # 다섯 가지 모두
+    python3 akashi/tests/run_all.py                         # 여섯 가지 모두
     python3 akashi/tests/run_all.py --only crawl,viewer     # 고른 것만
     python3 akashi/tests/run_all.py --app <다른 판.app>     # build/ 대신 그 앱으로(옛 판과 견줄 때)
     python3 akashi/tests/run_all.py -v                      # 시험마다 전체 출력
@@ -11,6 +11,7 @@
   capture_cleanup  캡처 Chrome 정리가 이 앱 데이터 폴더의 것만 끄는가(앱 시작 · 좀비 정리 단추 · 진단 수)
   viewer           '옛 트위터로 보기' — 계정 목록 · 계정별 화면 · 다시 누르면 바뀐 것만 · 번들에 .pyc 없음
   resume           이어받기 — 유튜브 오디오/동영상 장부 · 받는 도중 죽어도 잘린 파일 없음
+  youtube_layout   유튜브 '저장 방식' — 채널별 폴더 / 폴더 없이 바로(파일 이름 · _complete · 엑셀)
   crawl            크롤러 — 끝까지 · 중간에 멈춤 · 그림 받는 도중 멈춤 세 번
   singlefile       SingleFile 캡처 — 오류 화면 저장 안 함 · 지연 그림 · 다른 출처 · CSP
 
@@ -38,8 +39,8 @@ sys.path.insert(0, str(HERE))
 import _common as C  # noqa: E402
 from lib import paths  # noqa: E402
 
-TESTS = ["capture_cleanup", "viewer", "resume", "crawl", "singlefile"]
-LABEL = {"capture_cleanup": "캡처 정리", "viewer": "옛 트위터", "resume": "이어받기", "crawl": "크롤러", "singlefile": "SingleFile"}
+TESTS = ["capture_cleanup", "viewer", "resume", "youtube_layout", "crawl", "singlefile"]
+LABEL = {"capture_cleanup": "캡처 정리", "viewer": "옛 트위터", "resume": "이어받기", "youtube_layout": "유튜브 저장", "crawl": "크롤러", "singlefile": "SingleFile"}
 
 
 def run(name: str, verbose: bool, env: dict, timeout: int = 1200):

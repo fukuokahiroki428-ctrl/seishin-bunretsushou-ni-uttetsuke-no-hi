@@ -1480,6 +1480,15 @@
                                                 <option value="safe">안전 · 약 2시간 55분</option>
                                             </select>
                                         </div>
+                                        <!-- ★ 저장 방식 — 채널별 폴더(예전 그대로) / 폴더 없이 바로. 백엔드 runYoutubeDownload 의 saveLayout.
+                                             폴더 없이 둘 때도 파일 이름에 채널을 남긴다(다른 채널의 같은 날 · 같은 제목이 겹쳐 건너뛰지 않게). -->
+                                        <div class="field" title="채널별 폴더: 유형 폴더 안에 채널마다 폴더를 만들어 넣습니다(예전과 같음). 폴더 없이 바로: 영상 파일을 유형 폴더에 바로 넣고, 파일 이름에 날짜 · 채널 · 제목을 붙입니다. 완료(_complete) 사본도 같은 모양입니다.">
+                                            <label class="field-label">저장 방식</label>
+                                            <select class="input" id="youtube-save-layout">
+                                                <option value="channel" selected>채널별 폴더</option>
+                                                <option value="flat">폴더 없이 바로</option>
+                                            </select>
+                                        </div>
                                     </div>
                                     <div class="option-row">
                                         <label class="option-item"><input type="checkbox" id="youtube-subs"> 자막</label>
@@ -5307,7 +5316,9 @@
                 comments:document.getElementById('youtube-comments').checked,
                 realCapture:!!(document.getElementById('youtube-real-capture')||{}).checked,
                 // ★ 영상 사이 대기(빠름/보통/안전) — 백엔드 runYoutubeDownload 가 yt-dlp --sleep-* 값으로 바꾼다
-                ytPace:(document.getElementById('youtube-pace')||{}).value || 'normal'
+                ytPace:(document.getElementById('youtube-pace')||{}).value || 'normal',
+                // ★ 저장 방식 — 'channel'(채널별 폴더) · 'flat'(폴더 없이 바로)
+                saveLayout:(document.getElementById('youtube-save-layout')||{}).value || 'channel'
             };
             setRunning('youtube', true);
             clearLog('youtube'); setYoutubeProgress(0);
@@ -7442,7 +7453,7 @@
             'bsky-target','bsky-path','bsky-type','bsky-mode','bsky-since','bsky-until',
             'bsky-query','bsky-count','bsky-media','bsky-excel','bsky-replies','bsky-reposts','bsky-comments','bsky-real-capture',
             'bsky-method','bsky-ratelimit-mins','bsky-ratelimit-wait','bsky-cookie',
-            'youtube-path','youtube-quality','youtube-type','youtube-subs','youtube-thumb','youtube-metadata','youtube-playlist','youtube-sponsor','youtube-comments','youtube-pace','youtube-real-capture',
+            'youtube-path','youtube-quality','youtube-type','youtube-subs','youtube-thumb','youtube-metadata','youtube-playlist','youtube-sponsor','youtube-comments','youtube-pace','youtube-save-layout','youtube-real-capture',
             // ★ 니코동이 통째로 빠져 있었다 — 바꿔도 다시 켜면 기본값으로 돌아갔고, 内閣会 니코동
             //   감시도 늘 기본 화질 · 기본 경로로 돌았다(윈도우는 1bf9056 에서 먼저 고쳤다).
             'niconico-path','niconico-quality','niconico-type','niconico-thumb','niconico-metadata','niconico-comments','niconico-cookies','niconico-real-capture','niconico-proxy',
