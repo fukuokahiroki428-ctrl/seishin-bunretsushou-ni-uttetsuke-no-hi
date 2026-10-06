@@ -1563,6 +1563,14 @@
                                                 <option value="thumbnail">썸네일만</option>
                                             </select>
                                         </div>
+                                        <!-- ★ 저장 방식 — 유튜브와 같다(runYoutubeDownload 의 saveLayout). 内閣会의 니코동 감시도 이 값을 쓴다. -->
+                                        <div class="field" title="채널별 폴더: 유형 폴더 안에 투고자마다 폴더를 만들어 넣습니다(예전과 같음). 폴더 없이 바로: 영상 파일을 유형 폴더에 바로 넣고, 파일 이름에 날짜 · 투고자 · 제목 · 영상 번호를 붙입니다. 완료(_complete) 사본도 같은 모양입니다. 内閣会 감시도 이 값을 따릅니다.">
+                                            <label class="field-label">저장 방식</label>
+                                            <select class="input" id="niconico-save-layout">
+                                                <option value="channel" selected>채널별 폴더</option>
+                                                <option value="flat">폴더 없이 바로</option>
+                                            </select>
+                                        </div>
                                     </div>
                                     <div class="option-row">
                                         <label class="option-item"><input type="checkbox" id="niconico-metadata" checked> 메타데이터</label>
@@ -5343,7 +5351,9 @@
                 comments:document.getElementById('niconico-comments').checked,
                 browserCookies:document.getElementById('niconico-cookies').checked,
                 realCapture:!!(document.getElementById('niconico-real-capture')||{}).checked,
-                proxy:((document.getElementById('niconico-proxy')||{}).value || '')
+                proxy:((document.getElementById('niconico-proxy')||{}).value || ''),
+                // ★ 저장 방식 — 유튜브와 같다('channel' 채널별 폴더 · 'flat' 폴더 없이 바로)
+                saveLayout:(document.getElementById('niconico-save-layout')||{}).value || 'channel'
             };
             setRunning('niconico', true);
             clearLog('niconico');
@@ -7456,7 +7466,7 @@
             'youtube-path','youtube-quality','youtube-type','youtube-subs','youtube-thumb','youtube-metadata','youtube-playlist','youtube-sponsor','youtube-comments','youtube-pace','youtube-save-layout','youtube-real-capture',
             // ★ 니코동이 통째로 빠져 있었다 — 바꿔도 다시 켜면 기본값으로 돌아갔고, 内閣会 니코동
             //   감시도 늘 기본 화질 · 기본 경로로 돌았다(윈도우는 1bf9056 에서 먼저 고쳤다).
-            'niconico-path','niconico-quality','niconico-type','niconico-thumb','niconico-metadata','niconico-comments','niconico-cookies','niconico-real-capture','niconico-proxy',
+            'niconico-path','niconico-quality','niconico-type','niconico-thumb','niconico-metadata','niconico-comments','niconico-cookies','niconico-real-capture','niconico-proxy','niconico-save-layout',
             'discord-server','discord-channel','discord-type','discord-count','discord-delay','discord-media','discord-excel','discord-profiles','discord-path',
             'discord-method',
             'instagram-target','instagram-count','instagram-delay',

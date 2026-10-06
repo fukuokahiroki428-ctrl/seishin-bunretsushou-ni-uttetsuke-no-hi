@@ -3388,6 +3388,8 @@ void HanishikiBackend::naikakukaiTick()
         if (!runConfig.contains("metadata")) runConfig["metadata"] = formBool("niconico-metadata", true);
         if (!runConfig.contains("comments")) runConfig["comments"] = formBool("niconico-comments", false);
         if (!runConfig.contains("proxy"))    runConfig["proxy"]    = formStr("niconico-proxy", QString());
+        // 저장 방식도 니코동 탭과 같게 — 탭에서 '폴더 없이 바로' 를 골랐는데 감시만 채널 폴더에 넣으면 한 폴더에 두 모양이 섞인다
+        if (!runConfig.contains("saveLayout")) runConfig["saveLayout"] = formStr("niconico-save-layout", QStringLiteral("channel"));
 
         // ★ 페이지 캡쳐는 끈다. 캡쳐 대상은 '넘긴 주소' 라서, 감시에서는 같은 유저
         //   페이지를 주기마다 한 장씩 다시 찍을 뿐이다. 그때마다 크롬이 뜬다.
@@ -11295,7 +11297,7 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     //     NAS(리눅스 파일 서버 · SMB)는 255 '바이트' 라, 채널 이름까지 붙은 한글 · 일본어 이름이 넘칠 수 있다.
     //     9 + 50 + 1 + 140 + 14(" [ID]") = 214바이트 — '.f251-drc.webm.part' · '.comments.txt' 가 붙어도 255 안쪽.
     //     잘린 두 제목이 같아도 ID 가 갈라 준다. 'channel' 의 이름은 예전 그대로 둔다.
-    //   니코동 · 内閣会는 이 값을 보내지 않으므로 늘 'channel' 이다.
+    //   니코동 탭도 같은 칸을 보내고(niconico-save-layout), 内閣会의 니코동 감시는 그 탭에 저장된 값을 쓴다.
     const bool flatLayout = config.value("saveLayout").toString() == QLatin1String("flat");
     const QString ytOutTemplate = flatLayout
         ? ytTypeDir + "/%(upload_date)s_%(channel,uploader).50B_%(title).140B [%(id)s].%(ext)s"

@@ -11,7 +11,7 @@
   capture_cleanup  캡처 Chrome 정리가 이 앱 데이터 폴더의 것만 끄는가(앱 시작 · 좀비 정리 단추 · 진단 수)
   viewer           '옛 트위터로 보기' — 계정 목록 · 계정별 화면 · 다시 누르면 바뀐 것만 · 번들에 .pyc 없음
   resume           이어받기 — 유튜브 오디오/동영상 장부 · 받는 도중 죽어도 잘린 파일 없음
-  youtube_layout   유튜브 '저장 방식' — 채널별 폴더 / 폴더 없이 바로(파일 이름 · _complete · 엑셀)
+  youtube_layout   유튜브 · 니코동 '저장 방식' — 채널별 폴더 / 폴더 없이 바로(파일 이름 · _complete · 엑셀)
   crawl            크롤러 — 끝까지 · 중간에 멈춤 · 그림 받는 도중 멈춤 세 번
   singlefile       SingleFile 캡처 — 오류 화면 저장 안 함 · 지연 그림 · 다른 출처 · CSP
 
@@ -40,7 +40,7 @@ import _common as C  # noqa: E402
 from lib import paths  # noqa: E402
 
 TESTS = ["capture_cleanup", "viewer", "resume", "youtube_layout", "crawl", "singlefile"]
-LABEL = {"capture_cleanup": "캡처 정리", "viewer": "옛 트위터", "resume": "이어받기", "youtube_layout": "유튜브 저장", "crawl": "크롤러", "singlefile": "SingleFile"}
+LABEL = {"capture_cleanup": "캡처 정리", "viewer": "옛 트위터", "resume": "이어받기", "youtube_layout": "저장 방식", "crawl": "크롤러", "singlefile": "SingleFile"}
 
 
 def run(name: str, verbose: bool, env: dict, timeout: int = 1200):
