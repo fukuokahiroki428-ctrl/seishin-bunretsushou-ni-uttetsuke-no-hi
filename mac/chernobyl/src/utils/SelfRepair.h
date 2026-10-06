@@ -269,6 +269,8 @@ inline QStringList cleanStaleState()
 
 inline QByteArray httpGet(const QString &url, int timeoutMs)
 {
+    // 앱이 끝나는 중이면 묻지 않는다 — 이 스레드는 끝날 때 기다려 주지 않는다(HttpClient 와 같은 까닭, Common::appQuitting)
+    if (Common::appQuitting()) return {};
     QNetworkAccessManager nam;
     QNetworkRequest req{QUrl(url)};
     QNetworkReply *rep = nam.get(req);

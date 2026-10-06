@@ -90,6 +90,11 @@ QString appBundlePath();
 //   HANISHIKI_CAPTURE_PORT 로 바꾼다 — 공작함의 격리 사본은 19223 부터 써서, 같은 맥에서 돌고 있는
 //   사용자 앱의 Chrome 과 포트가 겹치지 않게 한다(겹치면 서로를 '좀비' 로 보고 끈다).
 int capturePortBase();
+// ★ 앱이 끝나는 중인가 — main 의 aboutToQuit 에서 맨 먼저 켠다. 뒷일 스레드의 HttpClient 는 이것이 켜지면 새 요청을
+//   시작하지 않고, 진행 중인 요청도 0.1초 안에 멈춘다. Qt 를 치우는 동안 다른 스레드가 네트워크(TLS 준비 등)를 붙들고
+//   있으면 종료 중에 죽는다(2026-10-06 충돌 보고 — 고침 꾸러미 확인이 종료 순간 첫 요청을 시작했다).
+void markAppQuitting();
+bool appQuitting();
 // ★ 이 앱이 띄운 캡처 Chrome 만 — 명령줄의 --user-data-dir 가 profileDir 와 같거나(prefix 면) profileDir_… 인
 //   프로세스(자기 자신은 뺀다). 예전엔 이름(chrome_capture_profile)만 보고 pkill 해서, 같은 맥의 다른 사본
 //   (공작함 격리 사본 · 옛 판)이 켜지는 순간 사용자 앱의 수집 Chrome 까지 꺼졌다. 앱 데이터 폴더가 다르면

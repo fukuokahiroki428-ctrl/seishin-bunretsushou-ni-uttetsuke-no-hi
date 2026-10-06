@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <csignal>
+#include <cstdio>
 #include <QLockFile>
 #include <QStandardPaths>
 #include <QMenu>
@@ -11,6 +12,9 @@
 #include <QStringList>
 #include "core/MainWindow.h"
 #include "core/Common.h"
+#include <QSslSocket>
+#include <QSslConfiguration>
+#include <QTimer>
 #include "utils/SelfRepair.h"   // ★ 자가진단·자가복구 + 로컬 LLM 진단
 #include <QThread>                 // 스레드 친화성 경고에 '낸 스레드' 이름을 붙이려고
 
@@ -132,6 +136,10 @@ int main(int argc, char *argv[])
     }
 #endif
 
+    // ★ Qt 를 다 치운 '뒤' 에 한 줄 — 이 지역 변수는 app 보다 먼저 만들어지므로 app 의 소멸자가 끝난 다음에 소멸한다.
+    //   이 줄이 기록에 없으면 앱은 끝나는 도중에 죽은 것이다(충돌 보고서는 몇 분 늦게 써지기도 한다 — 2026-10-06 3분).
+    //   공작함 tests/quit_during_hotfix.py 가 이것으로 '깨끗이 끝났는가' 를 잰다.
+    struct CleanExitMark { ~CleanExitMark() { std::fprintf(stderr, "[exit] 정상 종료\n"); std::fflush(stderr); } } cleanExitMark;
     QApplication app(argc, argv);
     // ★ 본 스레드에도 이름을 단다 — 스레드 경고에 '(이름없음)' 이 찍히면 본 스레드인지
     //   이름 안 단 작업 스레드인지 가를 수가 없다.
@@ -278,7 +286,22 @@ int main(int argc, char *argv[])
     //   (실측: 8월 28일에 뜬 중계기가 9월 6일까지 살아 있었다.)
     //   위에서 SIGTERM 을 정상 종료로 바꿔 두었으므로 재시동·로그아웃도 여기를 탄다.
     QObject::connect(&app, &QCoreApplication::aboutToQuit,
-                     []() { Common::stopProxyRelay(); });
+                     []() { Common::markAppQuitting(); Common::stopProxyRelay(); });
+    // ↑ 끝나는 중 표시를 맨 먼저 — 이 연결이 가장 먼저 걸리므로 다른 aboutToQuit 처리보다 앞선다(Common::appQuitting).
+
+    // ★ TLS 를 주 스레드에서 미리 준비한다. 처음 쓰는 쪽이 뒷일 스레드면 그 스레드가 TLS 플러그인을 찾아 올리는데
+    //   (QFactoryLoader), 그게 종료와 겹치면 치워지는 Qt 를 건드려 죽었다(2026-10-06 충돌 보고 — 고침 꾸러미 확인이
+    //   켠 지 20초 뒤 첫 HTTPS 를 시작한 순간 앱이 끝나던 중). 이벤트 루프가 돌자마자 한 번.
+    //   ★ 시스템 인증서까지 여기서 읽는다(defaultConfiguration → 키체인을 도는 긴 고리). 플러그인만 올려 두면 소용없다 —
+    //     Qt 는 앱이 끝날 때 TLS 플러그인을 다시 치우고, 그 사이 뒷일 스레드가 인증서를 읽고 있으면 그 스레드가
+    //     플러그인을 다시 찾다 죽는다(리뷰에서 잡힘). 인증서를 여기서 다 읽어 두면 뒷일 스레드의 TLS 준비는 순식간이다.
+    QTimer::singleShot(0, &app, []() {
+        const QString be = QSslSocket::activeBackend();
+        const bool ok = QSslSocket::supportsSsl();
+        const int cas = ok ? QSslConfiguration::defaultConfiguration().caCertificates().size() : 0;
+        qInfo().noquote() << "[TLS] 주 스레드에서 미리 준비:" << (be.isEmpty() ? QStringLiteral("(없음)") : be)
+                          << (ok ? QStringLiteral("· 인증서 %1개").arg(cas) : QStringLiteral("· 사용 불가"));
+    });
 
     MainWindow window;
     window.show();

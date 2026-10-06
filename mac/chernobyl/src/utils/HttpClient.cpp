@@ -4,6 +4,8 @@
 #include <QFileInfo>
 #include "FileHelper.h"
 #include <QTimer>
+#include <QElapsedTimer>
+#include <atomic>
 #include <QFile>
 #include <QThread>
 #include <QDateTime>
@@ -68,8 +70,28 @@ HttpClient::~HttpClient()
     m_nam = nullptr;
 }
 
+// 진행 중인 요청 수 — 앱이 끝날 때 waitIdle 이 0 이 되기를 기다린다
+static std::atomic<int> s_inFlight{0};
+namespace {
+struct InFlight {
+    InFlight() { s_inFlight.fetch_add(1, std::memory_order_acq_rel); }
+    ~InFlight() { s_inFlight.fetch_sub(1, std::memory_order_acq_rel); }
+};
+}
+
+bool HttpClient::waitIdle(int msecs)
+{
+    QElapsedTimer t;
+    t.start();
+    while (s_inFlight.load(std::memory_order_acquire) > 0 && t.elapsed() < msecs)
+        QThread::msleep(20);
+    return s_inFlight.load(std::memory_order_acquire) == 0;
+}
+
 HttpResponse HttpClient::get(const QString &url, const QMap<QString, QString> &headers)
 {
+    if (Common::appQuitting()) { HttpResponse r; r.error = QStringLiteral("App quitting"); return r; }
+    InFlight inFlight;
     waitForRateLimit();
 
     QNetworkRequest request{QUrl(url)};
@@ -82,6 +104,8 @@ HttpResponse HttpClient::get(const QString &url, const QMap<QString, QString> &h
 HttpResponse HttpClient::post(const QString &url, const QByteArray &body,
                                const QMap<QString, QString> &headers)
 {
+    if (Common::appQuitting()) { HttpResponse r; r.error = QStringLiteral("App quitting"); return r; }
+    InFlight inFlight;
     waitForRateLimit();
 
     QNetworkRequest request{QUrl(url)};
@@ -106,6 +130,8 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
 {
     // ★ 핸드오프 F: 이어받기 — 이미 받은(존재 + size>0) 파일은 스킵. (실패/빈 파일은 항상 지워지므로 안전)
     { QFileInfo fi(filePath); if (fi.exists() && fi.size() > 0) return true; }
+    if (Common::appQuitting()) return false;
+    InFlight inFlight;
     waitForRateLimit();
 
     QNetworkRequest request{QUrl(url)};
@@ -154,10 +180,12 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
     // 중지 플래그 폴링 — 파일 다운로드 중에도 중단 가능하게
     QTimer cancelPoll;
     bool cancelled = false;
-    if (m_runFlag) {
+    // ★ 앱이 끝나는 중이어도 멈춘다(Common::appQuitting) — 그래서 m_runFlag 가 없어도 늘 돈다.
+    //   뒷일 스레드가 종료 중에 요청을 붙들고 있으면 Qt 를 치우는 사이 죽는다(2026-10-06 충돌 보고).
+    {
         cancelPoll.setInterval(100);
         QObject::connect(&cancelPoll, &QTimer::timeout, [&]() {
-            if (m_runFlag && !*m_runFlag) {
+            if ((m_runFlag && !*m_runFlag) || Common::appQuitting()) {
                 cancelled = true;
                 reply->abort();
             }
@@ -168,6 +196,9 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
     timer.start(m_downloadTimeout);
     loop.exec();
     cancelPoll.stop();
+    // ★ 받기도 시간 초과도 아닌데 루프가 끝났다면 바깥에서 끝낸 것이다(앱이 끝날 때 QCoreApplication::exit 는 주 스레드의
+    //   모든 루프를 끝낸다). 그때를 '다 받음' 으로 읽으면 잘린 자료가 성공이 된다 — 취소로 다룬다.
+    if (!cancelled && timer.isActive() && !reply->isFinished()) { cancelled = true; reply->abort(); }
 
     bool success = false;
     if (cancelled) {
@@ -249,6 +280,8 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
             }
         }
     }
+    if (Common::appQuitting()) return result;
+    InFlight inFlight;
     waitForRateLimit();
 
     QNetworkRequest request{QUrl(url)};
@@ -298,10 +331,12 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
     // 중지 플래그 폴링
     QTimer cancelPoll;
     bool cancelled = false;
-    if (m_runFlag) {
+    // ★ 앱이 끝나는 중이어도 멈춘다(Common::appQuitting) — 그래서 m_runFlag 가 없어도 늘 돈다.
+    //   뒷일 스레드가 종료 중에 요청을 붙들고 있으면 Qt 를 치우는 사이 죽는다(2026-10-06 충돌 보고).
+    {
         cancelPoll.setInterval(100);
         QObject::connect(&cancelPoll, &QTimer::timeout, [&]() {
-            if (m_runFlag && !*m_runFlag) {
+            if ((m_runFlag && !*m_runFlag) || Common::appQuitting()) {
                 cancelled = true;
                 reply->abort();
             }
@@ -312,6 +347,9 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
     timer.start(m_downloadTimeout);
     loop.exec();
     cancelPoll.stop();
+    // ★ 받기도 시간 초과도 아닌데 루프가 끝났다면 바깥에서 끝낸 것이다(앱이 끝날 때 QCoreApplication::exit 는 주 스레드의
+    //   모든 루프를 끝낸다). 그때를 '다 받음' 으로 읽으면 잘린 자료가 성공이 된다 — 취소로 다룬다.
+    if (!cancelled && timer.isActive() && !reply->isFinished()) { cancelled = true; reply->abort(); }
 
     if (cancelled) {
         // fallthrough → 아래 파일 삭제
@@ -429,10 +467,12 @@ HttpResponse HttpClient::executeRequest(QNetworkReply *reply)
     // 중지 플래그 폴링 — 외부에서 setRunFlag(&isRunning) 해놨으면 100ms마다 확인 후 즉시 abort
     QTimer cancelPoll;
     bool cancelled = false;
-    if (m_runFlag) {
+    // ★ 앱이 끝나는 중이어도 멈춘다(Common::appQuitting) — 그래서 m_runFlag 가 없어도 늘 돈다.
+    //   뒷일 스레드가 종료 중에 요청을 붙들고 있으면 Qt 를 치우는 사이 죽는다(2026-10-06 충돌 보고).
+    {
         cancelPoll.setInterval(100);
         QObject::connect(&cancelPoll, &QTimer::timeout, [&]() {
-            if (m_runFlag && !*m_runFlag) {
+            if ((m_runFlag && !*m_runFlag) || Common::appQuitting()) {
                 cancelled = true;
                 reply->abort();
             }
@@ -443,6 +483,9 @@ HttpResponse HttpClient::executeRequest(QNetworkReply *reply)
     timer.start(m_timeout);
     loop.exec();
     cancelPoll.stop();
+    // ★ 받기도 시간 초과도 아닌데 루프가 끝났다면 바깥에서 끝낸 것이다(앱이 끝날 때 QCoreApplication::exit 는 주 스레드의
+    //   모든 루프를 끝낸다). 그때를 '다 받음' 으로 읽으면 잘린 자료가 성공이 된다 — 취소로 다룬다.
+    if (!cancelled && timer.isActive() && !reply->isFinished()) { cancelled = true; reply->abort(); }
 
     if (cancelled) {
         response.error = "Cancelled";

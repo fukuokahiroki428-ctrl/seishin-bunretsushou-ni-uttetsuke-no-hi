@@ -1062,6 +1062,10 @@ QString appBundlePath()
 static QAtomicInt g_resealInFlight(0);
 bool resealInFlight() { return g_resealInFlight.loadAcquire() != 0; }
 
+static std::atomic<bool> g_appQuitting{false};
+void markAppQuitting() { g_appQuitting.store(true, std::memory_order_release); }
+bool appQuitting() { return g_appQuitting.load(std::memory_order_acquire); }
+
 int capturePortBase()
 {
     bool ok = false;

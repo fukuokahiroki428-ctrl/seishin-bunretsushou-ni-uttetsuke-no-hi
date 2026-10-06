@@ -467,6 +467,8 @@ public:
     void killChildProcesses();
     void memoryMonitorTick();
     QTimer *m_memoryMonitorTimer = nullptr;
+    // 고침 꾸러미 확인 스레드 — 앱이 끝날 때 기다려 준다(종료 중에 네트워크를 붙든 채 남으면 죽는다)
+    QPointer<QThread> m_hotfixThread;
     qint64 m_peakRssMB = 0;
 
     // 内閣会 내부 상태

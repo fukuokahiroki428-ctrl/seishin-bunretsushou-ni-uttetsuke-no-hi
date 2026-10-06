@@ -559,6 +559,12 @@ QString capturePageHtml(const QString &saveDir,
         html.prepend(metaTag);
     }
 
+    // ★ 끝나는 중이라 그림 · CSS 받기가 멈췄으면(HttpClient 가 새 요청을 안 함) 반쪽 캡처를 진짜 이름으로 남기지 않는다 —
+    //   남기면 다음 판의 '이미 캡처됨' 검사에 걸려 다시는 받지 않는다(리뷰에서 잡힘).
+    if (Common::appQuitting()) {
+        if (ownHttp) delete http;
+        return QString();
+    }
     // 저장
     QFile f(filePath);
     if (f.open(QIODevice::WriteOnly)) {

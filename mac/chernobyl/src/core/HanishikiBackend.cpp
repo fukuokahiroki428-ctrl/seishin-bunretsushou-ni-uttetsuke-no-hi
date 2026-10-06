@@ -408,6 +408,16 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
     // 앱 종료 직전 hook — 자식 프로세스 정리
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
         killChildProcesses();
+        // ★ 고침 꾸러미 확인 스레드가 돌고 있으면 끝날 때까지(최대 3초) 기다린 뒤에 Qt 를 치우게 한다.
+        //   main 의 aboutToQuit 이 먼저 '끝나는 중' 을 켜 두었으므로 HttpClient 가 0.1초 안에 요청을 멈춘다.
+        //   예전엔 기다리지 않아, 확인이 도는 사이(켠 지 20초쯤) 앱을 끄면 그 스레드가 치워지는 Qt 를 건드려 죽었다.
+        QElapsedTimer quitWait;
+        quitWait.start();
+        if (m_hotfixThread && m_hotfixThread->isRunning() && !m_hotfixThread->wait(3000))
+            qWarning() << "[hotfix] 확인 스레드가 3초 안에 끝나지 않았습니다";
+        // ★ 다른 뒷일 스레드의 요청도(프록시 시험 · 감시 · 수집 …) — 모두 0.1초 안에 멈추므로 보통 곧 끝난다. 합쳐 3초까지.
+        if (!HttpClient::waitIdle(qMax(0, 3000 - int(quitWait.elapsed()))))
+            qWarning() << "[종료] 진행 중인 요청이 3초 안에 끝나지 않았습니다";
     });
 }
 
@@ -4452,6 +4462,12 @@ void HanishikiBackend::resetHotfixTools()
 
 void HanishikiBackend::checkHotfix(bool manual)
 {
+    // 앱이 끝나는 중이면 시작하지 않는다. 이미 확인 중이면 겹쳐 띄우지 않는다(끝날 때 하나만 기다리면 되게).
+    if (Common::appQuitting()) return;
+    if (m_hotfixThread && m_hotfixThread->isRunning()) {
+        if (manual) log("고침 꾸러미를 이미 확인하는 중입니다", "info", "settings");
+        return;
+    }
     QThread *t = QThread::create([this, manual]() {
         auto say = [this](const QString &m, const QString &type) {
             QMetaObject::invokeMethod(this, [this, m, type]() { log(m, type, "settings"); }, Qt::QueuedConnection);
@@ -4581,6 +4597,7 @@ void HanishikiBackend::checkHotfix(bool manual)
         status(QStringLiteral("v%1 을 쓰는 중").arg(ver));
     });
     connect(t, &QThread::finished, t, &QObject::deleteLater);
+    m_hotfixThread = t;                    // 앱이 끝날 때 기다려 준다(aboutToQuit)
     t->start(QThread::LowPriority);
 }
 
