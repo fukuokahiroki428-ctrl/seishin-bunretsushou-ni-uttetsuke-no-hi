@@ -1465,3 +1465,44 @@ git show origin/ueno:mac/chernobyl/resources/tools/twitter_viewer.py
 Support 아래이면서 데이터 폴더가 이제 없는' 캡처 Chrome 도 함께 끕니다(`Common::killOrphanedCaptureChromes` — 맥 리뷰에서 잡힘).
 윈도우 `killCaptureBrowsers("chrome_capture_profile")`(`MiyoBackend.cpp:364` · `5157`)도 이름만 보는 같은 모양이지만, 윈도우에서 앱을 둘
 띄우는 일이 드물어 급하지 않습니다. 좁힌다면 위 고아 정리도 같이 넣으십시오.
+
+## 2026-10-06 · 맥 → 윈도우 · 유튜브 · 니코동 '저장 방식' (채널별 폴더 / 폴더 없이 바로) — 그리고 PEN 수정 시작
+
+**사용자가 맥 쪽에 2026-10-06 "고치고 같은걸로 하고 인개서도" 라고 했습니다.** 맥이 제안한 셋 — ① 윈도우 PEN 포트 겹침 고치기,
+② 니코동에도 유튜브와 같은 저장 방식, ③ 윈도우에 인계서로 알리기 — 에 대한 답으로 받아 적습니다. 그래서:
+
+- **PEN(크롤링 탭) 수정은 시작해도 됩니다.** 위 「2026-10-05 (3)」 절(P1–P4 · '윈도우에서 함께 해야 할 것')대로 하십시오.
+  맥 본보기는 `ueno` 0aa09aa(올라가 있음).
+- **아래 '저장 방식' 도 윈도우에 같게 넣어 주십시오.** 맥 커밋 `ueno` 7bee69c(유튜브) · bb34ccc(니코동 · 内閣会 — **아직 origin 에 올리지 않음, 사용자 승인 대기** · 올라가기 전까지는 아래 설명대로)(니코동 · 内閣会).
+
+### 무엇 (유튜브는 맥 r39 에 들어감 · 니코동은 bb34ccc)
+
+유튜브 탭 · 니코동 탭 설정에 「저장 방식」 select(`youtube-save-layout` · `niconico-save-layout`, 값 `channel` | `flat`,
+기본 `channel`). 폼 저장 목록에 넣고, startYoutube · startNiconico 가 `saveLayout` 으로 보낸다.
+内閣会의 니코동 감시는 폼의 `niconico-save-layout` 을 runConfig 에 넣는다(탭과 같은 모양으로 받게).
+
+- `channel`(예전 그대로): `<유형>/%(channel,uploader)s/%(upload_date)s_%(title)s.%(ext)s`
+- `flat`: `<유형>/%(upload_date)s_%(channel,uploader).50B_%(title).140B [%(id)s].%(ext)s`
+
+### 꼭 같이 옮길 것 (맥에서 실측 · 리뷰로 잡은 것)
+
+| # | 무엇 | 까닭 |
+|---|---|---|
+| L1 | **폴더 없이 둘 때 이름에 영상 ID 를 붙인다** | `--no-overwrites` + `--download-archive` 에서 이름이 겹치면 yt-dlp 가 둘째 영상을 '이미 받음' 으로 건너뛰고 **장부에까지 적어 다시는 받지 않는다**(맥 실측: 다른 두 영상 → 파일 하나 · 장부 두 줄). 한 폴더에 모으면 다른 채널의 같은 날 · 같은 제목이 부딪힌다 |
+| L2 | **바이트로 자른다(`.50B` · `.140B`)** | NAS(리눅스 · SMB)는 이름이 255 바이트. 맥 APFS 는 255 '글자' 라 괜찮지만 NAS 에 받으면 넘친다. 긴 한글 · 일본어로 재어 220 바이트, `.f251-drc.webm.part` 가 붙어도 235. yt-dlp 의 `B` 는 글자를 쪼개지 않는다(`/` 는 `⧸`). 윈도우 NTFS 는 255 UTF-16 이라 더 넉넉하다 |
+| L3 | **`_complete` 미러 자리는 그 파일이 실제로 있는 모양으로** | 후처리는 유형 폴더의 info.json 을 **예전 것까지 모두** 다시 돈다. 이번 설정을 따르면 저장 방식을 바꾼 첫 판에 지난 영상 전부를 `_complete` 에 한 벌 더 복사한다. 맥: `fileIsFlat = !QDir(ytTypeDir).relativeFilePath(mediaPath).contains('/')` → 평평하면 `_complete/`, 아니면 `_complete/<채널>/`. 윈도우 위치 `MiyoBackend.cpp:10742`(mirrorChannelDir) — 윈도우는 구분자가 `\` 일 수 있으니 relativeFilePath 결과의 `/`·`\` 둘 다 볼 것 |
+
+### 윈도우 자리 (`origin/main` 4f49644 기준, 읽기만 함)
+
+- 서식: `MiyoBackend.cpp:10391-10393` 의 `Common::longPathTemplate(ytTypeDir, …)` 꼬리를 `saveLayout` 으로 고르고, **그 뒤에** 지금처럼
+  `outTemplate.replace("%", "%%")`(.bat). 같은 서식이 `:10487` 에도 박혀 있다 — 하나로 모을 것.
+- 미러: `:10742`(L3).
+- 内閣会: `:3616` 다음 줄에 `if (!runConfig.contains("saveLayout")) runConfig["saveLayout"] = formStr("niconico-save-layout", "channel");`
+- 화면: 유튜브 설정 `index.html:1722`(youtube-pace) 옆, 니코동 `:1794`(niconico-type) 옆에 select. 보내기 `:5421` · `:5446`,
+  폼 목록 `:6953` · `:6955`.
+
+### 맥 시험 (참고)
+
+`akashi/tests/youtube_layout.py` — 한 폴더에 첫째는 채널별, 둘째는 폴더 없이(화면에서 고르고 '다운로드'), 판마다 앱의 끝 신호
+(onCollectionEnded)를 기다린 뒤: 위치 · 이름(`[ID]`) · info.json · **`_complete` 두 개뿐** · 엑셀, 그리고 니코동 탭 폴더 없이 한 번.
+고치기 전 빌드로 돌리면 이름 · `_complete` 두 판정이 실패한다(시험이 그 버그를 잡는다는 확인).
