@@ -1538,3 +1538,60 @@ SIGKILL 없이 · `[exit] 정상 종료` · 충돌 보고서 없음 · `[TLS] �
 - Q1–Q6 을 같은 자리에 — `windows/src/utils/HttpClient.cpp`(80 get · 91 post · 113 downloadFile · 204 downloadFileEx ·
   기다림 156 · 270 · 395), `MiyoBackend.cpp:519` aboutToQuit, `windows/src/main.cpp:143`(QApplication 바로 앞에 Q7 · 뒤에 Q4).
 - 윈도우 main 에는 aboutToQuit 연결이 따로 없다 — Q1 은 `MiyoBackend.cpp:519` 의 맨 앞에서 켜도 된다(다른 aboutToQuit 처리보다 먼저).
+
+## 2026-10-08 · 맥 → 윈도우 · 크롤 탭 '끝까지 기록' — 트위터 · 미스키를 범용 크롤러로 끝까지
+
+사용자 기준: **"일본 미스키 사이트와 미국 트위터를 전부 제대로 다운할 수 있는가"** — 사이트마다 전용 수집기를 만들지 않고
+크롤러(経済産業省 탭)로. 맥 `ueno` `24410ae` 에 들어갔고 **r41** 로 냈습니다(2026-10-08).
+
+### 잰 것(공개 계정 · 받은 것은 잰 뒤 지움)
+
+| | 예전 | 끝까지 기록 |
+|---|---|---|
+| 미스키 @tips (공개 API 정답 47 노트 · 첨부 84) | 크롤러 15/47 · 첨부 0, 실제 Chrome 모드는 첫 화면만 | **47/47 · 84/84** (73초) |
+| 미스키 @notify (정답 408 · 92) | — | **408/408 · 91/92** — 빠진 하나는 2019년 저장 서버가 DNS 째 없어진 것 |
+| X @neuralink (로그인, 게시물 탭) | — | 끝까지(가장 옛 2019-07-11) · 본인 글 168 · 첨부 93/93 · 사진 원본 크기 |
+
+### 왜 예전 것이 멈췄나 — 윈도우에도 그대로일 것
+
+1. **미스키는 문서가 아니라 안쪽 상자가 스크롤됩니다**(`_pageScrollable`). `window.scrollBy` · `scrollTo(document.body.scrollHeight)`
+   가 아무 일도 안 합니다 — `captureRealPageCDP` 의 스크롤 JS 가 그렇습니다. 옆 칸(로컬 타임라인 위젯)도 따로 스크롤됩니다.
+2. **로그인하지 않은 미스키는 무한 스크롤이 아니라 '더 보기' 단추**입니다. 그 위젯에도 '더 보기' 가 있어, 아무 단추나 누르면
+   위젯만 54번 불러옵니다(실측).
+3. **트위터는 지나간 글을 화면에서 지웁니다**(가상 목록) — 마지막 화면 한 장(SingleFile)엔 전부가 남지 않습니다.
+   2026-10 의 X 응답은 사용자 객체에 `legacy` 가 없고(`core.screen_name` · `tweet_counts`), 글 목록 이름이
+   `UserOriginalsTimeline` 입니다. 글 객체(`legacy.full_text` · `extended_entities`)는 그대로입니다.
+4. **pbs.twimg.com 사진은 주소 그대로면 1200px** 입니다. `?name=orig` 로 원본(실측 2018px).
+
+### 맥에서 한 것 — 파이썬 도우미 하나 + 부르는 쪽
+
+- **`resources/tools/crawl_record.py`** (새 파일, 표준 라이브러리만 — 윈도우 python.exe 로도 돌 모양으로 짰습니다).
+  `--stdin-args` 로 설정 JSON 한 줄(쿠키가 들어 있어 명령줄로 안 넘김) → 헤드리스 Chrome for Testing 을 띄워
+  ① 보이는 넓이가 가장 큰 스크롤 상자를 한 화면씩 ② 바닥에서 안 늘면 그 상자에 딸린 '더 보기 · Load more · もっと見る …'
+  (고정 칸 · aside · nav 밖, 아래 40%, 같은 자리 두 번까지) ③ CDP Network 로 페이지가 받은 JSON 을 모두 저장하고
+  ④ 'id + 날짜 + 본문' 객체를 글로, `type` 이 image/video 인 객체의 주소를 첨부로(bitrate 최고) ⑤ 원본을 받아
+  `index.html`(날짜순 · 쓴이 고르기 · 인용) · `items.jsonl` · `media/` · `api/` · `report.json`.
+  stdout 은 줄마다 JSON(`log` · `progress` · `login_needed` · `done`), `login_needed` 뒤에는 stdin `continue` 한 줄을 기다립니다.
+  SIGTERM 이거나 **stdin 이 닫히면** Chrome 을 내리고 받은 것까지 쓰고 끝납니다(앱은 stdin 을 끝까지 열어 둡니다).
+  Chrome 은 `--headless=new --incognito` — 시크릿이라 쿠키를 디스크에 남기지 않고 키체인도 쓰지 않습니다(맥 격리 사본에서
+  키체인을 찾다 첫 쪽이 120초 넘게 멈췄습니다). 넣는 로그인은 판마다 다시 넣습니다.
+- **`HanishikiBackend::runCrawlRecord`** — `runCrawlCollection` 의 실제 Chrome 갈래에서 `config.record` 면 주소마다 부릅니다.
+  프로필 폴더는 `<AppData>/chrome_capture_profile_record`(이름이 `chrome_capture_profile_…` 이라 시작 정리가 남은 Chrome 을 거둠),
+  `m_chromeCapacitySem` 슬롯을 같이 씀, 중지 → terminate(20초 뒤 kill) → `killCaptureChromes(프로필, false)`.
+  로그인 확인은 기존 `onLoginPause('crawl')` · `confirmLoginDone('crawl')` 를 그대로 씁니다.
+- **`savedLoginCookiesForHost`** — 주소의 호스트로 저장된 계정 로그인만 고릅니다(x.com/twitter.com → 트위터 계정 첫째,
+  instagram · pixiv · fanbox · tumblr). 표에 없는 곳은 크롤 탭의 '캡쳐용 로그인 쿠키' 칸이나 '로그인 후 확인'(창에서 직접 —
+  그 판 동안만).
+- `RealChromeCrawler::findChromeExecutable()` 를 public static 으로(도우미에게 같은 Chrome 경로를 넘기려고).
+- 화면: 크롤 탭 옵션 줄에 `crawl-record` 「끝까지 기록 (트위터·미스키 등)」, `startCrawl` 의 `record`, 폼 저장 목록,
+  일괄 실행의 crawl 설정에도 `record`.
+- 시험: `akashi/tests/crawl_record.py` — 이 맥 안의 가짜 앱형 사이트(안쪽 상자 · 두 쪽 뒤 '더 보기' · 지나간 글을 지우는 목록 ·
+  옆 칸 미끼 '더 보기' · POST JSON · 썸네일만) 로 45/45 · 원본 15/15(바이트까지) · 미끼 0번 · 멈추면 받은 것까지.
+
+### 윈도우에 권하는 것
+
+윈도우 크롤 탭은 PEN(`penBackend.crawlStart`)이라 부르는 자리가 다릅니다. 도우미는 그대로 가져가시고, PEN 크롤 시작 쪽에
+같은 '끝까지 기록' 칸 → `python.exe crawl_record.py --stdin-args` 를 붙이시면 됩니다. 윈도우에서 다를 것:
+- 중지는 `QProcess::terminate()` 가 콘솔 프로그램에 안 닿습니다 — `closeWriteChannel()` 로 stdin 을 닫으십시오. 도우미가
+  받은 것까지 쓰고 Chrome 을 내린 뒤 끝납니다(맥에서 0.4초 실측). 20초 안에 안 끝나면 `kill()` 후 프로필 경로로 Chrome 을 내리십시오.
+- Chrome 경로는 앱이 넘깁니다(`chrome` 칸) — 윈도우의 `findChromeExecutable` 결과를 그대로.
