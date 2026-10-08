@@ -20444,7 +20444,9 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
 
     // ★ "실제 Chrome (CDP)" 모드 — 사용자 Chrome 프로필로 navigate → SingleFile 캡쳐 (모든 자원 인라인)
     //   QWebEngine으로는 봇 탐지 / JS-shell 페이지 → 실제 Chrome으로 우회.
-    if (config["useRealChrome"].toBool(false) || config["method"].toString() == "chrome") {
+    //   '끝까지 기록'(record)도 이 길로 온다 — 주소마다 SingleFile 한 장 대신 runCrawlRecord(글 자료 + 첨부 원본).
+    const bool record = config["record"].toBool(false);
+    if (record || config["useRealChrome"].toBool(false) || config["method"].toString() == "chrome") {
         QString savePath = config["path"].toString();
         if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
         QString urls = config["url"].toString();
@@ -20460,8 +20462,9 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
         }
         QString crawlDir = savePath + "/crawl_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
         QString capturesDir = crawlDir + "/captures";
-        QDir().mkpath(capturesDir);
-        log(QString("실제 Chrome 크롤 시작: %1개 URL").arg(urlList.size()), "info", "crawl");
+        QDir().mkpath(record ? crawlDir : capturesDir);
+        log(QString("%1: %2개 URL").arg(record ? QStringLiteral("끝까지 기록 시작") : QStringLiteral("실제 Chrome 크롤 시작"))
+                .arg(urlList.size()), "info", "crawl");
 
         // 각 URL을 별도 워커 스레드에서 처리. config["loginCheckJs"] 있으면 LoginAware 사용
         //   사용자가 UI에서 "로그인 체크 JS" 옵션 입력 시 → 첫 URL에서 로그인 페이지 감지 시 사용자 대기
@@ -20489,7 +20492,20 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
                 log(QString("크롤 쿠키 %1개 (도메인: %2)").arg(crawlCookies.size()).arg(domain), "info", "crawl");
             }
         }
-        QThread *thread = QThread::create([this, urlList, capturesDir, loginCheckJs, crawlCookies, config, crawlRun]() {
+        // ★ 끝까지 기록 — 저장된 계정 로그인을 호스트별로 미리 고른다(설정은 메인 스레드에서만 읽는다)
+        QHash<QString, QList<QNetworkCookie>> recordLogins;
+        if (record) {
+            for (const QString &u : urlList) {
+                const QString host = QUrl(u).host().toLower();
+                if (host.isEmpty() || recordLogins.contains(host)) continue;
+                QString label;
+                recordLogins.insert(host, savedLoginCookiesForHost(host, &label));
+                if (!label.isEmpty())
+                    log(QString("🔐 %1 — 저장된 %2 로그인으로 기록합니다").arg(host, label), "info", "crawl");
+            }
+        }
+        QThread *thread = QThread::create([this, urlList, capturesDir, crawlDir, loginCheckJs, crawlCookies, config, crawlRun,
+                                           record, recordLogins]() {
             int saved = 0;
             for (int i = 0; i < urlList.size(); ++i) {
                 if (!platformRunning("crawl", true) || crawlRun != s_crawlRun.load()) break;
@@ -20498,7 +20514,21 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
                                        .arg(QCryptographicHash::hash(url.toUtf8(), QCryptographicHash::Md5).toHex().left(8));
                 log(QString("[%1/%2] %3").arg(i+1).arg(urlList.size()).arg(url), "info", "crawl");
                 bool ok;
-                if (!loginCheckJs.isEmpty()) {
+                if (record) {
+                    const QUrl qu(url);
+                    const QString host = qu.host().toLower();
+                    QList<QNetworkCookie> ck = recordLogins.value(host);
+                    // 크롤 탭의 '캡쳐용 로그인 쿠키' 는 첫 주소의 호스트 것이다 — 그 호스트(와 하위)에만 싣는다
+                    for (const QNetworkCookie &c : crawlCookies) {
+                        const QString d = c.domain().toLower();
+                        const QString bare = d.startsWith(QLatin1Char('.')) ? d.mid(1) : d;
+                        if (host == bare || host.endsWith(QLatin1Char('.') + bare)) ck << c;
+                    }
+                    const QString outDir = crawlDir + QString("/record_%1_%2").arg(i + 1, 3, 10, QChar('0'))
+                                               .arg(sanitizeFilename(QString(host + qu.path()).replace(QLatin1Char('/'), QLatin1Char('_')), 60));
+                    ok = runCrawlRecord(url, outDir, ck, config["waitLogin"].toBool(false), loginCheckJs,
+                                        [this, crawlRun]() { return platformRunning("crawl", true) && crawlRun == s_crawlRun.load(); });
+                } else if (!loginCheckJs.isEmpty()) {
                     ok = captureRealPageCDPLoginAware(url, capturesDir, filename,
                                                        loginCheckJs, "crawl", 8000, crawlCookies, config);
                 } else {
@@ -20508,7 +20538,7 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
                 updateStats(saved, urlList.size(),
                     QString("진행 %1/%2").arg(i+1).arg(urlList.size()), "crawl");
             }
-            QMetaObject::invokeMethod(this, [this, saved, total = urlList.size(), capturesDir, crawlRun]() {
+            QMetaObject::invokeMethod(this, [this, saved, total = urlList.size(), doneDir = record ? crawlDir : capturesDir, crawlRun]() {
                 // 그새 새 판이 시작됐다 — 새 판의 깃발·상태·터미널은 건드리지 않는다
                 if (crawlRun != s_crawlRun.load()) return;
                 // 중지 단추·터미널 ⏹ 는 깃발을 먼저 내린다 — 멈춘 판을 'Done'·'✅ 완료' 로 덮지 않는다(SiteCrawler 쪽과 같게)
@@ -20516,7 +20546,7 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
                 setPlatformRunning("crawl", false);
                 updateStats(saved, total, stopped ? QStringLiteral("중단됨") : QStringLiteral("Done"), "crawl");
                 if (!stopped)
-                    log(QString("✅ 크롤 완료: %1/%2 저장 → %3").arg(saved).arg(total).arg(capturesDir), "success", "crawl");
+                    log(QString("✅ 크롤 완료: %1/%2 저장 → %3").arg(saved).arg(total).arg(doneDir), "success", "crawl");
                 closeTerminalLog("crawl");   // 앱 안 터미널 창에 끝 표시 — SiteCrawler 쪽(finished)과 같게
                 runJsAll("setRunning('crawl', false)");
                 if (m_window) m_window->releaseAwake();
@@ -20585,4 +20615,194 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
     }
 
     m_crawler->crawl(config);
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 끝까지 기록 — 앱형 사이트를 끝까지 내리며 페이지가 받은 글 자료와 첨부 원본을 남긴다(tools/crawl_record.py)
+// ═════════════════════════════════════════════════════════════════════════
+//   왜 따로 두나: 크롤러(보이지 않는 QWebEngine, 스크롤 5번)는 미스키 @tips 47개 중 15개에서 멈췄고, 실제 Chrome 모드는
+//   window 를 스크롤해 미스키(안쪽 상자가 스크롤된다)에선 첫 화면만 남겼다. 트위터는 화면이 지나간 글을 지워서(가상 목록)
+//   마지막 화면 한 장으론 전부가 안 된다. 도우미는 사이트별 코드 없이 '본문 상자를 끝까지 · 더 보기 단추 · 받은 JSON 에서
+//   글과 첨부' 로 미스키 @notify 408/408, X 계정 게시물 탭 끝까지를 받았다(2026-10-08 실측, akashi/bench).
+
+QList<QNetworkCookie> HanishikiBackend::savedLoginCookiesForHost(const QString &host, QString *label) const
+{
+    // ★ 사이트마다 수집기를 만들지 않는 대신, 이미 저장된 계정 로그인만 주소의 호스트로 골라 쓴다 — 로그인하지 않은
+    //   X 는 프로필 글을 보여 주지 않는다. 표에 없는 사이트는 크롤 탭의 '캡쳐용 로그인 쿠키' 칸이나
+    //   '로그인 후 확인'(Chrome 창에서 직접 로그인 — 시크릿 창이라 그 판 동안만)으로.
+    static const struct { const char *domain; const char *platform; } kHostLogins[] = {
+        {"x.com", "twitter"}, {"twitter.com", "twitter"}, {"instagram.com", "instagram"},
+        {"pixiv.net", "pixiv"}, {"fanbox.cc", "fanbox"}, {"tumblr.com", "tumblr"},
+    };
+    const QString h = host.toLower();
+    for (const auto &e : kHostLogins) {
+        const QString d = QString::fromLatin1(e.domain);
+        if (h != d && !h.endsWith(QLatin1Char('.') + d)) continue;
+        const QString platform = QString::fromLatin1(e.platform);
+        const QJsonArray accs = m_config ? m_config->getAccounts(platform) : QJsonArray();
+        if (accs.isEmpty()) return {};
+        QJsonObject cfg;
+        cfg["accounts"] = QJsonArray{accs.first()};
+        if (label) *label = QString("%1 계정 「%2」").arg(platform, accs.first().toObject()["name"].toString());
+        return cookiesForCapture(platform, cfg);
+    }
+    return {};
+}
+
+// QNetworkCookie → CDP Network.setCookies 형식 (captureRealPageCDP 와 같은 규칙)
+static QJsonArray cookiesToCdpJson(const QList<QNetworkCookie> &cookies)
+{
+    QJsonArray arr;
+    for (const QNetworkCookie &c : cookies) {
+        QJsonObject ck;
+        ck["name"] = QString::fromUtf8(c.name());
+        ck["value"] = QString::fromUtf8(c.value());
+        const QString d = c.domain();
+        const QString pth = c.path().isEmpty() ? QStringLiteral("/") : c.path();
+        if (!d.isEmpty()) {
+            ck["domain"] = d;
+            const QString cleanD = d.startsWith(QLatin1Char('.')) ? d.mid(1) : d;
+            ck["url"] = QString(c.isSecure() ? "https://" : "http://") + cleanD + pth;
+        }
+        ck["path"] = pth;
+        ck["secure"] = c.isSecure();
+        ck["httpOnly"] = c.isHttpOnly();
+        ck["sameSite"] = "None";
+        arr.append(ck);
+    }
+    return arr;
+}
+
+bool HanishikiBackend::runCrawlRecord(const QString &url, const QString &outDir, const QList<QNetworkCookie> &cookies,
+                                      bool headful, const QString &loginCheckJs, const std::function<bool()> &alive)
+{
+    const QString script = Common::activeToolScriptPath(QStringLiteral("crawl_record.py"));
+    QString python = Common::bundledPythonPath();
+    if (!QFileInfo::exists(python)) python = QStringLiteral("/usr/bin/python3");   // 도우미는 표준 라이브러리만 쓴다
+    const QString chrome = RealChromeCrawler::findChromeExecutable();
+    if (!QFileInfo::exists(script) || chrome.isEmpty()) {
+        log(QString("끝까지 기록을 할 수 없습니다 — %1 없음").arg(chrome.isEmpty() ? QStringLiteral("Chrome")
+                                                                  : QStringLiteral("crawl_record.py")), "error", "crawl");
+        return false;
+    }
+
+    // ★ RAM 보호 — 캡쳐 Chrome 과 같은 동시 개수 슬롯을 쓴다(8GB 맥 OOM). 기다리는 동안에도 중지를 본다.
+    bool slot = false;
+    while (alive() && !(slot = m_chromeCapacitySem.tryAcquire(1, 1000))) {}
+    if (!slot) return false;
+    struct SlotGuard { QSemaphore *s; ~SlotGuard() { s->release(); } } _slot{&m_chromeCapacitySem};
+
+    // ★ 프로필은 앱 데이터 안 chrome_capture_profile_record — 도우미가 시크릿 창으로 띄워 쿠키는 남지 않는다(키체인을
+    //   쓰지 않으려고 — 홈이 다른 격리 사본에서 키체인을 찾다 첫 쪽이 멈췄다). 이름이 chrome_capture_profile_… 이라
+    //   앱이 켜질 때의 정리(killCaptureChromes 접두 일치)가 남은 Chrome 을 거둔다.
+    //   같은 프로필의 Chrome 이 떠 있으면 새 Chrome 은 그쪽에 넘기고 곧장 꺼진다 — 지난번 것이 남았으면 먼저 내린다.
+    const QString profile = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                            + QStringLiteral("/chrome_capture_profile_record");
+    Common::killCaptureChromes(profile, false);
+    QDir().mkpath(outDir);
+
+    QProcess p;
+    p.start(python, {script, QStringLiteral("--stdin-args")});
+    if (!p.waitForStarted(15000)) {
+        log("끝까지 기록 도우미를 띄우지 못했습니다", "error", "crawl");
+        return false;
+    }
+    QJsonObject init;
+    init["url"] = url;
+    init["out_dir"] = outDir;
+    init["chrome"] = chrome;
+    init["profile_dir"] = profile;
+    init["cookies"] = cookiesToCdpJson(cookies);
+    init["headful"] = headful;          // '로그인 후 확인' 일 때만 창을 띄운다 — 나머지는 헤드리스(화면이 잠들어도 그린다)
+    init["wait_login"] = headful;
+    init["login_check_js"] = loginCheckJs;
+    init["max_seconds"] = 3600;
+    init["download"] = true;
+    // ★ 로그인 쿠키는 stdin 한 줄로 — 명령줄에 실으면 ps 로 누구나 본다(email_watch 와 같다). 값은 로그에도 적지 않는다.
+    p.write(QJsonDocument(init).toJson(QJsonDocument::Compact));
+    p.write("\n");
+    p.waitForBytesWritten(5000);
+    // stdin 은 끝까지 열어 둔다 — 로그인 확인(continue)을 보내는 길이고, 닫히면 도우미는 멈춘다(앱이 죽어도 Chrome 이 안 남게)
+
+    QByteArray out, err;
+    QJsonObject done;
+    QSemaphore *loginSem = nullptr;
+    QElapsedTimer loginWait, stopWait;
+    while (p.state() != QProcess::NotRunning) {
+        p.waitForReadyRead(300);
+        out += p.readAllStandardOutput();
+        err += p.readAllStandardError();
+        if (err.size() > 8192) err = err.right(4096);   // 파이프가 차서 도우미가 멈추지 않게 계속 비운다
+        int nl;
+        while ((nl = out.indexOf('\n')) >= 0) {
+            const QJsonObject ev = QJsonDocument::fromJson(out.left(nl).trimmed()).object();
+            out.remove(0, nl + 1);
+            const QString kind = ev["ev"].toString();
+            if (kind == QLatin1String("log")) {
+                log("[기록] " + ev["msg"].toString(), ev["level"].toString(QStringLiteral("info")), "crawl");
+            } else if (kind == QLatin1String("progress")) {
+                const QString st = ev["phase"].toString() == QLatin1String("download")
+                    ? QString("첨부 받는 중 %1/%2").arg(ev["saved"].toInt()).arg(ev["media"].toInt())
+                    : QString("기록 중 %1초 · 글 %2 · 첨부 %3").arg(ev["sec"].toInt()).arg(ev["items"].toInt()).arg(ev["media"].toInt());
+                updateStats(ev["items"].toInt(), ev["media"].toInt(), st, "crawl");
+            } else if (kind == QLatin1String("login_needed")) {
+                {
+                    QMutexLocker lock(&m_loginPauseMutex);
+                    loginSem = m_loginPauseSems.value(QStringLiteral("crawl"), nullptr);
+                    if (!loginSem) {
+                        loginSem = new QSemaphore(0);
+                        m_loginPauseSems[QStringLiteral("crawl")] = loginSem;
+                    }
+                }
+                while (loginSem->tryAcquire(1, 0)) {}   // 지난번에 두 번 누른 확인이 남아 있으면 기다리지 않고 지나간다
+                loginWait.start();
+                log("⚠ 로그인 필요 — 뜬 Chrome 창에서 로그인한 뒤 우측 패널의 'crawl 로그인 확인' 을 누르십시오", "warning", "crawl");
+                runJs("if(window.onLoginPause) onLoginPause('crawl');");
+            } else if (kind == QLatin1String("done")) {
+                done = ev;
+            }
+        }
+        if (loginSem && loginSem->tryAcquire(1, 0)) {
+            loginSem = nullptr;
+            runJs("if(window.onLoginResume) onLoginResume('crawl');");
+            p.write("continue\n");
+        } else if (loginSem && loginWait.elapsed() > 3600 * 1000 && !stopWait.isValid()) {
+            log("로그인 대기 1시간 — 기록을 멈춥니다", "warning", "crawl");
+            stopWait.start();
+            p.terminate();
+        }
+        if (!stopWait.isValid() && !alive()) {
+            stopWait.start();
+            p.terminate();   // SIGTERM — 도우미가 Chrome 을 내리고, 받은 것까지 index · items 로 쓰고 끝난다
+        }
+        if (stopWait.isValid() && stopWait.elapsed() > 20000) {
+            p.kill();
+            p.waitForFinished(3000);
+            break;
+        }
+    }
+    if (loginSem) runJs("if(window.onLoginResume) onLoginResume('crawl');");
+    out += p.readAllStandardOutput();
+    for (const QByteArray &line : out.split('\n')) {   // 마지막 몇 줄(끝 보고)이 루프 밖에서 왔을 수 있다
+        const QJsonObject ev = QJsonDocument::fromJson(line.trimmed()).object();
+        if (ev["ev"].toString() == QLatin1String("done")) done = ev;
+    }
+    Common::killCaptureChromes(profile, false);   // 도우미가 강제로 끝났으면 Chrome 이 남는다
+
+    if (done.isEmpty()) {
+        const QString tail = QString::fromUtf8(err).trimmed().right(300);
+        log(QString("끝까지 기록 실패 — %1").arg(tail.isEmpty() ? QStringLiteral("도우미가 보고 없이 끝났습니다") : tail), "error", "crawl");
+        return false;
+    }
+    if (done.contains("error")) {
+        log("끝까지 기록 실패 — " + done["error"].toString(), "error", "crawl");
+        return false;
+    }
+    const int items = done["items"].toInt(), saved = done["media_saved"].toInt(), failed = done["media_failed"].toInt();
+    log(QString("✅ 기록: 글 %1 · 첨부 %2/%3%4 · %5 (%6초) → %7/index.html")
+            .arg(items).arg(saved).arg(done["media_found"].toInt())
+            .arg(failed ? QString(" (실패 %1)").arg(failed) : QString())
+            .arg(done["stop"].toString()).arg(done["seconds"].toInt()).arg(outDir),
+        (failed || (items == 0 && saved == 0)) ? "warning" : "success", "crawl");
+    return items > 0 || saved > 0;
 }

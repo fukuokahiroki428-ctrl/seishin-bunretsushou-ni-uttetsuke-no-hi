@@ -130,8 +130,11 @@ private slots:
     void onWsTextMessage(const QString &msg);
     void onWsError();
 
+public:
+    // 이 앱이 띄울 Chrome 실행 파일 — 번들 Chrome for Testing 이 먼저다. 끝까지 기록(crawl_record.py)도 같은 것을 쓴다.
+    static QString findChromeExecutable();
+
 private:
-    QString findChromeExecutable() const;
     QString resolveDebuggerWsUrl(int port) const;  // /json/version 파싱
     int sendCommand(const QString &method, const QJsonObject &params,
                     std::function<void(const QJsonValue &result, const QJsonValue &error)> cb);

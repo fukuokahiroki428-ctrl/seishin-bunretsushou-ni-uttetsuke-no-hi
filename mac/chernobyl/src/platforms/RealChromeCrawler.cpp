@@ -45,7 +45,7 @@ RealChromeCrawler::~RealChromeCrawler()
     stop();
 }
 
-QString RealChromeCrawler::findChromeExecutable() const
+QString RealChromeCrawler::findChromeExecutable()
 {
     // 후보 경로 — 사용자가 어떤 Chromium 계열 브라우저든 깔려있을 가능성을 모두 검사
     QStringList candidates;

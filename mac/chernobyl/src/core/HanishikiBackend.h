@@ -12,6 +12,7 @@
 #include <QThread>
 #include <QPointer>
 #include <atomic>
+#include <functional>
 #include <memory>
 
 class MainWindow;
@@ -617,6 +618,13 @@ public:
     void runSpinSpinCollection(const QJsonObject &config);
     void runAskedCollection(const QJsonObject &config);
     void runCrawlCollection(const QJsonObject &config);
+    // ★ 끝까지 기록 — 앱형 사이트(트위터 · 미스키 …)를 끝까지 내리며 페이지가 받은 글 자료(JSON)와 첨부 원본을
+    //   outDir 에 남긴다(tools/crawl_record.py, 헤드리스 Chrome for Testing). 워커 스레드에서 부른다.
+    //   alive() 가 거짓이 되면(중지 · 새 판) 도우미를 내린다. 글이나 첨부를 하나라도 남겼으면 true.
+    bool runCrawlRecord(const QString &url, const QString &outDir, const QList<QNetworkCookie> &cookies,
+                        bool headful, const QString &loginCheckJs, const std::function<bool()> &alive);
+    // 주소의 호스트로 저장된 계정 로그인을 고른다(x.com → 트위터 계정 …). 없으면 빈 목록. label 엔 계정 이름만.
+    QList<QNetworkCookie> savedLoginCookiesForHost(const QString &host, QString *label = nullptr) const;
     // ★ Pixiv Fanbox (멤버십 컨텐츠 다운)
     void runFanboxCollection(const QJsonObject &config);
     Q_INVOKABLE void refreshFanboxSession();  // FANBOXSESSID 자동 추출

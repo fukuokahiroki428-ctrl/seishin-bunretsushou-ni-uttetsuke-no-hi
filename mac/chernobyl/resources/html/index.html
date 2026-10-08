@@ -2419,6 +2419,7 @@
                                         <label class="option-item"><input type="checkbox" id="crawl-exif" checked> EXIF 메타데이터</label>
                                         <label class="option-item"><input type="checkbox" id="crawl-wait-login"> 로그인 후 확인</label>
                                         <label class="option-item"><input type="checkbox" id="crawl-real-chrome"> 실제 Chrome (CDP)</label>
+                                        <label class="option-item" title="트위터 · 미스키처럼 내릴수록 글이 이어 나오는 사이트를 끝까지 내리며, 페이지가 받은 글 자료와 첨부 원본을 남깁니다. 주소마다 index.html(날짜순 보기) · items.jsonl · media/ 가 생깁니다. 저장된 계정(트위터 등)이 있으면 그 로그인으로 엽니다."><input type="checkbox" id="crawl-record"> 끝까지 기록 (트위터·미스키 등)</label>
                                     </div>
                                     <div class="input-row" style="margin-top:8px;">
                                         <div class="field" style="flex:1;">
@@ -5749,6 +5750,8 @@
                 //   useRealChrome 또는 method=chrome일 때만 사용. 페이지에서 평가해 true면 로그인 페이지로 판정 → 우측 하단 배너 + 사용자 대기.
                 useRealChrome:document.getElementById('crawl-method')?.value === 'chrome' ||
                               document.getElementById('crawl-real-chrome')?.checked || false,
+                // ★ 끝까지 기록 — 앱형 사이트의 글 자료(JSON) + 첨부 원본. 실제 Chrome 길로 간다(헤드리스, '로그인 후 확인' 이면 창)
+                record:document.getElementById('crawl-record')?.checked || false,
                 method:document.getElementById('crawl-method')?.value || '',
                 loginCheckJs:document.getElementById('crawl-login-check')?.value.trim() || '',
                 loginCookie:document.getElementById('crawl-login-cookie')?.value.trim() || ''
@@ -7481,7 +7484,7 @@
             'spinspin-cookie','spinspin-target','spinspin-method','spinspin-media','spinspin-excel','spinspin-exif','spinspin-path','spinspin-real-capture',
             'asked-cookie','asked-target','asked-method','asked-media','asked-excel','asked-exif','asked-path','asked-real-capture',
             'crawl-url','crawl-depth','crawl-maxpages','crawl-delay','crawl-same-domain','crawl-deep-scroll','crawl-security','crawl-exif','crawl-wait-login','crawl-path',
-            'crawl-real-chrome','crawl-login-check','crawl-login-cookie',
+            'crawl-real-chrome','crawl-record','crawl-login-check','crawl-login-cookie',
             // ★ 内閣会 저장 경로와 이메일 감시 설정 — 여기 없어서 앱을 다시 켜면 빈칸으로 돌아갔다.
             //   그러면 '끄기 전에 돌던 이메일 감시를 이어 돌리기' 도 할 수 없다. 1년을 켜 두는 물건이다.
             //   ※ email-pass 는 앱 비밀번호다. 다른 자격증명(쿠키·블스카이 비밀번호)과 같은
@@ -8080,6 +8083,7 @@
                         config.securityScan = document.getElementById('crawl-security').checked;
                         config.exif = document.getElementById('crawl-exif').checked;
                         config.waitLogin = document.getElementById('crawl-wait-login').checked;
+                        config.record = document.getElementById('crawl-record')?.checked || false;
                         config.path = document.getElementById('crawl-path').value;
                         break;
                 }
