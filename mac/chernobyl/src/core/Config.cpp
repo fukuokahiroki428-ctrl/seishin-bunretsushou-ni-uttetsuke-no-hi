@@ -267,6 +267,10 @@ QJsonObject Config::toJson() const
     root["debugLogs"] = m_debugLogs;
     if (!m_secondaryPath.isEmpty()) root["secondaryPath"] = m_secondaryPath;
     if (!m_naikakukaiWatches.isEmpty()) root["naikakukaiWatches"] = m_naikakukaiWatches;
+    // 비어 있어도 적는다 — 마지막 규칙을 지운 것이 저장되어야 한다
+    root["organizeRules"] = m_organizeRules;
+    root["organizeAuto"] = m_organizeAuto;
+    root["organizeCaptures"] = m_organizeCaptures;
     root["naikakukaiInterval"] = m_naikakukaiInterval;
     if (!m_webdavUrl.isEmpty())  root["webdavUrl"]  = m_webdavUrl;
     if (!m_webdavUser.isEmpty()) root["webdavUser"] = m_webdavUser;
@@ -318,6 +322,9 @@ void Config::fromJson(const QJsonObject &obj)
     if (obj.contains("debugLogs")) m_debugLogs = obj["debugLogs"].toBool();
     if (obj.contains("secondaryPath")) m_secondaryPath = obj["secondaryPath"].toString();
     if (obj.contains("naikakukaiWatches")) m_naikakukaiWatches = obj["naikakukaiWatches"].toArray();
+    if (obj.contains("organizeRules"))     m_organizeRules = obj["organizeRules"].toArray();
+    if (obj.contains("organizeAuto"))      m_organizeAuto = obj["organizeAuto"].toBool(true);
+    if (obj.contains("organizeCaptures"))  m_organizeCaptures = obj["organizeCaptures"].toBool(false);
     if (obj.contains("naikakukaiInterval")) m_naikakukaiInterval = obj["naikakukaiInterval"].toInt(30);
     if (obj.contains("webdavUrl"))      m_webdavUrl  = obj["webdavUrl"].toString();
     if (obj.contains("webdavUser"))     m_webdavUser = obj["webdavUser"].toString();

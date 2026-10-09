@@ -19,6 +19,8 @@ dist/
 **/resources/tools/exiftool/
 **/resources/tools/exiftool.exe
 **/resources/chromium/
+# 인텔판(x86_64) 빌드 재료 — Chrome for Testing mac-x64 · 파이썬 · 도구. 크고 바깥에서 받은 것이라 올리지 않는다
+**/assets-x86_64/
 **/python_env/
 **/python_embed/
 **/python_standalone/

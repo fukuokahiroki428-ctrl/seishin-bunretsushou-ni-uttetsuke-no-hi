@@ -415,6 +415,11 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
         quitWait.start();
         if (m_hotfixThread && m_hotfixThread->isRunning() && !m_hotfixThread->wait(3000))
             qWarning() << "[hotfix] 확인 스레드가 3초 안에 끝나지 않았습니다";
+        // ★ 정리하기 스레드 — 끄는 중이면 도우미를 곧바로 내리고 끝난다(organizeRun). 안 기다리면 그 스레드가
+        //   치워진 백엔드에 화면 알림을 보내다 죽는다(검토가 짚음 — 고침 꾸러미 스레드와 같은 꼴).
+        if (m_organizeThread && m_organizeThread->isRunning()
+            && !m_organizeThread->wait(qMax(100, 3000 - int(quitWait.elapsed()))))
+            qWarning() << "[정리] 정리 스레드가 제때 끝나지 않았습니다";
         // ★ 다른 뒷일 스레드의 요청도(프록시 시험 · 감시 · 수집 …) — 모두 0.1초 안에 멈추므로 보통 곧 끝난다. 합쳐 3초까지.
         if (!HttpClient::waitIdle(qMax(0, 3000 - int(quitWait.elapsed()))))
             qWarning() << "[종료] 진행 중인 요청이 3초 안에 끝나지 않았습니다";
@@ -6599,6 +6604,8 @@ void HanishikiBackend::checkNewPosts(const QString &platformName)
             setPlatformRunning("twitter", false);
             QMetaObject::invokeMethod(this, [this]() {
                 updateStats(0, 0, "완료", "twitter");
+                // '새 글 체크' 는 수집 가드 밖이라 onCollectionEnded 가 오지 않는다 — 받은 뒤 자동 정리를 여기서 부른다
+                runJs("window.organizeAfterCollection && organizeAfterCollection('twitter')");
             }, Qt::QueuedConnection);
         });
         connect(thread, &QThread::finished, thread, &QThread::deleteLater);
@@ -20805,4 +20812,131 @@ bool HanishikiBackend::runCrawlRecord(const QString &url, const QString &outDir,
             .arg(done["stop"].toString()).arg(done["seconds"].toInt()).arg(outDir),
         (failed || (items == 0 && saved == 0)) ? "warning" : "success", "crawl");
     return items > 0 || saved > 0;
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// 정리하기 — 받은 파일을 대상마다 정한 곳으로 '따로' 모은다(tools/organize.py). 원본은 그대로 둔다.
+// ═════════════════════════════════════════════════════════════════════════
+//   사용자 기준(2026-10-09): 정리할 곳/gaekkin/gaekkin・@gaekkin-(X ／ twitter.com)/令和7年11月/ 에 중복 없이.
+//   받는 곳과 정리할 곳을 따로 정하고, 정리하기 창을 따로 두며, 원본은 남긴다(같은 APFS 디스크면 복제라 자리를 거의
+//   안 먹는다). 폴더 이름 · 날짜 · 중복 판단은 모두 도우미가 한다 — 앱은 규칙을 넘기고 진행을 화면에 옮길 뿐이다.
+
+void HanishikiBackend::organizeRun(const QString &rulesJson)
+{
+    // 화면에 보내는 끝 신호 — failed 는 '사용자가 멈춤' 과 다르다(실패를 '멈춤' 으로 보이던 것을 검토가 짚었다)
+    auto finish = [this](const char *json) {
+        runJsAll(QStringLiteral("window.organizeEvent && organizeEvent(%1)").arg(Common::jsStringLiteral(QString::fromLatin1(json))));
+    };
+    const QJsonDocument doc = QJsonDocument::fromJson(rulesJson.toUtf8());
+    if (!doc.isObject() || doc.object()["rules"].toArray().isEmpty()) {
+        finish("{\"ev\":\"done\",\"rules\":0,\"copied\":0,\"dup\":0,\"errors\":0}");
+        return;
+    }
+    if (m_organizeRunning.exchange(true)) {
+        // 화면이 먼저 '정리 중' 으로 바꿔 놓았으면 되돌리게 알린다 — 조용히 거절하면 화면 상태가 엉켰다
+        finish("{\"ev\":\"busy\"}");
+        return;
+    }
+    m_organizeStop = false;
+    const QString script = Common::activeToolScriptPath(QStringLiteral("organize.py"));
+    QString python = Common::bundledPythonPath();
+    if (!QFileInfo::exists(python)) python = QStringLiteral("/usr/bin/python3");   // 도우미는 표준 라이브러리만 쓴다
+    if (!QFileInfo::exists(script)) {
+        log("정리 도우미(organize.py)가 없습니다", "error", "organize");
+        m_organizeRunning = false;
+        finish("{\"ev\":\"done\",\"rules\":0,\"copied\":0,\"dup\":0,\"errors\":1,\"failed\":true}");
+        return;
+    }
+    const QByteArray init = QJsonDocument(doc.object()).toJson(QJsonDocument::Compact);
+    QThread *t = QThread::create([this, script, python, init, finish]() {
+        auto forward = [this](const QByteArray &line) {
+            const QByteArray l = line.trimmed();
+            if (l.isEmpty() || !l.startsWith('{') || Common::appQuitting()) return;   // 끄는 중엔 화면을 건드리지 않는다
+            runJsAll(QStringLiteral("window.organizeEvent && organizeEvent(%1)")
+                         .arg(Common::jsStringLiteral(QString::fromUtf8(l))));
+        };
+        auto isDone = [](const QByteArray &l) { return l.contains("\"ev\": \"done\"") || l.contains("\"ev\":\"done\""); };
+        QProcess p;
+        p.start(python, {script, QStringLiteral("--stdin-args")});
+        if (!p.waitForStarted(15000)) {
+            log("정리 도우미를 띄우지 못했습니다", "error", "organize");
+            m_organizeRunning = false;
+            finish("{\"ev\":\"done\",\"rules\":0,\"copied\":0,\"dup\":0,\"errors\":1,\"failed\":true}");
+            return;
+        }
+        p.write(init);
+        p.write("\n");
+        p.waitForBytesWritten(5000);
+        // stdin 은 끝까지 열어 둔다 — 닫으면 도우미가 하던 파일까지 끝내고 멈춘다(중지 단추가 그렇게 한다)
+        QByteArray out, err, doneLine;
+        bool closed = false;
+        QElapsedTimer stopWait;
+        auto take = [&](const QByteArray &line) {
+            if (isDone(line)) doneLine = line;   // 끝 신호는 실행 표시를 내린 뒤에 보낸다(바로 다음 정리가 '바쁨' 에 걸리지 않게)
+            else forward(line);
+        };
+        while (p.state() != QProcess::NotRunning) {
+            p.waitForReadyRead(300);
+            out += p.readAllStandardOutput();
+            err += p.readAllStandardError();
+            if (err.size() > 8192) err = err.right(4096);
+            int nl;
+            while ((nl = out.indexOf('\n')) >= 0) {
+                const QByteArray line = out.left(nl);
+                out.remove(0, nl + 1);
+                take(line);
+            }
+            if (Common::appQuitting()) {   // 앱이 끝나는 중 — 기다리지 않는다(도우미는 숨은 임시 이름으로 쓰고 이름을 달아 반쪽 파일이 안 남는다)
+                p.kill();
+                p.waitForFinished(2000);
+                m_organizeRunning = false;
+                return;
+            }
+            if (!closed && m_organizeStop) {
+                closed = true;
+                p.closeWriteChannel();
+                stopWait.start();
+            }
+            if (closed && stopWait.elapsed() > 15000) {
+                p.kill();
+                p.waitForFinished(3000);
+                break;
+            }
+        }
+        out += p.readAllStandardOutput();
+        for (const QByteArray &line : out.split('\n')) take(line);
+        const bool userStop = m_organizeStop;
+        m_organizeRunning = false;
+        if (!doneLine.isEmpty()) {
+            forward(doneLine);
+        } else if (userStop) {
+            log("정리를 멈췄습니다(도우미가 제때 끝나지 않아 내림)", "warning", "organize");
+            finish("{\"ev\":\"done\",\"rules\":0,\"copied\":0,\"dup\":0,\"errors\":0,\"stopped\":true}");
+        } else {
+            const QString tail = QString::fromUtf8(err).trimmed().right(300);
+            log(QString("정리가 끝을 알리지 못하고 멈췄습니다%1").arg(tail.isEmpty() ? QString() : " — " + tail), "error", "organize");
+            finish("{\"ev\":\"done\",\"rules\":0,\"copied\":0,\"dup\":0,\"errors\":1,\"failed\":true}");
+        }
+    });
+    m_organizeThread = t;
+    connect(t, &QThread::finished, t, &QThread::deleteLater);
+    t->start();
+}
+
+void HanishikiBackend::organizeStop()
+{
+    if (m_organizeRunning) {
+        m_organizeStop = true;
+        log("정리 멈추는 중 — 하던 파일까지 끝냅니다", "warning", "organize");
+    }
+}
+
+void HanishikiBackend::organizeBrowse(const QString &fieldId)
+{
+    const QString startDir = QDir("/Volumes").exists() ? QStringLiteral("/Volumes") : QDir::homePath();
+    const QString folder = QFileDialog::getExistingDirectory(m_window, "폴더 선택", startDir);
+    if (folder.isEmpty()) return;
+    // 경로는 JS 문자열로 안전하게 — 따옴표 · 역슬래시가 든 폴더 이름도 깨지지 않게
+    runJs(QStringLiteral("window.setOrganizeField && setOrganizeField(%1, %2)")
+              .arg(Common::jsStringLiteral(fieldId), Common::jsStringLiteral(folder)));
 }

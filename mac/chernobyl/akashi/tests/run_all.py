@@ -40,8 +40,8 @@ sys.path.insert(0, str(HERE))
 import _common as C  # noqa: E402
 from lib import paths  # noqa: E402
 
-TESTS = ["capture_cleanup", "quit_during_hotfix", "viewer", "resume", "youtube_layout", "crawl", "crawl_record", "singlefile"]
-LABEL = {"capture_cleanup": "캡처 정리", "quit_during_hotfix": "끄기", "viewer": "옛 트위터", "resume": "이어받기", "youtube_layout": "저장 방식", "crawl": "크롤러", "crawl_record": "끝까지 기록", "singlefile": "SingleFile"}
+TESTS = ["capture_cleanup", "quit_during_hotfix", "viewer", "resume", "youtube_layout", "crawl", "crawl_record", "organize", "singlefile"]
+LABEL = {"capture_cleanup": "캡처 정리", "quit_during_hotfix": "끄기", "viewer": "옛 트위터", "resume": "이어받기", "youtube_layout": "저장 방식", "crawl": "크롤러", "crawl_record": "끝까지 기록", "organize": "정리하기", "singlefile": "SingleFile"}
 
 
 def run(name: str, verbose: bool, env: dict, timeout: int = 1200):

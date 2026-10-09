@@ -11,7 +11,7 @@
 ```bash
 cd mac/chernobyl
 python3 akashi/inspect_all.py --doctor --hotfix   # 정기 점검 — 새 빌드마다, 설치·판 내기 전에
-python3 akashi/tests/run_all.py                   # 기능 시험 — 크롤 · 캡처 · 이어받기를 실제로(약 13분)
+python3 akashi/tests/run_all.py                   # 기능 시험 — 크롤 · 캡처 · 이어받기를 실제로(약 15분)
 python3 akashi/iso.py start                       # 격리 사본 하나 띄우기 (끄기: iso.py stop)
 ```
 
@@ -20,7 +20,7 @@ python3 akashi/iso.py start                       # 격리 사본 하나 띄우�
 | 공구 | 하는 일 | 앱 | 바깥 |
 |---|---|---|---|
 | `inspect_all.py` | 정기 점검 — 사본을 띄워 아래 화면 점검을 차례로 돌리고 표로 알림 | 사본 | — |
-| `tests/run_all.py` | 기능 시험 여덟 — 캡처 Chrome 정리 · 종료 · 옛 트위터 보기 · 이어받기 · 저장 방식 · 크롤러 · 끝까지 기록 · SingleFile ([기능시험](docs/기능시험.md)) | 사본 | — |
+| `tests/run_all.py` | 기능 시험 아홉 — 캡처 Chrome 정리 · 종료 · 옛 트위터 보기 · 이어받기 · 저장 방식 · 크롤러 · 끝까지 기록 · 정리하기 · SingleFile ([기능시험](docs/기능시험.md)) | 사본 | — |
 | `bench/spa_record.py` | 끝까지 기록 벤치 — 앱의 도우미(`resources/tools/crawl_record.py`)로 실제 사이트를 받아 정답과 견줌. 정답은 `bench/misskey_truth.py`(미스키 공개 API). 받은 것은 시험 뒤 지운다 | 없음 | ↗ |
 | `iso.py` | 격리 사본 띄우기 · 끄기 · 상태 · 기록 (빌드본을 APFS 복제해서 띄움) | 사본 | — |
 | `check_console.py` | 새로 고침 뒤 모든 탭 · 설정 묶음의 JS 예외 · console.error | 사본 | — |

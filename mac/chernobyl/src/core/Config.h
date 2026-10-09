@@ -66,6 +66,10 @@ public:
 
     // 内閣会 감시 목록 + interval 영구 저장
     QJsonArray naikakukaiWatches() const { return m_naikakukaiWatches; }
+    // 정리하기 — 대상마다 '받은 곳 → 정리할 곳' 규칙(tools/organize.py). organizeAuto 면 수집이 끝날 때마다 돈다.
+    QJsonArray organizeRules() const { return m_organizeRules; }
+    bool organizeAuto() const { return m_organizeAuto; }
+    bool organizeCaptures() const { return m_organizeCaptures; }
     void setNaikakukaiWatches(const QJsonArray &arr) { m_naikakukaiWatches = arr; }
     int naikakukaiInterval() const { return m_naikakukaiInterval; }
     void setNaikakukaiInterval(int min) { m_naikakukaiInterval = min; }
@@ -178,6 +182,9 @@ private:
     bool m_debugLogs = false;
     QString m_secondaryPath;
     QJsonArray m_naikakukaiWatches;
+    QJsonArray m_organizeRules;
+    bool m_organizeAuto = true;
+    bool m_organizeCaptures = false;
     int m_naikakukaiInterval = 30;
     QString m_webdavUrl;
     QString m_webdavUser;

@@ -151,6 +151,16 @@
         .nav-icon.spinspin { background: #ff6b9d; }
         .nav-icon.asked { background: #7c3aed; }
         .nav-icon.crawl { background: #059669; }
+        .nav-icon.organize { background: #0f766e; }
+        /* 정리하기 — 규칙 카드 */
+        .org-rule { border: 1px solid var(--border-light); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 10px; background: var(--bg-secondary); }
+        .org-row3 { display: grid; grid-template-columns: 130px 1fr 1fr; gap: 8px; }
+        @media (max-width: 760px) { .org-row3 { grid-template-columns: 1fr; } }
+        .org-rule .field { margin: 6px 0 0; min-width: 0; }
+        .org-preview { font-size: 11.5px; color: var(--text-tertiary); margin-top: 6px; word-break: break-all; }
+        .org-status { font-size: 11.5px; color: var(--text-secondary); margin-top: 4px; word-break: break-all; }
+        .org-rule .btn-row { margin-top: 8px; }
+        .org-empty { font-size: 12.5px; color: var(--text-tertiary); padding: 8px 2px; }
         /* Nav queue badge — shows queued target count per tab */
         .nav-badge {
             margin-left: auto; min-width: 16px; height: 15px; padding: 0 5px;
@@ -1038,6 +1048,10 @@
                 </div>
                 <div class="nav-item" onclick="switchTab('trad')">
                     <div class="nav-icon trad">Tr</div> trad
+                </div>
+                <!-- 정리하기 — 받은 파일을 대상마다 정한 곳으로 따로 모은다(사용자 2026-10-09). 원본은 그대로. -->
+                <div class="nav-item" onclick="switchTab('organize')">
+                    <div class="nav-icon organize">整</div> 정리하기
                 </div>
                 <!-- naikakukai 메뉴 숨김 — 요청에 따라 선택창(사이드바)에서만 제거.
                      기능·탭 본문·백엔드 코드는 그대로 살아 있어 switchTab('naikakukai') 로 접근 가능하다.
@@ -2576,6 +2590,73 @@
                         <div class="section fx-log" style="margin-top:16px;">
                             <div class="section-label">로그</div>
                             <div class="log-box" id="trad-log"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ━━ 정리하기 ━━ -->
+                <div class="tab-content fx" id="tab-organize">
+                    <!-- ★ 사용자(2026-10-09): "다운로드 하고 난뒤에 따로 내가 폴더를 지정해놔 … 최상위 폴더가 gaekkin 이면
+                         거기 아래에다가 gaekkin・@gaekkin-(X / twitter.com) … 이 안에다가 令和7年11月 식으로 … 중복 없이 정리".
+                         받는 곳과 정리할 곳을 따로 정하고, 원본은 남긴다. 일은 tools/organize.py 가 한다. -->
+                    <div class="fx-board" data-fx="organize">
+                        <div class="fx-frame">
+                            <div class="fx-title">정리 규칙</div>
+                            <div class="fx-body">
+                                <div class="section">
+                                    <div class="section-label">개요</div>
+                                    <div style="padding:10px 12px; background:var(--bg-secondary); border-radius:6px; font-size:13px; line-height:1.7; color:var(--text-secondary);">
+                                        받은 파일을 대상마다 정한 곳으로 <b>따로</b> 모읍니다. <b>원본은 그대로</b> 둡니다(같은 디스크면 자리를 거의 먹지 않는 복제).<br>
+                                        모양: <code>정리할 곳 / 표시 이름・@핸들-(X ／ twitter.com) / 令和7年11月 /</code><br>
+                                        달은 <b>올린 날짜</b>(파일 이름의 날짜, 없으면 파일 시각)로 나누고, 내용이 같은 파일은 한 번만 둡니다.
+                                    </div>
+                                </div>
+                                <div class="section">
+                                    <div class="section-label">규칙</div>
+                                    <div id="organize-rules"></div>
+                                    <div class="btn-row">
+                                        <button class="btn btn-secondary btn-sm" onclick="organizeImportTargets()">대상 목록에서 불러오기</button>
+                                        <button class="btn btn-secondary btn-sm" onclick="organizeAddRule()">규칙 추가</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="fx-frame" data-single="1">
+                            <div class="fx-title">설정</div>
+                            <div class="fx-body">
+                                <div class="section">
+                                    <div class="section-label">설정</div>
+                                    <div class="option-row">
+                                        <label class="option-item"><input type="checkbox" id="organize-auto" checked onchange="organizeSaveSettings()"> 받은 뒤 자동 정리</label>
+                                        <label class="option-item"><input type="checkbox" id="organize-captures" onchange="organizeSaveSettings()"> 캡처(html · pdf)도</label>
+                                    </div>
+                                    <div style="font-size:12px; color:var(--text-tertiary); margin-top:6px; line-height:1.6;">
+                                        '받은 뒤 자동 정리' 를 켜 두면 그 플랫폼의 수집이 끝날 때마다 그 플랫폼 규칙을 다시 훑습니다(이미 정리한 것은 건너뜀).
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="fx-run">
+                        <div class="btn-row">
+                            <button class="btn btn-primary" id="organize-start-btn" onclick="organizeRunAll()">모두 정리</button>
+                            <button class="btn btn-secondary" id="organize-stop-btn" onclick="organizeStopRun()" disabled>중지</button>
+                        </div>
+                        <div class="data-panel" style="margin-top:12px;">
+                            <div class="data-panel-header">
+                                <span>정리 요약</span>
+                                <span class="data-panel-meta" id="organize-meta">대기 중</span>
+                            </div>
+                            <div class="data-panel-body">
+                                <div class="data-kv"><div class="data-kv-label">새로 둔 파일</div><div class="data-kv-value" id="organize-kv-copied">0</div></div>
+                                <div class="data-kv"><div class="data-kv-label">중복이라 건너뜀</div><div class="data-kv-value" id="organize-kv-dup">0</div></div>
+                                <div class="data-kv"><div class="data-kv-label">파일 시각으로 날짜</div><div class="data-kv-value" id="organize-kv-mtime">0</div></div>
+                                <div class="data-kv"><div class="data-kv-label">문제</div><div class="data-kv-value" id="organize-kv-errors">0</div></div>
+                            </div>
+                        </div>
+                        <div class="section fx-log" style="margin-top:16px;">
+                            <div class="section-label">로그</div>
+                            <div class="log-box" id="organize-log"></div>
                         </div>
                     </div>
                 </div>
@@ -4359,11 +4440,12 @@
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             const tabEl = document.getElementById('tab-' + tab);
             if (tabEl) tabEl.classList.add('active');
-            const names = {dashboard:'현황 대시보드',twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',niconico:'ニコニコ',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',naikakukai:'内閣会',crawl:'経済産業省',settings:'설정',proxy:'프록시 (VPN)'};
+            const names = {dashboard:'현황 대시보드',twitter:'Twitter',bluesky:'Bluesky',youtube:'YouTube',niconico:'ニコニコ',discord:'Discord',instagram:'Instagram',pixiv:'Pixiv',fanbox:'Pixiv Fanbox',tumblr:'Tumblr',spinspin:'SpinSpin',asked:'Asked',trad:'trad',organize:'정리하기',naikakukai:'内閣会',crawl:'経済産業省',settings:'설정',proxy:'프록시 (VPN)'};
             document.getElementById('toolbar-title').textContent = names[tab] || tab;
             // Load system info when switching to settings
             if (tab === 'settings') { loadSystemInfo(); updateSettingsDiskPath(); if (backend && backend.getLlmStatus) backend.getLlmStatus(); if (window.loadScriptState) loadScriptState(); if (window.archiveRefresh) archiveRefresh(); if (backend && backend.getAiConfig) backend.getAiConfig(); if (backend && backend.getApiOverrides) backend.getApiOverrides(); if (backend && backend.getAppInfo) backend.getAppInfo(); }
-            if (tab === 'proxy' && window.loadProxyProfiles) loadProxyProfiles();   // 프록시 탭 — 목록을 새로 받는다
+            if (tab === 'proxy' && window.loadProxyProfiles) loadProxyProfiles();
+            if (tab === 'organize' && window.renderOrganizeRules) renderOrganizeRules();   // 저장 경로가 복원된 뒤의 값으로 '자동' 안내   // 프록시 탭 — 목록을 새로 받는다
             if (tab === 'dashboard' && window.renderDashboard) renderDashboard();   // 캡처 콘솔 홈
             // 해당 플랫폼의 저장된 stats 복원
             const s = platformStats[tab] || {posts:0, media:0, status:'대기'};
@@ -4411,6 +4493,7 @@
             const m = _multis[basePlat];
             const stillRunning = m && Object.values(m.states).some(s => s === 'running' || s === 'pending');
             if (!stillRunning) setRunning(basePlat, false);
+            if (!stillRunning && window.organizeAfterCollection) organizeAfterCollection(basePlat);
         };
 
         // ── Stats (플랫폼별 개별 저장) ──
@@ -4534,6 +4617,13 @@
                     const cb = document.getElementById('settings-debug-logs');
                     if (cb) cb.checked = config.debugLogs;
                 }
+                // ★ 정리하기 규칙 · 설정 복원 — 따로 감싼다. 여기서 던지면 뒤의 복원(内閣会 · 보조 경로 …)이 통째로 빠지고
+                //   그 빈 값이 다음 저장에 덮였다(검토).
+                try {
+                    if (Array.isArray(config.organizeRules)) organizeRestore(config.organizeRules);
+                    if (typeof config.organizeAuto === 'boolean') { const c = document.getElementById('organize-auto'); if (c) c.checked = config.organizeAuto; }
+                    if (typeof config.organizeCaptures === 'boolean') { const c = document.getElementById('organize-captures'); if (c) c.checked = config.organizeCaptures; }
+                } catch (e) { try { console.warn('[정리하기] 규칙 복원 실패', e); } catch (_) {} }
                 // ★ 내각회 감시 목록 + interval 복원
                 if (Array.isArray(config.naikakukaiWatches)) {
                     naikakukaiWatches = config.naikakukaiWatches;
@@ -5730,6 +5820,233 @@
             if (_multis['asked']) { stopPlatformMulti('asked'); return; }
             if(backend){ backend.stopCollection('asked'); appendLog('중지 중...','warning','asked'); }
         }
+
+        // ── 정리하기 ──
+        // 규칙: {id, platform, target, name, source, dest}. source 가 비면 도우미가 '<그 플랫폼의 저장 경로(기본 · 보조)>/<플랫폼>/<대상>' 을 찾는다.
+        // ★ 진행 · 결과는 규칙의 id 로 잇는다 — 순서로 이으면 정리하는 동안 규칙을 지우거나 고칠 때 엉뚱한 규칙에 붙었다(검토).
+        let organizeRules = [];
+        let _orgRunning = false, _orgPending = new Set(), _orgTotals = null, _orgRunIds = [];
+        const _orgFolders = {}, _orgNames = {}, _orgStatus = {};   // 규칙 id → 찾은 정리 폴더 · 이름 · 상태 줄
+        const ORG_PLATFORMS = [['twitter','X (Twitter)','X','twitter.com'], ['bluesky','Bluesky','Bluesky','bsky.app'],
+            ['instagram','Instagram','Instagram','instagram.com'], ['pixiv','pixiv','pixiv','pixiv.net'],
+            ['fanbox','pixivFANBOX','pixivFANBOX','fanbox.cc'], ['tumblr','Tumblr','Tumblr','tumblr.com'],
+            ['spinspin','SpinSpin','SpinSpin','spin-spin.com'], ['asked','Asked','Asked','asked.kr'],
+            ['youtube','YouTube','YouTube','youtube.com'], ['niconico','ニコニコ','ニコニコ','nicovideo.jp'],
+            ['discord','Discord','Discord','discord.com'], ['misskey','Misskey','Misskey','misskey.io']];
+        function _orgEsc(t) { return String(t == null ? '' : t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+        function _orgId() { return 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+        // 도우미(organize.py)의 safe_name 과 같은 전각 치환 — 미리보기가 실제 이름과 같게
+        function _orgSafe(t) { const m = {'/':'／','\\':'＼',':':'：','*':'＊','?':'？','"':'＂','<':'＜','>':'＞','|':'｜'}; return String(t||'').normalize('NFC').replace(/[\/\\:*?"<>|]/g, c => m[c]).trim(); }
+        function _orgPlat(k) { return ORG_PLATFORMS.find(p => p[0] === k) || [k, k, k, '']; }
+        function _orgRoot(plat) { const id = pathIdMap[plat] || (plat + '-path'); const el = document.getElementById(id); return el ? el.value.trim() : ''; }
+        // 받은 곳을 찾을 뿌리 — 그 탭의 저장 경로와, 기본 디스크가 모자랄 때 수집이 옮겨 가는 보조 경로(설정)
+        function _orgRoots(plat) { return [_orgRoot(plat), String(window._secondaryPath || '').trim()].filter(Boolean); }
+        // 대상 칸에 주소를 붙여 넣으면 핸들만 — 수집 탭의 대상 추가와 같은 규칙
+        function _orgHandle(v) {
+            v = String(v || '').trim();
+            const m = v.match(/^https?:\/\/(?:www\.|m\.|mobile\.)?([^\/]+)\/?([^?#\s]*)/i);
+            if (!m) return v.replace(/^@/, '');
+            const host = m[1].toLowerCase(), segs = m[2].split('/').filter(Boolean);
+            let h = '';
+            if (/(^|\.)bsky\.app$/.test(host) && segs[0] === 'profile') h = segs[1] || '';
+            else if (/(^|\.)pixiv\.net$/.test(host)) { const i = segs.indexOf('users'); h = i >= 0 ? (segs[i + 1] || '') : ''; }
+            else if (/\.tumblr\.com$/.test(host) && host !== 'www.tumblr.com') h = host.replace(/\.tumblr\.com$/, '');
+            else if (/\.fanbox\.cc$/.test(host) && host !== 'www.fanbox.cc') h = host.replace(/\.fanbox\.cc$/, '');
+            else if (/fanbox\.cc$/.test(host) && segs[0] && segs[0][0] === '@') h = segs[0];
+            else h = segs[0] || '';
+            return decodeURIComponent(h).replace(/^@/, '');
+        }
+        function _orgFolderName(r, autoName) {
+            const p = _orgPlat(r.platform), h = String(r.target||'').trim().replace(/^@/, '');
+            const who = (String(r.name||'').trim() || autoName || '‹자동 이름›') + (h ? '・@' + h : '');
+            return _orgSafe(who + '-(' + p[2] + (p[3] ? ' ／ ' + p[3] : '') + ')');
+        }
+        function _orgEra(d) {
+            const y = d.getFullYear(), m = d.getMonth() + 1, key = y * 10000 + m * 100 + d.getDate();
+            const era = key >= 20190501 ? ['令和', y - 2018] : key >= 19890108 ? ['平成', y - 1988] : ['昭和', y - 1925];
+            return era[0] + (era[1] === 1 ? '元' : era[1]) + '年' + m + '月';
+        }
+        function _orgPreview(r) {
+            const dest = String(r.dest || '').trim();
+            return dest ? (dest + '/' + _orgFolderName(r, _orgNames[r.id]) + '/' + _orgEra(new Date()) + '/') : '정리할 곳을 고르십시오';
+        }
+        function organizeSave() {
+            if (!backend || !backend.saveConfig || !_configLoaded) return;
+            backend.saveConfig(JSON.stringify({ organizeRules: organizeRules,
+                organizeAuto: !!document.getElementById('organize-auto')?.checked,
+                organizeCaptures: !!document.getElementById('organize-captures')?.checked }));
+        }
+        function organizeSaveSettings() { organizeSave(); }
+        window.organizeRestore = function(arr) {
+            organizeRules = (Array.isArray(arr) ? arr : []).filter(r => r && typeof r === 'object').map(r => Object.assign(
+                { platform: 'twitter', target: '', name: '', source: '', dest: '' }, r, { id: r.id || _orgId() }));
+            renderOrganizeRules();
+        };
+        function renderOrganizeRules() {
+            const box = document.getElementById('organize-rules');
+            if (!box) return;
+            if (!organizeRules.length) {
+                box.innerHTML = '<div class="org-empty">규칙이 없습니다. <b>대상 목록에서 불러오기</b> 로 각 탭의 대상을 가져오거나 <b>규칙 추가</b> 를 누르십시오.</div>';
+                return;
+            }
+            const dis = _orgRunning ? ' disabled' : '';
+            box.innerHTML = organizeRules.map((r, i) => {
+                const opts = ORG_PLATFORMS.map(p => '<option value="' + p[0] + '"' + (p[0] === r.platform ? ' selected' : '') + '>' + _orgEsc(p[1]) + '</option>').join('');
+                const auto = r.target ? ('자동 — ' + (_orgRoot(r.platform) || '저장 경로') + '/' + r.platform + '/' + String(r.target).replace(/^@/, '')) : '받은 폴더를 고르십시오';
+                return '<div class="org-rule" data-id="' + _orgEsc(r.id) + '">'
+                    + '<div class="org-row3">'
+                    + '<div class="field"><label class="field-label">플랫폼</label><select class="input" onchange="organizeSet(' + i + ',\'platform\',this.value)"' + dis + '>' + opts + '</select></div>'
+                    + '<div class="field"><label class="field-label">대상 (핸들)</label><input class="input" value="' + _orgEsc(r.target) + '" placeholder="@핸들" onchange="organizeSet(' + i + ',\'target\',this.value)"' + dis + '></div>'
+                    + '<div class="field"><label class="field-label">표시 이름</label><input class="input" value="' + _orgEsc(r.name) + '" placeholder="자동(프로필 이름 · 없으면 핸들)" onchange="organizeSet(' + i + ',\'name\',this.value)"' + dis + '></div>'
+                    + '</div>'
+                    + '<div class="field"><label class="field-label">받은 곳</label><div class="input-row"><input class="input" id="org-src-' + i + '" value="' + _orgEsc(r.source) + '" placeholder="' + _orgEsc(auto) + '" onchange="organizeSet(' + i + ',\'source\',this.value)"' + dis + '><button class="btn btn-secondary btn-sm" onclick="organizeBrowseField(\'org-src-' + i + '\')"' + dis + '>찾아보기</button></div></div>'
+                    + '<div class="field"><label class="field-label">정리할 곳 (최상위 폴더 — 없으면 하나 만듦)</label><div class="input-row"><input class="input" id="org-dst-' + i + '" value="' + _orgEsc(r.dest) + '" placeholder="예: ~/Pictures/gaekkin" onchange="organizeSet(' + i + ',\'dest\',this.value)"' + dis + '><button class="btn btn-secondary btn-sm" onclick="organizeBrowseField(\'org-dst-' + i + '\')"' + dis + '>찾아보기</button></div></div>'
+                    + '<div class="org-preview">→ ' + _orgEsc(_orgPreview(r)) + '</div>'
+                    + '<div class="org-status">' + _orgEsc(_orgStatus[r.id] || '') + '</div>'
+                    + '<div class="btn-row"><button class="btn btn-secondary btn-sm" onclick="organizeRunOne(' + i + ')"' + dis + '>이것만 정리</button>'
+                    + '<button class="btn btn-secondary btn-sm" onclick="organizeOpen(' + i + ')">정리 폴더 열기</button>'
+                    + '<button class="btn btn-secondary btn-sm" onclick="organizeRemove(' + i + ')"' + dis + '>삭제</button></div>'
+                    + '</div>';
+            }).join('');
+        }
+        // 카드 하나의 미리보기 · 상태 줄만 — 통째로 다시 그리면 입력 중이던 칸과 포커스가 날아갔다(검토)
+        function _orgPatchCard(id) {
+            const card = document.querySelector('.org-rule[data-id="' + CSS.escape(id) + '"]');
+            const r = organizeRules.find(x => x.id === id);
+            if (!card || !r) return;
+            const pv = card.querySelector('.org-preview'), st = card.querySelector('.org-status');
+            if (pv) pv.textContent = '→ ' + _orgPreview(r);
+            if (st) st.textContent = _orgStatus[id] || '';
+        }
+        function organizeSet(i, key, value) {
+            const r = organizeRules[i];
+            if (!r || _orgRunning) return;
+            let v = String(value || '').trim();
+            if (key === 'target') v = _orgHandle(v);
+            r[key] = v;
+            delete _orgFolders[r.id];                                         // 정리 폴더는 다시 찾는다
+            if (key !== 'dest') { delete _orgNames[r.id]; delete _orgStatus[r.id]; }   // 대상 · 받은 곳이 바뀌면 이름도
+            organizeSave();
+            renderOrganizeRules();
+        }
+        function organizeAddRule() {
+            if (_orgRunning) return;
+            organizeRules.push({ id: _orgId(), platform: 'twitter', target: '', name: '', source: '', dest: '' });
+            organizeSave(); renderOrganizeRules();
+        }
+        function organizeRemove(i) {
+            const r = organizeRules[i]; if (!r || _orgRunning) return;
+            if (!confirm('이 규칙을 지울까요? (이미 정리한 파일은 그대로 둡니다)')) return;
+            organizeRules.splice(i, 1); organizeSave(); renderOrganizeRules();
+        }
+        // 각 플랫폼 탭의 대상 목록에서 아직 규칙이 없는 것만 가져온다(정리할 곳은 비워 둔다 — 사용자가 고른다)
+        function organizeImportTargets() {
+            if (_orgRunning) return;
+            let n = 0;
+            Object.keys(platformTargets || {}).forEach(plat => {
+                if (!ORG_PLATFORMS.some(p => p[0] === plat)) return;
+                (platformTargets[plat] || []).forEach(e => {
+                    const t = _orgHandle(e.target);
+                    if (!t || organizeRules.some(r => r.platform === plat && String(r.target).replace(/^@/, '').toLowerCase() === t.toLowerCase())) return;
+                    organizeRules.push({ id: _orgId(), platform: plat, target: t, name: e.nickname || '', source: '', dest: '' });
+                    n++;
+                });
+            });
+            organizeSave(); renderOrganizeRules();
+            appendLog(n ? ('대상 ' + n + '개를 불러왔습니다 — 각 규칙의 <b>정리할 곳</b> 을 고르십시오') : '새로 불러올 대상이 없습니다', n ? 'success' : 'info', 'organize');
+        }
+        function organizeBrowseField(fieldId) { if (backend && backend.organizeBrowse && !_orgRunning) backend.organizeBrowse(fieldId); }
+        window.setOrganizeField = function(fieldId, folder) {
+            const el = document.getElementById(fieldId);
+            if (!el) return;
+            el.value = folder;
+            el.dispatchEvent(new Event('change'));
+        };
+        function organizeOpen(i) {
+            const r = organizeRules[i]; if (!r || !backend) return;
+            const f = _orgFolders[r.id] || String(r.dest || '').trim();
+            if (f) backend.openFolder(f);
+        }
+        function _orgSetRunning(on) {
+            _orgRunning = on;
+            document.getElementById('organize-start-btn').disabled = on;
+            document.getElementById('organize-stop-btn').disabled = !on;
+            renderOrganizeRules();
+        }
+        // 돌릴 수 있으면 시작하고 true. 이미 돌고 있거나 돌릴 규칙이 없으면 false.
+        function _orgStart(ids, why) {
+            if (_orgRunning) { appendLog('정리가 이미 돌고 있습니다 — 끝난 뒤 다시 하십시오', 'warning', 'organize'); return false; }
+            const ready = organizeRules.filter(r => ids.includes(r.id) && String(r.dest || '').trim() && (r.target || r.source));
+            if (!ready.length) { appendLog('정리할 규칙이 없습니다 — 규칙마다 <b>정리할 곳</b> 과 대상(또는 받은 곳)을 정하십시오', 'warning', 'organize'); return false; }
+            if (!backend || !backend.organizeRun) return false;
+            _orgRunIds = ready.map(r => r.id);
+            _orgTotals = { copied: 0, dup: 0, mtime_date: 0, errors: 0 };
+            ['copied', 'dup', 'mtime', 'errors'].forEach(k => { const e = document.getElementById('organize-kv-' + k); if (e) e.textContent = '0'; });
+            document.getElementById('organize-meta').textContent = '정리 중';
+            _orgSetRunning(true);
+            appendLog(_orgEsc(why || '정리 시작') + ' — 규칙 ' + ready.length + '개', 'info', 'organize');
+            backend.organizeRun(JSON.stringify({
+                rules: ready.map(r => Object.assign({}, r, { roots: _orgRoots(r.platform) })),
+                captures: !!document.getElementById('organize-captures')?.checked }));
+            return true;
+        }
+        function organizeRunAll() { _orgStart(organizeRules.map(r => r.id)); }
+        function organizeRunOne(i) { if (organizeRules[i]) _orgStart([organizeRules[i].id]); }
+        function organizeStopRun() {
+            _orgPending.clear();   // 멈추면 줄 서 있던 자동 정리도 버린다
+            if (backend && backend.organizeStop) backend.organizeStop();
+        }
+        window.organizeAfterCollection = function(plat) {
+            if (plat === 'bsky') plat = 'bluesky';
+            if (!document.getElementById('organize-auto')?.checked) return false;
+            const ids = organizeRules.filter(r => r.platform === plat && String(r.dest || '').trim()).map(r => r.id);
+            if (!ids.length) return false;
+            if (_orgRunning) { _orgPending.add(plat); return false; }
+            return _orgStart(ids, '수집이 끝나 자동 정리(' + plat + ')');
+        };
+        function _orgNextPending() {
+            for (const p of Array.from(_orgPending)) {   // 시작되는 것이 나올 때까지 — 하나가 못 돌아도 나머지가 남지 않게
+                _orgPending.delete(p);
+                if (window.organizeAfterCollection(p)) return;
+            }
+        }
+        window.organizeEvent = function(raw) {
+            let ev; try { ev = JSON.parse(raw); } catch (e) { return; }
+            const rid = ev.id || _orgRunIds[ev.index];
+            const rule = organizeRules.find(r => r.id === rid);
+            if (ev.ev === 'log') {
+                appendLog(_orgEsc(ev.msg), ev.level || 'info', 'organize');
+            } else if (ev.ev === 'busy') {
+                appendLog('정리가 이미 돌고 있습니다 — 끝난 뒤 다시 하십시오', 'warning', 'organize');
+                _orgSetRunning(false);
+                document.getElementById('organize-meta').textContent = '대기 중';
+            } else if (ev.ev === 'resolved') {
+                if (rid) {
+                    _orgFolders[rid] = ev.folder;
+                    _orgNames[rid] = ev.name;
+                    _orgStatus[rid] = '받은 곳: ' + ev.source + ' · 이름: ' + ev.name;
+                    _orgPatchCard(rid);
+                }
+            } else if (ev.ev === 'progress') {
+                document.getElementById('organize-meta').textContent = '정리 중 — ' + ev.seen + '개 살핌';
+            } else if (ev.ev === 'rule_done') {
+                ['copied', 'dup', 'mtime_date', 'errors'].forEach(k => { _orgTotals[k] += ev[k] || 0; });
+                document.getElementById('organize-kv-copied').textContent = _orgTotals.copied;
+                document.getElementById('organize-kv-dup').textContent = _orgTotals.dup;
+                document.getElementById('organize-kv-mtime').textContent = _orgTotals.mtime_date;
+                document.getElementById('organize-kv-errors').textContent = _orgTotals.errors;
+                const label = rule ? (rule.name || rule.target || '규칙') : '규칙';
+                appendLog(_orgEsc(label) + ' — 새로 ' + ev.copied + '개 · 중복 ' + ev.dup + '개' + (ev.errors ? ' · 문제 ' + ev.errors + '개' : ''), ev.errors ? 'warning' : 'success', 'organize');
+            } else if (ev.ev === 'done') {
+                _orgSetRunning(false);
+                const failed = !!ev.failed || ((ev.errors || 0) > 0 && !(ev.copied || 0) && !(ev.dup || 0));
+                document.getElementById('organize-meta').textContent = ev.stopped ? '멈춤' : failed ? '실패' : '끝';
+                if (ev.stopped) { _orgPending.clear(); appendLog('정리를 멈췄습니다', 'warning', 'organize'); }
+                else if (failed) appendLog('정리하지 못했습니다 — 위 로그를 보십시오', 'error', 'organize');
+                else appendLog('정리 끝 — 새로 ' + (ev.copied || 0) + '개 · 중복 ' + (ev.dup || 0) + '개' + (ev.errors ? ' · 문제 ' + ev.errors + '개' : ''), ev.errors ? 'warning' : 'success', 'organize');
+                if (!ev.stopped && _orgPending.size) setTimeout(_orgNextPending, 300);
+            }
+        };
 
         // ── 크롤링 ──
         function startCrawl() {

@@ -129,6 +129,12 @@ public slots:
     // Check if any collection is running
     bool isAnyRunning() const;
 
+    // 정리하기 — 받은 파일을 대상마다 정한 곳으로 '따로' 모은다(tools/organize.py, 원본은 그대로).
+    //   rulesJson = {"rules":[…], "captures":bool}. 진행은 화면 organizeEvent(줄 JSON)로 간다.
+    void organizeRun(const QString &rulesJson);
+    void organizeStop();
+    void organizeBrowse(const QString &fieldId);   // 폴더를 골라 화면의 그 칸에(setOrganizeField)
+
     // Navigation
     void browsePath(const QString &platform);
     void openFolder(const QString &path);
@@ -654,6 +660,9 @@ public:
     // RAM 제한 — 동시 실행 Chromium 1개로 제한 (메모리 우선)
     // ★ 8GB Mac OOM 방지 + 디스크 마운트 해제 방지 — 캡쳐 quality 그대로, 속도만 느려짐
     QSemaphore m_chromeCapacitySem{1};
+    std::atomic<bool> m_organizeRunning{false};   // 정리하기는 한 번에 하나
+    std::atomic<bool> m_organizeStop{false};
+    QPointer<QThread> m_organizeThread;            // 끌 때 기다린다(aboutToQuit)
 
     // ★ 동시 수집 작업 자체 제한 — 여러 플랫폼 동시 돌릴 때 메모리 중첩 방지
     //   2개 동시 OK. 3번째는 큐에서 대기. 끝나면 자동으로 다음 시작.

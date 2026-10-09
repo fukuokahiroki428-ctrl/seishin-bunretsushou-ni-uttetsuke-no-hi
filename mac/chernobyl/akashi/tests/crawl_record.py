@@ -203,7 +203,14 @@ def main() -> int:
             check('index.html — 주인이 먼저 골라져 있고 원본 그림을 가리킨다', 'value="@akashi_demo" selected' in idx
                   and 'media/full_045.png' in idx, len(idx))
             check("옆 칸의 미끼 '더 보기' 는 누르지 않았다", SpaHandler.decoy_calls[0] == 1, '위젯 요청 %d번' % SpaHandler.decoy_calls[0])
-            log_txt = p.eval("(document.getElementById('crawl-log')||{}).innerText||''") or ''
+            # 로그는 묶어서 화면으로 가 상태 'Done' 보다 조금 늦게 올 수 있다 — 몇 초 기다린다
+            t_log = time.time()
+            log_txt = ''
+            while time.time() - t_log < 8:
+                log_txt = p.eval("(document.getElementById('crawl-log')||{}).innerText||''") or ''
+                if '✅ 기록' in log_txt:
+                    break
+                time.sleep(0.4)
             check("로그에 '✅ 기록' 줄", '✅ 기록' in log_txt, log_txt[-200:].replace('\n', ' / '))
             check('기록용 Chrome 이 남지 않았다', not record_chromes(), record_chromes())
 
