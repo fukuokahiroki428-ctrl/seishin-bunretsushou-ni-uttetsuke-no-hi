@@ -1595,3 +1595,36 @@ SIGKILL 없이 · `[exit] 정상 종료` · 충돌 보고서 없음 · `[TLS] �
 - 중지는 `QProcess::terminate()` 가 콘솔 프로그램에 안 닿습니다 — `closeWriteChannel()` 로 stdin 을 닫으십시오. 도우미가
   받은 것까지 쓰고 Chrome 을 내린 뒤 끝납니다(맥에서 0.4초 실측). 20초 안에 안 끝나면 `kill()` 후 프로필 경로로 Chrome 을 내리십시오.
 - Chrome 경로는 앱이 넘깁니다(`chrome` 칸) — 윈도우의 `findChromeExecutable` 결과를 그대로.
+
+## 2026-10-09 · 맥 → 윈도우 · 「정리하기」 — 받은 파일을 대상마다 정한 곳으로, 연호 · 달 폴더에 중복 없이
+
+사용자 요청(맥 쪽에): "다운로드 하고 난뒤에 따로 내가 폴더를 지정해놔 … 최상위 폴더가 gaekkin 이면 거기 아래에다가
+gaekkin・@gaekkin-(X / twitter.com) 이런식으로 만들고 이 폴더 안에다가 令和7年11月 식으로 만들고 이 안에다가 중복 없이 정리".
+고른 것: 날짜는 **올린 날짜**, 빗금은 **항상 전각 ／**, 받는 곳과 정리할 곳을 **따로** 정하고 **정리하기 창을 따로**, **원본은 남긴다**.
+맥 `ueno` `a17b4aa` · **r42** 로 냈습니다.
+
+### 맥에서 한 것
+
+- **`resources/tools/organize.py`**(새 파일, 표준 라이브러리만 — 윈도우 python.exe 로도 돌 모양이지만 아래 '윈도우에서 다를 것' 참고).
+  `--stdin-args` 첫 줄 `{"rules":[…], "captures":bool}` → stdout 줄 JSON(`log` · `resolved` · `progress` · `rule_done` · `done`).
+  규칙: `id · platform · target · name(비우면 자동) · roots(그 탭의 저장 경로 + 설정의 보조 경로) · source(비우면 roots 아래에서 찾음) · dest`.
+  - 폴더: `dest/<표시 이름>・@<핸들>-(<서비스> ／ <주소>)/<令和N年M月>/` — 서비스 표시는 `X ／ twitter.com` · `Bluesky ／ bsky.app` …
+  - 날짜: 파일 이름 앞 `yyyyMMdd_` → `profile_/banner_` 뒤 → 파일 시각(일본 시간). 이름 속 아무 8자리는 날짜로 안 본다(pixiv 번호).
+    令和(2019-05-01~) · 平成 · 昭和, 첫해 元年.
+  - 중복: 정리 폴더에 **실제로 둔 바이트**의 SHA-256. 한 번 정리한 원본(같은 경로)은 내용이 바뀌어도(앱이 다음 수집 때 EXIF 재기록)
+    다시 두지 않는다. 이름만 같은 다른 내용은 `name (2).ext`. 장부는 계정 폴더의 `.hanishiki_organize.json`.
+  - 원본은 읽기만. 맥은 clonefile(APFS) · 아니면 복사, 숨은 임시 이름 → `renamex_np(RENAME_EXCL)` 로 '없을 때만' 이름 달기.
+    받은 곳과 정리할 곳이 겹치면(inode 로) 안 함. 트위터 `profiles/` 는 대상 본인 것만(팔로워 등 남의 프로필 사진 제외).
+- **`HanishikiBackend::organizeRun/organizeStop/organizeBrowse`** — 규칙을 stdin 으로, 진행은 `organizeEvent(json)` 로.
+  앱을 끌 때 정리 스레드를 기다린다(aboutToQuit). 이미 돌면 `{"ev":"busy"}`. Config 에 `organizeRules` · `organizeAuto` · `organizeCaptures`.
+- 화면: 사이드바 「整 정리하기」 탭(규칙 카드 · 대상 목록에서 불러오기 · 모두 정리 · 받은 뒤 자동 정리). `onCollectionEnded` 와
+  트위터 '새 글 체크' 끝에서 `organizeAfterCollection(plat)`.
+- 시험: `akashi/tests/organize.py` — 가짜 자료로 폴더 이름 · 연호 경계 · 중복 · (2) · 남의 프로필 빼기 · 원본 그대로 · 다시 돌리면 0 ·
+  자동 정리 · EXIF 재기록에도 다시 안 둠. 2-렌즈 검토(데이터 안전 · 앱 연결)가 실측으로 찾은 9건을 막은 뒤의 모양.
+
+### 윈도우에서 다를 것 (사용자가 윈도우에도 넣으라 할 때)
+
+- `fcntl.flock` · `ctypes` 의 `clonefile`/`renamex_np` 는 맥 전용이다 — 윈도우에선 `msvcrt.locking` 이나 잠금 파일, 복사는 그냥 복사,
+  '없을 때만' 이름 달기는 `os.link` 또는 `os.rename`(윈도우 rename 은 대상이 있으면 실패한다 — 그게 원하는 동작).
+- 겹침 검사의 inode 비교는 윈도우에선 `os.stat().st_ino`(파일 ID)가 있으나 대소문자 무시 경로 비교도 함께.
+- 폴더 이름의 전각 치환은 이미 윈도우 금지 문자를 모두 피한다(`／ ＼ ： ＊ ？ ＂ ＜ ＞ ｜`).
