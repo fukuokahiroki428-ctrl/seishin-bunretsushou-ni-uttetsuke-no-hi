@@ -47,7 +47,7 @@ HttpClient::~HttpClient()
     if (QThread::currentThread() != mainThread) {
         // ★ 만든 스레드가 이미 사라진 NAM 이 온다.
         //
-        //   MiyoBackend::runTwitterCollection 은 수집 워커 스레드에서
+        //   HanishikiBackend::runTwitterCollection 은 수집 워커 스레드에서
         //     delete m_twitterCollector; m_twitterCollector = new TwitterCollector(this);
         //   를 한다. 그러면 TwitterCollector 의 HttpClient 와 그 안의 NAM 이 그 워커
         //   스레드 소속으로 태어난다. 워커가 끝나면 스레드는 사라지는데 객체는

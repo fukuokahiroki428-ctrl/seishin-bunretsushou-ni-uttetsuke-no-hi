@@ -13,7 +13,7 @@
 #include <windows.h>
 #endif
 
-class MiyoBackend;
+class HanishikiBackend;
 class PenBackend;   // ★ PEN(팬을 잘 쓰고 싶다) 통합 — 2번째 백엔드 객체
 
 class MainWindow : public QMainWindow
@@ -38,7 +38,7 @@ public:
     bool uiReady() const { return m_uiReady; }
     QWebEngineView *browserView() const { return m_browserView; }
     void setChromeTheme(bool dark);   // 창 배경을 HTML 테마(--bg)에 맞춘다
-    MiyoBackend *backend() const { return m_backend; }
+    HanishikiBackend *backend() const { return m_backend; }
 
     // Sleep prevention for background downloads
     void holdAwake();
@@ -74,7 +74,7 @@ private:
     QWebEngineView *m_browserView = nullptr;
     QMainWindow *m_browserWindow = nullptr;
     QWebChannel *m_channel = nullptr;
-    MiyoBackend *m_backend = nullptr;
+    HanishikiBackend *m_backend = nullptr;
     PenBackend *m_penBackend = nullptr;   // ★ PEN 통합
     QMenu *m_dockMenu = nullptr;
 

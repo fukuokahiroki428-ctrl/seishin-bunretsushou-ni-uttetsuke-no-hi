@@ -1,5 +1,5 @@
 #include "TwitterCollector.h"
-#include "core/MiyoBackend.h"
+#include "core/HanishikiBackend.h"
 #include "core/Common.h"
 #include <QDirIterator>
 #include <QFileInfo>
@@ -96,7 +96,7 @@ QString TwitterCollector::displayNameOf(const QJsonObject &userResult)
     return QString();
 }
 
-TwitterCollector::TwitterCollector(MiyoBackend *backend, QObject *parent)
+TwitterCollector::TwitterCollector(HanishikiBackend *backend, QObject *parent)
     : QObject(parent)
     , m_backend(backend)
     // ★ 부모(this)를 주지 않는다. collector 는 메인 스레드 소속인데 m_http 는
@@ -112,7 +112,7 @@ TwitterCollector::TwitterCollector(MiyoBackend *backend, QObject *parent)
 // ★ QNetworkAccessManager 는 자기를 만든 스레드에서만 써야 한다(Qt 규칙).
 //
 //   이 객체는 수집 워커 스레드에서 new 된다
-//   (MiyoBackend::runTwitterCollection — 'Sequential 모드' 쪽).
+//   (HanishikiBackend::runTwitterCollection — 'Sequential 모드' 쪽).
 //   그런데 멤버로 남아서 그 워커가 끝난 뒤에도 살아 있고, '새 트윗 확인' 은
 //   또 다른 워커 스레드에서 같은 객체의 checkNewPosts() 를 부른다.
 //   그때 생성자에서 만들어 둔 HttpClient 를 그대로 쓰면, 그 안의 NAM 은
@@ -133,11 +133,11 @@ void TwitterCollector::adoptHttpToCurrentThread()
 
 TwitterCollector::~TwitterCollector()
 {
-    // multi-target: MiyoBackend가 매 collect()마다 collector를 새로 만들므로
+    // multi-target: HanishikiBackend가 매 collect()마다 collector를 새로 만들므로
     // 이전 collector가 destroy될 때 daemon이 leak되지 않도록 명시적으로 정리.
     stopDaemon();
     // ★ 프로필 버퍼도 여기서 지운다. 지우는 자리가 '다음 수집 시작' 하나뿐이었는데,
-    //   MiyoBackend 는 수집할 때마다 collector 를 새로 만든다 — 그래서 수집이 끝날
+    //   HanishikiBackend 는 수집할 때마다 collector 를 새로 만든다 — 그래서 수집이 끝날
     //   때마다 버퍼가 하나씩 새고, 임시 파일이 디스크에 남고, 파일 핸들도 남았다.
     //   (실측: 사용자 보관함에 tw_profiles_*.jsonl 48개. 앱이 떠 있는 동안에는
     //    "다른 프로세스가 사용 중" 이라 지워지지도 않았다)

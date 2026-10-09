@@ -11,7 +11,7 @@
 #include <QMutex>
 #include <atomic>
 
-class MiyoBackend;
+class HanishikiBackend;
 class HttpClient;
 class DiskJsonBuffer;
 
@@ -20,13 +20,13 @@ class TwitterCollector : public QObject
     Q_OBJECT
 
 public:
-    explicit TwitterCollector(MiyoBackend *backend, QObject *parent = nullptr);
+    explicit TwitterCollector(HanishikiBackend *backend, QObject *parent = nullptr);
     ~TwitterCollector() override;
 
     void collect(const QJsonObject &config, const std::atomic<bool> &isRunning);
     void checkNewPosts(const QJsonObject &config, const std::atomic<bool> &isRunning);
     void stopDaemon();
-    // 외부(MiyoBackend)에서 중지 시 프로세스를 즉시 죽이기 위해 노출
+    // 외부(HanishikiBackend)에서 중지 시 프로세스를 즉시 죽이기 위해 노출
     // ★ QProcess 를 건드리지 않는다 — 다른 스레드 것일 수 있다.
     //   pid 는 start 직후 여기에 베껴 두고, 이후로는 이 값만 쓴다.
     qint64 daemonPid() const { return m_daemonPid.load(); }
@@ -111,7 +111,7 @@ private:
     //   force: 명시적으로 캡쳐할지 (likes/bookmarks 같이 별도 폴더 쓸 때 capturesDir만 다르게)
     void captureTweet(const QJsonObject &tweet, const QString &capturesDir, const QJsonObject &config);
 
-    MiyoBackend *m_backend;
+    HanishikiBackend *m_backend;
     // ★ 이 스레드에서 쓸 HttpClient 를 새로 만든다 — 아래 정의의 설명 참고.
     void adoptHttpToCurrentThread();
 

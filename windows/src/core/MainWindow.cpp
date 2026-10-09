@@ -1,6 +1,6 @@
 #include "MainWindow.h"
 #include "Config.h"   // 창 크기 복원 — config()->windowGeometry()
-#include "MiyoBackend.h"
+#include "HanishikiBackend.h"
 #include "PenBackend.h"   // ★ PEN(팬을 잘 쓰고 싶다) 통합
 
 #include <QWebEngineSettings>
@@ -107,7 +107,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // WebChannel
     m_channel = new QWebChannel(this);
-    m_backend = new MiyoBackend(this);
+    m_backend = new HanishikiBackend(this);
     m_channel->registerObject(QStringLiteral("backend"), m_backend);
 
     // ★ 지난번 창 크기·위치를 되살린다.
@@ -156,7 +156,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // ★ PEN(팬을 잘 쓰고 싶다) 통합 — 같은 페이지에 2번째 백엔드 객체로 노출.
     //   UI 의 사이트 미러 탭이 penBackend.crawl* 를 호출. runJs/log 는 jsSignal/logSignal
-    //   로 동작(JS 측에서 connect) — MiyoBackend 와 동일 메커니즘, 같은 webView 공유.
+    //   로 동작(JS 측에서 connect) — HanishikiBackend 와 동일 메커니즘, 같은 webView 공유.
     m_penBackend = new PenBackend(this);
     m_channel->registerObject(QStringLiteral("penBackend"), m_penBackend);
     m_webView->page()->setWebChannel(m_channel);

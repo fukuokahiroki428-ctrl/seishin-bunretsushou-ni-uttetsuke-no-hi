@@ -128,7 +128,7 @@ FetchContent_MakeAvailable(QXlsx)
 set(CORE_SOURCES
     src/core/MainWindow.cpp
     src/core/TerminalWindow.cpp
-    src/core/MiyoBackend.cpp
+    src/core/HanishikiBackend.cpp
     src/core/PenBackend.cpp
     src/core/Common.cpp
     src/core/Config.cpp
@@ -137,7 +137,7 @@ set(CORE_SOURCES
 set(CORE_HEADERS
     src/core/MainWindow.h
     src/core/TerminalWindow.h
-    src/core/MiyoBackend.h
+    src/core/HanishikiBackend.h
     src/core/PenBackend.h
     src/core/WorkerSignals.h
     src/core/Common.h

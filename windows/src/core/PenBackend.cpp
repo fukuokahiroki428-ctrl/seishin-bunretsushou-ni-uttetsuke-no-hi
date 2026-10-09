@@ -122,7 +122,7 @@ PenBackend::~PenBackend()
 // ═════════════════════════════════════════════════════════════════════════
 void PenBackend::executeJsMainThread(const QString &js)
 {
-    // ★ MiyoBackend 와 같은 이유 — 페이지가 뜨기 전이면 MainWindow 가 담아 둔다.
+    // ★ HanishikiBackend 와 같은 이유 — 페이지가 뜨기 전이면 MainWindow 가 담아 둔다.
     if (m_window) m_window->runJsOnUi(js);
 }
 

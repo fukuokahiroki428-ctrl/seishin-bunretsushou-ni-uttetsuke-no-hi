@@ -1,5 +1,5 @@
 #include "SiteCrawler.h"
-#include "core/MiyoBackend.h"
+#include "core/HanishikiBackend.h"
 #include "core/Common.h"
 #include "utils/HttpClient.h"
 #include "utils/FileHelper.h"
@@ -24,7 +24,7 @@
 #include <QProcess>
 #include <QDateTime>
 
-SiteCrawler::SiteCrawler(MiyoBackend *backend, QWebEngineProfile *sharedProfile, QObject *parent)
+SiteCrawler::SiteCrawler(HanishikiBackend *backend, QWebEngineProfile *sharedProfile, QObject *parent)
     : QObject(parent)
     , m_backend(backend)
     , m_http(new HttpClient(this))

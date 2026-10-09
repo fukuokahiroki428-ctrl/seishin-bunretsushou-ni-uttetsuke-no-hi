@@ -7,14 +7,14 @@
 #include <QMutex>
 #include <atomic>
 
-class MiyoBackend;
+class HanishikiBackend;
 
 class BlueskyCollector : public QObject
 {
     Q_OBJECT
 
 public:
-    explicit BlueskyCollector(MiyoBackend *backend, QObject *parent = nullptr);
+    explicit BlueskyCollector(HanishikiBackend *backend, QObject *parent = nullptr);
     ~BlueskyCollector() override;
 
     void collect(const QJsonObject &config, const std::atomic<bool> &isRunning);
@@ -39,7 +39,7 @@ private:
     // ★ 다운로드 끝나면 user 폴더 root 에 gallery.html 자동 생성 — 모든 미디어 grid 로 한눈에
     void generateMediaGallery(const QString &userDir, const QString &handle);
 
-    MiyoBackend *m_backend;
+    HanishikiBackend *m_backend;
     QProcess *m_daemon = nullptr;
     // 워커가 쓰고 메인이 읽고 지운다 — atomic 이어야 한다.
     std::atomic<qint64> m_daemonPid{0};   // stopDaemon 이 객체 없이도 끊을 수 있게
