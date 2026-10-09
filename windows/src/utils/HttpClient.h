@@ -16,6 +16,7 @@ struct HttpResponse {
     int statusCode = 0;
     QByteArray data;
     QString error;
+    bool http2 = false;      // 협상된 프로토콜이 HTTP/2 였나 (인스타 429 진단용)
     bool isOk() const { return statusCode >= 200 && statusCode < 300; }
     QJsonObject json() const { return QJsonDocument::fromJson(data).object(); }
     QJsonArray jsonArray() const { return QJsonDocument::fromJson(data).array(); }

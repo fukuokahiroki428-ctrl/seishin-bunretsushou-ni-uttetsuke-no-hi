@@ -665,6 +665,32 @@ QString browserUserAgent()
     return cached;
 }
 
+// ★ 진짜 Chrome 은 UA 와 함께 늘 이 힌트들을 보낸다. 우리는 UA 만 흉내 내고 이것들을 빼먹었다.
+//   그 상태로 인스타 웹 API 를 부르면 JSON 대신 21KB HTML + 429 가 온다 — 로그인·확인 화면이
+//   아니라 '브라우저가 아닌 것' 으로 본 응답이다(맥 실측 2026-09-20).
+//   판 번호는 UA 와 반드시 같아야 한다. 어긋나면 그 자체가 봇 표식이 된다.
+//   플랫폼은 이 트리가 도는 곳을 적는다 — 맥은 "macOS", 여기는 "Windows".
+//   UA 가 Windows 라고 말하는데 힌트가 macOS 라고 하면 그것도 어긋남이다.
+QMap<QString, QString> browserClientHints()
+{
+    const QString ua = browserUserAgent();
+    QString major = QStringLiteral("140");
+    {
+        static const QRegularExpression re(QStringLiteral("Chrome/(\\d+)\\."));
+        const auto m = re.match(ua);
+        if (m.hasMatch()) major = m.captured(1);
+    }
+    QMap<QString, QString> h;
+    h["sec-ch-ua"] = QString("\"Chromium\";v=\"%1\", \"Google Chrome\";v=\"%1\", \"Not=A?Brand\";v=\"24\"").arg(major);
+    h["sec-ch-ua-mobile"] = "?0";
+    h["sec-ch-ua-platform"] = "\"Windows\"";
+    h["Sec-Fetch-Site"] = "same-origin";
+    h["Sec-Fetch-Mode"] = "cors";
+    h["Sec-Fetch-Dest"] = "empty";
+    h["Accept-Language"] = "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7";
+    return h;
+}
+
 bool writeFileAtomic(const QString &path, const QByteArray &bytes, QString *err)
 {
     QDir().mkpath(QFileInfo(path).absolutePath());

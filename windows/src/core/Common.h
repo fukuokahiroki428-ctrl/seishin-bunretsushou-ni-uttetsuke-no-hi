@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QMap>
 #include <QStringList>
 #include <QDateTime>
 #include <QProcessEnvironment>
@@ -123,6 +124,9 @@ QString checkFileIntegrity(const QString &filePath);
 //   → 설치된 브라우저에서 실제 판을 읽어 만든다. 한 번 만들고 캐시한다.
 //   (맥판 Common 의 같은 이름 함수와 짝이다. 맥은 맥 UA, 윈도우는 윈도우 UA.)
 QString browserUserAgent();
+// ★ UA 와 짝이 맞는 클라이언트 힌트(sec-ch-ua 계열). UA 만 Chrome 이라 적고 이것들이 없으면
+//   Meta 쪽이 XHR 로 보지 않아 JSON 대신 HTML 한 판을 준다(인스타 429 실측 2026-09-20, 맥).
+QMap<QString, QString> browserClientHints();
 
 // ── 파일을 통째로 갈아 끼우기 ──────────────────────────────────────────────
 // 임시 파일에 다 쓴 뒤 원자적으로 갈아 끼운다. 중간 상태(잘린 파일)가 없다.
