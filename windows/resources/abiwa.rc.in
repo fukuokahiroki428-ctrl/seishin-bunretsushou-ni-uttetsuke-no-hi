@@ -17,14 +17,14 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "CompanyName", "Predormition"
-            VALUE "FileDescription", "Predormition"
+            VALUE "CompanyName", "@APP_VENDOR@"
+            VALUE "FileDescription", "@APP_DISPLAY_NAME@"
             VALUE "FileVersion", "@PREDORMITION_VERSION@"
-            VALUE "InternalName", "Predormition"
-            VALUE "LegalCopyright", "Copyright (C) 2026 Predormition"
-            VALUE "OriginalFilename", "Predormition.exe"
-            VALUE "ProductName", "Predormition"
-            VALUE "ProductVersion", "@PREDORMITION_VERSION@"
+            VALUE "InternalName", "@APP_NAME@"
+            VALUE "LegalCopyright", "Copyright (C) 2026 @APP_VENDOR@"
+            VALUE "OriginalFilename", "@APP_NAME@.exe"
+            VALUE "ProductName", "@APP_DISPLAY_NAME@"
+            VALUE "ProductVersion", "@PREDORMITION_VERSION@ @PREDORMITION_CODENAME@"
         END
     END
     BLOCK "VarFileInfo"

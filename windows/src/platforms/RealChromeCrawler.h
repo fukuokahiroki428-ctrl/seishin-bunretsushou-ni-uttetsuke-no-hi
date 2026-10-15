@@ -34,6 +34,7 @@
 
 class HanishikiBackend;
 class QProcess;
+class QWindow;
 class QWebSocket;
 class QNetworkAccessManager;
 
@@ -50,8 +51,16 @@ public:
     void setUseUserProfile(bool b) { m_useUserProfile = b; }
     void setDebugPort(int port) { m_debugPort = port; }
     void setUserDataDir(const QString &d) { m_userDataDir = d; }
-    // 프록시(VPN) — "socks5://user:pass@host:port". 비어 두면 직접 나간다.
+    // 프록시(VPN) — "socks5://user:pass@host:port". 비어 두면 직접 나간다. (윈도우)
+    //   주소·포트만 명령줄로, 아이디·비밀번호는 CDP Fetch.authRequired 로 넘긴다.
+    //   setProxyServer 로 출구를 정해 받으면 그쪽이 이긴다 — 그때 이 비밀번호는 쓰지 않고 버린다.
     void setProxy(const QString &url);
+    // ★ 출구를 정해서 넘긴다(캡처 Chrome). start() 는 메인 스레드에서 도는데, 계정 프록시는
+    //   수집 스레드에만 걸려 있다(Common::setThreadProxy). 그래서 수집 스레드에서 구한 중계 주소를
+    //   여기로 넘긴다. required 면 주소가 비었을 때 start 를 실패로 끝낸다 — 직접 연결로 새지 않게.
+    void setProxyServer(const QString &server, bool required)
+    { m_proxyPinned = true; m_proxyServer = server; m_proxyRequired = required; }
+    QString proxyServerUsed() const { return m_proxyServerUsed; }   // 이 Chrome 이 뜬 출구(빈 값 = 직접)
 
     // 1) Chrome 시작 + CDP 연결 (콜백 ok=true면 성공)
     void start(std::function<void(bool)> done);
@@ -89,6 +98,24 @@ public:
     //     modifiers: 1=Alt, 2=Ctrl, 4=Meta(Cmd), 8=Shift (조합 비트마스크)
     void dispatchKey(const QString &key, int modifiers, std::function<void()> done);
 
+    // 12) 창 최소화/복원 — 윈도우의 SW_SHOWMINNOACTIVE 와 같은 목적.
+    //     수집 중에는 화면을 가리지 않게 최소화해 두고, 사용자가 이 창에서 로그인해야 할 때만 올린다.
+    //     CDP Browser.getWindowForTarget → Browser.setWindowBounds{windowState} 로 한다 —
+    //     손쉬운 사용·자동화(AppleScript) 권한이 필요 없다. 올릴 때는 Page.bringToFront 로 앞에 낸다.
+    //     메인 스레드에서 부른다 (QWebSocket 이 메인 스레드 객체).
+    void setWindowMinimized(bool minimized, std::function<void(bool)> done = nullptr);
+    // 직접 띄운 Chrome 을 CDP 연결 직후 최소화할지 (기본 true). 이미 떠 있던 Chrome 에 붙은 경우는 건드리지 않는다.
+    void setStartMinimized(bool b) { m_startMinimized = b; }
+
+    // 13) SingleFile 자원 모으기용 — 켜 둔 동안 fetch 응답에 Access-Control-Allow-Origin 이 없으면 요청 Origin 을 붙인다.
+    //     (자격증명은 안 붙인다 — ACAC 없음.) 교차 출처 그림이 CORS 로 'data:,' 로 비는 것을 막는다. 메인 스레드에서 부른다.
+    void setCorsRelax(bool on, std::function<void()> done = nullptr);
+
+    // 14) 페이지 CSP 끄기/켜기(Page.setBypassCSP) — 다음 navigate·reload 부터 적용된다.
+    //     캡쳐 때는 끄고(SingleFile 이 페이지 안에서 자원을 모은다), 사용자가 이 창에서 로그인할 때는 켠다.
+    void setBypassCsp(bool on);
+    void reloadPage();
+
     // 종료
     void stop();
     bool isReady() const { return m_ready; }
@@ -107,8 +134,11 @@ private slots:
     void onWsTextMessage(const QString &msg);
     void onWsError();
 
+public:
+    // 이 앱이 띄울 Chrome 실행 파일 — 번들 Chrome for Testing 이 먼저다. 끝까지 기록(crawl_record.py)도 같은 것을 쓴다.
+    static QString findChromeExecutable();
+
 private:
-    QString findChromeExecutable() const;
     QString resolveDebuggerWsUrl(int port) const;  // /json/version 파싱
     int sendCommand(const QString &method, const QJsonObject &params,
                     std::function<void(const QJsonValue &result, const QJsonValue &error)> cb);
@@ -129,6 +159,12 @@ private:
     QMap<int, std::function<void(const QJsonValue &, const QJsonValue &)>> m_pendingCmds;
 
     QString m_userDataDir;     // 임시 프로필 경로 (m_useUserProfile=false일 때)
+    bool    m_proxyPinned = false;    // setProxyServer 로 출구를 정해 받았는가
+    bool    m_proxyRequired = false;
+    QString m_proxyServer;            // 정해 받은 출구
+    QString m_proxyServerUsed;        // 실제로 띄울 때 쓴 출구
+    bool    m_startMinimized = true;  // 직접 띄운 Chrome 은 최소화로 둔다 (윈도우 SW_SHOWMINNOACTIVE 대응)
+    QPointer<QWindow> m_refocusAfterLaunch;  // 띄우기 직전 우리 앱에서 포커스를 쥐고 있던 창 — 최소화 뒤 돌려준다
     QString m_responseSaveDir; // Network 응답 저장 디렉토리
     QStringList m_capturedRespFiles;
 

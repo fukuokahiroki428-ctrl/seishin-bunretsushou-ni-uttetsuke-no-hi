@@ -30,6 +30,11 @@ public:
     explicit HttpClient(QObject *parent = nullptr);
     ~HttpClient() override;
 
+    // ★ 앱이 끝날 때 — 어느 스레드에서든 진행 중인 요청이 모두 끝나기를 msecs 까지 기다린다(끝났으면 true).
+    //   끝나는 중(Common::appQuitting)이면 요청은 0.1초 안에 멈추므로 보통 곧 돌아온다. 기다리지 않으면 뒷일 스레드가
+    //   TLS · 네트워크를 붙든 채 Qt 가 치워져 죽는다(2026-10-06 충돌 보고).
+    static bool waitIdle(int msecs);
+
     // Synchronous requests (blocks until complete)
     HttpResponse get(const QString &url, const QMap<QString, QString> &headers = {});
     HttpResponse post(const QString &url, const QByteArray &body = {},

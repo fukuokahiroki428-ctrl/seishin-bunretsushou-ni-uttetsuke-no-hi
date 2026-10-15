@@ -1,4 +1,4 @@
-name: Windows Build (Predormition)
+name: Windows Build (ハンイシキ)
 
 # Mac 에서 코드 작성 → git push → 이 workflow 가 GitHub 의 Windows 서버에서 자동 빌드.
 # 결과 .exe + DLL + 도구가 zip 으로 Artifacts 에 올라감. Actions 탭에서 다운로드.
@@ -243,8 +243,8 @@ jobs:
           cmake -B build_win -G "Ninja" `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
-            -DAPP_NAME=Predormition `
-            -DAPP_ID=com.predormition.app
+            -DAPP_NAME=Hanishiki `
+            -DAPP_ID=com.hanishiki.app
           # ★ 컴파일 오류를 GitHub 주석(annotation)으로도 남긴다.
           #   Actions 의 원문 로그는 내려받는 데 인증이 필요해서, 토큰이 없는 쪽(예: 다른
           #   플랫폼 담당자)은 "exit code 1" 말고는 아무것도 볼 수 없다. 실제로 이것 때문에
@@ -267,12 +267,12 @@ jobs:
           $dist = "dist/win"   # ★ 짧게 — Windows MAX_PATH(260자) 여유 확보(python_env 의 깊은 경로가 한계에 걸림)
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
-          # exe 찾기 (Predormition.exe / 구 이름 fallback)
-          $exe = Get-ChildItem -Path "build_win" -Filter "*.exe" -Recurse | Where-Object { $_.Name -match "Predormition|Chernobyl|Miyo" } | Select-Object -First 1
-          Copy-Item $exe.FullName "$dist/Predormition.exe" -Force
+          # exe 찾기 (Hanishiki.exe / 구 이름 fallback)
+          $exe = Get-ChildItem -Path "build_win" -Filter "*.exe" -Recurse | Where-Object { $_.Name -match "Hanishiki|Predormition|Chernobyl|Miyo" } | Select-Object -First 1
+          Copy-Item $exe.FullName "$dist/Hanishiki.exe" -Force
 
           # Qt DLL 번들 (--compiler-runtime: VC++ 런타임 DLL 동봉 → 사용자 PC 에 VC redist 없어도 실행)
-          & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --no-translations --compiler-runtime --no-system-d3d-compiler "$dist/Predormition.exe"
+          & "$env:QT_ROOT_DIR/bin/windeployqt.exe" --release --no-translations --compiler-runtime --no-system-d3d-compiler "$dist/Hanishiki.exe"
           # ★ 종료 코드 확인 — windeployqt 가 실패해도 조용히 지나가면 Qt DLL 이 빠진
           #   '실행조차 안 되는' 배포본이 그대로 릴리즈된다.
           if ($LASTEXITCODE -ne 0) { throw "windeployqt 실패 (exit $LASTEXITCODE) — Qt 런타임이 불완전하므로 중단" }
@@ -401,7 +401,7 @@ jobs:
           #   YouTube/캡쳐/폰트가 통째로 없는" 설치본이 릴리즈된 적이 있다.
           #   필수 산출물은 없으면 빌드를 세우고, 있으면 없어도 되는 것만 경고로 남긴다.
           $must = @{
-            "Predormition.exe"   = "본체 실행 파일"
+            "Hanishiki.exe"      = "본체 실행 파일"
             "Qt6Core.dll"        = "Qt 런타임"
             "Qt6WebEngineCore.dll" = "WebEngine(캡쳐·UI) 런타임"
             # ★ WebEngine 은 DLL 만으론 못 뜬다 — 아래가 하나라도 빠지면 앱은 켜지지만
@@ -437,7 +437,7 @@ jobs:
           Write-Host "  ✔ 필수 산출물 $($must.Count)종 모두 확인"
 
           # ★ MAX_PATH 게이트 — 설치 경로는 보통
-          #   C:\Users\<이름>\AppData\Local\Programs\Predormition\ (약 60자) 이다.
+          #   C:\Users\<이름>\AppData\Local\Programs\Hanishiki\ (약 57자) 이다.
           #   여기에 dist 안의 상대 경로가 더해져 260자를 넘으면 Inno 가 파일을 못 풀거나
           #   앱이 그 파일을 못 연다(python_env 의 깊은 경로가 늘 한계에 가깝다).
           $root = (Resolve-Path $dist).Path
@@ -457,11 +457,11 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Predormition-Windows-${{ github.sha }}
+          name: Hanishiki-Windows-${{ github.sha }}
           path: windows/dist/win/
           retention-days: 14
 
-      # 7) 단일 설치 파일 (Inno Setup) — dist 전체를 Predormition_Setup.exe 하나로 패키징
+      # 7) 단일 설치 파일 (Inno Setup) — dist 전체를 Hanishiki_Setup.exe 하나로 패키징
       - name: Build single-file installer (Inno Setup)
         shell: pwsh
         run: |
@@ -492,8 +492,8 @@ jobs:
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: Predormition-Setup-${{ github.sha }}
-          path: windows/installer_out/Predormition_Setup.exe
+          name: Hanishiki-Setup-${{ github.sha }}
+          path: windows/installer_out/Hanishiki_Setup.exe
           retention-days: 14
 
       # 8-1) 포터블 zip — 설치 없이 압축만 풀어 쓰는 배포본.
@@ -507,7 +507,7 @@ jobs:
         run: |
           # ★ 이 스텝은 defaults 에 따라 windows/ 안에서 돈다 — 경로에 windows/ 를 또 붙이지 말 것.
           #   (릴리즈 첨부는 uses: 스텝이라 working-directory 를 무시하므로 그쪽은 windows/ 접두어가 맞다.)
-          $out = "installer_out/Predormition_Portable.zip"
+          $out = "installer_out/Hanishiki_Portable.zip"
           7z a -tzip -mx=5 -bso0 -bsp0 $out ./dist/win/*
           if ($LASTEXITCODE -ne 0) { throw "7z 압축 실패 (exit $LASTEXITCODE)" }
           $z = Get-Item $out
@@ -525,8 +525,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            windows/installer_out/Predormition_Setup.exe
-            windows/installer_out/Predormition_Portable.zip
+            windows/installer_out/Hanishiki_Setup.exe
+            windows/installer_out/Hanishiki_Portable.zip
           generate_release_notes: true
           fail_on_unmatched_files: true
           draft: true

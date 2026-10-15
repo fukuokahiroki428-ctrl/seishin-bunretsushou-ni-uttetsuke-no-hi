@@ -13,6 +13,8 @@
 #include <QUrl>
 #include <QCryptographicHash>
 #include <QJsonArray>
+#include <QHash>
+#include <QMutex>
 
 #ifdef Q_OS_WIN
 #include <sys/types.h>
@@ -24,6 +26,10 @@
 
 #ifdef Q_OS_MACOS
 #include <sys/xattr.h>
+#include <dirent.h>
+#include <unistd.h>
+#include <cstdio>
+#include <functional>
 #endif
 
 namespace FileHelper {
@@ -117,6 +123,57 @@ QString reuseExistingName(const QString &parentDir, const QString &name)
     if (found != it->constEnd()) return found.value();
     it->insert(key, name);   // 곧 만들어질 이름. 같은 판에서 뒤에 오는 변형도 이것을 쓴다.
     return name;
+}
+
+int normalizeNamesToNfc(const QString &rootDir)
+{
+#ifdef Q_OS_MACOS
+    if (rootDir.isEmpty()) return 0;
+    int changed = 0;
+    // NFD→NFC 한 칸 바꾸기 — 임시 이름을 거친다(FileHelper.h 설명). 실패하면 원래대로 되돌린다.
+    auto fixOne = [&](const QByteArray &parent, const QByteArray &name) {
+        const QString s = QString::fromUtf8(name);
+        const QString nfc = s.normalized(QString::NormalizationForm_C);
+        if (nfc == s) return;
+        const QByteArray from = parent + '/' + name;
+        const QByteArray to = parent + '/' + nfc.toUtf8();
+        const QByteArray tmp = parent + "/.nfc_tmp_" + QByteArray::number(qint64(::getpid()));
+        if (::rename(from.constData(), tmp.constData()) != 0) return;
+        if (::rename(tmp.constData(), to.constData()) != 0) { ::rename(tmp.constData(), from.constData()); return; }
+        ++changed;
+    };
+    // ★ Qt 로 목록을 읽으면 이름이 이미 NFC 로 바뀌어 나와서 디스크의 형태를 알 수 없다 — 날것으로 읽는다.
+    std::function<void(const QByteArray &)> walk = [&](const QByteArray &dir) {
+        DIR *d = ::opendir(dir.constData());
+        if (!d) return;
+        QList<QPair<QByteArray, bool>> entries;
+        while (struct dirent *e = ::readdir(d)) {
+            const QByteArray n(e->d_name);
+            if (n == "." || n == ".." || n.startsWith(".nfc_tmp_")) continue;
+            bool isDir = (e->d_type == DT_DIR);
+            if (e->d_type == DT_UNKNOWN) {
+                struct stat st;
+                isDir = (::lstat((dir + '/' + n).constData(), &st) == 0 && S_ISDIR(st.st_mode));
+            }
+            entries.append({n, isDir});
+        }
+        ::closedir(d);
+        for (const auto &e : entries) {
+            if (e.second) walk(dir + '/' + e.first);   // 안쪽 먼저 — 부모를 먼저 바꾸면 아래 경로가 달라진다
+            fixOne(dir, e.first);
+        }
+    };
+    // 시작 경로는 Qt 가 쓰는 바이트 그대로 — APFS 는 정규화를 가리지 않고 찾는다.
+    const QByteArray root = QFile::encodeName(QDir::cleanPath(rootDir));
+    walk(root);
+    // 폴더 자신의 이름(예: pixiv/12345_작가이름)도
+    const int slash = root.lastIndexOf('/');
+    if (slash > 0) fixOne(root.left(slash), root.mid(slash + 1));
+    return changed;
+#else
+    Q_UNUSED(rootDir);
+    return 0;
+#endif
 }
 
 // 어느 파일시스템에서도 같은 이름이 되게 — 위 헤더의 설명 참고.
@@ -522,6 +579,12 @@ QString capturePageHtml(const QString &saveDir,
         html.prepend(metaTag);
     }
 
+    // ★ 끝나는 중이라 그림 · CSS 받기가 멈췄으면(HttpClient 가 새 요청을 안 함) 반쪽 캡처를 진짜 이름으로 남기지 않는다 —
+    //   남기면 다음 판의 '이미 캡처됨' 검사에 걸려 다시는 받지 않는다(리뷰에서 잡힘).
+    if (Common::appQuitting()) {
+        if (ownHttp) delete http;
+        return QString();
+    }
     // 저장
     QFile f(filePath);
     if (f.open(QIODevice::WriteOnly)) {

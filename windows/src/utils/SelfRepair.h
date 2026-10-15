@@ -32,7 +32,10 @@
 
 #include <QAtomicInt>
 #include <QElapsedTimer>
+#include <QHash>
 #include <QMutex>
+#include <QPointer>
+#include <QStorageInfo>
 #include <QTextStream>
 #include <functional>
 #include <QCoreApplication>
@@ -104,7 +107,10 @@ inline QStringList toolCandidates(const QString &name)
     const QString sfx = exeSuffix();
     QStringList c;
     if (name == "yt-dlp") {
-        c << userToolsDir() + "/yt-dlp" + sfx;          // 자동 업데이트본
+        // 자동 업데이트본 — 앱 본체(Common::ytDlpExecutable)와 같은 규칙: 1MB 미만(껍데기)은 쓰지 않는다.
+        //   그 규칙이 여기만 없어서, 데이터 폴더의 껍데기 사본을 집어 yt-dlp 를 '건너뜀' 으로 적었다.
+        const QString ub = userToolsDir() + "/yt-dlp" + sfx;
+        if (QFileInfo(ub).size() >= 1000000) c << ub;
         c << appDir() + "/yt-dlp" + sfx;                // mac: Contents/MacOS
         c << resourcesDir() + "/tools/yt-dlp" + sfx;    // 번들 tools/
     } else if (name == "python") {
@@ -215,7 +221,11 @@ inline ToolStatus checkTool(const QString &name)
         // exiftool 은 perl 스크립트 — 앱도 perl 로 실행한다. 스크립트를 직접 execve 하면
         // 서명 직후 첫 실행에서 Gatekeeper 평가로 'execve: Permission denied' 위양성이 나
         // 매 실행마다 LLM 진단을 불필요하게 스폰했다. perl 경유로 실제 사용과 일치시킨다.
-        p.start("/usr/bin/perl", QStringList() << st.path << versionArgs(name));
+        // ★ perl 경로를 여기서 정하지 않는다 — 본체와 갈라지면 그 순간 이 점검은 거짓말이 된다.
+        //   Common::exiftoolProgram 이 번들 perl 이 있으면 그것을, 없으면 시스템 것을 준다.
+        QStringList lead;
+        const QString prog = Common::exiftoolProgram(&lead);
+        p.start(prog, lead + versionArgs(name));
     } else
 #endif
     // ★ 앱 본체(Common::addExifMetadata)와 같은 경로 처리를 쓴다. exiftool 은 argv 를
@@ -364,8 +374,18 @@ inline SmokeResult smokeExiftool(const QString &exe)
         a.close();
         QProcess p;
         p.setProcessEnvironment(Common::bundledProcessEnv());
-        p.start(launchPath(QStringLiteral("exiftool"), exe),
-                QStringList() << "-@" << Common::ansiSafePath(argPath));
+        // ★ 맥에서는 perl 을 명시적으로 거친다. exiftool 은 perl 스크립트이고
+        //   앱 본체(Common::addExifMetadata)도, checkTool 도 그렇게 부른다.
+        //   스크립트를 직접 execve 하면 재서명 직후 첫 실행에서 Gatekeeper 평가로
+        //   'execve: Permission denied' 위양성이 난다(checkTool 주석 참고 — 실측).
+        //   자가수리가 스스로 재서명한 바로 다음 기동이 정확히 그 상황이라,
+        //   도구는 멀쩡한데 진단서만 고장을 알리게 된다.
+        //   덤으로 shebang(#!/usr/bin/env perl)이 PATH 앞의 홈브루 perl 을 잡는 것도 막는다.
+        // ★ 본체와 같은 함수로 실행 방법을 받는다. 여기서 따로 정하면 '시험은 되는데
+        //   앱은 안 되는' (또는 그 반대) 상태가 생긴다 — 실제로 겪었다.
+        QStringList lead;
+        const QString prog = Common::exiftoolProgram(&lead);
+        p.start(prog, lead + (QStringList() << "-@" << Common::ansiSafePath(argPath)));
         if (!p.waitForStarted(5000)) return false;
         if (!p.waitForFinished(20000)) { p.kill(); return false; }
         if (out) *out = p.readAllStandardOutput();
@@ -444,6 +464,7 @@ inline SmokeResult smokePython(const QString &exe)
               "    except Exception: missing.append(m)\n"
               "try: sys.stdout.reconfigure(encoding='utf-8')\n"
               "except Exception: pass\n"
+              "print('TOTAL:%d' % len(mods))\n"
               "print('KOREAN:자가진단')\n"
               "print('MISSING:' + ','.join(missing))\n";
     }
@@ -454,6 +475,18 @@ inline SmokeResult smokePython(const QString &exe)
     if (!p.waitForStarted(5000)) return smokeFail("파이썬을 실행하지 못했습니다");
     if (!p.waitForFinished(120000)) { p.kill(); return smokeFail("파이썬이 응답하지 않습니다"); }
     const QString out = QString::fromUtf8(p.readAllStandardOutput());
+    const QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();
+
+    // ★ 종료코드를 먼저 본다. 파이썬이 아예 죽으면 표준출력이 비는데, 그것을
+    //   '한글이 깨졌다' 로 읽으면 엉뚱한 데를 고치게 된다. 자가진단이 틀린 곳을
+    //   가리키면 없느니만 못하다 — 무엇이 죽었는지 stderr 첫 줄을 그대로 보인다.
+    if (p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
+        // 파이썬 역추적은 마지막 줄에 진짜 원인이 온다(ModuleNotFoundError 등).
+        const QString first = err.isEmpty() ? QStringLiteral("(오류 출력 없음)")
+                                            : err.section('\n', -1).left(160);
+        return smokeFail(QStringLiteral("파이썬이 종료코드 %1 로 죽었습니다 — %2")
+                             .arg(p.exitCode()).arg(first));
+    }
 
     if (!out.contains(QStringLiteral("KOREAN:자가진단")))
         return smokeFail("한글 출력이 깨집니다 (수집 스크립트가 같은 자리에서 죽는다)");
@@ -463,14 +496,30 @@ inline SmokeResult smokePython(const QString &exe)
         if (line.startsWith("MISSING:")) missing = line.mid(8).trimmed();
     if (!missing.isEmpty())
         return smokeFail("빠진 모듈: " + missing + " — 설정 → 모듈 업데이트로 받으세요");
-    return smokePass("필수 모듈 14개 import · 한글 출력 확인");
+    // ★ 개수를 코드에 박아 두면 목록을 고칠 때마다 어긋난다. 실제로 목록은 14개인데
+    //   "15개" 라고 적고 있었다. 진단서가 검사한 것보다 많게 말하면 그 보고서 전체를
+    //   믿을 수 없게 된다 — 세어서 쓴다.
+    QString total;
+    for (const QString &line : out.split('\n'))
+        if (line.startsWith("TOTAL:")) total = line.mid(6).trimmed();
+    return smokePass(QStringLiteral("필수 모듈 %1개 import · 한글 출력 확인")
+                         .arg(total.isEmpty() ? QStringLiteral("?") : total));
 }
 
 // ── 인터넷에 닿는지 ──────────────────────────────────────────────────────
 //   실패를 '도구 고장' 으로 적기 전에 반드시 확인한다.
 inline bool internetReachable()
 {
-    return !httpGet(QStringLiteral("https://www.youtube.com/robots.txt"), 5000).isEmpty();
+    // ★ 한 곳만 보면 그 한 곳이 막힌 망에서 '인터넷이 없다' 가 된다.
+    //   유튜브가 막힌 학교·회사·나라가 실제로 있고, 그러면 꾸러미 갱신이
+    //   영영 안 돈다 — 스스로 버티라고 넣은 장치가 그 자리에서 멈춘다.
+    //   서로 다른 곳 셋 중 하나만 닿으면 인터넷이 있는 것으로 본다.
+    for (const QString &u : {QStringLiteral("https://pypi.org/simple/"),
+                             QStringLiteral("https://www.cloudflare.com/robots.txt"),
+                             QStringLiteral("https://www.youtube.com/robots.txt")}) {
+        if (!httpGet(u, 4000).isEmpty()) return true;
+    }
+    return false;
 }
 
 // ── yt-dlp: 실제로 미디어 바이트를 받아 본다 ─────────────────────────────
@@ -478,8 +527,93 @@ inline bool internetReachable()
 //   본문만 403 이었다. 그래서 '받아진다' 를 직접 확인한다.
 //   기준 영상은 사라질 가능성이 가장 낮은 둘을 쓰고, 둘 다 실패했을 때만
 //   네트워크를 의심한다.
+// 브라우저 쿠키를 실제로 꺼내 본다.
+//
+// 왜 이 검사가 필요한가.
+//   browser_cookie3 는 최신 배포가 2025-01 이다. 그런데 이건 규격이 아니라
+//   '브라우저 내부 구현' 을 따라간다 — 크롬이 쿠키 암호화를 바꾸면 그날로 깨진다.
+//   우리가 대신 만들 수도 없다(그러면 그 추격을 우리가 떠안는다).
+//   대신 '깨진 것을 즉시 아는 것' 은 할 수 있다. 그게 이 검사다.
+//
+// 무엇을 성공으로 보나.
+//   특정 사이트의 쿠키가 있느냐가 아니라 '복호화가 되느냐' 다.
+//   로그인을 안 했으면 쿠키가 없는 게 정상이므로 그것으로 실패를 매기면 안 된다.
+//   · 하나라도 값을 읽어 냈다  → 통과 (장치가 살아 있다)
+//   · 브라우저가 없다·비었다   → 건너뜀 (고장이 아니다)
+//   · 브라우저는 있는데 복호화가 터진다 → 실패 (이게 진짜 신호다)
+inline SmokeResult smokeBrowserCookies(const QString &python)
+{
+    if (python.isEmpty() || !QFile::exists(python))
+        return smokeSkip(QStringLiteral("파이썬이 없어 건너뜁니다"));
+
+    static const char *kCode =
+        "import warnings,sys,json\n"
+        "warnings.filterwarnings('ignore')\n"
+        "try:\n"
+        "    import browser_cookie3 as b\n"
+        "except Exception as e:\n"
+        "    print(json.dumps({'v':'skip','d':'browser_cookie3 없음'})); sys.exit(0)\n"
+        "found=0; tried=0; broke=[]\n"
+        "for n in ('chrome','firefox','brave','edge','arc','vivaldi','opera'):\n"
+        "    f=getattr(b,n,None)\n"
+        "    if not f: continue\n"
+        "    try:\n"
+        "        tried+=1\n"
+        "        for c in f():\n"
+        "            if c.value: found+=1\n"
+        "            if found>=3: break\n"
+        "    except Exception as e:\n"
+        "        m=str(e).lower()\n"
+        "        # '없어서 못 찾음' 은 고장이 아니다 — 안 깔린 브라우저다.\n"
+        "        if any(k in m for k in ('could not find','not found','no such',\n"
+        "                                'does not exist','no cookies')):\n"
+        "            continue\n"
+        "        broke.append('%s: %s' % (n, type(e).__name__))\n"
+        "if found:\n"
+        "    print(json.dumps({'v':'pass','d':'쿠키 복호화 확인 (%d개 읽음)' % found}))\n"
+        "elif broke:\n"
+        "    print(json.dumps({'v':'fail','d':'복호화 실패 — ' + '; '.join(broke[:2])}))\n"
+        "else:\n"
+        "    print(json.dumps({'v':'skip','d':'읽을 쿠키가 없습니다 (브라우저 미설치·로그아웃)'}))\n";
+
+    QProcess p;
+    p.setProcessEnvironment(Common::bundledProcessEnv());
+    p.start(python, {"-c", QString::fromUtf8(kCode)});
+    if (!p.waitForFinished(60000)) {
+        p.kill(); p.waitForFinished(3000);
+        return smokeFail(QStringLiteral("60초 안에 끝나지 않았습니다"));
+    }
+    const QByteArray out = p.readAllStandardOutput().trimmed();
+    const QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();
+    // ★ 자식이 죽으면 표준출력이 비고, 그러면 아래에서 '건너뜀' 으로 빠진다.
+    //   건너뜀은 '검사할 대상이 없었다' 는 뜻이지 '고장났다' 가 아니다.
+    //   둘을 섞으면 진단서를 보고도 고장을 못 알아챈다 — 종료코드를 먼저 본다.
+    if (p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
+        const QString first = err.isEmpty() ? QStringLiteral("(오류 출력 없음)")
+                                            : err.section('\n', -1).left(160);
+        return smokeFail(QStringLiteral("쿠키 검사가 종료코드 %1 로 죽었습니다 — %2")
+                             .arg(p.exitCode()).arg(first));
+    }
+    const QJsonObject o = QJsonDocument::fromJson(out).object();
+    const QString v = o.value("v").toString();
+    const QString d = o.value("d").toString();
+    if (v == "pass") return smokePass(d);
+    if (v == "fail") return smokeFail(d);
+    return smokeSkip(d.isEmpty() ? QString::fromUtf8(out).left(120) : d);
+}
+
 inline SmokeResult smokeYtDlp(const QString &exe)
 {
+    // ★ 지난 번 시험이 남긴 조각을 먼저 치운다. 작업 폴더는 smokeDir() 로 못박아
+    //   두었지만(그 전에는 앱 실행 폴더에 흘렸다) 치우는 사람이 없었다.
+    //   HLS 로 잡히면 32KB 받고 죽이는 사이에 조각이 생긴다 — 쌓이면 그것도 쓰레기다.
+    {
+        QDir d(smokeDir());
+        for (const QString &f : d.entryList(QStringList() << "*Frag*" << "*.part" << "*.ytdl",
+                                            QDir::Files))
+            QFile::remove(d.filePath(f));
+    }
+
     // 기준 영상 — 사라질 가능성이 가장 낮은 둘을 쓴다.
     //   그래도 10년 뒤에는 모른다. 그때 코드를 못 고치는 사람도 쓸 수 있도록
     //   환경변수로 갈아끼울 수 있게 열어 둔다 (쉼표로 여러 개).
@@ -496,6 +630,14 @@ inline SmokeResult smokeYtDlp(const QString &exe)
     for (const QString &url : urls) {
         QProcess p;
         p.setProcessEnvironment(Common::bundledProcessEnv());
+        // ★ 작업 폴더를 검사용 폴더로 못박는다.
+        //   -o - 로 표준출력에 받더라도, 형식이 HLS(m3u8)로 잡히면 yt-dlp 는
+        //   조각 임시파일(--Frag1 …)을 '현재 작업 폴더' 에 만든다. 32KB 를 받자마자
+        //   프로세스를 죽이므로 그 조각이 그대로 남는다.
+        //   앱을 Finder 로 켜면 작업 폴더가 / 라서 쓰기에 실패해 우연히 안 남았을 뿐이다.
+        //   터미널에서 켜면 그 폴더에 조각이 쌓인다(실측: 33KB 짜리 AAC 조각).
+        //   '우연히 못 쓰는 것' 에 기대지 않고 쓸 자리를 정해 준다.
+        p.setWorkingDirectory(smokeDir());
         p.start(launchPath(QStringLiteral("yt-dlp"), exe), QStringList()
                 << "--no-warnings" << "--no-progress" << "--no-playlist"
                 << "-f" << "worstaudio/worst" << "-o" << "-" << url.trimmed());
@@ -645,6 +787,374 @@ inline QString importNameOf(const QString &pkg)
     return pkg;
 }
 
+// ── 꾸러미 신선도: 낡은 것을 찾아 스스로 맞춘다 ────────────────────────────
+//
+// 왜 필요한가 (실측).
+//   2026-08 에 유튜브 다운로드가 통째로 멈췄다. 코드 버그가 아니었다.
+//   배포본에 딸려 온 yt-dlp 2026.07.04 가 유튜브의 변경을 못 따라가 미디어 요청이
+//   전부 403 으로 막혔다(형식 목록은 나오는데 본문만 거부). 2026.08.19 로 바꾸니
+//   같은 영상을 2초에 받았다. 두 달 만에 정지한 것이다.
+//
+//   기존 자가진단은 이 고장을 원리적으로 못 잡는다 — 낡은 yt-dlp 도 --version 은
+//   멀쩡히 출력하므로 [OK] 로 통과한다. 게다가 고장 시 '번들본 재복사' 를 하는데,
+//   그것은 더 낡은 쪽으로 되돌리는 일이다. 낡음에 무방비일 뿐 아니라 낡는 쪽으로 민다.
+//
+// 어떻게 하는가.
+//   · 번들을 직접 고치지 않는다. pip 로 번들 python_env 에 설치하면 codesign 봉인이
+//     깨지고, 재서명이 실패하면 앱 자체가 안 뜬다. 갱신하려다 앱을 못 쓰게 되는 것은
+//     갱신을 안 하느니만 못하다.
+//   · 쓰기 가능한 덧씌우기 폴더에 새 판을 깔고 PYTHONPATH 로 먼저 읽게 한다.
+//     번들은 그대로라 봉인이 유지되고, 덧씌운 것을 지우면 즉시 원래대로 돌아온다.
+//   · 갱신 뒤 실제로 불러 보고, 안 되면 지워서 되돌린다.
+//     새 것이 망가졌는데 그대로 두면 자동 갱신은 없느니만 못하다.
+//   · 대상은 '바깥 서비스를 따라가야 하는 것' 만. 나머지는 낡아도 멈추지 않는다.
+//
+// ★ 윈도우에서는 아래 '고정판 맞추기'(syncModulesToPins)와 함께 돈다. 둘은 다른 일이다.
+//   저것은 이 기계를 requirements.txt 의 검증된 판까지 올리고(번들에 바로 깐다 — 윈도우엔
+//   봉인이 없다), 이것은 바깥 서비스가 바뀌어 고정판마저 막히는 날을 버틴다(덧씌우기 폴더에
+//   최신을 얹는다). 덧씌운 것을 지우면 곧바로 번들의 고정판으로 돌아온다.
+//   ★ 부르는 쪽(runStartupMaintenance)은 수집이 도는 중이면 이것을 미룬다 — 윈도우 규칙.
+
+inline QString freshStampPath()
+{
+    const QString d = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                      + "/selfrepair";
+    QDir().mkpath(d);
+    return d + "/last_pkg_check.txt";
+}
+
+inline bool freshCheckDue(int everyDays)
+{
+    QFile f(freshStampPath());
+    if (!f.open(QIODevice::ReadOnly)) return true;
+    const qint64 last = QString::fromUtf8(f.readAll()).trimmed().toLongLong();
+    f.close();
+    if (last <= 0) return true;
+    return (QDateTime::currentSecsSinceEpoch() - last) >= qint64(everyDays) * 86400;
+}
+
+inline void markFreshChecked()
+{
+    QFile f(freshStampPath());
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        f.write(QByteArray::number(QDateTime::currentSecsSinceEpoch()));
+}
+
+// 낡으면 '느려지는' 게 아니라 '안 되는' 것들. 목록을 좁게 잡는다 —
+// 전부 최신으로 밀면 멀쩡하던 것이 깨질 위험이 오히려 커진다.
+inline QStringList serviceFollowingPackages()
+{
+    return {"yt-dlp", "twikit", "atproto", "discord.py", "browser_cookie3"};
+}
+
+// 꾸러미 이름과 import 이름은 같지 않다.
+//   하이픈만 밑줄로 바꾸면 되는 줄 알았는데 discord.py 에는 점이 들어 있어
+//   'import discord.py' 가 되고, 이건 discord 패키지의 py 속성을 찾는 뜻이라
+//   무조건 실패한다. 그 결과 discord.py 가 갱신될 때마다 검증이 실패하고,
+//   그 벌로 덧씌운 폴더 전체가 지워져 yt-dlp·twikit·atproto 갱신분까지 함께
+//   날아갔다. 3일마다 되풀이되니 갱신은 영영 자리를 못 잡는다.
+inline QString importModuleFor(const QString &pkg)
+{
+    // ★ 표로 둔다. discord.py 하나만 if 로 예외 처리해 두면, 다음에 이름이 다른
+    //   꾸러미가 들어올 때 같은 고장이 그대로 되돌아온다.
+    //   (PyPI 이름과 import 이름이 다른 것은 흔하다 — Pillow→PIL, beautifulsoup4→bs4 …)
+    static const QHash<QString, QString> kNameMap = {
+        {QStringLiteral("discord.py"),      QStringLiteral("discord")},
+        {QStringLiteral("Pillow"),          QStringLiteral("PIL")},
+        {QStringLiteral("beautifulsoup4"),  QStringLiteral("bs4")},
+        {QStringLiteral("python-dateutil"), QStringLiteral("dateutil")},
+        {QStringLiteral("xclienttransaction"), QStringLiteral("x_client_transaction")},
+    };
+    const auto it = kNameMap.constFind(pkg);
+    if (it != kNameMap.constEnd()) return it.value();
+    QString m = pkg;
+    m.replace('-', '_');
+    return m;
+}
+
+// 덧씌운 것 중 '그 꾸러미만' 지운다.
+//   폴더째 지우면 멀쩡히 갱신된 다른 꾸러미까지 잃는다. pip 는 --target 에
+//   uninstall 을 지원하지 않으므로 dist-info 의 RECORD 를 읽어 그 파일들만 지운다.
+//   RECORD 를 못 찾으면 false 를 돌려준다 — 부르는 쪽이 옛 방식으로 물러선다.
+inline bool removeOnePackageFromOverlay(const QString &python,
+                                        const QString &overlay,
+                                        const QString &pkg)
+{
+    static const char kPy[] =
+        "import os,sys,glob,shutil\n"
+        "ov,pkg=sys.argv[1],sys.argv[2]\n"
+        "norm=pkg.replace('-','_').replace('.','_').lower()\n"
+        "hit=False\n"
+        "for di in glob.glob(os.path.join(ov,'*.dist-info')):\n"
+        "    name=os.path.basename(di).split('-')[0].replace('-','_').replace('.','_').lower()\n"
+        "    if name!=norm: continue\n"
+        "    rec=os.path.join(di,'RECORD')\n"
+        "    if not os.path.exists(rec):\n"
+        // ★ RECORD 가 없으면 그 꾸러미의 파일을 지울 방법이 없다. 그런데도 'OK' 라
+        //   돌려주면, 부르는 쪽은 되돌리기가 끝난 줄 알고 폴더째 비우는 마지막 수단을
+        //   건너뛴다. 망가진 꾸러미가 그대로 남아 계속 번들을 가린다.
+        "        continue\n"
+        "    hit=True\n"
+        "    if True:\n"
+        "        for line in open(rec,encoding='utf-8',errors='replace'):\n"
+        "            rel=line.split(',')[0].strip()\n"
+        "            if not rel or os.path.isabs(rel): continue\n"
+        // ★ 앞이 '..' 인지만 보면 'a/../../etc' 같은 것을 못 막는다. 합친 뒤
+        //   정규화해서 '정말 오버레이 안인가' 로 판정한다. RECORD 는 pip 가
+        //   쓰는 파일이지만, 남이 쓴 파일을 믿고 지우는 코드는 그렇게 짜면 안 된다.
+        "            t=os.path.normpath(os.path.join(ov,rel))\n"
+        "            if not t.startswith(os.path.normpath(ov)+os.sep): continue\n"
+        "            if os.path.isfile(t):\n"
+        "                try: os.remove(t)\n"
+        "                except OSError: pass\n"
+        "    shutil.rmtree(di,ignore_errors=True)\n"
+        "for root,dirs,files in os.walk(ov,topdown=False):\n"
+        "    if root!=ov and not dirs and not files:\n"
+        "        try: os.rmdir(root)\n"
+        "        except OSError: pass\n"
+        "print('OK' if hit else 'MISS')\n";
+    QProcess rm;
+    rm.setProcessEnvironment(Common::bundledProcessEnv());
+    rm.start(python, {"-c", QString::fromLatin1(kPy), overlay, pkg});
+    if (!rm.waitForFinished(60000)) { rm.kill(); return false; }
+    return rm.exitCode() == 0
+        && QString::fromUtf8(rm.readAllStandardOutput()).contains(QLatin1String("OK"));
+}
+
+inline QString updatePackagesIfDue(const QString &python, bool allowNetwork,
+                                   int everyDays = 3, bool force = false)
+{
+    if (!allowNetwork) return QString();
+    if (!force && !freshCheckDue(everyDays)) return QString();
+    if (python.isEmpty() || !QFile::exists(python)) return QString();
+
+    // ★ 인터넷이 없으면 '맞출 것이 없었다' 가 아니라 '확인하지 못했다' 이다.
+    //   예전엔 오프라인에서도 pip 가 전부 실패한 뒤 markFreshChecked() 를 찍어
+    //   3일을 더 미뤘고, 화면에는 '맞출 것이 없었습니다' 라고 적었다.
+    //   켤 때만 잠깐 연결되는 기계에서는 갱신이 영영 자리를 못 잡는다.
+    //   시각을 찍지 않고 물러난다 — 다음에 켤 때 다시 해 본다.
+    if (!internetReachable())
+        return QStringLiteral("[UPD]  꾸러미 신선도 확인 — 인터넷에 닿지 않아 미룹니다\n");
+
+    const QString overlay = Common::userPyOverlayDir();
+    QString out;
+    int updated = 0, failed = 0;
+
+    for (const QString &pkg : serviceFollowingPackages()) {
+        // 지금 실제로 쓰이는 판 (덧씌우기가 있으면 그것이 잡힌다)
+        auto versionNow = [&]() -> QString {
+            QProcess q;
+            QProcessEnvironment e = Common::bundledProcessEnv();
+            q.setProcessEnvironment(e);
+            q.start(python, {"-c",
+                "import importlib.metadata as m,sys\n"
+                "try: print(m.version(sys.argv[1]))\n"
+                "except Exception: print('')", pkg});
+            q.waitForFinished(20000);
+            return QString::fromUtf8(q.readAllStandardOutput()).trimmed();
+        };
+        const QString before = versionNow();
+
+        // 최신으로 덧씌운다. --target 이라 번들은 손대지 않는다.
+        QProcess pip;
+        pip.setProcessEnvironment(Common::bundledProcessEnv());
+        pip.start(python, {"-m", "pip", "install", "--quiet", "--upgrade",
+                           "--target", overlay, "--no-input", pkg});
+        if (!pip.waitForFinished(300000)) { pip.kill(); pip.waitForFinished(3000); continue; }
+        if (pip.exitCode() != 0) continue;      // 오프라인 등 — 다음 기회에 다시
+
+        const QString after = versionNow();
+        if (after.isEmpty() || after == before) continue;   // 바뀐 게 없으면 조용히 넘어간다
+
+        // ★ 갱신했으면 반드시 '실제로 되는지' 본다. 안 되면 되돌린다.
+        QProcess chk;
+        chk.setProcessEnvironment(Common::bundledProcessEnv());
+        const QString mod = importModuleFor(pkg);
+        chk.start(python, {"-c", QString("import %1").arg(mod)});
+        chk.waitForFinished(30000);
+        if (chk.exitStatus() != QProcess::NormalExit || chk.exitCode() != 0) {
+            // 그 꾸러미만 걷어내면 번들의 옛 판으로 즉시 돌아간다.
+            // 못 걷어냈을 때만 폴더째 지운다 — 다른 갱신분을 잃는 마지막 수단이다.
+            bool rolledBack = removeOnePackageFromOverlay(python, overlay, pkg);
+            if (rolledBack) {
+                // ★ 그 꾸러미만 걷어냈다고 끝이 아니다. pip 는 갱신하면서 의존 꾸러미도
+                //   함께 올린다. 주인공만 빼면 그 새 의존만 덧씌운 채 남아, 번들의 옛
+                //   판과 짝이 안 맞을 수 있다. 남은 것들이 아직 다 불러와지는지 본다.
+                for (const QString &other : serviceFollowingPackages()) {
+                    if (other == pkg) continue;
+                    QProcess c2;
+                    c2.setProcessEnvironment(Common::bundledProcessEnv());
+                    c2.start(python, {"-c", QString("import %1").arg(importModuleFor(other))});
+                    c2.waitForFinished(30000);
+                    if (c2.exitStatus() != QProcess::NormalExit || c2.exitCode() != 0) {
+                        out += QString("[UPD]  %1 을 빼고 나니 %2 가 불러와지지 않습니다 — "
+                                       "덧씌운 것을 통째로 비웁니다\n").arg(pkg, other);
+                        rolledBack = false;     // 아래에서 폴더째 비운다
+                        break;
+                    }
+                }
+            }
+            if (!rolledBack) {
+                QDir(overlay).removeRecursively();
+                QDir().mkpath(overlay);
+            }
+            out += QString("[UPD]  %1 %2 → %3 이 불러오기에 실패해 되돌렸습니다\n")
+                       .arg(pkg, before.isEmpty() ? "?" : before, after);
+            ++failed;
+            continue;
+        }
+        out += QString("[UPD]  %1 %2 → %3 으로 맞췄습니다\n")
+                   .arg(pkg, before.isEmpty() ? "(없음)" : before, after);
+        ++updated;
+    }
+
+    markFreshChecked();
+    if (updated == 0 && failed == 0)
+        return QStringLiteral("[UPD]  꾸러미 신선도 확인 — 맞출 것이 없었습니다\n");
+    return out;
+}
+
+// ── 앱 상태 점검 ─────────────────────────────────────────────────────────
+//   ★ 예전 진단서는 도구 5개(yt-dlp/ffmpeg/python/exiftool/rclone)만 봤다.
+//     그런데 오늘 실제로 사람을 막은 고장들은 전부 그 밖에 있었다:
+//       파이썬 패키지 누락(수집이 통째로 죽는다) · AI 엔진 미설치 ·
+//       색인 없음 · 설정 파일 권한이 열림 · 디스크 여유 부족
+//     진단서에 안 나오니 자가수리가 "이상 없음" 이라고 답할 수밖에 없었다.
+//     고칠 수 있는지와 별개로, '보이기는 해야' 사람이 다음 수를 둔다.
+inline QString checkEnvironment()
+{
+    QString out;
+    const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+
+    // 1) 파이썬 패키지 — 하나만 빠져도 그 플랫폼 수집이 통째로 죽는다.
+    {
+        const QString py = Common::bundledPythonPath();
+        if (QFile::exists(py)) {
+            QProcess pc;
+            pc.setProcessEnvironment(Common::bundledProcessEnv());
+            pc.start(py, {"-c",
+                "import importlib.util as u\n"
+                "mods=['twikit','httpx','atproto','openpyxl','PIL',"
+                "'browser_cookie3','bs4','websockets','lxml','m3u8','cryptography']\n"
+                "miss=[m for m in mods if u.find_spec(m) is None]\n"
+                "print(','.join(miss))\n"
+                "print('TOTAL:%d' % len(mods))"});
+            pc.waitForFinished(20000);
+            // ★ 검사 자체가 죽으면 출력이 빈다. 그걸 '빠진 모듈 없음' 으로 읽어
+            //   '[OK] 파이썬 패키지 ?종 정상' 이라 적고 있었다. 진단서가 검사도
+            //   못 한 것을 정상이라 말하면, 그 보고서를 믿을 수 없게 된다.
+            const bool pcOk = (pc.exitStatus() == QProcess::NormalExit && pc.exitCode() == 0);
+            const QString raw = QString::fromUtf8(pc.readAllStandardOutput());
+            QString miss, pkgTotal;
+            for (const QString &line : raw.split('\n')) {
+                const QString t = line.trimmed();
+                if (t.startsWith("TOTAL:")) pkgTotal = t.mid(6).trimmed();
+                else if (!t.isEmpty()) miss = t;
+            }
+            if (!pcOk || pkgTotal.isEmpty())
+                out += "[FAIL] 파이썬 패키지를 확인하지 못했습니다 (종료코드 "
+                     + QString::number(pc.exitCode()) + ") — 정상인지 알 수 없습니다\n";
+            else if (!miss.isEmpty())
+                out += "[FAIL] 파이썬 패키지 없음: " + miss + " — 수집이 실패합니다\n";
+            else
+                out += "[OK]   파이썬 패키지 " + pkgTotal + "종 정상\n";
+        }
+    }
+
+    // ★ '없다' 고 말하기 전에 한 단계 아래를 본다.
+    //   이사(앱 이름이 네 번 바뀌었다)를 하다 보면 옛 데이터 한 벌이 통째로
+    //   하위 폴더에 남는 일이 실제로 있었다. 그때 진단서는 "AI 엔진 미설치 —
+    //   'AI 설치' 를 실행하세요" 라고 안내했는데, 정작 9.4GB 짜리 모델이 바로
+    //   한 칸 아래 있었다. 그대로 따랐으면 있는 것을 다시 내려받았을 것이다.
+    //   그러니 없으면 '정말 없는지' 부터 확인하고, 있으면 그 자리를 알려 준다.
+    auto findOrphan = [&appData](const QString &relative) -> QString {
+        const QStringList subs = QDir(appData).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        for (const QString &sub : subs) {
+            const QString cand = appData + "/" + sub + "/" + relative;
+            if (QFileInfo::exists(cand)) return appData + "/" + sub;
+        }
+        return QString();
+    };
+
+    // 2) AI 엔진·모델 — 없으면 자가수리·보관함 질의가 아예 못 돈다.
+    {
+        const QString llm = appData + "/llm";
+        // ★ 윈도우는 llama-server.exe 다 — 접미사 없이 찾으면 깔려 있어도 '미설치' 라 적는다.
+        const bool srv = QFile::exists(llm + "/llama-server" + exeSuffix());
+        const int models = QDir(llm).entryList(QStringList() << "*.gguf", QDir::Files).size();
+        if (!srv || models == 0) {
+            const QString orphan = findOrphan("llm/llama-server" + exeSuffix());
+            if (!orphan.isEmpty()) {
+                const int om = QDir(orphan + "/llm").entryList(QStringList() << "*.gguf", QDir::Files).size();
+                out += QString("[WARN] AI 엔진이 제자리에 없습니다 — 다만 %1 에 한 벌(모델 %2개)이 있습니다.\n"
+                               "       다시 내려받지 마시고 그 안의 llm 폴더를 %3 로 옮기십시오.\n")
+                           .arg(QDir(orphan).dirName()).arg(om).arg(appData);
+            } else {
+                out += QString("[WARN] AI 엔진 미설치 (엔진 %1 · 모델 %2개) — 'AI 설치' 를 실행하세요\n")
+                           .arg(srv ? "있음" : "없음").arg(models);
+            }
+        } else {
+            out += QString("[OK]   AI 엔진 · 모델 %1개\n").arg(models);
+        }
+    }
+
+    // 3) 산출물 색인 — 없으면 보관함 질문이 전부 "자료 없음" 이 된다.
+    {
+        const QFileInfo db(appData + "/archive_index.db");
+        if (!db.exists()) {
+            const QString orphan = findOrphan("archive_index.db");
+            if (!orphan.isEmpty())
+                out += QString("[WARN] 산출물 색인이 제자리에 없습니다 — %1 에 있습니다.\n"
+                               "       다시 만들지 마시고 archive_index.db 를 %2 로 옮기십시오.\n")
+                           .arg(QDir(orphan).dirName()).arg(appData);
+            else
+                out += "[WARN] 산출물 색인 없음 — 설정에서 '색인 만들기' 를 한 번 실행하세요\n";
+        }
+        else {
+            const int days = db.lastModified().daysTo(QDateTime::currentDateTime());
+            out += QString("[OK]   산출물 색인 %1MB (%2일 전 갱신)%3\n")
+                       .arg(db.size() / 1024 / 1024).arg(days)
+                       .arg(days > 30 ? "  ← 오래됐습니다. 갱신을 권합니다" : "");
+        }
+    }
+
+    // 4) 설정 파일 권한 — NAS 비밀번호·쿠키·토큰이 들어 있다.
+    //   ★ 윈도우에서는 보지 않는다. Qt 는 기본으로 NTFS 권한을 읽지 않아(qt_ntfs_permission_lookup)
+    //     읽을 수 있는 파일이면 늘 '남도 읽을 수 있음' 으로 답한다 — 켤 때마다 거짓 경고가 뜨고,
+    //     '저장하면 자동으로 조여집니다' 도 윈도우에서는 사실이 아니다(setPermissions 는 읽기 전용
+    //     속성만 바꾼다). 설정은 %APPDATA% 아래라 다른 사용자 계정은 기본 ACL 로 못 읽는다.
+#ifndef Q_OS_WIN
+    {
+        // 이름이 바뀌는 중이라 둘 다 본다(하나만 보면 '설정 없음' 오경보가 난다).
+        QString cfg = appData + "/hanishiki_config.json";
+        if (!QFile::exists(cfg)) cfg = appData + "/miyo_config.json";
+        if (QFile::exists(cfg)) {
+            const QFile::Permissions pm = QFile::permissions(cfg);
+            const bool others = pm & (QFile::ReadGroup | QFile::ReadOther);
+            out += others
+                ? "[WARN] 설정 파일을 다른 사용자도 읽을 수 있습니다 — 저장하면 자동으로 조여집니다\n"
+                : "[OK]   설정 파일 권한 (본인만 읽기)\n";
+        }
+    }
+#endif
+
+    // 5) 저장 디스크 여유 — 가득 차면 수집이 조용히 반쪽 파일을 남긴다.
+    {
+        const QString dir = Common::resolveTempBase(QString());
+        if (!dir.isEmpty()) {
+            QStorageInfo si(dir);
+            if (si.isValid() && si.bytesTotal() > 0) {
+                const double freeGB = si.bytesAvailable() / (1024.0 * 1024 * 1024);
+                const double pct = 100.0 * si.bytesAvailable() / si.bytesTotal();
+                out += QString(freeGB < 5 ? "[FAIL] " : (pct < 10 ? "[WARN] " : "[OK]   "))
+                     + QString("저장 디스크 여유 %1GB (%2%)\n")
+                           .arg(freeGB, 0, 'f', 1).arg(pct, 0, 'f', 0);
+            }
+        }
+    }
+    return out;
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 // 설치본을 고정판에 맞춘다 — 사람이 버튼을 안 눌러도 되게.
 //
@@ -699,7 +1209,10 @@ inline QString syncModulesToPins(const QString &python,
         const QString name = d.first;
         const QString have = d.second.first;    // 지금 깔린 판
         const QString want = d.second.second;   // 고정판
-        const QString mod  = importNameOf(name);
+        // ★ import 이름은 맥 판의 표(importModuleFor) 하나로 정한다. 예전 이 자리의 짧은 표
+        //   (importNameOf)에는 xclienttransaction → x_client_transaction 이 없어서, 고정판을 깔고
+        //   'import xclienttransaction' 이 실패해 멀쩡한 새 판을 되돌리고 그것을 영영 재시도했다.
+        const QString mod  = importModuleFor(name);
 
         if (!pip({"install", "--upgrade", "--no-input", name + "==" + want}, 300000)) {
             out += QString("       └ %1 %2 → %3 설치 실패 (기존 것 유지)\n").arg(name, have, want);
@@ -1219,6 +1732,61 @@ inline QString lastReport()
     return QString();
 }
 
+// ── 결과를 바깥(화면)으로 내보내는 통로 ─────────────────────────────────
+//
+// ★ 예전에는 AppData/selfrepair/last_report.txt 와 표준출력에만 남겼다. 그러면 아무도 안 본다.
+//   윈도우 판에서 EXIF 가 1668건 전부 실패하는 동안 앱은 화면에 한 마디도 하지 않았고,
+//   사람은 잘 되고 있다고 믿었다. 파일에만 적는 진단은 진단이 아니라 기록이다.
+//   그래서 한 줄짜리 요약을 앱에 넘길 통로를 둔다. 넘기는 쪽은 백그라운드 스레드이므로,
+//   받는 쪽(HanishikiBackend)이 메인 스레드로 넘겨서 화면을 건드린다.
+// ─────────────────────────────────────────────────────────────────────────
+
+inline QMutex &stateMutex()     { static QMutex m;  return m; }
+inline QString &lastReportRef() { static QString s; return s; }
+
+using Notifier = std::function<void(QString, QString)>;   // (한 줄, 등급: success/error)
+inline Notifier &notifierRef()  { static Notifier f; return f; }
+
+inline void setNotifier(Notifier f)
+{
+    QMutexLocker lk(&stateMutex());
+    notifierRef() = std::move(f);
+}
+
+inline void notify(const QString &line, const QString &level)
+{
+    Notifier f;
+    { QMutexLocker lk(&stateMutex()); f = notifierRef(); }
+    if (f) f(line, level);
+}
+
+inline QString reportPath()
+{
+    const QString d = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                      + "/selfrepair";
+    QDir().mkpath(d);
+    return d + "/last_report.txt";
+}
+
+// 마지막 보고서 — 메모리에 있으면 그것, 없으면 지난 실행이 남긴 파일.
+// (앱을 막 켠 직후 화면이 물어보면 이번 점검이 아직 안 끝났다. 그때는 지난 것이라도 보여 준다.)
+inline QString lastReport()
+{
+    { QMutexLocker lk(&stateMutex());
+      if (!lastReportRef().isEmpty()) return lastReportRef(); }
+    QFile f(reportPath());
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return QString::fromUtf8(f.readAll());
+    return QString();
+}
+
+// ★ 한 번에 하나만 돈다.
+//   설정 탭에 [지금 검사] 단추가 생기면서, 켤 때 도는 점검이 끝나기 전에 또 누를 수 있게 됐다.
+//   겹쳐 돌면 같은 도구를 두 스레드가 동시에 실행하고 보고서도 뒤섞인다.
+//   맥에서는 더 나쁘다 — 아래 서명 봉인 복구(resealAppBundle)는 1분쯤 걸리는데 그 자체엔
+//   겹침 막이가 없다. 둘이 같은 번들을 동시에 다시 서명하면 봉인이 무효로 남을 수 있다.
+inline QAtomicInt &maintenanceRunning() { static QAtomicInt v{0}; return v; }
+
 // ── 오케스트레이터 ───────────────────────────────────────────────────────
 
 // deep       = 사용자가 화면에서 직접 눌렀다는 뜻.
@@ -1229,8 +1797,8 @@ inline QString lastReport()
 //              시작할 때만 지운다.
 inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
 {
-    // 이미 돌고 있으면 그냥 돌아간다. 겹쳐 돌아서 좋을 것이 없다 —
-    // 같은 도구를 두 스레드가 동시에 실행하게 되고, 결과도 뒤섞인다.
+    // 이미 돌고 있으면 그냥 돌아간다. 빈 문자열은 '이번엔 안 했다' 는 뜻이다
+    //   (부르는 쪽은 lastReport() 로 앞선 결과를 보여 주면 되고, 돌던 점검이 끝나면 notify 가 온다).
     if (!maintenanceRunning().testAndSetOrdered(0, 1)) {
         qInfo().noquote() << "[SelfRepair] 이미 점검 중이라 이번 요청은 건너뜁니다";
         return QString();
@@ -1270,9 +1838,8 @@ inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
     report += updateYtDlpIfDue(7, deep);
 
     const QStringList tools = {"yt-dlp", "ffmpeg", "python", "exiftool", "rclone"};
-    int broken = 0, repaired = 0, smokeBad = 0, moduleStale = 0;
-    QStringList badNames;
-
+    int broken = 0, repaired = 0, smokeBad = 0;
+    QStringList badNames;   // ★ 화면 한 줄 요약에 '무엇이' 고장인지 적으려고 모은다
     for (const QString &t : tools) {
         ToolStatus st = checkTool(t);
         if (!st.runs) {
@@ -1316,17 +1883,26 @@ inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
 
         if (sm.verdict == SmokePass) {
             report += "       └ 실기능 확인: 통과 — " + sm.detail + "\n";
-            // 파이썬이 실제로 도는 것이 확인됐을 때만 꾸러미 신선도를 본다.
+            // 파이썬이 실제로 도는 것이 확인됐을 때만 쿠키·꾸러미 신선도를 본다.
             //   안 도는 파이썬에 판을 물어봐야 답이 없다.
             if (t == "python") {
+                // ★ 브라우저 쿠키를 실제로 꺼내 본다(맥 판 smokeBrowserCookies — 앱이 쿠키·토큰을 뽑는
+                //   그 번들 파이썬과 browser_cookie3 로). 복호화가 깨진 것을 그날 바로 알기 위해서다.
+                //   ★ 다만 윈도우에서는 실패를 빨간 띠(smokeBad)로 올리지 않는다. 윈도우의 크로미움 계열은
+                //     v127 부터 앱-바운드 쿠키 암호화라 browser_cookie3 가 원래 못 푸는 일이 잦다
+                //     (yt-dlp #10927 — 유튜브·니코동 쿠키도 그래서 파일 방식만 믿는다, HanishikiBackend 주석).
+                //     올리면 파이어폭스가 없는 기계는 켤 때마다 '고장' 이 뜬다 — 이미 아는 한계를 고장이라
+                //     부르는 거짓 경보다. 보고서에는 그대로 적는다(무엇이 왜 안 되는지는 보여야 한다).
+                const SmokeResult ck = smokeBrowserCookies(Common::bundledPythonPath());
+                report += QStringLiteral("       └ 브라우저 쿠키: %1 — %2\n")
+                              .arg(ck.verdict == SmokePass ? QStringLiteral("통과")
+                                   : ck.verdict == SmokeFail ? QStringLiteral("실패")
+                                                             : QStringLiteral("건너뜀"),
+                                   ck.detail);
                 const QString mod = checkModuleFreshness(st.path, netCheck);
                 if (!mod.isEmpty()) {
                     report += mod;
                     if (netCheck) netCheckRan = true;
-                    // 꾸러미가 뒤처진 것은 '고장' 은 아니지만 조용히 넘길 일도 아니다.
-                    //   실제로 낡은 꾸러미 하나가 유튜브를 통째로 세운 적이 있다.
-                    for (const QString &ln : mod.split('\n'))
-                        if (ln.contains("모듈 업데이트")) ++moduleStale;
                 }
             }
         } else if (sm.verdict == SmokeSkip) {
@@ -1357,27 +1933,104 @@ inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
             : "┌ LLM 진단 ┐\n" + diag + "\n└──────────┘\n";
     }
 
-    // 한 줄 요약 — 이게 화면에 뜨는 문장이다. 길면 안 읽는다.
+    // ★ 도구 밖의 상태도 본다 — 실제로 사람을 막는 것은 대부분 여기다(맥 판 checkEnvironment).
+    //   파이썬 꾸러미 · AI 엔진 · 산출물 색인 · 저장 디스크 여유(설정 파일 권한은 맥에서만 본다).
+    report += checkEnvironment();
+
+    // ★ 낡음 확인 — 며칠에 한 번, 바깥 서비스를 따라가야 하는 꾸러미만(맥 판 updatePackagesIfDue).
+    //   유튜브를 통째로 세운 것이 코드 버그가 아니라 '낡은 꾸러미' 였다.
+    //   버전이 찍히는지만 보는 진단은 그 고장을 원리적으로 못 잡는다.
+    //   ★ 수집이 도는 중이면 미룬다 — pip 가 그 수집이 읽는 파일을 바꾸면 중간에 죽는다
+    //     (윈도우 규칙, syncModulesToPins 와 같다). 시각을 찍지 않으니 다음 점검이 다시 해 본다.
+    {
+        const QString py = Common::bundledPythonPath();
+        if (!pythonBusy()) {
+            const QString upd = updatePackagesIfDue(py, /*allowNetwork=*/true);
+            if (!upd.isEmpty()) report += upd;
+        } else if (freshCheckDue(3)) {
+            report += QStringLiteral("[UPD]  꾸러미 신선도 확인 — 수집 중이라 다음 점검으로 미룹니다\n");
+        }
+    }
+
+#ifdef Q_OS_MACOS
+    // ── 코드 서명 봉인 자동 복구 ─────────────────────────────────────────────
+    //   앱 내부에 pip 설치·스크립트 갱신이 일어나면 codesign 봉인이 깨진다.
+    //   깨진 채로도 지금 서명 구성(Apple Development, 하드닝 런타임 없음)에서는
+    //   앱이 실행된다 — 실제로 확인했다. 하지만 그대로 두면
+    //     · codesign --verify 가 계속 실패하고
+    //     · 공증·배포로 넘어가는 순간 막히며
+    //     · 하드닝 런타임을 켜는 날 갑자기 실행이 안 된다.
+    //   그러니 기동할 때 조용히 확인하고, 깨져 있으면 스스로 다시 서명한다.
+    //   재서명은 번들에 동봉한 codesign_app.sh(빌드가 쓰는 그 스크립트)가 한다.
+    {
+        const QString app = Common::appBundlePath();
+        if (!app.isEmpty()) {
+            // ★ 판정은 Common::checkAppSeal 이 한다 — 다른 데서 Finder 로 복사해 붙은 표시는 그 자리에서
+            //   지우고, iCloud 폴더라 시스템이 붙여 지울 수 없는 표시만 남았으면 '서명은 맞음' 으로 본다.
+            //   예전엔 엄격 검사가 실패하면 무조건 다시 서명했다. 문서 폴더(iCloud)에 둔 앱은 그 표시가
+            //   다시 서명해도 그대로라, 켤 때마다 1분씩 '봉인이 깨져 있습니다 → 복구 실패' 를 되풀이했고
+            //   그동안 실행 중인 앱 안을 고쳐 썼다(실측 2026-09-30 보고서).
+            QString sealWhy;
+            const Common::SealState seal = Common::checkAppSeal(&sealWhy);
+            if (seal == Common::SealState::OkFinderDetritus)
+                report += "[SEAL] 서명은 맞습니다 — 앱이 iCloud 로 동기화되는 폴더(문서·데스크탑)에 있어 앱 폴더에\n"
+                          "       Finder 표시가 붙고, 엄격 검사만 그것에 걸립니다. 다시 서명하지 않습니다.\n"
+                          "       (그 표시는 시스템이 붙여 지울 수 없습니다 — 응용 프로그램 폴더로 옮기면 사라집니다.)\n";
+            if (seal == Common::SealState::Broken) {
+                // ★ 이 줄은 report 에만 담으면 안 된다. 보고서는 진단이 다 끝난 뒤에야
+                //   한꺼번에 출력된다(맨 아래 qInfo). 그런데 재서명은 1분쯤 걸린다.
+                //   그동안 화면에도 로그에도 아무 것도 안 뜨니, 사용자는 앱이 그냥
+                //   멈춘 줄 알고 끈다. 끄면 재서명이 중간에 잘려 번들이 오히려
+                //   무효 상태로 남는다(실측: 시작 9초 → 완주 60초, 중간에 끊기면 무효).
+                //   그러니 지금 당장 밖으로 내보낸다.
+                qInfo().noquote() << "[SEAL] 코드 서명 봉인이 깨져 있습니다 — 지금 복구합니다."
+                                     " 1분쯤 걸립니다. 끝날 때까지 앱을 끄지 마십시오.";
+                report += "[SEAL] 코드 서명 봉인이 깨져 있습니다 — 자동 복구를 시도합니다"
+                          " (1분쯤 걸립니다 — 끄지 마십시오)…\n";
+                QString serr;
+                if (Common::resealAppBundle(&serr)) {
+                    report += "[SEAL] ✅ 서명 복구 완료.\n";
+                    // ★ 어떤 신원으로 다시 서명했는지 확인해 알린다.
+                    //   인증서가 만료되면 codesign_app.sh 는 조용히 ad-hoc 으로 떨어진다.
+                    //   ad-hoc 은 서명 해시가 매번 바뀌어 macOS 가 '다른 앱' 으로 본다 —
+                    //   자동화·화면 기록 같은 권한이 초기화되고 대화상자가 다시 뜬다.
+                    //   그때 사용자에게는 아무 설명 없이 권한만 사라지는 것으로 보인다.
+                    //   왜 그런지 여기서 말해 주지 않으면 알 길이 없다.
+                    QProcess idp;
+                    idp.start("/usr/bin/codesign", {"-dv", app});
+                    idp.waitForFinished(10000);
+                    const QString sig = QString::fromUtf8(idp.readAllStandardError());
+                    if (sig.contains(QLatin1String("Signature=adhoc"))) {
+                        report += "[SEAL] ⚠️ 인증서가 없어 ad-hoc 으로 서명했습니다.\n"
+                                  "       macOS 는 이것을 '다른 앱' 으로 봅니다 — 자동화·화면 기록\n"
+                                  "       같은 권한이 초기화되고 대화상자가 다시 뜹니다. 앱은 계속\n"
+                                  "       돌아갑니다. 원래대로 두려면 개발자 인증서를 새로 받아\n"
+                                  "       다시 빌드하십시오.\n";
+                    }
+                }
+                else
+                    report += "[SEAL] ⚠️ 서명 복구 실패: " + serr.left(200) + "\n"
+                              "       앱은 계속 쓸 수 있지만, 배포·공증 전에 다시 빌드하십시오.\n";
+            }
+        }
+    }
+#endif
+
+    // ★ 한 줄 요약 — 이게 화면에 뜨는 문장이다. 길면 안 읽는다.
+    //   고장이 하나라도 있으면 error — 화면은 error 일 때만 빨간 띠를 띄운다.
     QString summary, level;
     if (broken == 0 && smokeBad == 0) {
         summary = QString("자가진단 이상 없음 — 도구 %1개가 실제로 동작합니다").arg(tools.size());
         if (repaired > 0) summary += QString(" (%1개는 자동 복구했습니다)").arg(repaired);
-        if (moduleStale > 0) {
-            // 도구는 다 도는데 파이썬 꾸러미가 뒤처진 상태. 지금 당장은 되지만
-            // 그대로 두면 언젠가 멈춘다 — '주의' 로 알린다(빨간 띠는 안 띄운다).
-            summary += QString(". 다만 파이썬 꾸러미 %1개가 뒤처져 있습니다 — "
-                               "설정 → 모듈 업데이트").arg(moduleStale);
-            level = QStringLiteral("warning");
-        } else {
-            level = QStringLiteral("success");
-        }
+        level = QStringLiteral("success");
     } else {
-        summary = QString("자가진단에서 문제를 찾았습니다 — %1 (설정 → 자가진단에서 자세히)")
+        summary = QString("자가진단에서 문제를 찾았습니다 — %1 (설정 → 유지보수 → 자가진단에서 자세히)")
                       .arg(badNames.join(", "));
         level = QStringLiteral("error");
     }
     report += "\n" + summary + "\n";
 
+    // 보고서 저장 — 메모리(화면이 곧바로 물어볼 때)와 파일(다음 실행·AI 수리 도우미가 읽는다) 둘 다.
     { QMutexLocker lk(&stateMutex()); lastReportRef() = report; }
     QFile f(reportPath());
     if (f.open(QIODevice::WriteOnly | QIODevice::Text))
@@ -1388,10 +2041,41 @@ inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
     return report;
 }
 
-inline void runStartupMaintenanceAsync()
+// ★ onDone 은 점검이 끝난 뒤 '그 작업 스레드에서' 불린다 — 화면을 만지려면 받는 쪽이 메인으로 넘겨야 한다.
+//   설정 탭의 [지금 검사] 도 이 함수를 쓴다(threadName = "selfrepair-manual").
+//   스레드를 따로 만들면 아래 '끌 때 재서명이 도는 중이면 기다리는' 장치가 빠진다.
+// ★ 스레드에 이름을 단다 — 스레드 친화성 경고에 '낸 스레드' 가 찍히게(main.cpp 로그 처리기).
+//   윈도우에서 30분마다 나던 moveToThread 경고를 쫓을 때, 이 이름으로 SelfRepair 를 빨리 지웠다(e0f1b3d).
+inline void runStartupMaintenanceAsync(std::function<void(QString)> onDone = {},
+                                       const QString &threadName = QStringLiteral("selfrepair-startup"))
 {
-    QThread *t = QThread::create([] { runStartupMaintenance(); });
-    t->setObjectName(QStringLiteral("selfrepair-startup"));
+    // ★ 사람이 [지금 검사] 를 누른 것이면(threadName = "selfrepair-manual") deep 으로 돈다 —
+    //   하루 한 번 제한을 무시하고 유튜브 확인·yt-dlp 갱신까지 지금 한다. 윈도우 runSelfDiagnosis 가
+    //   runStartupMaintenance(deep=true) 로 부르던 뜻을, 맥 판처럼 이 함수를 거쳐 불러도 지킨다.
+    //   켤 때 도는 점검(selfrepair-startup)은 예전처럼 네트워크 확인을 하루 한 번만 한다.
+    const bool deep = (threadName == QLatin1String("selfrepair-manual"));
+    QThread *t = QThread::create([onDone, deep] {
+        const QString rep = runStartupMaintenance(deep);
+        if (onDone) onDone(rep);
+    });
+    t->setObjectName(threadName);
+#ifdef Q_OS_MACOS
+    // ★ 종료할 때 이 스레드를 아무도 기다리지 않았다.
+    //   진단 대부분은 읽기라서 중간에 버려도 그만이지만, 재서명은 다르다.
+    //   1분 남짓 걸리는데 그 도중에 프로세스가 끝나면 번들이 무효인 채로 남는다
+    //   (안쪽 부품은 새로 서명됐는데 바깥 봉인은 옛것). 다음 실행 때 또 재서명을
+    //   시작하고, 또 끄면 또 무효 — 고리가 된다. 실제로 그 상태를 겪었다.
+    //   그러니 '재서명이 도는 중일 때만' 기다린다. 다른 작업은 그냥 버린다.
+    QPointer<QThread> guard(t);
+    QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
+                     [guard]() {
+        if (!guard || !guard->isRunning() || !Common::resealInFlight()) return;
+        qInfo().noquote() << "[SEAL] 서명 복구가 끝나기를 기다립니다 — 잠시만 기다려 주십시오.";
+        // 넉넉히 기다리되 무한정은 아니다. 못 끝내면 다음 실행이 이어서 고친다.
+        if (!guard->wait(240000))
+            qWarning().noquote() << "[SEAL] 시간 안에 끝내지 못했습니다 — 다음 실행 때 다시 복구합니다.";
+    });
+#endif
     QObject::connect(t, &QThread::finished, t, &QObject::deleteLater);
     t->start(QThread::LowPriority);
 }

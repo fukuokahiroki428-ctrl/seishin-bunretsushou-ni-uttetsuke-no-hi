@@ -6,6 +6,11 @@
 #include <QDateTime>
 #include <QProcessEnvironment>
 
+#include <QRegularExpression>
+#include <QHash>
+#include <QJsonArray>
+#include <QJsonObject>
+
 namespace Common {
 
 // 날짜를 일본어 형식으로 변환
@@ -72,13 +77,65 @@ bool setApiOverride(const QString &key, const QString &value);   // 빈 값이�
 QString apiOverridesPath();
 QString apiOverridesJson();                                       // 현재 오버라이드 전체(JSON 문자열)
 
-// ★ macOS: 앱 번들 경로(.../Predormition.app). 번들이 아니면 빈 문자열.
+// ── 고침 꾸러미(1단계 — 데이터만) ─────────────────────────────────────────
+//   공개 저장소 hotfix-mac 브랜치에서 받은 값을 담는다. 실행되는 코드는 없다.
+//   받은 값은 모양을 검사해서 통과한 것만 쓴다 — 데이터로도 해칠 길이 있기 때문이다
+//   (끝점 주소를 딴 서버로 바꾸면 앱이 거기로 쿠키를 보낸다).
+struct HotfixRule { QRegularExpression re; QString cause; QString advice; QString action; };
+struct HotfixApplyResult { int overrides = 0, aliases = 0, rules = 0; QStringList rejected; };
+// 검사하고(dryRun 이면 담지 않고) 통과한 것만 담는다.
+HotfixApplyResult applyHotfix(const QJsonObject &overrides, const QJsonObject &aliases,
+                              const QJsonArray &rules, bool dryRun = false);
+QString remoteOverride(const QString &key);                         // 고침 꾸러미의 값(없으면 빈 문자열)
+QStringList shapeAliasesFor(const QStringList &keys);               // 응답 이름 후보에 꾸러미의 별명을 덧붙인다
+QList<HotfixRule> remoteRepairRules();                              // 수리 도우미가 먼저 볼 규칙
+QString hotfixDir();                                                // 받은 꾸러미를 두는 곳(앱 데이터 폴더/hotfix)
+// 2단계 — 서명이 맞은 파이썬 도우미. 이 폴더에는 검증을 통과한 파일만 둔다(다른 것은 지운다).
+QString hotfixToolsDir();
+void setHotfixTools(const QHash<QString, QString> &nameToSha256);    // 쓸 도우미(이름 → sha256)
+QHash<QString, QString> hotfixTools();
+
+// ★ macOS: 앱 번들 경로(.../<앱 이름>.app). 번들이 아니면 빈 문자열 — 윈도우·리눅스에서는 언제나 빈 문자열.
 QString appBundlePath();
+// 캡처 Chrome 디버그 포트의 기준(순차 캡처 = 이 값, 병렬 트랙 = 이 값 + 1 부터). 기본 9223.
+//   HANISHIKI_CAPTURE_PORT 로 바꾼다 — 공작함의 격리 사본은 19223 부터 써서, 같은 맥에서 돌고 있는
+//   사용자 앱의 Chrome 과 포트가 겹치지 않게 한다(겹치면 서로를 '좀비' 로 보고 끈다).
+int capturePortBase();
+// ★ 앱이 끝나는 중인가 — main 의 aboutToQuit 에서 맨 먼저 켠다. 뒷일 스레드의 HttpClient 는 이것이 켜지면 새 요청을
+//   시작하지 않고, 진행 중인 요청도 0.1초 안에 멈춘다. Qt 를 치우는 동안 다른 스레드가 네트워크(TLS 준비 등)를 붙들고
+//   있으면 종료 중에 죽는다(2026-10-06 충돌 보고 — 고침 꾸러미 확인이 종료 순간 첫 요청을 시작했다).
+void markAppQuitting();
+bool appQuitting();
+// ★ 이 앱이 띄운 캡처 Chrome 만 — 명령줄의 --user-data-dir 가 profileDir 와 같거나(prefix 면) profileDir_… 인
+//   프로세스(자기 자신은 뺀다). 예전엔 이름(chrome_capture_profile)만 보고 pkill 해서, 같은 맥의 다른 사본
+//   (공작함 격리 사본 · 옛 판)이 켜지는 순간 사용자 앱의 수집 Chrome 까지 꺼졌다. 앱 데이터 폴더가 다르면
+//   전체 경로가 다르니, 전체 경로로 고르면 남의 것은 걸리지 않는다. Windows 에서는 빈 목록/0.
+QList<qint64> captureChromePids(const QString &profileDir, bool prefix);
+// 위 프로세스를 SIGTERM → 0.3초 뒤 남은 것을 SIGKILL. 처음 찾은 수를 돌려준다.
+int killCaptureChromes(const QString &profileDir, bool prefix);
+// ★ 사라진 데이터 폴더의 캡처 Chrome — appSupportRoot(이 홈의 Application Support) 아래 …/chrome_capture_profile[_…]
+//   인데 그 데이터 폴더가 이제 없는 것. 앱 이름이 바뀌어 폴더가 옮겨진 뒤(main.cpp 의 이전) 옛 판이 죽으며 남긴 Chrome 이
+//   여기 걸린다 — 예전 이름만 보던 pkill 은 잡았지만 위의 전체 경로 정리는 못 잡는다. 같은 홈의 살아 있는 사본은
+//   ABIWA.lock 이 막고, 격리 사본은 홈이 달라 appSupportRoot 밖이라 걸리지 않는다.
+QList<qint64> orphanedCaptureChromePids(const QString &appSupportRoot);
+int killOrphanedCaptureChromes(const QString &appSupportRoot);
 // ★ macOS: 앱 번들 재서명 — 번들 안에 파일이 추가/변경되면(모듈 설치 등) codesign 봉인이 깨져
 //   macOS 가 앱을 SIGKILL 할 수 있다. 설치 직후 이걸 호출해 봉인을 복구한다.
 //   유효한 서명 아이덴티티가 있으면 그걸 쓰고, 없으면 ad-hoc(-) 서명. 검증까지 통과해야 true.
 //   Windows/Linux 는 서명 봉인이 없어 항상 true(무동작).
 bool resealAppBundle(QString *err = nullptr);
+
+// ★ macOS: 앱 서명 봉인 상태. 엄격 검사(codesign --verify --deep --strict)로 본다.
+//   OkFinderDetritus — 서명은 맞는데 앱 폴더에 'Finder 정보' 표시가 붙어 엄격 검사만 걸리는 것.
+//     iCloud 로 동기화되는 폴더(문서·데스크탑)에 둔 앱은 시스템(파일 공급자)이 앱 폴더 맨 위에 이 표시를
+//     붙이고, 지워지지 않는다. 다시 서명해도 그대로라 재서명은 1분만 쓰고 실패한다 — 다시 서명하지 않는다.
+//   다른 곳에서 Finder 로 복사해 붙은 표시(지울 수 있는 것)는 판정하면서 지운다(내용은 건드리지 않는다).
+enum class SealState { Ok, OkFinderDetritus, Broken, NotBundle };
+SealState checkAppSeal(QString *detail = nullptr);
+
+// 지금 재서명이 돌고 있나. 종료할 때 이것만 기다린다 —
+// 서명 도중에 잘리면 번들이 무효인 채로 남기 때문이다.
+bool resealInFlight();
 // 디렉토리에 실제로 쓸 수 있는지(임시파일 생성/삭제로 확인).
 bool isDirWritable(const QString &dir);
 
@@ -128,6 +185,40 @@ QString browserUserAgent();
 //   Meta 쪽이 XHR 로 보지 않아 JSON 대신 HTML 한 판을 준다(인스타 429 실측 2026-09-20, 맥).
 QMap<QString, QString> browserClientHints();
 
+// ── 프록시(VPN) ────────────────────────────────────────────────────────────
+// ★ 이 앱은 요청을 다섯 갈래로 내보낸다 — Qt(HttpClient)·파이썬 데몬·yt-dlp·
+//   rclone·번들 크로미움. 프록시를 쓰기로 했으면 다섯이 전부 같은 길로 나가야 한다.
+//   하나라도 빠지면 같은 세션이 두 IP 에서 온 것처럼 보여 오히려 더 눈에 띈다.
+//   그래서 설정을 한 곳에 두고, 각 경로가 여기서 받아 간다.
+//
+//   자격증명은 명령줄로 넘기지 않는다(ps 로 남이 읽는다). 환경변수와 stdin 만 쓴다.
+// ★ type 은 프로필의 연결 방식("socks5" · "http" · "https") — 윈도우 프로필과 같은 값.
+//   기본값을 socks5 로 두어 예전 호출(전역 하나·계정별 SOCKS5)이 그대로 같은 뜻이 되게 한다.
+void  setProxyConfig(bool enabled, const QString &host, int port,
+                     const QString &user, const QString &pass,
+                     const QString &type = QStringLiteral("socks5"));
+bool  proxyEnabled();
+// "socks5://user:pass@host:port" — 없으면 빈 문자열.
+QString proxyUrl();
+// 크로미움처럼 '인증을 못 넣는' 프로그램용. 로컬 중계기를 띄우고 그 주소를 준다.
+// (인증 없는 127.0.0.1 → 중계기가 상위에 인증해 연결)
+QString proxyLocalRelayUrl();
+// 지금 스레드가 나가는 출구를 가리키는 짧은 꼬리표(종류·주소·포트·아이디의 지문 — 비밀번호는 없다).
+//   출구가 없으면 빈 값. 캡처 Chrome 을 출구마다 따로 둘 때 열쇠로 쓴다(앱을 다시 켜도 같다).
+QString proxyExitTag();
+
+// 사용자 쪽 꾸러미 덧씌우기 폴더 — 번들을 건드리지 않고 새 판을 얹는 자리.
+//   번들에 직접 설치하면 codesign 봉인이 깨진다. 여기에 깔고 PYTHONPATH 로 먼저 읽는다.
+QString userPyOverlayDir();
+
+// 이 스레드에만 적용되는 프록시(계정별 지정). 지우면 전역 설정으로 돌아간다.
+//   수집이 병렬로 도므로 전역 하나를 바꿔 끼우면 서로 덮어쓴다 — 그래서 스레드별이다.
+void setThreadProxy(bool enabled, const QString &host, int port,
+                    const QString &user, const QString &pass,
+                    const QString &type = QStringLiteral("socks5"));
+void clearThreadProxy();
+void  stopProxyRelay();
+
 // ── 파일을 통째로 갈아 끼우기 ──────────────────────────────────────────────
 // 임시 파일에 다 쓴 뒤 원자적으로 갈아 끼운다. 중간 상태(잘린 파일)가 없다.
 //   설정 파일처럼 '망가지면 계정·토큰이 통째로 날아가는' 것에 쓴다.
@@ -142,6 +233,14 @@ QStringList pythonCandidates();
 
 // Cross-platform bundled environment (PATH, library paths, etc.)
 QProcessEnvironment bundledProcessEnv();
+
+// exiftool 을 실행할 '프로그램' 과 그 앞에 붙일 인자를 돌려준다.
+//   ★ 왜 함수 하나로 모으나. 본체(addExifMetadata)·도구 점검(checkTool)·연막 시험이
+//     제각각 exiftool 을 띄우고 있었고, 그중 하나만 방식이 달라 '시험은 되는데 앱은
+//     안 되는' (또는 그 반대) 상태가 실제로 났다. 한 곳에서만 정하게 한다.
+//   맥: perl 경로를 돌려주고 leadingArgs 에 -I… 와 exiftool 스크립트 경로가 담긴다.
+//   윈도우/시스템 exiftool: exiftool 경로를 돌려주고 leadingArgs 는 비어 있다.
+QString exiftoolProgram(QStringList *leadingArgs);
 
 // 저장 경로의 남은 공간 (바이트). 경로 없거나 마운트 안 됐으면 0.
 qint64 freeSpace(const QString &path);

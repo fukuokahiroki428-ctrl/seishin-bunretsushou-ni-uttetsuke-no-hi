@@ -2,6 +2,8 @@
 #include "HttpClient.h"
 #include "FileHelper.h"
 #include <QTimer>
+#include <QElapsedTimer>
+#include <atomic>
 #include <QFile>
 #include <QFileInfo>
 #include <QThread>
@@ -47,17 +49,19 @@ HttpClient::~HttpClient()
     if (QThread::currentThread() != mainThread) {
         // ★ 만든 스레드가 이미 사라진 NAM 이 온다.
         //
-        //   HanishikiBackend::runTwitterCollection 은 수집 워커 스레드에서
+        //   (예전엔) HanishikiBackend::runTwitterCollection 이 수집 워커 스레드에서
         //     delete m_twitterCollector; m_twitterCollector = new TwitterCollector(this);
-        //   를 한다. 그러면 TwitterCollector 의 HttpClient 와 그 안의 NAM 이 그 워커
+        //   를 했다 — 지금은 메인에서 만든다(윈도우 9271c57 을 옮김). 병렬 모드의 지역
+        //   collector 와 adoptHttpToCurrentThread 가 만든 것은 여전히 워커 소속이다. 그러면 TwitterCollector 의 HttpClient 와 그 안의 NAM 이 그 워커
         //   스레드 소속으로 태어난다. 워커가 끝나면 스레드는 사라지는데 객체는
         //   멤버라 살아남는다 — 그때부터 nam->thread() 가 0 이다.
         //   다음 수집 때 '다른' 워커가 이 소멸자를 부르면, Qt 는 "스레드 없는 객체는
         //   현재 스레드로만 옮길 수 있다" 며 moveToThread 를 거절한다.
         //     QObject::moveToThread: Current thread (...) is not the object's thread (0x0).
         //   거절당하면 바로 아래 deleteLater 가 죽은 스레드의 큐로 들어가 영영 처리되지
-        //   않는다. NAM 이 수집 한 번에 하나씩 샌다 — 이 기계에서는 内閣会 30분 폴링마다
-        //   하나씩, 로그에 같은 경고가 248번 쌓여 있었다. 1년을 켜 두면 만 몇 천 개다.
+        //   않는다. NAM 이 수집 한 번에 하나씩 샌다 — 윈도우 기계에서 실측했다.
+        //   内閣会 30분 폴링마다 하나씩, 로그에 같은 경고가 248번 쌓여 있었다.
+        //   (SIGBUS 를 막는 위 규칙 자체는 그대로다 — 워커에서 직접 delete 하지 않는다)
         //
         //   그래서 두 걸음으로 옮긴다. 스레드가 없으면 먼저 현재 스레드로 데려오고
         //   (Qt 가 허용하는 유일한 경우다), 그 다음 메인으로 보낸다.
@@ -67,9 +71,12 @@ HttpClient::~HttpClient()
         QMetaObject::invokeMethod(m_nam, &QObject::deleteLater);
     } else {
         // ★ 메인에서 지울 때도, 만든 스레드가 이미 사라진 NAM 이 올 수 있다.
-        //   그대로 delete 하면 QObject 소멸자가 '다른 스레드의 타이머' 를 두고
-        //   경고를 낸다. 스레드 없는 객체는 현재 스레드로 데려올 수 있으므로
-        //   메인으로 먼저 옮기고 지운다.
+        //   TwitterCollector 가 메인 소속이 되면서 그 소멸자(=m_http 정리)가 메인에서 도는데,
+        //   그때의 m_http 는 마지막 collect()/checkNewPosts() 워커가 만든 것이고 그 워커는
+        //   이미 끝났다. 그대로 delete 하면 QObject 소멸자가 '다른 스레드의 타이머' 를 두고
+        //   경고를 낸다. 스레드 없는 객체는 현재 스레드로 데려올 수 있으므로(Qt 가 허용하는
+        //   유일한 경우) 메인으로 먼저 옮기고 지운다. (메인에서 지우는 것이라 위의 SIGBUS
+        //   규칙과도 어긋나지 않는다)
         if (!m_nam->thread())
             m_nam->moveToThread(mainThread);
         delete m_nam;
@@ -77,8 +84,28 @@ HttpClient::~HttpClient()
     m_nam = nullptr;
 }
 
+// 진행 중인 요청 수 — 앱이 끝날 때 waitIdle 이 0 이 되기를 기다린다
+static std::atomic<int> s_inFlight{0};
+namespace {
+struct InFlight {
+    InFlight() { s_inFlight.fetch_add(1, std::memory_order_acq_rel); }
+    ~InFlight() { s_inFlight.fetch_sub(1, std::memory_order_acq_rel); }
+};
+}
+
+bool HttpClient::waitIdle(int msecs)
+{
+    QElapsedTimer t;
+    t.start();
+    while (s_inFlight.load(std::memory_order_acquire) > 0 && t.elapsed() < msecs)
+        QThread::msleep(20);
+    return s_inFlight.load(std::memory_order_acquire) == 0;
+}
+
 HttpResponse HttpClient::get(const QString &url, const QMap<QString, QString> &headers)
 {
+    if (Common::appQuitting()) { HttpResponse r; r.error = QStringLiteral("App quitting"); return r; }
+    InFlight inFlight;
     waitForRateLimit();
 
     QNetworkRequest request{QUrl(url)};
@@ -91,6 +118,8 @@ HttpResponse HttpClient::get(const QString &url, const QMap<QString, QString> &h
 HttpResponse HttpClient::post(const QString &url, const QByteArray &body,
                                const QMap<QString, QString> &headers)
 {
+    if (Common::appQuitting()) { HttpResponse r; r.error = QStringLiteral("App quitting"); return r; }
+    InFlight inFlight;
     waitForRateLimit();
 
     QNetworkRequest request{QUrl(url)};
@@ -113,14 +142,10 @@ HttpResponse HttpClient::postJson(const QString &url, const QJsonObject &json,
 bool HttpClient::downloadFile(const QString &url, const QString &filePath,
                                const QMap<QString, QString> &headers)
 {
-    // ★ 이어받기(resume) — 이미 받은(완료) 파일이면 재다운로드 없이 스킵.
-    //   이 함수는 실패/빈 파일을 항상 지우므로(하단), 존재하는 size>0 파일 = 이전 완료분이다.
-    //   덕분에 이 헬퍼를 쓰는 모든 수집기(Twitter/Instagram/Discord/Pixiv/Fanbox/Tumblr/
-    //   Asked/SpinSpin)가 중단·재실행 시 이미 받은 미디어를 건너뛰고 새 것만 받는다.
-    {
-        QFileInfo _fi(filePath);
-        if (_fi.exists() && _fi.size() > 0) return true;
-    }
+    // ★ 핸드오프 F: 이어받기 — 이미 받은(존재 + size>0) 파일은 스킵. (실패/빈 파일은 항상 지워지므로 안전)
+    { QFileInfo fi(filePath); if (fi.exists() && fi.size() > 0) return true; }
+    if (Common::appQuitting()) return false;
+    InFlight inFlight;
     waitForRateLimit();
 
     QNetworkRequest request{QUrl(url)};
@@ -129,7 +154,21 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
     QNetworkReply *reply = m_nam->get(request);
 
     // Stream directly to file to avoid loading entire file into memory
-    QFile file(filePath);
+    // ★ 받는 동안은 같은 폴더의 숨은 조각 파일에 쓰고, 끝까지 받아 아래 검사(상태·Content-Length·쓰기 오류)를
+    //   통과한 뒤에만 진짜 이름으로 바꾼다. 진짜 이름에 바로 쓰면 앱이 강제 종료·크래시·전원 차단으로
+    //   죽을 때(아래 정리 코드가 돌지 못한다) 잘린 파일이 진짜 이름으로 남고, 맨 위 이어받기
+    //   검사(size>0)가 그것을 영원히 완성본으로 본다.
+    //   조각 이름은 '<진짜 이름>.part' 로 짓지 않는다 — 트윗 미디어 이름은 UTF-8 255바이트 한계까지 채워
+    //   짓는다(TwitterCollector::downloadTweetMedia). 5바이트만 붙여도 바이트로 세는 저장소(리눅스 NAS·SMB)
+    //   에서는 "File name too long" 으로 열리지 않아 그 파일을 영영 못 받는다. 진짜 이름의 해시로 짧게 짓는다 —
+    //   같은 파일은 늘 같은 조각 이름이라, 강제 종료로 남은 조각은 다음 판이 지우고 새로 받는다.
+    const QFileInfo targetInfo(filePath);
+    const QString partPath = targetInfo.absolutePath() + QStringLiteral("/.dl_")
+        + QString::fromLatin1(QCryptographicHash::hash(targetInfo.fileName().toUtf8(),
+                                                       QCryptographicHash::Sha1).toHex().left(20))
+        + QStringLiteral(".part");
+    QFile::remove(partPath);
+    QFile file(partPath);
     if (!file.open(QIODevice::WriteOnly)) {
         qWarning() << "[HttpClient] 저장할 파일을 열지 못했습니다:"
                    << openFailureReason(filePath, file.errorString()) << "-" << filePath;
@@ -153,10 +192,12 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
     // 중지 플래그 폴링 — 파일 다운로드 중에도 중단 가능하게
     QTimer cancelPoll;
     bool cancelled = false;
-    if (m_runFlag) {
+    // ★ 앱이 끝나는 중이어도 멈춘다(Common::appQuitting) — 그래서 m_runFlag 가 없어도 늘 돈다.
+    //   뒷일 스레드가 종료 중에 요청을 붙들고 있으면 Qt 를 치우는 사이 죽는다(2026-10-06 충돌 보고).
+    {
         cancelPoll.setInterval(100);
         QObject::connect(&cancelPoll, &QTimer::timeout, [&]() {
-            if (m_runFlag && !*m_runFlag) {
+            if ((m_runFlag && !*m_runFlag) || Common::appQuitting()) {
                 cancelled = true;
                 reply->abort();
             }
@@ -167,6 +208,9 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
     timer.start(m_downloadTimeout);
     loop.exec();
     cancelPoll.stop();
+    // ★ 받기도 시간 초과도 아닌데 루프가 끝났다면 바깥에서 끝낸 것이다(앱이 끝날 때 QCoreApplication::exit 는 주 스레드의
+    //   모든 루프를 끝낸다). 그때를 '다 받음' 으로 읽으면 잘린 자료가 성공이 된다 — 취소로 다룬다.
+    if (!cancelled && timer.isActive() && !reply->isFinished()) { cancelled = true; reply->abort(); }
 
     bool success = false;
     if (cancelled) {
@@ -187,8 +231,16 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
 
     // Remove empty/failed files
     if (!success || file.size() == 0) {
-        QFile::remove(filePath);
+        QFile::remove(partPath);
         success = false;
+    } else {
+        // 진짜 이름에 0 바이트 잔재가 있으면 QFile::rename 이 실패하므로 먼저 치운다
+        // (size>0 이면 맨 위에서 이미 돌아갔다 — 여기 오는 것은 '없음' 이거나 0 바이트뿐이다).
+        QFile::remove(filePath);
+        if (!QFile::rename(partPath, filePath)) {
+            QFile::remove(partPath);
+            success = false;
+        }
     }
 
     // macOS 다운로드 메타데이터 (setxattr syscall — 프로세스 스폰 없음)
@@ -223,6 +275,8 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
             return result;
         }
     }
+    if (Common::appQuitting()) return result;
+    InFlight inFlight;
     waitForRateLimit();
 
     QNetworkRequest request{QUrl(url)};
@@ -230,7 +284,14 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
 
     QNetworkReply *reply = m_nam->get(request);
 
-    QFile file(filePath);
+    // ★ downloadFile 과 같은 까닭·같은 이름 규칙 — 숨은 조각 파일에 받고, 성공했을 때만 진짜 이름으로 바꾼다.
+    const QFileInfo targetInfo(filePath);
+    const QString partPath = targetInfo.absolutePath() + QStringLiteral("/.dl_")
+        + QString::fromLatin1(QCryptographicHash::hash(targetInfo.fileName().toUtf8(),
+                                                       QCryptographicHash::Sha1).toHex().left(20))
+        + QStringLiteral(".part");
+    QFile::remove(partPath);
+    QFile file(partPath);
     if (!file.open(QIODevice::WriteOnly)) {
         qWarning() << "[HttpClient] 저장할 파일을 열지 못했습니다:"
                    << openFailureReason(filePath, file.errorString()) << "-" << filePath;
@@ -267,10 +328,12 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
     // 중지 플래그 폴링
     QTimer cancelPoll;
     bool cancelled = false;
-    if (m_runFlag) {
+    // ★ 앱이 끝나는 중이어도 멈춘다(Common::appQuitting) — 그래서 m_runFlag 가 없어도 늘 돈다.
+    //   뒷일 스레드가 종료 중에 요청을 붙들고 있으면 Qt 를 치우는 사이 죽는다(2026-10-06 충돌 보고).
+    {
         cancelPoll.setInterval(100);
         QObject::connect(&cancelPoll, &QTimer::timeout, [&]() {
-            if (m_runFlag && !*m_runFlag) {
+            if ((m_runFlag && !*m_runFlag) || Common::appQuitting()) {
                 cancelled = true;
                 reply->abort();
             }
@@ -281,6 +344,9 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
     timer.start(m_downloadTimeout);
     loop.exec();
     cancelPoll.stop();
+    // ★ 받기도 시간 초과도 아닌데 루프가 끝났다면 바깥에서 끝낸 것이다(앱이 끝날 때 QCoreApplication::exit 는 주 스레드의
+    //   모든 루프를 끝낸다). 그때를 '다 받음' 으로 읽으면 잘린 자료가 성공이 된다 — 취소로 다룬다.
+    if (!cancelled && timer.isActive() && !reply->isFinished()) { cancelled = true; reply->abort(); }
 
     if (cancelled) {
         // fallthrough → 아래 파일 삭제
@@ -316,8 +382,14 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
     if (writeFailed) result.success = false;
 
     if (!result.success || totalWritten == 0) {
-        QFile::remove(filePath);
+        QFile::remove(partPath);
         result.success = false;
+    } else {
+        QFile::remove(filePath);   // 0 바이트 잔재 — downloadFile 의 같은 자리 설명
+        if (!QFile::rename(partPath, filePath)) {
+            QFile::remove(partPath);
+            result.success = false;
+        }
     }
 
     if (result.success) {
@@ -333,6 +405,32 @@ void HttpClient::setProxy(const QString &host, int port, QNetworkProxy::ProxyTyp
 {
     QNetworkProxy proxy(type, host, port);
     m_nam->setProxy(proxy);
+}
+
+// ★ 프록시를 켜 두었으면(전역 설정 · 이 스레드의 계정 프록시 — Common::setThreadProxy) 이 클라이언트도 그 길로 나간다.
+//   생성자가 부른다. 여기가 빠지면 API 요청만 진짜 IP 로 새어 '한 세션 두 IP' 가 된다(맥 ueno 와 같은 본문).
+//   호출부가 뒤에 setProxyUrl 로 따로 주면 그것이 이긴다.
+void HttpClient::applyGlobalProxy()
+{
+    const QString u = Common::proxyUrl();
+    if (u.isEmpty()) {
+        // ★ 출구가 있어야 하는데 주소를 못 얻었으면(HTTPS 프록시의 중계기를 못 띄움) 닫힌 길을 건다
+        //   (127.0.0.1:9 — 아무것도 듣지 않는다). 그냥 NoProxy 로 두면 이 요청만 직접 연결로 샌다.
+        if (Common::proxyEnabled())
+            m_nam->setProxy(QNetworkProxy(QNetworkProxy::Socks5Proxy, QStringLiteral("127.0.0.1"), 9));
+        else
+            m_nam->setProxy(QNetworkProxy::NoProxy);
+        return;
+    }
+    const QUrl url(u);
+    // ★ 프로필이 HTTP 프록시일 수도 있다(윈도우 HttpClient::setProxyUrl 과 같은 판정).
+    //   HTTPS 프록시는 여기까지 오지 않는다 — Qt 에는 '프록시까지 TLS' 종류가 없어서
+    //   Common::proxyUrl 이 중계기(socks5://127.0.0.1) 주소로 바꿔 준다.
+    const bool socks = url.scheme().startsWith(QLatin1String("socks"));
+    QNetworkProxy p(socks ? QNetworkProxy::Socks5Proxy : QNetworkProxy::HttpProxy,
+                    url.host(), quint16(url.port(socks ? 1080 : 8080)));
+    if (!url.userName().isEmpty()) { p.setUser(url.userName()); p.setPassword(url.password()); }
+    m_nam->setProxy(p);
 }
 
 void HttpClient::setProxyUrl(const QString &url)
@@ -392,10 +490,12 @@ HttpResponse HttpClient::executeRequest(QNetworkReply *reply)
     // 중지 플래그 폴링 — 외부에서 setRunFlag(&isRunning) 해놨으면 100ms마다 확인 후 즉시 abort
     QTimer cancelPoll;
     bool cancelled = false;
-    if (m_runFlag) {
+    // ★ 앱이 끝나는 중이어도 멈춘다(Common::appQuitting) — 그래서 m_runFlag 가 없어도 늘 돈다.
+    //   뒷일 스레드가 종료 중에 요청을 붙들고 있으면 Qt 를 치우는 사이 죽는다(2026-10-06 충돌 보고).
+    {
         cancelPoll.setInterval(100);
         QObject::connect(&cancelPoll, &QTimer::timeout, [&]() {
-            if (m_runFlag && !*m_runFlag) {
+            if ((m_runFlag && !*m_runFlag) || Common::appQuitting()) {
                 cancelled = true;
                 reply->abort();
             }
@@ -406,6 +506,9 @@ HttpResponse HttpClient::executeRequest(QNetworkReply *reply)
     timer.start(m_timeout);
     loop.exec();
     cancelPoll.stop();
+    // ★ 받기도 시간 초과도 아닌데 루프가 끝났다면 바깥에서 끝낸 것이다(앱이 끝날 때 QCoreApplication::exit 는 주 스레드의
+    //   모든 루프를 끝낸다). 그때를 '다 받음' 으로 읽으면 잘린 자료가 성공이 된다 — 취소로 다룬다.
+    if (!cancelled && timer.isActive() && !reply->isFinished()) { cancelled = true; reply->abort(); }
 
     if (cancelled) {
         response.error = "Cancelled";

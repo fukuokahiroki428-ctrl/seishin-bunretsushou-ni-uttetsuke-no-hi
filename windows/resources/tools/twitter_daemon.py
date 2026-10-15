@@ -707,15 +707,16 @@ async def main():
         try:
             if USING_SHIM:
                 raise RuntimeError("x_session 이 이미 처리했습니다")
-            await client.client_transaction.init(client.http, ct_headers)
+            _r = await client.client_transaction.init(client.http, ct_headers)
+            if _r is False:
+                raise RuntimeError(getattr(client.client_transaction, "reason", "init 실패"))
             deduplicate_cookies(client)
             tid_ok = True
-            print(json.dumps({"info": "TID twikit init OK"}), flush=True)
+            print(json.dumps({"info": "TID init OK: " + str(getattr(client.client_transaction, "reason", "twikit"))}), flush=True)
         except Exception as e2:
             if not USING_SHIM:
                 print(json.dumps({"info": f"TID twikit init also failed: {e2}"}), flush=True)
 
-    # If all TID methods failed, use random transaction IDs
     # ★ twikit 으로 서명을 못 만들었으면 여기서 x_session 으로 갈아탄다.
     #   무작위 서명으로 계속 가는 것보다 낫다 — 그건 되는 척하다가 X 가 막을 때
     #   비로소 드러나는 상태다. x_session 은 유지되는 라이브러리로 서명하므로
@@ -744,15 +745,17 @@ async def main():
         except Exception as _xe:
             print(json.dumps({"info": f"x_session 으로도 못 갈아탔습니다: {_xe}"}), flush=True)
 
+    # 무효 TID 는 SearchTimeline 에서 빈 본문 404 로만 돌아와 해시 만료와 구별되지 않는다(RSSHub #23408)
     if not tid_ok:
-        # ★ 여기서 'import os' 를 하면 안 된다. 함수 안 어디서든 import 하면 파이썬이
-        #   그 이름을 함수 전체의 지역 변수로 잡아, 이 줄보다 위에서 os 를 쓰는 곳이
-        #   UnboundLocalError 로 죽는다. os 는 이미 파일 맨 위에 있다.
-        import base64
-        def _fake_transaction_id(*args, **kwargs):
-            return base64.b64encode(os.urandom(72)).decode('ascii')[:96]
-        client.client_transaction.generate_transaction_id = _fake_transaction_id
-        print(json.dumps({"info": "TID bypassed: using random transaction IDs"}), flush=True)
+        if not USING_SHIM:
+            client.client_transaction.generate_transaction_id = lambda *a, **k: ""
+            # ★ twikit 의 ClientTransaction 에는 ready/reason 이 없다(x_session 에만 있다).
+            #   handle_command 의 404 판정 getattr(..., "ready", True) 이 twikit 에서는 늘
+            #   '준비됨' 으로 읽혀, 서명 없는 404 가 no_tid 로 안 가고 해시 수리로 샌다.
+            #   윈도우는 twikit 이 주 경로라 여기서 tid_ok 를 그 이름으로 옮겨 적는다.
+            client.client_transaction.ready = False
+            client.client_transaction.reason = "twikit 서명기 초기화 실패 (위 'TID ... init' 줄 참고)"
+        print(json.dumps({"info": "TID 초기화 실패 — 서명 없이 보냅니다. SearchTimeline 404 는 해시 문제가 아닙니다"}), flush=True)
 
     # Re-apply cached hashes AFTER TID init (in case twikit reset them)
     cached2 = _load_cached_hashes()
@@ -760,7 +763,9 @@ async def main():
         apply_hashes_to_endpoint(Endpoint, cached2)
 
     # Signal ready with debug info
-    print(json.dumps({"status": "ready", "tid": tid_ok, "_st_url": Endpoint.SEARCH_TIMELINE[-40:]}), flush=True)
+    print(json.dumps({"status": "ready", "tid": tid_ok,
+                      "tid_reason": str(getattr(client.client_transaction, "reason", "")),
+                      "_st_url": Endpoint.SEARCH_TIMELINE[-40:]}), flush=True)
 
     # Track 404 for auto-repair
     repair_count = 0          # How many repairs attempted
@@ -815,8 +820,9 @@ async def main():
                     ct0 = new_ct0
                     client.set_cookies({"auth_token": auth_token, "ct0": ct0})
                     deduplicate_cookies(client)
+                    # 토큰은 앞자리도 내보내지 않는다(로그에 남는다) — 길이만
                     print(json.dumps({"status": "ok", "info": "Cookies refreshed from Chrome",
-                                      "auth_token": auth_token[:10] + "...", "ct0": ct0[:10] + "..."}), flush=True)
+                                      "auth_token_len": len(auth_token), "ct0_len": len(ct0)}), flush=True)
                 else:
                     print(json.dumps({"status": "error", "error": "Failed to extract cookies from Chrome"}), flush=True)
                 continue
@@ -853,7 +859,22 @@ async def main():
 
             # Auto-repair: if 404, try fetching new hashes and retry
             # Allow repair if: never repaired, or >60 seconds since last repair
-            if result.get("status") == 404:
+            if result.get("status") == 404 and result.get("_cause") == "no_tid":
+                # 서명기(x-client-transaction-id)가 준비되지 않아 난 404 — 해시 수리·캐시 삭제를 하지 않는다.
+                #   앱의 검색 루프는 ERROR 뒤 5초마다 같은 검색을 끝없이 다시 보낸다. 그래서 재초기화
+                #   (x.com/home + ondemand.s)는 60초에 한 번만 한다.
+                print(json.dumps({"info": "404 (TID 없음: %s) — 해시 수리 건너뜀" % result.get("_tid_reason", "")}), flush=True)
+                _ct = client.client_transaction
+                if time.time() - getattr(_ct, "_hn_reinit_at", 0) > 60:
+                    try:
+                        _ct._hn_reinit_at = time.time()
+                        if await _ct.init(client.http, ct_headers) is not False:
+                            deduplicate_cookies(client)
+                            print(json.dumps({"info": "TID 재초기화 성공 — 다시 보냅니다"}), flush=True)
+                            result = await handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatten_params)
+                    except Exception as _re:
+                        print(json.dumps({"info": f"TID 재초기화 실패: {_re}"}), flush=True)
+            elif result.get("status") == 404:
                 consecutive_404 += 1
                 can_repair = (
                     repair_count < 5 and  # Max 5 auto-repairs per session
@@ -865,12 +886,11 @@ async def main():
                     last_repair_time = time.time()
                     print(json.dumps({"info": f"HTTP 404 detected (attempt {repair_count}/5), auto-repairing GraphQL hashes..."}), flush=True)
 
-                    # Clear cached hashes first to force fresh fetch
-                    try:
-                        if os.path.exists(_hash_cache_path):
-                            os.remove(_hash_cache_path)
-                    except Exception:
-                        pass
+                    # 캐시는 지우지 않는다. auto_repair_hashes 는 캐시를 읽지 않고, 성공하면 덮어쓴다.
+                    #   지우면 갱신이 실패했을 때 마지막으로 맞던 해시만 잃는다.
+                    #   게다가 파일이 없으면 다음 기동 때 옛 Miyo 자리의 캐시를 끌어온다(파일 머리 50-55행).
+                    #   (tid_ok 가 참이면 main() 안의 'import base64, os' 때문에 이 삭제가 UnboundLocalError 로
+                    #    조용히 죽어 있었다. 그 import 를 없애면 살아나므로 같이 뺀다)
 
                     updated, err = await auto_repair_hashes(
                         client, Endpoint, auth_token=auth_token, ct0=ct0
@@ -1070,6 +1090,86 @@ def _adaptive_to_graphql_search(adaptive_data):
     }
 
 
+def _dig(obj, *keys):
+    """중첩 dict 를 안전하게 따라간다 — 중간이 dict 가 아니면 None."""
+    for k in keys:
+        if not isinstance(obj, dict):
+            return None
+        obj = obj.get(k)
+    return obj
+
+
+def _normalize_user_result(u):
+    """UserByScreenName 의 data.user.result 를 옛 legacy 모양으로 채운다(제자리 수정).
+
+    X 는 2026-08 초부터 user 객체에서 legacy 를 통째로 뺐다(키 자체가 없다).
+    필드는 core / profile_bio / relationship_counts / tweet_counts / action_counts /
+    banner / avatar / location / privacy / verification / website / pinned_items 로 흩어졌다.
+    C++(TwitterCollector)은 legacy 를 읽으므로 여기서 되돌려 채운다.
+
+    ★ legacy 에 이미 값이 있으면 건드리지 않는다 — 옛 모양 응답은 그대로 지나간다.
+      None·빈 문자열만 '없음' 으로 본다(0 과 False 는 값이다).
+    """
+    if not isinstance(u, dict):
+        return u
+    leg = u.get("legacy")
+    if not isinstance(leg, dict):
+        leg = {}  # 없음(2026-08~) 또는 null
+
+    def fill(key, value):
+        if value is None or value == "":
+            return
+        # 숫자가 문자열로 오는 변종 대비 — C++ toInt() 는 문자열이면 0 이 된다
+        if key.endswith("_count") and isinstance(value, str) and value.isdigit():
+            value = int(value)
+        cur = leg.get(key)
+        if cur is None or cur == "":
+            leg[key] = value
+
+    # 이름·아이디·가입일 — 2025 부터 core. 더 옛 변종 core.user_results.result.legacy 도 본다.
+    old_core_leg = _dig(u, "core", "user_results", "result", "legacy")
+    for k in ("name", "screen_name", "created_at"):
+        fill(k, _dig(u, "core", k))
+        fill(k, _dig(old_core_leg, k))
+    # 소개글 + 링크 엔티티(description.urls / url.urls)
+    fill("description", _dig(u, "profile_bio", "description"))
+    ents = _dig(u, "profile_bio", "entities")
+    if isinstance(ents, dict) and not leg.get("entities"):
+        leg["entities"] = ents
+    # 위치 — {"location": "..."} 또는 문자열
+    loc = u.get("location")
+    fill("location", loc.get("location") if isinstance(loc, dict) else loc)
+    # 웹사이트 — 옛 legacy.url 과 같은 t.co 주소(펼친 주소는 entities.url.urls[0].expanded_url)
+    fill("url", _dig(u, "website", "url"))
+    urls = _dig(leg, "entities", "url", "urls")
+    if isinstance(urls, list) and urls and isinstance(urls[0], dict):
+        fill("url", urls[0].get("url"))
+    # 비공개·인증
+    fill("protected", _dig(u, "privacy", "protected"))
+    fill("verified", _dig(u, "verification", "verified"))
+    fill("verified_type", _dig(u, "verification", "verified_type"))
+    # 숫자
+    fill("followers_count", _dig(u, "relationship_counts", "followers"))
+    fill("friends_count", _dig(u, "relationship_counts", "following"))
+    fill("statuses_count", _dig(u, "tweet_counts", "tweets"))
+    fill("media_count", _dig(u, "tweet_counts", "media_tweets"))
+    fill("favourites_count", _dig(u, "action_counts", "favorites_count"))
+    # 이미지
+    fill("profile_banner_url", _dig(u, "banner", "image_url"))
+    av = u.get("avatar")
+    if isinstance(av, dict):
+        fill("profile_image_url_https", av.get("image_url") or av.get("url"))
+    elif isinstance(av, str):
+        fill("profile_image_url_https", av)
+    # 기타 — 옛 legacy 에 있던 것
+    fill("pinned_tweet_ids_str", _dig(u, "pinned_items", "tweet_ids_str"))
+    fill("possibly_sensitive", u.get("possibly_sensitive"))
+
+    if leg:
+        u["legacy"] = leg
+    return u
+
+
 async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatten_params):
     action = args["action"]
 
@@ -1093,6 +1193,9 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
             if response.status_code == 200 and isinstance(data, dict):
                 try:
                     u = data.get("data", {}).get("user", {}).get("result", {})
+                    # X 는 2026-08 초부터 user 에서 legacy 를 통째로 뺐다 — 새 자리에서
+                    #   legacy 의 '없는 키만' 채운다(옛 모양은 그대로). 아래 옛 보정은 그 뒤 no-op.
+                    _normalize_user_result(u)
                     leg = u.get("legacy", {})
                     # If name is missing from legacy, try to get from core or top-level
                     if not leg.get("name"):
@@ -1174,9 +1277,12 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
                 raise_exception=False
             )
 
-            # Fallback: if GraphQL SearchTimeline returns 404 (account restricted),
-            # try v1.1 search API which is less likely to be blocked
-            if response.status_code == 404:
+            # 404 의 실제 원인은 대개 x-client-transaction-id 없음/무효(RSSHub #23408, 2026-09-27)
+            if response.status_code == 404 and not getattr(client.client_transaction, "ready", True):
+                return {"status": 404, "body": response.text, "_cause": "no_tid",
+                        "_tid_reason": str(getattr(client.client_transaction, "reason", ""))}
+            # 1.1/search/tweets.json · 2/search/adaptive.json 은 웹이 쓰지 않는 끝점 — 기본 꺼 둠
+            if response.status_code == 404 and os.environ.get("HANISHIKI_LEGACY_SEARCH") == "1":
                 try:
                     v1_params = {
                         "q": args["query"],
@@ -1316,6 +1422,11 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
                 raise_exception=False
             )
 
+            # 서명기가 준비되지 않은 404 는 해시 문제가 아니다 — 해시를 다시 받지 않고 원인을 붙여 돌려준다
+            #   (메인 루프가 _cause == "no_tid" 를 보고 TID 만 다시 세운다)
+            if response.status_code == 404 and not getattr(client.client_transaction, "ready", True):
+                return {"status": 404, "body": response.text, "_cause": "no_tid",
+                        "_tid_reason": str(getattr(client.client_transaction, "reason", ""))}
             # 404 = endpoint hash 만료 → 즉시 fresh hash fetch + retry (메인 루프 throttle 우회)
             if response.status_code == 404:
                 try:
@@ -1338,7 +1449,7 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
                     elif not updated:
                         # ★ 빈 배열이면 아무것도 안 바뀐 것이다. 그대로 다시 물으면 같은 404 가
                         #   온다 — '갱신됨' 이라고 적으면 안 된다. 예전에는 그렇게 적고 한 번 더
-                        #   똑같이 물어본 뒤 "API error: 404" 로 끝났다(실측: _0_zero_h).
+                        #   똑같이 물어본 뒤 "API error: 404" 로 끝났다(윈도우 실측: _0_zero_h).
                         print(json.dumps({"info": f"{action} hash 갱신 결과가 비어 있음 — 새 해시를 못 받았습니다. "
                                                   f"이 계정이 그 목록을 못 보는 상태이거나(비공개·차단·미로그인), "
                                                   f"X 가 끝점을 바꿨을 수 있습니다. 다시 묻지 않고 끝냅니다."}), flush=True)

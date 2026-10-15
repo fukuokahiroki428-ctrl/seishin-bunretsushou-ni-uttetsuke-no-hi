@@ -12,7 +12,9 @@
 #include <QNetworkCookie>
 #include <QHash>
 #include <QThread>
+#include <QPointer>
 #include <atomic>
+#include <functional>
 
 class MainWindow;
 class Config;
@@ -24,6 +26,7 @@ class HttpClient;
 class QTimer;
 class QProcess;
 class WebDavUploader;
+class TerminalWindow;
 
 class HanishikiBackend : public QObject
 {
@@ -37,11 +40,13 @@ public:
 
     // Thread-safe JS execution
     void runJs(const QString &js);
+    // 모든 창에 — '되풀이해도 결과가 같은' 화면 갱신 전용.
+    void runJsAll(const QString &js);
     void log(const QString &message, const QString &type = "info", const QString &platform = QString());
     void updateStats(int posts, int media, const QString &status, const QString &platform = QString());
     // 수집 종료 후 로그 꼬리에서 오류 다발 감지 시 로컬 LLM 진단 (SelfRepair 연동)
     void llmDiagnoseIfBroken(const QString &platformName, const QString &trackKey);
-    // 자가진단 보고서를 화면으로 (JSON 으로 감싸서 JS 에 넘긴다)
+    // 자가진단 보고서 전문을 화면(설정 → 유지보수 → 자가진단)으로 — JSON 으로 감싸서 넘긴다
     void pushSelfDiagnosisReport(const QString &report);
     // 수집 종료 시 UI 시작/정지 버튼 동기화 통지 (CollectionGuard 소멸자에서 호출)
     void notifyCollectionEnded(const QString &platform);
@@ -53,6 +58,8 @@ public:
 
 signals:
     void jsSignal(const QString &js);
+    // ★ '모든 창' 용 통로. jsSignal 과 나눈 이유는 아래 runJsAll 주석 참고.
+    void jsAllSignal(const QString &js);
     void logSignal(const QString &message, const QString &type, const QString &platform);
 
 public slots:
@@ -65,8 +72,18 @@ public slots:
     // 로컬 AI (자가진단 LLM) — 번들 llama-server 수동 제어 (설정 탭 토글)
     void startLocalLlm(const QString &modelHint);
     void stopLocalLlm();
-    bool killLlmOnPort();   // 8737 을 문 llama-server 정리(고아 포함)
-    void getLlmStatus();
+    bool killLlmOnPort();   // 8737 을 문 llama-server 정리(고아 포함)                            // 우리가 띄운 서버 종료
+    void getLlmStatus();                            // JS onLlmStatus(json) 로 상태·모델목록 통지
+    QString appStateBrief() const;   // 대화에 넘길 앱 설정 요약(진단서엔 없는 것)
+public:   // ↓ 슬롯이 아니다(moc 가 구조체를 슬롯 구역에서 받지 않는다)
+    // ★ 최근 오류·경고를 모아 두고, 알려진 원인에 맞춰 진단한다(수리 도우미의 눈).
+    //   예전엔 AI 가 받는 상태에 '무엇이 실패했는지' 가 하나도 없었다 — "기능 고쳐" 에
+    //   "도움이 필요하면 말씀해 주세요" 로만 답할 수밖에 없었다.
+    struct RecentProblem { qint64 at; QString platform; QString type; QString msg; };
+    struct Finding { QString platform; QString cause; QString advice; QString action; QString sample; int count = 0; qint64 last = 0; };
+    QList<Finding> diagnoseProblems(qint64 withinMs, const QString &onlyPlatform = QString()) const;
+    QString problemsDigest(qint64 withinMs) const;
+public slots:
     void llmChat(const QString &historyJson);       // 로컬 AI 와 대화(수리 도우미) — JS onLlmReply(text)
     // ── AI 방식(로컬/온라인) 설정 — 설정 화면에서 부른다 ────────────────────
     //   온라인은 OpenAI 호환 API 면 무엇이든 붙는다(제공자별 코드 없음).
@@ -74,7 +91,16 @@ public slots:
     void setAiOnlineConfig(const QString &baseUrl, const QString &apiKey, const QString &model);
     void getAiConfig();                                                    // JS onAiConfig(json)
     void testAiOnline();                                                   // 연결 시험 → JS onAiTestResult(ok, msg)
-    void openLlmTerminal();                          // 오픈클로를 대화형 터미널 REPL 로 띄움
+    void openLlmTerminal();                          // ハニワ를 대화형 터미널 REPL 로 띄움
+    // ★ winStartMove 는 아래 'Frameless 창 컨트롤' 의 Q_INVOKABLE 하나만 둔다(윈도우는 startSystemMove).
+    void setDragHover(bool on);                      // 마우스가 '끌 수 있는 곳' 위에 있나 — 누르는 순간 창 서버에 맡길지 정한다
+    // 고침 꾸러미(1단계 — 데이터만): 공개 저장소 hotfix-mac 브랜치에서 질의 번호·응답 이름 별명·수리 규칙을 받는다
+    void checkHotfixNow();                           // '지금 확인' — JS onHotfixStatus(json)
+    void setHotfixAuto(bool on);                     // 켤 때와 12시간마다 스스로 확인할지
+    void getHotfixStatus();                          // JS onHotfixStatus(json)
+    void resetHotfixTools();                         // 받은 파이썬 도우미를 버리고 앱에 든 것으로 되돌린다
+    void setDragRegions(const QString &key, const QString &json); // 끌 자리(사이드바·위쪽 띠)와 그 안 단추 자리 — CSS 픽셀 사각형
+    void setUiScaleMode(const QString &mode);        // 설정 '창 크기를 바꿀 때' — "layout" / "both"(기본) / "scale"
     void setWindowChrome(bool dark);                 // 웹 테마 토글 → 창 배경 동기화
     void setLlmModel(const QString &hint);           // 드롭다운 선택 모델 기억 (자동기동 경로가 이걸 사용)
     void autoRepair();                               // AI 가 자가진단→수리동작을 스스로 판단해 자동 실행
@@ -93,6 +119,12 @@ public slots:
 
     // Check if any collection is running
     bool isAnyRunning() const;
+
+    // 정리하기 — 받은 파일을 대상마다 정한 곳으로 '따로' 모은다(tools/organize.py, 원본은 그대로).
+    //   rulesJson = {"rules":[…], "captures":bool}. 진행은 화면 organizeEvent(줄 JSON)로 간다.
+    void organizeRun(const QString &rulesJson);
+    void organizeStop();
+    void organizeBrowse(const QString &fieldId);   // 폴더를 골라 화면의 그 칸에(setOrganizeField)
 
     // Navigation
     void browsePath(const QString &platform);
@@ -202,8 +234,28 @@ public slots:
     Q_INVOKABLE void openSelfDiagnosisFolder(); // 보고서 폴더 열기
 
     // 디버그 진단 — 설정 탭에서 호출
+    // ── 프록시(VPN) — 이름 붙은 프로필(윈도우 MiyoBackend 와 같은 이름·같은 모양) ──
+    Q_INVOKABLE void getProxyProfiles();                       // JS onProxyProfiles(list) — 비밀번호는 hasPass 만
+    Q_INVOKABLE void setProxyProfiles(const QString &json);    // 목록 저장(빈 비밀번호 = 안 바꿈)
+    Q_INVOKABLE void testProxyProfile(const QString &json);    // 한 개를 실제로 나가 보고 JS onProxyTest(ok, detail)
+    // 계정 ↔ 프록시 — 여기서 저장하고 모든 창의 accounts 를 맞춘다(JS onAccountProxy). handle 로 같은 계정인지 본다.
+    Q_INVOKABLE void setAccountProxy(const QString &platform, int index, const QString &handle, const QString &name);
+    // 화면의 테마 토큰({dark, bg, text, accent …}) — 앱 안 터미널 창이 같은 색으로 칠한다(라이트·다크 바꿀 때마다)
+    Q_INVOKABLE void setUiPalette(const QString &json);
+    // 옛 트위터 보기 — <저장 경로>/twitter 아래 받아 둔 계정을 예전 트위터 모양 페이지로 만들고 연다
+    Q_INVOKABLE void openTwitterViewer(const QString &savePath);
+    void buildTwitterViewer(const QString &savePath, bool openWhenDone);   // 어느 스레드에서든
+    Q_INVOKABLE void testProxy();          // 앱·데몬 두 갈래가 어떤 IP 로 나가는지 로그로(프로필 없이 = 직접 연결)
+
+    Q_INVOKABLE void getAppInfo();                   // JS onAppInfo(json) — 이름/판/만든 곳
     Q_INVOKABLE void getDiagnosticInfo();
     Q_INVOKABLE void killZombieChromes();
+    // ★ crash 로그 폴더 — 경로는 백엔드가 OS 에 맞춰 정한다(index.html 에 경로를 박지 않는다)
+    Q_INVOKABLE void openDiagnosticsFolder();
+    // ★ 자가진단 (설정 → 유지보수) — SelfRepair 보고서를 화면으로 끌어낸다
+    Q_INVOKABLE void runSelfDiagnosis();         // 지금 검사 (백그라운드 1~2분, 끝나면 onSelfDiagnosisReport)
+    Q_INVOKABLE void loadLastSelfDiagnosis();    // 마지막 보고서를 다시 띄운다 (창이 붙을 때)
+    Q_INVOKABLE void openSelfDiagnosisFolder();  // AppData/selfrepair 폴더 열기
 
     // ★ Frameless 창 컨트롤 — 커스텀 타이틀바(JS)에서 호출
     Q_INVOKABLE void winMinimize();
@@ -292,11 +344,21 @@ public slots:
 
 private slots:
     void executeJsMainThread(const QString &js);
+    void executeJsAllWindows(const QString &js);
     void appendLogMainThread(const QString &message, const QString &type, const QString &platform);
 
+public:   // ↓ 슬롯도 Q_INVOKABLE 도 아니다 — QWebChannel 은 이것들을 화면에 내보이지 않는다.
+    // 프록시 도우미 — 비밀번호를 담아 돌려주므로 화면에서 부를 수 없어야 한다(HanishikiBackend.cpp 설명).
+    //   public 인 까닭: TwitterCollector 가 계정을 돌릴 때(switchToAccount) 이름 → 프로필을 풀어야 한다.
+    QString proxyUrl(const QJsonObject &p, bool withCredentials = true) const;
+    QJsonObject proxyForAccount(const QJsonObject &account) const;
 private:
+
     MainWindow *m_window;
     Config *m_config;
+    mutable QMutex m_recentMutex;                 // 최근 오류·경고(수리 도우미용)
+    QList<RecentProblem> m_recentProblems;
+    QHash<QString, qint64> m_repairRanAt;          // 수리 도우미가 마지막으로 한 수리(되풀이 대신 다음 단계로)
     HttpClient *m_http;
     // ★ 중지 플래그 — 왜 이렇게 생겼나.
     //   예전에는 QMap<QString,bool> 하나였고, m_runningMutex 로 지킨다고 적혀 있었다.
@@ -399,12 +461,12 @@ private:
     }
     QString m_currentPlatform;
 
-    // Terminal log window
+    // Terminal log window — 앱 안 창(TerminalWindow). 예전엔 바깥 콘솔(맥은 Terminal.app)이었다.
     //   showWindow=false 면 로그 파일만 연다 — 창을 만들지도, 이미 있는 창을
     //   앞으로 끌어내지도 않는다. 内閣会의 폴링처럼 사람이 보고 있지 않은 자리에서 쓴다.
     void openTerminalLog(const QString &platform, const QString &savePath = QString(),
                          bool showWindow = true);
-    // 백업 전용 — 컬러 + 스피너 애니메이션 (clear + tail -n 30 + spinner refresh 200ms)
+    // 백업 전용 창 — 중지 단추가 백업 워치독의 STOP 표식을 쓴다
     void openBackupTerminalLog();
     void writeTerminalLog(const QString &message, const QString &platform = QString());
     void closeTerminalLog(const QString &platform = QString());
@@ -412,8 +474,26 @@ private:
     //   작업관리자에서 Predormition 아래 nested, 앱 종료 시 트리 kill. 다른 OS 에선 no-op.
     void launchChildConsole(const QString &scriptPath);
     QList<QProcess*> m_childConsoleProcs;  // 실행 중인 자식 콘솔 추적 (종료 시 정리)
+    // ★ 앱 안 터미널 창 — 키(플랫폼·트랙)마다 하나. 메인 스레드에서만 만들고 만진다.
+    QHash<QString, QPointer<TerminalWindow>> m_terminalWindows;
+    // 메인 스레드 전용 — 없으면 만들고, 새 판을 시작하고(begin), 앞으로 띄운다.
+    TerminalWindow *openTerminalWindow(const QString &key, const QString &savePath, bool interactive = false);
+    void terminalWindowLive(const QString &key, const QString &line);       // \r 진행률 줄(어느 스레드든)
+    void terminalWindowDone(const QString &key, const QString &label = QString(),
+                            bool stopped = false);                          // 어느 스레드든
+    void onTerminalStop(const QString &key);
+    // 유튜브·니코동 배치 스크립트(bash) — 예전엔 Terminal.app 이 돌렸다. 이제 앱의 자식이다.
+    QHash<QString, QPointer<QProcess>> m_batchProcs;
+    void killBatchGroup(const QString &platform);
+    // ハニワ 대화(REPL) — 앱 안 대화형 창에 붙은 파이썬
+    QPointer<QProcess> m_haniwaProc;
+    // 실제 Chrome 수집(m_realChrome — 한 번에 하나)이 쓰는 계정 출구. 미디어 다운로드는 메인 스레드
+    //   콜백에서 돌아 계정 프록시가 안 보인다 — 이것을 그 HttpClient 에만 건다.
+    QJsonObject m_realChromeProxyProfile;
+    QJsonObject m_uiPalette;   // 마지막으로 받은 화면 테마 토큰(setUiPalette)
 public:
     void closeAllTerminalLogs();
+    void closeAllTerminalWindows();   // 본 창을 닫을 때 — 앱 안 터미널 창도 같이 닫는다
     QString m_terminalLogPath;
     QMap<QString, QString> m_terminalLogPaths;
     // 수집 모니터 창 — 트랙마다 하나씩 띄우는 별도 창(cmd 아님).
@@ -431,6 +511,8 @@ public:
     void killChildProcesses();
     void memoryMonitorTick();
     QTimer *m_memoryMonitorTimer = nullptr;
+    // 고침 꾸러미 확인 스레드 — 앱이 끝날 때 기다려 준다(종료 중에 네트워크를 붙든 채 남으면 죽는다)
+    QPointer<QThread> m_hotfixThread;
     qint64 m_peakRssMB = 0;
 
     // 内閣会 내부 상태
@@ -442,14 +524,18 @@ public:
     QJsonArray m_naikakukaiWatches;
     int m_naikakukaiIntervalMin = 30;
     int m_naikakukaiCursor = 0;
+    bool m_naikakukaiDiskGoneLogged = false;   // 디스크 빠짐/돌아옴을 한 줄씩만 적으려고
+    bool m_autoResumeDone = false;          // autoResumeWatchers 는 앱이 뜬 뒤 한 번만
+    void autoResumeWatchers();
+    void loadHotfixFromDisk();                       // 켤 때 — 받아 둔 꾸러미를 곧장 쓴다(인터넷 없어도)
+    void checkHotfix(bool manual);                   // 새 판이 있으면 받아 검사하고 쓴다
+    QJsonObject hotfixState() const;
+    void saveHotfixState(const QJsonObject &st) const;
     std::atomic<bool> m_naikakukaiRunning{false};
     // 内閣会가 띄운 수집의 플랫폼. 중지 버튼이 '그것만' 멈추게 하려고 둔다.
     //   사용자가 직접 시작한 수집까지 멈추면 안 되므로 구별이 필요하다.
     //   m_runningMutex 로 보호한다.
     QString m_naikakukaiActivePlatform;
-    // ★ 디스크가 안 붙어 임시 폴더가 폴백으로 갈 때, 처음 한 번만 알리려고 둔다.
-    //   매 tick 마다 적으면 1년치 로그가 그 한 줄로 덮인다. 다시 붙으면 false 로 돌린다.
-    bool m_tempFallbackWarned = false;
     // 감시가 돌려놓은 수집인가 — 맞으면 그 수집 로그를 内閣会 창에도 같이 보여 준다.
     std::atomic<bool> m_naikakukaiMirroring{false};
 
@@ -574,6 +660,13 @@ public:
     void runSpinSpinCollection(const QJsonObject &config);
     void runAskedCollection(const QJsonObject &config);
     void runCrawlCollection(const QJsonObject &config);
+    // ★ 끝까지 기록 — 앱형 사이트(트위터 · 미스키 …)를 끝까지 내리며 페이지가 받은 글 자료(JSON)와 첨부 원본을
+    //   outDir 에 남긴다(tools/crawl_record.py, 헤드리스 Chrome for Testing). 워커 스레드에서 부른다.
+    //   alive() 가 거짓이 되면(중지 · 새 판) 도우미를 내린다. 글이나 첨부를 하나라도 남겼으면 true.
+    bool runCrawlRecord(const QString &url, const QString &outDir, const QList<QNetworkCookie> &cookies,
+                        bool headful, const QString &loginCheckJs, const std::function<bool()> &alive);
+    // 주소의 호스트로 저장된 계정 로그인을 고른다(x.com → 트위터 계정 …). 없으면 빈 목록. label 엔 계정 이름만.
+    QList<QNetworkCookie> savedLoginCookiesForHost(const QString &host, QString *label = nullptr) const;
     // ★ Pixiv Fanbox (멤버십 컨텐츠 다운)
     void runFanboxCollection(const QJsonObject &config);
     Q_INVOKABLE void refreshFanboxSession();  // FANBOXSESSID 자동 추출
@@ -589,7 +682,10 @@ public:
     // ★ 병렬 모드: 각 trackKey마다 자기 Chrome 인스턴스 — 다른 디버그 포트로 격리
     QMap<QString, RealChromeCrawler*> m_captureChromesPerThread;
     QMutex m_capChromeMapMutex;
-    int m_nextCapPort = 9223;
+    int m_nextCapPort = 0;   // 0 이면 처음 배정할 때 Common::capturePortBase() + 1 로 시작
+    // 수집 중 실패 건수. 디스코드 'all' 모드의 하위 수집과, 라우팅에 없는
+    // 플랫폼이 들어온 경우를 센다. 0 이 아니면 '완료' 라고 말하지 않는다.
+    int m_collectionErrorCount = 0;
     // ★ trackKey → 디버그 포트 고정. 예전엔 맵에 트랙을 처음 넣을 때만 포트를 배정해서,
     //   Chrome 이 죽어 재생성될 때 기본값 9223 으로 되돌아갔다. start() 는 그 포트를 쓰는
     //   프로세스를 죽이므로 다른 트랙의 멀쩡한 Chrome 을 잡아버린다.
@@ -600,6 +696,9 @@ public:
     // RAM 제한 — 동시 실행 Chromium 1개로 제한 (메모리 우선)
     // ★ 8GB Mac OOM 방지 + 디스크 마운트 해제 방지 — 캡쳐 quality 그대로, 속도만 느려짐
     QSemaphore m_chromeCapacitySem{1};
+    std::atomic<bool> m_organizeRunning{false};   // 정리하기는 한 번에 하나
+    std::atomic<bool> m_organizeStop{false};
+    QPointer<QThread> m_organizeThread;            // 끌 때 기다린다(aboutToQuit)
 
     // ★ 동시 수집 작업 자체 제한 — 여러 플랫폼 동시 돌릴 때 메모리 중첩 방지
     //   2개 동시 OK. 3번째는 큐에서 대기. 끝나면 자동으로 다음 시작.

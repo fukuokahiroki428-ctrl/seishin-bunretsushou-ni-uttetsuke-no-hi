@@ -26,6 +26,141 @@
 #include <QSet>
 #include <QQueue>
 
+#include "utils/JsonShape.h"
+
+// ── X 응답을 '이름 하나' 로 읽지 않는다 ─────────────────────────────────────
+//
+// X 는 응답 이름을 주기적으로 바꾼다. 이 파일에도 그 흔적이 남아 있다 —
+//   bookmark_timeline → bookmark_timeline_v2
+//   threaded_conversation_with_injections → …_v2
+//   timeline → timeline_v2
+// 한 번 바뀐 이름은 또 바뀐다. 그런데 정작 알맹이를 꺼내는 세 이름
+// (itemContent · tweet_results · legacy) 은 이 파일 안에 열두 벌 넘게 복사돼
+// 박혀 있었다. 하나만 바뀌면 검색·유저트윗·좋아요·북마크·팔로워·스레드가
+// 동시에 0개가 되고, 화면에는 '수집 완료 0개' 라고만 뜬다.
+// 팬박스가 그런 식으로 여덟 달을 조용히 비어 있었다(2026-09-24).
+//
+// 그래서 꺼내는 자리를 여기 한 곳에 모으고, 이름을 여러 개 댄다.
+namespace {
+
+// 타임라인의 instructions — 껍데기 이름이 갈래마다 다르고 자주 바뀐다.
+//   roots  : data 바로 아래에서 찾을 이름들
+//   howOut : 아는 이름으로 못 찾아 모양을 훑어 찾았을 때 그 자리를 적어 준다(빈 문자열이면 정상)
+QJsonArray xInstructions(const QJsonObject &body, const QStringList &roots, QString *howOut = nullptr)
+{
+    if (howOut) howOut->clear();
+    const QJsonObject data = body.value("data").toObject();
+    // data → (root) → [result] → (timeline 계열) → [timeline] → instructions
+    QJsonObject cur = JsonShape::pickObject(data, roots);
+    if (cur.isEmpty() && !data.isEmpty()) cur = data;
+    cur = JsonShape::unwrap(cur, {"result"});
+    QJsonObject tl = JsonShape::pickObject(cur, {"timeline_v2", "timeline", "timeline_v3",
+                                                 "timeline_response", "search_timeline",
+                                                 "community_timeline", "favoriters_timeline",
+                                                 "retweeters_timeline", "bookmark_timeline_v2",
+                                                 "bookmark_timeline"});
+    if (!tl.isEmpty()) cur = tl;
+    cur = JsonShape::unwrap(cur, {"timeline"});
+    QJsonArray ins = JsonShape::pickArray(cur, {"instructions"});
+    if (!ins.isEmpty()) return ins;
+    // 아는 이름이 하나도 없다 — 모양을 훑어 instructions 처럼 생긴 배열을 찾는다.
+    QString foundAt;
+    const QJsonArray guess = JsonShape::findArrayOfObjects(data, &foundAt, 6);
+    if (howOut) *howOut = foundAt;
+    return guess;
+}
+
+// entry 하나에서 트윗 알맹이 — itemContent / tweet_results / result 세 이름.
+QJsonObject xTweetResult(const QJsonObject &entryOrItem)
+{
+    QJsonObject c = JsonShape::pickObject(entryOrItem, {"content", "item"});
+    if (c.isEmpty()) c = entryOrItem;
+    c = JsonShape::unwrap(c, {"item"});                       // item.itemContent 꼴
+    QJsonObject ic = JsonShape::pickObject(c, {"itemContent", "content"});
+    if (ic.isEmpty()) ic = c;
+    QJsonObject tr = JsonShape::pickObject(ic, {"tweet_results", "tweetResults", "tweet_result"});
+    tr = JsonShape::unwrap(tr, {"result"});
+    // TweetWithVisibilityResults 껍데기 — 예전부터 있던 변종
+    tr = JsonShape::unwrap(tr, {"tweet"});
+    return tr;
+}
+
+// entry 하나에서 사용자 알맹이 — user_results / result.
+QJsonObject xUserResult(const QJsonObject &entryOrItem)
+{
+    QJsonObject c = JsonShape::pickObject(entryOrItem, {"content", "item"});
+    if (c.isEmpty()) c = entryOrItem;
+    c = JsonShape::unwrap(c, {"item"});
+    QJsonObject ic = JsonShape::pickObject(c, {"itemContent", "content"});
+    if (ic.isEmpty()) ic = c;
+    QJsonObject ur = JsonShape::pickObject(ic, {"user_results", "userResults", "user_result"});
+    return JsonShape::unwrap(ur, {"result"});
+}
+
+// 트윗/사용자의 옛 필드 묶음 — X 가 2023년부터 조금씩 밖으로 꺼내고 있다.
+//   legacy 가 사라져도 core / __typename 옆에 같은 이름들이 남는 꼴을 여러 번 봤다.
+QJsonObject xLegacy(const QJsonObject &result)
+{
+    QJsonObject lg = JsonShape::pickObject(result, {"legacy", "tweet_legacy", "user_legacy"});
+    if (!lg.isEmpty()) return lg;
+    // legacy 가 없는데 알맹이가 이미 펼쳐져 있는 꼴이면 그대로 쓴다.
+    if (result.contains("full_text") || result.contains("screen_name")
+        || result.contains("created_at") || result.contains("entities"))
+        return result;
+    // core.user_results.result.legacy 처럼 한 겹 안쪽에 있는 꼴
+    const QJsonObject core = result.value("core").toObject();
+    if (!core.isEmpty()) {
+        QJsonObject u = JsonShape::unwrap(JsonShape::pickObject(core, {"user_results", "user_result"}), {"result"});
+        QJsonObject ul = JsonShape::pickObject(u, {"legacy"});
+        if (!ul.isEmpty()) return ul;
+    }
+    return QJsonObject();
+}
+
+// 사용자 알맹이의 legacy — 2026-08 새 모양도 채워서 준다.
+//   X 는 2026-08 초 user 객체에서 legacy 를 통째로 뺐다. 필드가
+//   core / profile_bio / relationship_counts / tweet_counts / action_counts /
+//   banner / avatar / location / privacy / verification / website 로 흩어졌다.
+//   ★ legacy 에 이미 있는 값은 그대로 둔다 — 없거나 빈 키만 새 자리에서 채운다.
+//     데몬(twitter_daemon.py _normalize_user_result)과 같은 지도. 데몬이 옛 판일 때의 그물.
+QJsonObject xUserLegacy(const QJsonObject &user)
+{
+    QJsonObject lg = xLegacy(user);
+    auto sub = [&user](const QString &k) { return user.value(k).toObject(); };
+    auto fill = [&lg](const QString &key, const QJsonValue &v) {
+        if (v.isUndefined() || v.isNull()) return;
+        if (v.isString() && v.toString().isEmpty()) return;
+        const QJsonValue cur = lg.value(key);
+        if (cur.isUndefined() || cur.isNull() || (cur.isString() && cur.toString().isEmpty()))
+            lg.insert(key, v);
+    };
+    const QJsonObject core = sub("core");
+    fill("name", core.value("name"));
+    fill("screen_name", core.value("screen_name"));
+    fill("created_at", core.value("created_at"));
+    const QJsonObject bio = sub("profile_bio");
+    fill("description", bio.value("description"));
+    fill("entities", bio.value("entities"));
+    const QJsonValue loc = user.value("location");
+    fill("location", loc.isObject() ? loc.toObject().value("location") : loc);
+    fill("url", sub("website").value("url"));
+    fill("protected", sub("privacy").value("protected"));
+    fill("verified", sub("verification").value("verified"));
+    const QJsonObject rc = sub("relationship_counts");
+    fill("followers_count", rc.value("followers"));
+    fill("friends_count", rc.value("following"));
+    const QJsonObject tc = sub("tweet_counts");
+    fill("statuses_count", tc.value("tweets"));
+    fill("media_count", tc.value("media_tweets"));
+    fill("favourites_count", sub("action_counts").value("favorites_count"));
+    fill("profile_banner_url", sub("banner").value("image_url"));
+    const QJsonValue av = user.value("avatar");
+    fill("profile_image_url_https", av.isObject() ? av.toObject().value("image_url") : av);
+    return lg;
+}
+
+} // namespace
+
 const QString TwitterCollector::GRAPHQL_BASE = "https://x.com/i/api/graphql";
 // ★ 아래 3개는 '코드에 박힌 기본값'일 뿐 — 실제 사용 값은 apiUrl() 이 런타임에 고른다.
 //   X 는 배포마다 GraphQL query ID 를 회전시킨다 → api_overrides.json 으로 재빌드 없이 교체.
@@ -58,7 +193,7 @@ QString TwitterCollector::apiUrl(const QString &key, const QString &builtin)
 // 순서: 옛 자리 → 새 자리 → 최상위 → 한 겹 더 들어간 판.
 QString TwitterCollector::screenNameOf(const QJsonObject &userResult)
 {
-    QString sn = userResult["legacy"].toObject()["screen_name"].toString();
+    QString sn = xLegacy(userResult)["screen_name"].toString();
     if (!sn.isEmpty()) return sn;
     sn = userResult["core"].toObject()["screen_name"].toString();
     if (!sn.isEmpty()) return sn;
@@ -68,7 +203,7 @@ QString TwitterCollector::screenNameOf(const QJsonObject &userResult)
     const QJsonObject inner = userResult["core"].toObject()["user_results"]
                                   .toObject()["result"].toObject();
     if (!inner.isEmpty()) {
-        sn = inner["legacy"].toObject()["screen_name"].toString();
+        sn = xLegacy(inner)["screen_name"].toString();
         if (!sn.isEmpty()) return sn;
         sn = inner["core"].toObject()["screen_name"].toString();
         if (!sn.isEmpty()) return sn;
@@ -79,7 +214,7 @@ QString TwitterCollector::screenNameOf(const QJsonObject &userResult)
 // 표시 이름(@아이디가 아닌 사람 이름). 옮겨 간 자리가 screen_name 과 같다.
 QString TwitterCollector::displayNameOf(const QJsonObject &userResult)
 {
-    QString n = userResult["legacy"].toObject()["name"].toString();
+    QString n = xLegacy(userResult)["name"].toString();
     if (!n.isEmpty()) return n;
     n = userResult["core"].toObject()["name"].toString();
     if (!n.isEmpty()) return n;
@@ -88,7 +223,7 @@ QString TwitterCollector::displayNameOf(const QJsonObject &userResult)
     const QJsonObject inner = userResult["core"].toObject()["user_results"]
                                   .toObject()["result"].toObject();
     if (!inner.isEmpty()) {
-        n = inner["legacy"].toObject()["name"].toString();
+        n = xLegacy(inner)["name"].toString();
         if (!n.isEmpty()) return n;
         n = inner["core"].toObject()["name"].toString();
         if (!n.isEmpty()) return n;
@@ -99,34 +234,35 @@ QString TwitterCollector::displayNameOf(const QJsonObject &userResult)
 TwitterCollector::TwitterCollector(HanishikiBackend *backend, QObject *parent)
     : QObject(parent)
     , m_backend(backend)
-    // ★ 부모(this)를 주지 않는다. collector 는 메인 스레드 소속인데 m_http 는
-    //   collect()/checkNewPosts() 가 도는 워커 스레드에서 다시 만들어진다.
-    //   그때 부모를 주면 Qt 가 "다른 스레드의 부모에게 자식을 만들 수 없다" 며
-    //   거절하고, 부모가 안 붙은 채로 남아 정리도 안 된다(실측으로 이 경고를 봤다).
+    // ★ 부모(this)를 주지 않는다. collector 는 메인 스레드 소속인데(HanishikiBackend::
+    //   runTwitterCollection 이 메인에서 만든다) m_http 는 collect()/checkNewPosts() 가 도는
+    //   워커 스레드에서 다시 만들어진다(adoptHttpToCurrentThread). 그때 부모를 주면 Qt 가
+    //     QObject: Cannot create children for a parent that is in a different thread.
+    //   라며 거절하고, 부모가 안 붙은 채로 남아 정리도 안 된다(윈도우 쪽에서 실측한 경고).
     //   수명은 adoptHttpToCurrentThread() 와 소멸자가 직접 책임진다.
     , m_http(new HttpClient())
 {
+    delete m_http;                       // 옛것 정리(소멸자가 스레드 없는 NAM 도 처리한다)
+    m_http = new HttpClient();           // 부모 없음 — 생성자의 설명 참고
     m_http->setTimeout(30000);
 }
 
 // ★ QNetworkAccessManager 는 자기를 만든 스레드에서만 써야 한다(Qt 규칙).
 //
-//   이 객체는 수집 워커 스레드에서 new 된다
-//   (HanishikiBackend::runTwitterCollection — 'Sequential 모드' 쪽).
-//   그런데 멤버로 남아서 그 워커가 끝난 뒤에도 살아 있고, '새 트윗 확인' 은
-//   또 다른 워커 스레드에서 같은 객체의 checkNewPosts() 를 부른다.
-//   그때 생성자에서 만들어 둔 HttpClient 를 그대로 쓰면, 그 안의 NAM 은
-//   이미 사라진 스레드에 묶여 있다(실측: nam->thread() == 0).
-//   소켓 알림이 죽은 이벤트 디스패처에 걸려 있어 응답이 영영 안 오고,
-//   30초 타임아웃으로만 드러난다 — '새 트윗 확인이 느리다' 로 보인다.
+//   이 객체는 메인 스레드에서 만들어지지만 collect() 는 수집 워커에서, checkNewPosts() 는
+//   또 다른 워커('새 트윗 확인' 의 QThread::create)에서 돈다. 앞서 만든 HttpClient 를
+//   그대로 쓰면 그 안의 NAM 은 엉뚱한 스레드, 혹은 이미 사라진 스레드(nam->thread() == 0)에
+//   묶여 있다. 소켓 알림이 죽은 이벤트 디스패처에 걸리면 응답이 영영 안 오고 30초
+//   타임아웃으로만 드러난다 — '새 트윗 확인이 느리다' 로 보일 자리다.
 //
 //   그래서 진입할 때마다 지금 도는 스레드 것으로 새로 만든다.
-//   (근본은 워커에서 멤버 collector 를 new 하는 것이지만, 그쪽은 병렬/순차
-//    분기와 newestTweetId 상태가 얽혀 있어 건드리지 않았다. 이 한 줄로
-//    '엉뚱한 스레드의 NAM 을 쓴다' 는 실제 오작동은 사라진다.)
+//   ※ 맥에서는 이것이 계정별 프록시도 맞춘다. HttpClient 생성자의 applyGlobalProxy() 가
+//     '이 스레드' 의 프록시(Common::setThreadProxy)를 읽기 때문이다. 메인에서 만든 것은
+//     전역 설정만 보므로, 이 줄이 없으면 미디어 다운로드만 계정 프록시를 벗어나
+//     '한 세션 두 IP' 가 된다.
 void TwitterCollector::adoptHttpToCurrentThread()
 {
-    delete m_http;                       // 옛것 정리(소멸자가 스레드 없는 NAM 도 처리한다)
+    delete m_http;                       // 옛것 정리 — ~HttpClient 가 다른/사라진 스레드의 NAM 도 처리한다
     m_http = new HttpClient();           // 부모 없음 — 생성자의 설명 참고
     m_http->setTimeout(30000);
 }
@@ -145,6 +281,8 @@ TwitterCollector::~TwitterCollector()
     delete m_profileBuffer;
     m_profileBuffer = nullptr;
     // ★ m_http 는 부모가 없다(위 생성자 설명) — 여기서 직접 지운다.
+    //   메인에서 지우든(멤버 collector) 워커에서 지우든(병렬 모드의 지역 collector)
+    //   ~HttpClient 가 NAM 을 맞는 스레드로 넘겨 정리한다.
     delete m_http;
     m_http = nullptr;
 }
@@ -753,12 +891,13 @@ QJsonObject TwitterCollector::getUserByScreenName(const QString &screenName)
         QString bodyStr = resp["body"].toString();
         if (!bodyStr.isEmpty()) m_backend->log("body (str): "+ bodyStr.left(300), "error", "twitter");
     } else {
-        QJsonObject legacy = result["legacy"].toObject();
+        QJsonObject legacy = xLegacy(result);
         // Twitter API 2025+: name moved out of legacy, try to recover
         if (legacy["name"].toString().isEmpty()) {
             // Try core.user_results.result.legacy.name
-            QString coreName = result["core"].toObject()["user_results"].toObject()
-                                   ["result"].toObject()["legacy"].toObject()["name"].toString();
+            QString coreName = JsonShape::pickString(xLegacy(result), {"name", "screen_name"});
+            if (coreName.isEmpty())
+                coreName = JsonShape::pickString(result.value("core").toObject(), {"name", "screen_name"});
             if (!coreName.isEmpty()) {
                 legacy["name"] = coreName;
                 result["legacy"] = legacy;
@@ -809,6 +948,12 @@ QPair<QJsonArray, QString> TwitterCollector::searchTweets(const QString &query, 
     int status = resp["status"].toInt();
     if (status == 429) return {QJsonArray(), "RATE_LIMITED"};
 
+    if (status == 404 && resp.value(QStringLiteral("_cause")).toString() == QLatin1String("no_tid")) {
+        m_backend->log("SearchTimeline 404 — X 서명(x-client-transaction-id)을 만들지 못했습니다: "
+                       + resp.value(QStringLiteral("_tid_reason")).toString().left(200)
+                       + " (해시·토큰 문제 아님)", "error", "twitter");
+        return {QJsonArray(), QStringLiteral("ERROR")};
+    }
     // 401/403/404: 토큰/해시 만료 → 데몬 재시작으로 자동 갱신 (최대 3회)
     if (status == 401 || status == 403 || status == 404) {
         m_backend->log(QString("SearchTimeline HTTP %1 → 자동 갱신 시도 (최대 3회)").arg(status), "warning", "twitter");
@@ -848,9 +993,11 @@ QPair<QJsonArray, QString> TwitterCollector::searchTweets(const QString &query, 
 
     QJsonArray results;
     QString nextCursor;
-    QJsonArray instructions = data["data"].toObject()["search_by_raw_query"].toObject()
-                                  ["search_timeline"].toObject()["timeline"].toObject()
-                                  ["instructions"].toArray();
+    QString insHow;
+    QJsonArray instructions = xInstructions(data, {"search_by_raw_query", "search", "search_timeline"}, &insHow);
+    if (!insHow.isEmpty())
+        m_backend->log(QString("X 검색 응답 모양이 바뀐 듯합니다 — '%1' 에서 찾았습니다. 받기는 계속합니다.")
+                           .arg(insHow), "warning", "twitter");
 
     for (const auto &inst : instructions) {
         QJsonObject instruction = inst.toObject();
@@ -860,8 +1007,7 @@ QPair<QJsonArray, QString> TwitterCollector::searchTweets(const QString &query, 
                 QJsonObject entryObj = entry.toObject();
                 QString entryId = entryObj["entryId"].toString();
                 if (entryId.startsWith("tweet-")) {
-                    QJsonObject tweetResult = entryObj["content"].toObject()
-                        ["itemContent"].toObject()["tweet_results"].toObject()["result"].toObject();
+                    QJsonObject tweetResult = xTweetResult(entryObj);
 
                     if (tweetResult.contains("tweet")) {
                         tweetResult = tweetResult["tweet"].toObject();
@@ -940,14 +1086,15 @@ QPair<QJsonArray, QString> TwitterCollector::getUserTweets(const QString &userId
         }
     }
 
-    // Navigate: data → user → result → timeline_v2 → timeline → instructions
+    // data → user → result → (timeline_v2|timeline|…) → timeline → instructions
+    //   ★ 물러설 이름을 손으로 두 개 적어 두었던 자리다. 이제 xInstructions 가
+    //     아는 이름을 전부 훑고, 그래도 없으면 모양으로 찾는다.
     QJsonObject userData = json["data"].toObject()["user"].toObject()["result"].toObject();
-    QJsonArray instructions = userData["timeline_v2"].toObject()["timeline"].toObject()["instructions"].toArray();
-
-    // Fallback path: data → user → result → timeline → timeline → instructions
-    if (instructions.isEmpty()) {
-        instructions = userData["timeline"].toObject()["timeline"].toObject()["instructions"].toArray();
-    }
+    QString utHow;
+    QJsonArray instructions = xInstructions(json, {"user", "user_result"}, &utHow);
+    if (!utHow.isEmpty())
+        m_backend->log(QString("X 타임라인 응답 모양이 바뀐 듯합니다 — '%1' 에서 찾았습니다.")
+                           .arg(utHow), "warning", "twitter");
 
     if (instructions.isEmpty() && cursor.isEmpty()) {
         QStringList keys;
@@ -967,15 +1114,13 @@ QPair<QJsonArray, QString> TwitterCollector::getUserTweets(const QString &userId
                     QJsonObject content = e["content"].toObject();
                     QString entryType = content["entryType"].toString();
                     if (entryType == "TimelineTimelineItem"|| content.contains("itemContent")) {
-                        QJsonObject tweetResult = content["itemContent"].toObject()
-                            ["tweet_results"].toObject()["result"].toObject();
+                        QJsonObject tweetResult = xTweetResult(content);
                         if (tweetResult.contains("tweet")) tweetResult = tweetResult["tweet"].toObject();
                         if (!tweetResult.isEmpty()) results.append(tweetResult);
                     } else if (entryType == "TimelineTimelineModule") {
                         QJsonArray items = content["items"].toArray();
                         for (const auto &item : items) {
-                            QJsonObject itemContent = item.toObject()["item"].toObject()["itemContent"].toObject();
-                            QJsonObject tweetResult = itemContent["tweet_results"].toObject()["result"].toObject();
+                            QJsonObject tweetResult = xTweetResult(item.toObject());
                             if (tweetResult.contains("tweet")) tweetResult = tweetResult["tweet"].toObject();
                             if (!tweetResult.isEmpty()) results.append(tweetResult);
                         }
@@ -1025,9 +1170,9 @@ QPair<QJsonArray, QString> TwitterCollector::getTweetDetail(const QString &tweet
     QString nextCursor;
 
     // Navigate: data → threaded_conversation_with_injections_v2 → instructions
-    QJsonArray instructions = json["data"].toObject()
-        ["threaded_conversation_with_injections_v2"].toObject()
-        ["instructions"].toArray();
+    QJsonArray instructions = xInstructions(json, {"threaded_conversation_with_injections_v2",
+        "threaded_conversation_with_injections", "threaded_conversation_with_injections_v3",
+        "threaded_conversation", "timeline_response"});
 
     for (const auto &inst : instructions) {
         QJsonObject instruction = inst.toObject();
@@ -1043,8 +1188,7 @@ QPair<QJsonArray, QString> TwitterCollector::getTweetDetail(const QString &tweet
                 if (eid.startsWith("conversationthread-")) {
                     QJsonArray items = e["content"].toObject()["items"].toArray();
                     for (const auto &item : items) {
-                        QJsonObject itemContent = item.toObject()["item"].toObject()["itemContent"].toObject();
-                        QJsonObject tweetResult = itemContent["tweet_results"].toObject()["result"].toObject();
+                        QJsonObject tweetResult = xTweetResult(item.toObject());
                         if (tweetResult.contains("tweet")) tweetResult = tweetResult["tweet"].toObject();
                         if (!tweetResult.isEmpty()) results.append(tweetResult);
                     }
@@ -1052,8 +1196,7 @@ QPair<QJsonArray, QString> TwitterCollector::getTweetDetail(const QString &tweet
                 // Individual tweet entries (direct replies)
                 else if (eid.startsWith("tweet-")) {
                     QJsonObject content = e["content"].toObject();
-                    QJsonObject tweetResult = content["itemContent"].toObject()
-                        ["tweet_results"].toObject()["result"].toObject();
+                    QJsonObject tweetResult = xTweetResult(content);
                     if (tweetResult.contains("tweet")) tweetResult = tweetResult["tweet"].toObject();
                     // Skip the focal tweet itself
                     QString tid = tweetResult["rest_id"].toString();
@@ -1073,8 +1216,7 @@ QPair<QJsonArray, QString> TwitterCollector::getTweetDetail(const QString &tweet
 else if (instType == "TimelineAddToModule") {
             QJsonArray items = instruction["moduleItems"].toArray();
             for (const auto &item : items) {
-                QJsonObject itemContent = item.toObject()["item"].toObject()["itemContent"].toObject();
-                QJsonObject tweetResult = itemContent["tweet_results"].toObject()["result"].toObject();
+                QJsonObject tweetResult = xTweetResult(item.toObject());
                 if (tweetResult.contains("tweet")) tweetResult = tweetResult["tweet"].toObject();
                 if (!tweetResult.isEmpty()) results.append(tweetResult);
             }
@@ -1120,8 +1262,7 @@ QPair<QJsonArray, QString> TwitterCollector::getLikes(const QString &userId, con
 
     QJsonArray results;
     QString nextCursor;
-    QJsonArray instructions = resp["body"].toObject()["data"].toObject()["user"].toObject()["result"].toObject()
-        ["timeline_v2"].toObject()["timeline"].toObject()["instructions"].toArray();
+    QJsonArray instructions = xInstructions(resp["body"].toObject(), {"user", "user_result"});
 
     for (const auto &inst : instructions) {
         QJsonObject instruction = inst.toObject();
@@ -1131,8 +1272,7 @@ QPair<QJsonArray, QString> TwitterCollector::getLikes(const QString &userId, con
                 QJsonObject e = entry.toObject();
                 QString eid = e["entryId"].toString();
                 if (eid.startsWith("tweet-")) {
-                    QJsonObject tweetResult = e["content"].toObject()
-                        ["itemContent"].toObject()["tweet_results"].toObject()["result"].toObject();
+                    QJsonObject tweetResult = xTweetResult(e);
                     if (tweetResult.contains("tweet")) tweetResult = tweetResult["tweet"].toObject();
                     if (!tweetResult.isEmpty()) results.append(tweetResult);
                 } else if (eid.startsWith("cursor-bottom")) {
@@ -1179,8 +1319,8 @@ QPair<QJsonArray, QString> TwitterCollector::getBookmarks(const QString &cursor)
 
     QJsonArray results;
     QString nextCursor;
-    QJsonArray instructions = resp["body"].toObject()["data"].toObject()["bookmark_timeline_v2"].toObject()
-        ["timeline"].toObject()["instructions"].toArray();
+    QJsonArray instructions = xInstructions(resp["body"].toObject(),
+        {"bookmark_timeline_v2", "bookmark_timeline", "bookmark_timeline_v3", "bookmark_collection_timeline"});
 
     for (const auto &inst : instructions) {
         QJsonObject instruction = inst.toObject();
@@ -1190,8 +1330,7 @@ QPair<QJsonArray, QString> TwitterCollector::getBookmarks(const QString &cursor)
                 QJsonObject e = entry.toObject();
                 QString eid = e["entryId"].toString();
                 if (eid.startsWith("tweet-")) {
-                    QJsonObject tweetResult = e["content"].toObject()
-                        ["itemContent"].toObject()["tweet_results"].toObject()["result"].toObject();
+                    QJsonObject tweetResult = xTweetResult(e);
                     if (tweetResult.contains("tweet")) tweetResult = tweetResult["tweet"].toObject();
                     if (!tweetResult.isEmpty()) results.append(tweetResult);
                 } else if (eid.startsWith("cursor-bottom")) {
@@ -1222,12 +1361,10 @@ static void _parseTimelineEntries(const QJsonArray &instructions, QJsonArray &re
                     continue;
                 }
                 if (expectUsers && eid.startsWith("user-")) {
-                    QJsonObject userResult = content["itemContent"].toObject()
-                        ["user_results"].toObject()["result"].toObject();
+                    QJsonObject userResult = xUserResult(content);
                     if (!userResult.isEmpty()) results.append(userResult);
                 } else if (!expectUsers && eid.startsWith("tweet-")) {
-                    QJsonObject tr = content["itemContent"].toObject()
-                        ["tweet_results"].toObject()["result"].toObject();
+                    QJsonObject tr = xTweetResult(content);
                     if (tr.contains("tweet")) tr = tr["tweet"].toObject();
                     if (!tr.isEmpty()) results.append(tr);
                 } else if (eid.startsWith("cursor-bottom")) {
@@ -1259,9 +1396,7 @@ QPair<QJsonArray, QString> TwitterCollector::getHighlights(const QString &userId
         return {QJsonArray(), QStringLiteral("ERROR")};
     }
 
-    QJsonArray instructions = resp["body"].toObject()["data"].toObject()
-        ["user"].toObject()["result"].toObject()
-        ["timeline"].toObject()["timeline"].toObject()["instructions"].toArray();
+    QJsonArray instructions = xInstructions(resp["body"].toObject(), {"user", "user_result"});
     QJsonArray results;
     QString nextCursor;
     _parseTimelineEntries(instructions, results, nextCursor, false);
@@ -1288,8 +1423,7 @@ QPair<QJsonArray, QString> TwitterCollector::getFavoriters(const QString &tweetI
         return {QJsonArray(), QStringLiteral("ERROR")};
     }
 
-    QJsonArray instructions = resp["body"].toObject()["data"].toObject()
-        ["favoriters_timeline"].toObject()["timeline"].toObject()["instructions"].toArray();
+    QJsonArray instructions = xInstructions(resp["body"].toObject(), {"favoriters_timeline", "liking_users_timeline"});
     QJsonArray results;
     QString nextCursor;
     _parseTimelineEntries(instructions, results, nextCursor, true);
@@ -1316,8 +1450,7 @@ QPair<QJsonArray, QString> TwitterCollector::getRetweeters(const QString &tweetI
         return {QJsonArray(), QStringLiteral("ERROR")};
     }
 
-    QJsonArray instructions = resp["body"].toObject()["data"].toObject()
-        ["retweeters_timeline"].toObject()["timeline"].toObject()["instructions"].toArray();
+    QJsonArray instructions = xInstructions(resp["body"].toObject(), {"retweeters_timeline", "retweeted_by_timeline"});
     QJsonArray results;
     QString nextCursor;
     _parseTimelineEntries(instructions, results, nextCursor, true);
@@ -1344,9 +1477,9 @@ QPair<QJsonArray, QString> TwitterCollector::getListTweets(const QString &listId
         return {QJsonArray(), QStringLiteral("ERROR")};
     }
 
-    QJsonArray instructions = resp["body"].toObject()["data"].toObject()
-        ["list"].toObject()["tweets_timeline"].toObject()
-        ["timeline"].toObject()["instructions"].toArray();
+    QJsonArray instructions = xInstructions(
+        QJsonObject{{"data", resp["body"].toObject()["data"].toObject()["list"].toObject()}},
+        {"tweets_timeline", "timeline"});
     QJsonArray results;
     QString nextCursor;
     _parseTimelineEntries(instructions, results, nextCursor, false);
@@ -1373,9 +1506,7 @@ QPair<QJsonArray, QString> TwitterCollector::getCommunityTweets(const QString &c
         return {QJsonArray(), QStringLiteral("ERROR")};
     }
 
-    QJsonArray instructions = resp["body"].toObject()["data"].toObject()
-        ["communityResults"].toObject()["result"].toObject()
-        ["community_timeline"].toObject()["timeline"].toObject()["instructions"].toArray();
+    QJsonArray instructions = xInstructions(resp["body"].toObject(), {"communityResults", "community_results"});
     QJsonArray results;
     QString nextCursor;
     _parseTimelineEntries(instructions, results, nextCursor, false);
@@ -1395,7 +1526,7 @@ int TwitterCollector::downloadTweetMedia(const QJsonObject &tweet, const QString
     if (!m_downloadMedia && !m_saveExif) return 0;
 
     int downloaded = 0;
-    QJsonObject legacy = tweet["legacy"].toObject();
+    QJsonObject legacy = xLegacy(tweet);
 
     // Check if this is a retweet - if so, download media from original tweet
     QJsonObject mediaTweet = tweet;
@@ -1410,7 +1541,7 @@ int TwitterCollector::downloadTweetMedia(const QJsonObject &tweet, const QString
     if (!rtResult.isEmpty()) {
         if (rtResult.contains("tweet")) rtResult = rtResult["tweet"].toObject();
         mediaTweet = rtResult;
-        mediaLegacy = rtResult["legacy"].toObject();
+        mediaLegacy = xLegacy(rtResult);
     }
 
     // Also check quoted tweet
@@ -1503,7 +1634,7 @@ int TwitterCollector::downloadTweetMedia(const QJsonObject &tweet, const QString
             tweetText.replace(QRegularExpression("\\s+"), "");
             // ★ NFC 로 모은다. HFS+(맥 옛 디스크)는 파일명을 NFD 로 강제하므로,
             //   맞춰 두지 않으면 같은 트윗인데 맥과 윈도우의 파일명 바이트가 달라진다.
-            //   (길이·서로게이트는 아래 composeName 쪽에서 이미 다룬다)
+            //   (길이·서로게이트는 아래에서 이미 다룬다 — 윈도우판 4b87220 과 같은 자리)
             tweetText = tweetText.normalized(QString::NormalizationForm_C);
             tweetText = tweetText.trimmed();
             if (tweetText.startsWith('.')) tweetText = tweetText.mid(1).trimmed();
@@ -1522,7 +1653,7 @@ int TwitterCollector::downloadTweetMedia(const QJsonObject &tweet, const QString
             QString createdAt = twLegacy["created_at"].toString();
             if (createdAt.isEmpty()) {
                 // Fallback: try parent tweet's created_at
-                createdAt = tw["legacy"].toObject()["created_at"].toString();
+                createdAt = xLegacy(tw)["created_at"].toString();
             }
 
             // 업로드 시각 prefix (OS 정렬 시 업로드 순 배치)
@@ -1628,7 +1759,7 @@ QDateTime twDt = QDateTime::fromString(createdAt, "ddd MMM dd HH:mm:ss +0000 yyy
 
     // Also download media from quoted tweet if present
     if (!quotedTweet.isEmpty()) {
-        downloaded += downloadFromTweet(quotedTweet, quotedTweet["legacy"].toObject());
+        downloaded += downloadFromTweet(quotedTweet, xLegacy(quotedTweet));
     }
 
     return downloaded;
@@ -1645,7 +1776,7 @@ void TwitterCollector::downloadUserProfileMedia(const QJsonObject &tweet, const 
     users.append(extractUser(tweet));
 
     // RT'd user
-    QJsonObject legacy = tweet["legacy"].toObject();
+    QJsonObject legacy = xLegacy(tweet);
     QJsonObject rtResult;
     if (legacy.contains("retweeted_status_result"))
         rtResult = legacy["retweeted_status_result"].toObject()["result"].toObject();
@@ -1672,7 +1803,7 @@ void TwitterCollector::downloadUserProfileMedia(const QJsonObject &tweet, const 
 
         // ── Twitter API 2025+ 구조: screen_name, name, profile_image_url_https가 legacy에서 제거됨 ──
         // 새 구조: userObj = { rest_id, avatar, core: {screen_name, name, ...}, legacy: {stats만...} }
-        QJsonObject uLeg = userObj["legacy"].toObject();
+        QJsonObject uLeg = xUserLegacy(userObj);
         QJsonObject uCore = userObj["core"].toObject();
 
         // screen_name 추출 (여러 위치 시도)
@@ -1681,8 +1812,8 @@ void TwitterCollector::downloadUserProfileMedia(const QJsonObject &tweet, const 
         if (screenName.isEmpty()) screenName = userObj["screen_name"].toString();
         // core.user_results.result.legacy (중첩 구조)
         if (screenName.isEmpty()) {
-            QJsonObject innerResult = uCore["user_results"].toObject()["result"].toObject();
-            screenName = innerResult["legacy"].toObject()["screen_name"].toString();
+            QJsonObject innerResult = xUserResult(uCore);
+            screenName = xLegacy(innerResult)["screen_name"].toString();
             if (screenName.isEmpty()) screenName = innerResult["screen_name"].toString();
         }
         // 최후 수단: rest_id
@@ -1784,7 +1915,7 @@ void TwitterCollector::downloadUserProfileMedia(const QJsonObject &tweet, const 
 
 void TwitterCollector::addExifMetadata(const QString &imagePath, const QJsonObject &tweet)
 {
-    QJsonObject legacy = tweet["legacy"].toObject();
+    QJsonObject legacy = xLegacy(tweet);
     QString screenName = screenNameOf(tweet["core"].toObject()["user_results"]
                                           .toObject()["result"].toObject());
     QString text = legacy["full_text"].toString().left(200);
@@ -2152,6 +2283,42 @@ void TwitterCollector::handleRateLimit(const QJsonArray &accounts, int &currentI
         int prevIdx = currentIdx;
         currentIdx = idx;
         QJsonObject account = accounts[idx].toObject();
+
+        // ★ 계정이 바뀌면 나가는 길도 같이 바꾼다.
+        //   토큰만 갈아 끼우면 B 계정 세션이 A 계정 프록시로 나간다 — 계정마다
+        //   다른 IP 를 쓰려는 목적이 그 자리에서 깨진다. 수집 시작 때 한 번만
+        //   걸어 두고 있었는데, 레이트리밋으로 계정이 도는 순간부터 어긋났다.
+        //   여기는 수집 스레드 안이라 thread_local 이 이 수집에만 적용된다.
+        //   반드시 setupClient·startDaemon 보다 먼저 해야 한다 — 데몬은 뜨는
+        //   시점의 환경변수로 프록시를 물려받기 때문이다.
+        {
+            // ★ 계정은 프로필 이름(proxy)만 든다 — 이름 → 주소·비밀번호는 백엔드가 푼다
+            //   (HanishikiBackend::proxyForAccount — 옛 모양의 계정도 그대로 받는다).
+            const QJsonObject prof = m_backend ? m_backend->proxyForAccount(account) : QJsonObject();
+            const QString want = account.value("proxy").toString();
+            if (!prof.isEmpty()) {
+                Common::setThreadProxy(true, prof["host"].toString(), prof["port"].toInt(),
+                                       prof["user"].toString(), prof["pass"].toString(),
+                                       prof["type"].toString());
+                m_backend->log(QString("🔒 %1 은 프로필 '%2' (%3:%4) 로 나갑니다")
+                                   .arg(account["name"].toString("Account"), prof["name"].toString(),
+                                        prof["host"].toString()).arg(prof["port"].toInt()),
+                               "info", "twitter");
+            } else if (!want.isEmpty()) {
+                // ★ 고른 프로필이 목록에 없다(지웠거나 이름을 바꿨다). 직접 연결로 조용히 새지 않게
+                //   닫힌 길(127.0.0.1:9 — 아무것도 듣지 않는다)을 건다.
+                //   이 계정의 요청은 실패하고, 까닭은 이 줄로 남는다.
+                Common::setThreadProxy(true, QStringLiteral("127.0.0.1"), 9, QString(), QString());
+                m_backend->log(QString("⚠ %1 이 고른 프록시 '%2' 이 목록에 없습니다 — 이 계정은 나가지 않습니다. "
+                                       "'프록시 (VPN)' 탭에서 다시 등록하거나 계정의 출구를 다시 고르십시오.")
+                                   .arg(account["name"].toString("Account"), want),
+                               "error", "twitter");
+            } else {
+                // 이 계정엔 지정이 없다 — 앞 계정 것을 물려받지 않도록 반드시 지운다.
+                Common::clearThreadProxy();
+            }
+        }
+
         setupClient(account["auth_token"].toString(), account["ct0"].toString());
         m_tidInitialized = false;
         m_backend->log(QString("계정 전환: %1 → %2 (%3/%4)")
@@ -2268,7 +2435,7 @@ void TwitterCollector::handleRateLimit(const QJsonArray &accounts, int &currentI
 void TwitterCollector::captureTweet(const QJsonObject &tweet, const QString &capturesDir, const QJsonObject &config)
 {
     if (capturesDir.isEmpty()) return;
-    QJsonObject legacy = tweet["legacy"].toObject();
+    QJsonObject legacy = xLegacy(tweet);
     QString tweetId = legacy["id_str"].toString();
     if (tweetId.isEmpty()) tweetId = tweet["rest_id"].toString();
     if (tweetId.isEmpty()) return;
@@ -2506,6 +2673,10 @@ void TwitterCollector::collectThreadsAuto(const QJsonObject &config, const QStri
 
 void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool> &isRunning)
 {
+    // ★ 이 워커의 HttpClient 로 갈아 끼운다 — adoptHttpToCurrentThread 설명 참고.
+    //   collect() 가 자기를 다시 부르는 경우(전체 모드의 하위 수집, 스레드 자동탐지)에도
+    //   같은 워커라 그대로 맞다. m_http 는 downloadMedia() 에서만 꺼내 쓰므로 옛 포인터를
+    //   쥐고 있는 곳이 없다.
     adoptHttpToCurrentThread();
 
     // 중지 시 진행 중인 미디어 다운로드를 즉시 끊기 위해 HttpClient에 '진행 플래그' 연결
@@ -2582,7 +2753,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     m_saveExif = config["exif"].toBool(true);
     m_saveProgress = config["saveProgress"].toBool(false);  // 이어서 수집 기능 (체크박스)
     // ★ 최대 수집 수 — 화면의 '최대 수집 수(0 = 전체)'. 이번 판에 새로 받은 것만 센다.
-    //   전에는 이 값을 어디서도 읽지 않아 8 을 넣어도 406개를 끝까지 받았다(맥 실측 2026-09-13).
+    //   전에는 이 값을 어디서도 읽지 않아 8 을 넣어도 406개를 끝까지 받았다(실측 2026-09-13).
     //   트윗·좋아요·북마크·리포스트·하이라이트·리스트·커뮤니티·좁히기·스레드·좋아요/RT 한 유저에 걸린다.
     const int maxCount = qMax(0, config["count"].toInt(0));
 
@@ -2668,7 +2839,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         }
     }
 
-    QJsonObject userLegacy = user["legacy"].toObject();
+    QJsonObject userLegacy = xUserLegacy(user);   // 2026-08 legacy 없는 모양도 채운다
     QString userName = userLegacy["name"].toString();
     QString userId = user["rest_id"].toString();
     int statusesCount = userLegacy["statuses_count"].toInt();
@@ -2913,11 +3084,9 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         QString cursor;
         int currentAccountIdx = 0;
 
-        // ★ 최대 수집 수가 이 경로에만 안 걸려 있었다. 목록을 끝까지 모은 다음
-        //   한 명씩 프로필 사진·배너를 받으므로, 상한이 없으면 '전체' 한 번에
-        //   수만 개가 쏟아진다(맥 실측: 최대 3 인데 14초에 2,208파일).
+        // ★ 최대 수집 수 — 목록도 그 개수에서 멈춘다. 빠져 있어서 '전체' 로 3개를 주면 팔로워 목록을
+        //   끝까지 모으고 한 명씩 프로필 사진·배너까지 받았다(실측 2026-09-19: 14초에 2,208파일).
         auto usersCapped = [&]() { return maxCount > 0 && allUsers.count() >= maxCount; };
-
         while (isRunning && !usersCapped()) {
             QJsonObject cmd;
             cmd["action"] = type;  // "followers" or "following"
@@ -2942,8 +3111,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             }
 
             QJsonObject data = resp["body"].toObject();
-            QJsonArray instructions = data["data"].toObject()["user"].toObject()["result"].toObject()
-                ["timeline"].toObject()["timeline"].toObject()["instructions"].toArray();
+            QJsonArray instructions = xInstructions(data, {"user", "user_result"});
 
             bool foundEntries = false;
             QString nextCursor;
@@ -2955,8 +3123,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                         QJsonObject e = entry.toObject();
                         QString eid = e["entryId"].toString();
                         if (eid.startsWith("user-")) {
-                            QJsonObject userResult = e["content"].toObject()["itemContent"].toObject()
-                                ["user_results"].toObject()["result"].toObject();
+                            QJsonObject userResult = xUserResult(e);
                             if (!userResult.isEmpty() && !usersCapped()) {
                                 allUsers.append(userResult);
                                 foundEntries = true;
@@ -2987,7 +3154,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             int dlCount = 0;
             while (allUsers.readNext(pu)) {
                 if (!isRunning) break;
-                QJsonObject pLeg = pu["legacy"].toObject();
+                QJsonObject pLeg = xUserLegacy(pu);
                 QJsonObject pCore = pu["core"].toObject();
                 QString handle = pLeg["screen_name"].toString();
                 if (handle.isEmpty()) handle = pCore["screen_name"].toString();
@@ -3008,7 +3175,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 // 유저별 서브폴더: profiles/{type}/{이름(@handle)}/
                 QString userDirName = filePrefix;
                 userDirName.remove(QRegularExpression("[/\\\\:*?\"<>|]"));
-                // 표시이름 대소문자만 바뀐 계정이 폴더를 하나 더 만들지 않게(맥 실측 4묶음)
+                // 표시이름 대소문자만 바뀐 계정이 폴더를 하나 더 만들지 않게(실측 4묶음이 여기서 났다)
                 userDirName = FileHelper::reuseExistingName(profileDir + "/"+ type, userDirName);
                 QString userProfileDir = profileDir + "/"+ type + "/"+ userDirName;
                 QDir().mkpath(userProfileDir);
@@ -3071,7 +3238,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             allUsers.resetReader();
             QJsonObject uo;
             while (allUsers.readNext(uo)) {
-                QJsonObject leg = uo["legacy"].toObject();
+                QJsonObject leg = xUserLegacy(uo);
                 QString handle = screenNameOf(uo);
                 writer.writeRow(row++, {
                     uo["rest_id"].toString(),
@@ -3240,7 +3407,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             for (const auto &tweetVal : tweets) {
                 if (!isRunning || (maxCount > 0 && tweetCount >= maxCount)) break;
                 QJsonObject tweet = tweetVal.toObject();
-                QJsonObject legacy = tweet["legacy"].toObject();
+                QJsonObject legacy = xLegacy(tweet);
                 QString tweetId = legacy["id_str"].toString();
                 if (tweetId.isEmpty()) tweetId = tweet["rest_id"].toString();
                 if (collectedIds.contains(tweetId)) continue;
@@ -3355,7 +3522,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             for (const auto &tweetVal : tweets) {
                 if (!isRunning || (maxCount > 0 && tweetCount >= maxCount)) break;
                 QJsonObject tweet = tweetVal.toObject();
-                QJsonObject legacy = tweet["legacy"].toObject();
+                QJsonObject legacy = xLegacy(tweet);
                 QString tweetId = legacy["id_str"].toString();
                 if (tweetId.isEmpty()) tweetId = tweet["rest_id"].toString();
                 if (collectedIds.contains(tweetId)) continue;
@@ -3485,7 +3652,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             for (const auto &tweetVal : tweets) {
                 if (!isRunning || (maxCount > 0 && tweetCount >= maxCount)) break;
                 QJsonObject tweet = tweetVal.toObject();
-                QJsonObject legacy = tweet["legacy"].toObject();
+                QJsonObject legacy = xLegacy(tweet);
 
                 // Only include retweets
                 QJsonObject rtResult;
@@ -3513,7 +3680,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 collectedIds.insert(tweetId);
                 tweetCount++;
 
-                QJsonObject rtLegacy = rtResult["legacy"].toObject();
+                QJsonObject rtLegacy = xLegacy(rtResult);
                 QString rtScreenName = screenNameOf(rtResult["core"].toObject()["user_results"]
                                                         .toObject()["result"].toObject());
                 QString rtText = rtLegacy["full_text"].toString();
@@ -3556,7 +3723,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 // Author info (원글 작성자)
                 QJsonObject rtUserResult = rtResult["core"].toObject()["user_results"].toObject()["result"].toObject();
                 // 팔로워 수 등 통계는 아직 legacy 에 남아 있다 — 이름만 옮겨 갔다.
-                QJsonObject rtUserLeg = rtUserResult["legacy"].toObject();
+                QJsonObject rtUserLeg = xUserLegacy(rtUserResult);
                 data["author_name"] = displayNameOf(rtUserResult);
                 data["author_username"] = rtScreenName;
 
@@ -3671,7 +3838,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
                 for (const auto &tweetVal : tweets) {
                     QJsonObject tweet = tweetVal.toObject();
-                    QJsonObject legacy = tweet["legacy"].toObject();
+                    QJsonObject legacy = xLegacy(tweet);
                     // Skip retweets
                     if (legacy.contains("retweeted_status_result") || tweet.contains("retweeted_status_result"))
                         continue;
@@ -3722,7 +3889,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 for (const auto &replyVal : replies) {
                     if (!isRunning) break;
                     QJsonObject tweet = replyVal.toObject();
-                    QJsonObject legacy = tweet["legacy"].toObject();
+                    QJsonObject legacy = xLegacy(tweet);
                     QString replyId = legacy["id_str"].toString();
                     if (replyId.isEmpty()) replyId = tweet["rest_id"].toString();
                     if (replyId.isEmpty() || collectedIds.contains(replyId)) continue;
@@ -3924,6 +4091,9 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     //   "both" / 기본: 양방향 (과거로 backtrack + 현재 새 트윗 둘 다)
     QString resumeMode = config["resumeMode"].toString();
     if (resumeMode.isEmpty()) resumeMode = "both";
+    // ★ 화면의 방식 '새 글만'(mode=incremental). 예전엔 아무도 이 값을 읽지 않아 '전체(2006년부터)' 와
+    //   똑같이 과거 끝까지 훑었다. 지난번 가장 새 트윗 이후만 본다(= 이어서 수집 + 현재에서 이어서).
+    if (mode == "incremental") { resumeMode = "future"; m_saveProgress = true; }
 
     if (QFile::exists(excelPath)) {
         QXlsx::Document doc(excelPath);
@@ -3988,6 +4158,23 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         }
     }
 
+    // ★ 위쪽(새 글 쪽) 이어짐. progress 의 newestDate/Id 는 '이보다 새 것은 다 받았다' 는 약속이다.
+    //   예전엔 이번 판에서 본 가장 새 트윗으로 무조건 올렸다 — 새 글 쪽 훑기가 오류·중지·50쪽 안전장치·
+    //   기간 지정 때문에 지난번 가장 새 트윗까지 내려오지 못했어도 그랬다. 그러면 그 사이가 다음
+    //   '현재 이어서/양방향' 에서 영영 빠진다(since: 는 새 값 위에서 시작하고, 과거 쪽은 oldest 밑만 본다).
+    //   → 맨 위에서 이어 내려오며 지난번 가장 새 트윗(이하)을 실제로 만났거나, since: 구간을 끝까지
+    //     봤을 때만 올린다. 아니면 예전 값을 지킨다 — 다음 판이 그 자리부터 다시 본다(중복은 ID 로 걸러진다).
+    QString prevNewestBoundary;
+    if (QFile::exists(progressPath)) {
+        QFile bf(progressPath);
+        if (bf.open(QIODevice::ReadOnly)) {
+            prevNewestBoundary = QJsonDocument::fromJson(bf.readAll()).object()["newestId"].toString();
+            bf.close();
+        }
+    }
+    bool forwardScan = true;                                // 지금 훑는 것이 맨 위에서 이어 내려오는 중인가
+    bool reachedPrevNewest = prevNewestBoundary.isEmpty();  // 지난 기록이 없으면 지킬 것도 없다
+
     // Helper: progress 파일 저장 — oldest/newest 둘 다 누적
     //   기존 파일에 이미 newestDate가 있으면 그보다 새로운 것만 갱신 (newer wins)
     //   기존 oldestDate가 있으면 그보다 오래된 것만 갱신 (older wins)
@@ -4001,7 +4188,13 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             }
         }
         // oldestDate: older wins
-        QString outOldest = oldestDate;
+        // ★ 중지로 끝난 판의 '가장 오래된 날짜' 는 믿을 수 없다. 검색 루프는 처리하기 전에 배치 전체
+        //   (한 쪽 최대 40개 — 드물게 올리는 계정이면 몇 달 치)의 날짜로 iterOldestDate·oldestTweetDate 를 정하고,
+        //   중지는 processTweetBatch 가 그 배치 한가운데서 끊는다. 그 날짜를 적으면 다음 '과거 이어서' 의
+        //   until:(그 날 제외) 가 처리 못 한 트윗들과 그 날의 나머지를 건너뛴다. 루프 안 저장(nextUntil)도
+        //   중지된 판에서 이 날짜를 적으므로 마지막 저장만 고쳐서는 안 된다 — 여기서 함께 막는다.
+        //   중지된 판은 지난 값을 지킨다(끝까지 돈 iteration 은 돌던 중에 이미 적었다).
+        QString outOldest = isRunning ? oldestDate : prev["oldestDate"].toString();
         QString prevOldest = prev["oldestDate"].toString();
         if (!prevOldest.isEmpty()) {
             QDate prevD = QDate::fromString(prevOldest, "yyyy-MM-dd");
@@ -4012,12 +4205,13 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         QString outNewestId = m_newestTweetId;
         QString prevNewestId = prev["newestId"].toString();
         if (!prevNewestId.isEmpty()
-            && (outNewestId.isEmpty() || prevNewestId.toLongLong() > outNewestId.toLongLong())) {
+            && (outNewestId.isEmpty() || !reachedPrevNewest
+                || prevNewestId.toLongLong() > outNewestId.toLongLong())) {
             outNewestId = prevNewestId;
         }
         // newestDate: newer wins
         QString outNewestDate = prev["newestDate"].toString();
-        if (newestTweetDate.isValid()) {
+        if (newestTweetDate.isValid() && reachedPrevNewest) {
             QString curND = newestTweetDate.toString("yyyy-MM-dd");
             QDate prevD = QDate::fromString(outNewestDate, "yyyy-MM-dd");
             QDate curD  = QDate::fromString(curND, "yyyy-MM-dd");
@@ -4087,9 +4281,14 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             if (!isRunning || capReached()) break;
 
             QJsonObject tweet = tweetVal.toObject();
-            QJsonObject legacy = tweet["legacy"].toObject();
+            QJsonObject legacy = xLegacy(tweet);
             QString tweetId = legacy["id_str"].toString();
             if (tweetId.isEmpty()) tweetId = tweet["rest_id"].toString();
+
+            // ★ 위쪽 이어짐 — 지난번 가장 새 트윗(이하)을 만났는가. 이미 받은 트윗도 센다(그래서 Dedup 앞).
+            if (forwardScan && !reachedPrevNewest && !tweetId.isEmpty()
+                && tweetId.toLongLong() <= prevNewestBoundary.toLongLong())
+                reachedPrevNewest = true;
 
             // Dedup
             if (collectedIds.contains(tweetId)) continue;
@@ -4131,7 +4330,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                     mediaArr = entities["media"].toArray();
                 }
                 if (mediaArr.isEmpty() && isRetweet && !rtResult.isEmpty()) {
-                    QJsonObject rtLeg = rtResult["legacy"].toObject();
+                    QJsonObject rtLeg = xLegacy(rtResult);
                     mediaArr = rtLeg["extended_entities"].toObject()["media"].toArray();
                     if (mediaArr.isEmpty()) mediaArr = rtLeg["entities"].toObject()["media"].toArray();
                 }
@@ -4179,7 +4378,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             QString tweetUrl = QString("https://x.com/%1/status/%2").arg(urlAuthor, tweetId);
 
             if (isRetweet && !rtResult.isEmpty()) {
-                QJsonObject rtLegacy = rtResult["legacy"].toObject();
+                QJsonObject rtLegacy = xLegacy(rtResult);
                 QJsonObject rtUserResult = rtResult["core"].toObject()["user_results"].toObject()["result"].toObject();
                 QString rtAuthor = getScreenName(rtUserResult);
                 // RT의 원작자 screen_name이 없으면 full_text에서 추출 시도
@@ -4251,7 +4450,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                                 legacy.value("is_quote_status").toBool(false);
             // 투표 카드: card.legacy.name == "poll*choice*"패턴
             QJsonObject cardObj = tweet["card"].toObject();
-            QString cardName = cardObj["legacy"].toObject()["name"].toString();
+            QString cardName = xLegacy(cardObj)["name"].toString();
             bool hasPoll = cardName.startsWith("poll");
             // 🎙️ 스페이스 카드 트윗 — status URL 을 모아 전체수집 끝에 yt-dlp 로 추출/다운로드.
             //   (호스팅/공유한 스페이스는 URL 엔티티가 아니라 카드라서, status URL 을 yt-dlp 에 넘겨 추출)
@@ -4271,7 +4470,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
             // 투표 데이터를 text 뒤에 JSON 형태로 첨부 (분석/기록용)
             if (hasPoll) {
-                QJsonArray bindings = cardObj["legacy"].toObject()["binding_values"].toArray();
+                QJsonArray bindings = xLegacy(cardObj)["binding_values"].toArray();
                 QMap<QString, QString> bmap;
                 for (const auto &bv : bindings) {
                     QJsonObject b = bv.toObject();
@@ -4334,7 +4533,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 data["retweet_time"] = data["created_at"].toString();
                 // 원본 트윗의 created_at으로 교체
                 if (!rtResult.isEmpty()) {
-                    QString origCreated = rtResult["legacy"].toObject()["created_at"].toString();
+                    QString origCreated = xLegacy(rtResult)["created_at"].toString();
                     QDateTime origDt = Common::parseISODate(origCreated);
                     if (origDt.isValid()) {
                         origDt = origDt.toUTC().addSecs(9 * 3600);
@@ -4374,7 +4573,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             if (mediaArr.isEmpty()) mediaArr = legacy["entities"].toObject()["media"].toArray();
             // RT의 경우 원본 트윗의 미디어도 확인
             if (mediaArr.isEmpty() && isRetweet && !rtResult.isEmpty()) {
-                QJsonObject rtLeg = rtResult["legacy"].toObject();
+                QJsonObject rtLeg = xLegacy(rtResult);
                 mediaArr = rtLeg["extended_entities"].toObject()["media"].toArray();
                 if (mediaArr.isEmpty()) mediaArr = rtLeg["entities"].toObject()["media"].toArray();
             }
@@ -4410,8 +4609,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 QJsonObject quotedResult = tweet["quoted_status_result"].toObject()["result"].toObject();
                 if (quotedResult.contains("tweet")) quotedResult = quotedResult["tweet"].toObject();
                 QString qId = quotedResult["rest_id"].toString();
-                QJsonObject qLeg = quotedResult["legacy"].toObject();
-                QJsonObject qUser = quotedResult["core"].toObject()["user_results"].toObject()["result"].toObject()["legacy"].toObject();
+                QJsonObject qLeg = xLegacy(quotedResult);
+                QJsonObject qUser = xLegacy(quotedResult);
                 QString qScreenName = qUser["screen_name"].toString();
                 if (!qId.isEmpty() && !qScreenName.isEmpty()) {
                     data["quoted_tweet_url"] = QString("https://x.com/%1/status/%2").arg(qScreenName, qId);
@@ -4428,7 +4627,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             // 작성자 프로필 정보
             {
                 QJsonObject uResult = tweet["core"].toObject()["user_results"].toObject()["result"].toObject();
-                QJsonObject uLeg = uResult["legacy"].toObject();
+                QJsonObject uLeg = xUserLegacy(uResult);
                 data["user_followers"] = QString::number(uLeg["followers_count"].toInt());
                 data["user_following"] = QString::number(uLeg["friends_count"].toInt());
                 data["user_verified"] = uResult.value("is_blue_verified").toBool(false) ? "True": "False";
@@ -4491,12 +4690,12 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 for (const auto &tv : batch) {
                     QJsonObject tw = tv.toObject();
                     QString id = tw["rest_id"].toString();
-                    if (id.isEmpty()) id = tw["legacy"].toObject()["id_str"].toString();
+                    if (id.isEmpty()) id = xLegacy(tw)["id_str"].toString();
                     if (id.isEmpty()) continue;
 
                     QJsonObject core = tw["core"].toObject()["user_results"].toObject()["result"].toObject();
                     QString authorId = core["rest_id"].toString();
-                    QString authorScreen = core["legacy"].toObject()["screen_name"].toString();
+                    QString authorScreen = xLegacy(core)["screen_name"].toString();
 
                     // focal 작성자 결정
                     if (threadAuthorId.isEmpty() && id == curId) {
@@ -4512,8 +4711,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                     }
 
                     // 부모 트윗(선조 체인)도 큐에 추가
-                    QString parentId = tw["legacy"].toObject()["in_reply_to_status_id_str"].toString();
-                    QString parentAuthorId = tw["legacy"].toObject()["in_reply_to_user_id_str"].toString();
+                    QString parentId = xLegacy(tw)["in_reply_to_status_id_str"].toString();
+                    QString parentAuthorId = xLegacy(tw)["in_reply_to_user_id_str"].toString();
                     if (!parentId.isEmpty() && !visitedIds.contains(parentId)) {
                         // 선조는 스레드 작성자 본인에게만 (다른 사람에게 한 답글은 제외)
                         if (parentAuthorId.isEmpty() || threadAuthorId.isEmpty() ||
@@ -4532,9 +4731,9 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                     rawCmd["tweet_id"] = curId;
                     QJsonObject rawResp = sendDaemonCommand(rawCmd, 30000);
                     if (rawResp["status"].toInt() == 200) {
-                        QJsonArray instructions = rawResp["body"].toObject()["data"].toObject()
-                            ["threaded_conversation_with_injections_v2"].toObject()
-                            ["instructions"].toArray();
+                        QJsonArray instructions = xInstructions(rawResp["body"].toObject(),
+                            {"threaded_conversation_with_injections_v2", "threaded_conversation_with_injections",
+                             "threaded_conversation_with_injections_v3", "threaded_conversation", "timeline_response"});
                         for (const auto &inst : instructions) {
                             if (inst.toObject()["type"].toString() != "TimelineAddEntries") continue;
                             QJsonArray entries = inst.toObject()["entries"].toArray();
@@ -4542,20 +4741,17 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                                 QJsonObject e = entry.toObject();
                                 QString eid = e["entryId"].toString();
                                 if (!eid.startsWith("tweet-")) continue;
-                                QJsonObject tr = e["content"].toObject()
-                                    ["itemContent"].toObject()
-                                    ["tweet_results"].toObject()["result"].toObject();
-                                if (tr.contains("tweet")) tr = tr["tweet"].toObject();
+                                QJsonObject tr = xTweetResult(e);
                                 QString tid = tr["rest_id"].toString();
                                 if (tid == curId && !visitedIds.contains(tid)) {
                                     QJsonObject fcore = tr["core"].toObject()
                                         ["user_results"].toObject()["result"].toObject();
                                     if (threadAuthorId.isEmpty()) {
                                         threadAuthorId = fcore["rest_id"].toString();
-                                        threadAuthorScreen = fcore["legacy"].toObject()["screen_name"].toString();
+                                        threadAuthorScreen = xLegacy(fcore)["screen_name"].toString();
                                     }
                                     threadTweets.append(tr);
-                                    QString parentId2 = tr["legacy"].toObject()["in_reply_to_status_id_str"].toString();
+                                    QString parentId2 = xLegacy(tr)["in_reply_to_status_id_str"].toString();
                                     if (!parentId2.isEmpty() && !visitedIds.contains(parentId2))
                                         toFetch.enqueue(parentId2);
                                 }
@@ -4577,8 +4773,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             QList<QJsonObject> sortedList;
             for (const auto &v : threadTweets) sortedList.append(v.toObject());
             std::sort(sortedList.begin(), sortedList.end(), [](const QJsonObject &a, const QJsonObject &b) {
-                QString ca = a["legacy"].toObject()["created_at"].toString();
-                QString cb = b["legacy"].toObject()["created_at"].toString();
+                QString ca = xLegacy(a)["created_at"].toString();
+                QString cb = xLegacy(b)["created_at"].toString();
                 return Common::parseISODate(ca) < Common::parseISODate(cb);
             });
             QJsonArray sortedArr;
@@ -4703,7 +4899,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             int row = 2;
             for (const auto &uv : users) {
                 QJsonObject u = uv.toObject();
-                QJsonObject l = u["legacy"].toObject();
+                QJsonObject l = xUserLegacy(u);
                 QStringList r;
                 r << u["rest_id"].toString()
                   << l["screen_name"].toString()
@@ -4787,13 +4983,16 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
         QString cCursor;
         int cEmpty = 0;
+        int cErr = 0;   // ★ 오류가 끝없이 이어지면(서명·해시 문제는 기다려도 안 풀린다) 5번째에 멈춘다
         while (isRunning && !capReached()) {
             auto [batch, nextCursor] = getCommunityTweets(commId, cCursor);
             if (nextCursor == "RATE_LIMITED") { handleRateLimit(accounts, currentAccountIdx, isRunning); continue; }
             if (nextCursor == "ERROR") {
+                if (++cErr >= 5) { m_backend->log("API 오류가 5번 이어졌습니다 — 커뮤니티 수집을 멈춥니다", "error", "twitter"); break; }
                 for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1);
                 continue;
             }
+            cErr = 0;
             if (batch.isEmpty()) { if (++cEmpty >= 2) break; } else { cEmpty = 0; }
             processTweetBatch(batch);
             if (nextCursor.isEmpty()) break;
@@ -4814,6 +5013,21 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     //       3) 반복 (backtrack 횟수 무제한, 연속 빈 결과 시 종료)
     // ══════════════════════════════════════════════════════════════
     bool searchFailed = false;  // Phase 1 검색 실패 플래그 (Phase 2에서 사용)
+    // ★ 검색이 "ERROR" 를 돌려주면 5초 쉬고 끝없이 다시 했다. 서명(TID)·해시 문제는 기다려도 안 풀려서
+    //   같은 요청만 수백 번 나갔다. 5번 이어지면 그 단계를 멈추고 다음 단계(Phase 2 등)로 넘긴다.
+    int searchErrStreak = 0;
+    bool searchErrored = false;
+    auto searchErrorGiveUp = [&]() -> bool {
+        if (++searchErrStreak < 5) {
+            m_backend->log(QString("API 오류 — 5초 후 재시도 (%1/5)").arg(searchErrStreak), "warning", "twitter");
+            for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1);
+            return false;
+        }
+        m_backend->log("API 오류가 5번 이어졌습니다 — 검색 단계를 멈춥니다", "error", "twitter");
+        searchErrStreak = 0;
+        searchErrored = true;
+        return true;
+    };
     // Phase 1: tweets, media, all 일 때만 실행 (tweets_api, replies는 건너뜀)
     // ── 포스트 좁히기 (narrow) — from:user [키워드] [since/until] SearchTimeline ──
     //   복잡한 아니포 백트래킹 없이, 좁힌 쿼리로 커서 페이지네이션만 한다.
@@ -4831,7 +5045,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         while (isRunning && !capReached() && pages < NARROW_MAX_PAGES) {
             auto [tweets, nextCursor] = searchTweets(q, cur);
             if (nextCursor == "RATE_LIMITED") { handleRateLimit(accounts, currentAccountIdx, isRunning); continue; }
-            if (nextCursor == "ERROR") { for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1); continue; }
+            if (nextCursor == "ERROR") { if (searchErrorGiveUp()) break; continue; }
+            searchErrStreak = 0;
             if (tweets.isEmpty()) break;
             processTweetBatch(tweets);
             pages++;
@@ -4882,7 +5097,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             while (isRunning && !capReached() && searchHasMore) {
                 auto [tweets, nextCursor] = searchTweets(currentQuery, searchCursor);
                 if (nextCursor == "RATE_LIMITED") { handleRateLimit(accounts, currentAccountIdx, isRunning); continue; }
-                    if (nextCursor == "ERROR") { m_backend->log("API 오류 — 5초 후 재시도", "warning", "twitter"); for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1); continue; }
+                if (nextCursor == "ERROR") { if (searchErrorGiveUp()) break; continue; }
+                searchErrStreak = 0;
                 if (tweets.isEmpty()) break;
                 processTweetBatch(tweets);
                 searchCursor = nextCursor;
@@ -4914,13 +5130,17 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                         handleRateLimit(accounts, currentAccountIdx, isRunning);
                         continue;
                     }
-                    if (nextCursor == "ERROR" || tweets.isEmpty()) break;
+                    if (nextCursor == "ERROR") break;
+                    if (tweets.isEmpty()) { reachedPrevNewest = true; break; }   // since: 구간을 끝까지 봤다
                     int prev = tweetCount;
                     processTweetBatch(tweets);
                     futureNew += (tweetCount - prev);
                     futurePages++;
                     futCursor = nextCursor;
-                    if (futCursor.isEmpty()) break;
+                    if (futCursor.isEmpty()) {
+                        if (isRunning && !capReached()) reachedPrevNewest = true;   // 중간에 멈춘 게 아니면 끝까지 본 것
+                        break;
+                    }
                     for (int w = qMax(2, (int)m_delay); w > 0 && isRunning; --w) QThread::sleep(1);
                 }
                 m_backend->log(QString("[양방향 1단계] %1개 새 트윗 → 2단계 backtrack 시작")
@@ -4951,6 +5171,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 QDate rd = QDate::fromString(resumeOldestDate, "yyyy-MM-dd");
                 if (rd.isValid()) {
                     currentQuery = QString("from:%1 until:%2").arg(target, resumeOldestDate);
+                    forwardScan = false;   // 여기부터는 과거 쪽 이어가기 — 위쪽 이어짐 판정에 쓰지 않는다
                     QString modeLabel = (resumeMode == "past") ? "[과거 이어서]" : "[양방향 이어서]";
                     m_backend->log(QString("%1 %2 이전부터").arg(modeLabel, resumeOldestDate),
                                    "info", "twitter");
@@ -4978,17 +5199,17 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                         continue;
                     }
                     if (nextCursor == "ERROR") {
-                        m_backend->log("API 오류 — 5초 후 재시도", "warning", "twitter");
-                        for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1);
+                        if (searchErrorGiveUp()) break;
                         continue;
                     }
+                    searchErrStreak = 0;
                     if (tweets.isEmpty()) break;
 
                     iterBatchCount += tweets.size();
 
                     // 가장 오래된 날짜 추적 (이 iteration 한정 + 전체)
                     for (const auto &tv : tweets) {
-                        QString ca = tv.toObject()["legacy"].toObject()["created_at"].toString();
+                        QString ca = xLegacy(tv.toObject())["created_at"].toString();
                         QDateTime td = Common::parseISODate(ca);
                         if (td.isValid()) {
                             QDate d = td.date();
@@ -5005,6 +5226,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                     if (searchCursor.isEmpty()) break;
                     for (int w = qMax(2, (int)m_delay); w > 0 && isRunning; --w) QThread::sleep(1);
                 }
+                if (searchErrored) break;   // 오류로 멈춘 판 — 날짜를 물리며 같은 오류를 되풀이하지 않는다
 
                 if (iterBatchCount > 0) {
                     consecutiveEmpty = 0;
@@ -5022,8 +5244,18 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
                 // ★ "현재 이어서" 모드는 한 iteration만 — backtrack 안 함
                 if (resumeMode == "future") {
-                    m_backend->log(QString("[현재 이어서] 1회 검색 완료 — backtrack 생략 (총 %1개 새 트윗)").arg(iterNewCount),
-                                   "success", "twitter");
+                    // 오류로 멈춘 판은 바로 위에서 이미 빠져나갔다. 중지·최대 수가 아니면 since: 구간을 끝까지 본 것이다.
+                    if (isRunning && !capReached() && (!resumeNewestDate.isEmpty() || !resumeNewestId.isEmpty()))
+                        reachedPrevNewest = true;
+                    if (iterNewCount > 0) {
+                        m_backend->log(QString("[현재 이어서] 새 트윗 %1개 수집 (과거 backtrack 생략)").arg(iterNewCount),
+                                       "success", "twitter");
+                    } else {
+                        // 새 트윗 0개 — '아무것도 안 함'처럼 보이지 않게 명확히 안내.
+                        m_backend->log("[현재 이어서] 새로 올라온 트윗이 없습니다 — 이미 최신 상태입니다.", "success", "twitter");
+                        m_backend->log("  ↳ 빠진 과거 트윗을 더 받으려면 '이어서 수집' 방향을 '과거에서 이어서' 또는 '양방향'으로 선택하세요.",
+                                       "info", "twitter");
+                    }
                     break;
                 }
 
@@ -5066,7 +5298,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         }
 
         int phase1New = tweetCount - phase1Start;
-        searchFailed = (phase1New == 0 && backtrackCount == 0);  // 검색 API 자체가 실패
+        searchFailed = (phase1New == 0 && backtrackCount == 0)  // 검색 API 자체가 실패
+                       || (phase1New == 0 && searchErrored);   // 오류가 이어져 멈춤 — Phase 2(UserTweets)로 받는다
         m_backend->log(QString("Phase 1 완료: %1개 트윗, %2개 미디어%3")
                            .arg(tweetCount).arg(mediaCount)
                            .arg(searchFailed ? "(검색 API 실패)": ""),
@@ -5084,6 +5317,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         bool hasMore = true;
         int emptyRetries = 0;
         int phase2Pages = 0;
+        int phase2Err = 0;   // ★ 검색 단계와 같은 상한 — 오류가 5번 이어지면 이 단계를 멈춘다(끝없이 같은 요청을 보냈다)
 
         while (isRunning && !capReached() && hasMore) {
             auto [tweets, nextCursor] = getUserTweets(userId, cursor);
@@ -5093,10 +5327,15 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 continue;
             }
             if (nextCursor == "ERROR") {
-                m_backend->log("API 오류 — 5초 후 재시도", "warning", "twitter");
+                if (++phase2Err >= 5) {
+                    m_backend->log("API 오류가 5번 이어졌습니다 — 타임라인 단계를 멈춥니다", "error", "twitter");
+                    break;
+                }
+                m_backend->log(QString("API 오류 — 5초 후 재시도 (%1/5)").arg(phase2Err), "warning", "twitter");
                 for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1);
                 continue;
             }
+            phase2Err = 0;
 
             if (tweets.isEmpty()) {
                 emptyRetries++;
@@ -5135,6 +5374,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     if (isRunning && !capReached() && (type == "replies"|| type == "all") && mode != "period") {
         m_backend->log("Phase 3: 답글 검색 (filter:replies) + 주간 백트래킹...", "info", "twitter");
         int replyNew = 0;
+        bool replyErr = false;   // ★ 답글 검색도 오류가 5번 이어지면 멈춘다(Phase 1 과 같은 상한 — searchErrored 는 Phase 1 판정용이라 따로 둔다)
 
         // Step 1: 최신 답글부터 검색
         {
@@ -5150,10 +5390,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                     continue;
                 }
                 if (nextCursor == "ERROR") {
-                    m_backend->log("API 오류 — 5초 후 재시도", "warning", "twitter");
-                    for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1);
+                    if (searchErrorGiveUp()) { replyErr = true; break; }
                     continue;
                 }
+                searchErrStreak = 0;
                 if (tweets.isEmpty()) {
                     replyEmptyRetries++;
                     if (replyEmptyRetries >= 5) break;
@@ -5164,7 +5404,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
                 // 가장 오래된 날짜 추적
                 for (const auto &tv : tweets) {
-                    QString ca = tv.toObject()["legacy"].toObject()["created_at"].toString();
+                    QString ca = xLegacy(tv.toObject())["created_at"].toString();
                     QDateTime td = Common::parseISODate(ca);
                     if (td.isValid() && (!oldestTweetDate.isValid() || td < oldestTweetDate))
                         oldestTweetDate = td;
@@ -5196,7 +5436,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 replyQuery2 = QString("from:%1 filter:replies").arg(target);
             }
 
-            while (isRunning && !capReached() && replyConsecutiveEmpty < REPLY_MAX_EMPTY) {
+            while (isRunning && !capReached() && !replyErr && replyConsecutiveEmpty < REPLY_MAX_EMPTY) {
                 QString rCursor;
                 int iterNew = 0;
                 int iterBatch = 0;
@@ -5209,16 +5449,16 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                         continue;
                     }
                     if (nextCursor == "ERROR") {
-                        m_backend->log("API 오류 — 5초 후 재시도", "warning", "twitter");
-                        for (int s = 5; s > 0 && isRunning; --s) QThread::sleep(1);
+                        if (searchErrorGiveUp()) { replyErr = true; break; }
                         continue;
                     }
+                    searchErrStreak = 0;
                     if (tweets.isEmpty()) break;
 
                     iterBatch += tweets.size();
 
                     for (const auto &tv : tweets) {
-                        QString ca = tv.toObject()["legacy"].toObject()["created_at"].toString();
+                        QString ca = xLegacy(tv.toObject())["created_at"].toString();
                         QDateTime td = Common::parseISODate(ca);
                         if (td.isValid()) {
                             QDate d = td.date();
@@ -5319,7 +5559,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
                 for (const auto &tv : replies) {
                     QJsonObject tw = tv.toObject();
-                    QJsonObject leg = tw["legacy"].toObject();
+                    QJsonObject leg = xLegacy(tw);
                     QString tid = leg["id_str"].toString();
                     if (tid.isEmpty()) tid = tw["rest_id"].toString();
                     if (tid.isEmpty() || collectedIds.contains(tid)) continue;
@@ -5331,7 +5571,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                     if (mediaArr.isEmpty()) continue;
 
                     QJsonObject authorResult = tw["core"].toObject()["user_results"].toObject()["result"].toObject();
-                    QString convAuthor = authorResult["legacy"].toObject()["screen_name"].toString();
+                    QString convAuthor = xLegacy(authorResult)["screen_name"].toString();
                     convTweetCount++;
 
                     int newMedia = downloadTweetMedia(tw, convMediaDir, convTweetCount);
@@ -5384,7 +5624,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     // ★ 최대 수집 수에서 멈춘 판은 progress 를 적지 않는다. 이 판의 가장 오래된·새 날짜는
     //   끝까지 못 본 구간을 덮고 있어, 적으면 다음 '이어서' 가 그 사이를 영영 건너뛴다.
     //   안 적으면 같은 자리를 다시 훑고, 받아 둔 것은 엑셀 ID 로 건너뛰므로 빠짐없이 이어진다.
-    if (oldestTweetDate.isValid() && !capReached()) {
+    if (oldestTweetDate.isValid() && !capReached() && !searchErrored) {   // ★ 검색 오류 상한으로 멈춘 판도 최대 수와 같다 — 끝까지 못 본 구간의 날짜를 적지 않는다(끝난 iteration 은 루프 안 saveProgress(nextUntil) 가 이미 적었다)
         saveProgress(oldestTweetDate.toString("yyyy-MM-dd"));
     }
 
@@ -5404,7 +5644,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
 void TwitterCollector::checkNewPosts(const QJsonObject &config, const std::atomic<bool> &isRunning)
 {
-    // ★ 여기가 문제의 자리다 — 이 함수는 collect() 를 돌린 워커와 '다른' 워커에서 온다.
+    // ★ 여기가 문제의 자리다 — 이 함수는 collect() 를 돌린 워커와 '다른' 워커에서 온다
+    //   (HanishikiBackend::checkNewPosts 의 QThread::create). 앞서 만든 것을 그대로 쓰면
+    //   죽은 스레드의 NAM 이다. 새로 만들었으니 중지 플래그도 다시 단다
+    //   (안 달면 '새 트윗 확인' 중 중지를 눌러도 미디어 다운로드가 안 끊긴다).
     adoptHttpToCurrentThread();
     if (m_http) m_http->setRunFlag(&isRunning);
 
@@ -5457,7 +5700,7 @@ void TwitterCollector::checkNewPosts(const QJsonObject &config, const std::atomi
     qlonglong newestIdNum = m_newestTweetId.toLongLong();
     for (const auto &tweetVal : tweets) {
         QJsonObject tweet = tweetVal.toObject();
-        QJsonObject legacy = tweet["legacy"].toObject();
+        QJsonObject legacy = xLegacy(tweet);
         QString tweetId = legacy["id_str"].toString();
         if (tweetId.isEmpty()) tweetId = tweet["rest_id"].toString();
         if (tweetId.toLongLong() > newestIdNum) {
@@ -5482,7 +5725,7 @@ void TwitterCollector::checkNewPosts(const QJsonObject &config, const std::atomi
     for (const auto &tweetVal : newTweets) {
         if (!isRunning) break;
         QJsonObject tweet = tweetVal.toObject();
-        QJsonObject legacy = tweet["legacy"].toObject();
+        QJsonObject legacy = xLegacy(tweet);
         QString tweetId = legacy["id_str"].toString();
         if (tweetId.isEmpty()) tweetId = tweet["rest_id"].toString();
 
@@ -5497,8 +5740,8 @@ void TwitterCollector::checkNewPosts(const QJsonObject &config, const std::atomi
             QJsonObject rtResult = legacy["retweeted_status_result"].toObject()["result"].toObject();
             if (rtResult.isEmpty()) rtResult = tweet["retweeted_status_result"].toObject()["result"].toObject();
             if (rtResult.contains("tweet")) rtResult = rtResult["tweet"].toObject();
-            QString rtAuthor = rtResult["core"].toObject()["user_results"].toObject()["result"].toObject()["legacy"].toObject()["screen_name"].toString();
-            m_backend->log(QString("RT @%1: %2...").arg(rtAuthor, rtResult["legacy"].toObject()["full_text"].toString().left(40)), "info", "twitter");
+            QString rtAuthor = xLegacy(rtResult)["screen_name"].toString();
+            m_backend->log(QString("RT @%1: %2...").arg(rtAuthor, xLegacy(rtResult)["full_text"].toString().left(40)), "info", "twitter");
         } else {
             m_backend->log(QString("%1...").arg(text.left(50)), "info", "twitter");
         }

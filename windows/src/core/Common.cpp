@@ -1,9 +1,16 @@
 #include "Common.h"
-#include <QProcess>
+#include <atomic>
+#include <QReadWriteLock>
 #ifndef Q_OS_WIN
 #include <csignal>
 #include <sys/types.h>
 #endif
+#include <QHash>
+#include <QLockFile>
+#include <QAtomicInt>
+#include <QProcess>
+#include <QUrl>
+#include <QCryptographicHash>
 #include <QProcessEnvironment>
 #include <QTimeZone>
 #include <QLocale>
@@ -21,6 +28,7 @@
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QThread>
 #include <QMutex>
 #include <QRegularExpression>
 #include <QJsonDocument>
@@ -352,6 +360,106 @@ QString ansiSafePath(const QString &path, const QString &who)
 #endif
 }
 
+// exiftool 실행 방법 — 한 곳에서만 정한다(선언부 주석 참고).
+namespace {
+// exiftool 실행 방법을 한 번만 정해서 들고 있는다.
+//   ★ 왜 구조체 하나로 묶어 함수 지역 static 으로 두나.
+//     예전엔 static QString 넷을 두고 "비었으면 채운다" 로 썼다. 그런데 EXIF 는
+//     여러 수집 스레드가 동시에 쓴다. 두 스레드가 같이 '비었다' 를 보면 둘 다
+//     채우기에 들어가고, QString 대입은 원자적이지 않아 찢어진 값을 읽을 수 있다.
+//     C++11 부터 함수 지역 static 의 '초기화' 는 한 번만·스레드 안전하게 일어난다.
+//     그 보장을 받으려면 대입이 아니라 초기화여야 한다.
+struct ExiftoolWay {
+    QString program;        // 실제로 띄울 것 (perl 또는 exiftool)
+    QStringList lead;       // 그 앞에 붙일 인자 (-I… + exiftool 스크립트 경로)
+};
+
+ExiftoolWay resolveExiftoolWay()
+{
+    ExiftoolWay w;
+    const QString bundledExiftool = bundledResourcesDir() + "/tools/exiftool/exiftool";
+    if (!QFile::exists(bundledExiftool)) {
+        QStringList candidates = {
+#ifdef Q_OS_WIN
+            QCoreApplication::applicationDirPath() + "/exiftool.exe",
+#endif
+            "/opt/homebrew/bin/exiftool",
+            "/usr/local/bin/exiftool",
+            "/usr/bin/exiftool",
+        };
+        for (const QString &c : candidates)
+            if (QFile::exists(c)) { w.program = c; break; }
+        if (w.program.isEmpty()) w.program = QStringLiteral("exiftool");
+        qInfo() << "[Common] system exiftool:" << w.program;
+        return w;                       // lead 비어 있음 = perl 안 거침
+    }
+
+#ifdef Q_OS_WIN
+    // 윈도우 번들은 exe 라 perl 을 거치지 않는다.
+    w.program = bundledExiftool;
+    return w;
+#else
+    // ★ 예전엔 exiftool 모듈 경로로 ".../lib/perl5" 를 넘겼는데 그런 폴더는 없다.
+    //   실제 위치는 .../tools/exiftool/lib (그 밑에 Image/ · File/).
+    //   exiftool 스크립트가 스스로 자기 lib 을 찾아 주는 덕에 티가 안 났을 뿐,
+    //   우리가 준 -I 는 내내 허공을 가리키고 있었다.
+    const QString exiftoolLib = bundledResourcesDir() + "/tools/exiftool/lib";
+
+    // ★ 번들 perl 우선. Apple 은 /usr/bin/perl 을 언젠가 뺀다고 예고했다.
+    //   그날 EXIF 기록이 통째로 죽지 않도록 perl 을 들고 다닌다.
+    QString perl = bundledResourcesDir() + "/tools/perl/bin/perl";
+    QStringList coreIncs;
+    // ★ '파일이 있다' 와 '실제로 뜬다' 는 다르다. 서명이 깨졌거나 libperl 이 빠지면
+    //   파일은 그대로 있는데 커널이 실행을 거부한다. 그때 시스템 perl 로 물러나지
+    //   않으면 EXIF 가 통째로 죽는다 — 들고 다니는 것이 오히려 해가 된다.
+    //   한 번만 물어본다(결과는 이 함수째로 캐시된다).
+    auto perlRuns = [](const QString &p) {
+        QProcess t;
+        t.setProcessEnvironment(bundledProcessEnv());
+        t.start(p, {"-e", "1"});
+        if (!t.waitForStarted(3000)) return false;
+        if (!t.waitForFinished(5000)) { t.kill(); return false; }
+        return t.exitStatus() == QProcess::NormalExit && t.exitCode() == 0;
+    };
+    if (QFile::exists(perl) && !perlRuns(perl)) {
+        qWarning() << "[Common] 번들 perl 이 실행되지 않습니다 — 시스템 perl 로 물러납니다:" << perl;
+        perl.clear();
+    }
+    if (!perl.isEmpty() && QFile::exists(perl)) {
+        const QString core = bundledResourcesDir() + "/tools/perl/lib";
+        // 아키텍처 폴더 이름(darwin-thread-multi-2level)을 코드에 박지 않는다.
+        // perl 판이 바뀌면 이름도 바뀐다 — 실제로 있는 것을 찾아 넣는다.
+        for (const QString &d : QDir(core).entryList(QStringList() << "darwin*",
+                                                     QDir::Dirs | QDir::NoDotAndDotDot))
+            coreIncs << (core + "/" + d);
+        coreIncs << core;
+    } else {
+        perl.clear();
+        for (const QString &p : {QStringLiteral("/usr/bin/perl"),
+                                 QStringLiteral("/usr/local/bin/perl"),
+                                 QStringLiteral("/opt/homebrew/bin/perl")}) {
+            if (QFile::exists(p)) { perl = p; break; }
+        }
+        if (perl.isEmpty()) perl = QStringLiteral("perl");
+    }
+    w.program = perl;
+    for (const QString &inc : coreIncs) w.lead << ("-I" + inc);
+    w.lead << ("-I" + exiftoolLib);
+    w.lead << bundledExiftool;
+    qInfo() << "[Common] exiftool:" << bundledExiftool << "perl:" << perl
+            << (coreIncs.isEmpty() ? "(시스템 perl)" : "(번들 perl)");
+    return w;
+#endif
+}
+} // namespace
+
+QString exiftoolProgram(QStringList *leadingArgs)
+{
+    static const ExiftoolWay way = resolveExiftoolWay();   // 1회·스레드 안전
+    if (leadingArgs) *leadingArgs = way.lead;
+    return way.program;
+}
+
 void addExifMetadata(const QString &imagePath, const QString &artist,
                      const QString &description, const QString &copyright,
                      const QString &comment, const QString &dateStr)
@@ -397,63 +505,6 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
     //   경로·값의 인코딩은 아래 UTF-8 argfile 로 해결한다.
     args << imagePath;
 
-    // exiftool 경로 탐색 (번들 → homebrew → system)
-    static QString exiftoolPath;
-    static QString exiftoolPerl;  // 번들 exiftool용 Perl 인터프리터
-    static QString exiftoolPerlLib;
-    static QString exiftoolPerlCoreLib;  // ★ 번들 Perl 의 코어 @INC (자체완결 perl 사용 시)
-    if (exiftoolPath.isEmpty()) {
-        // 번들된 exiftool (Resources/tools/exiftool/exiftool)
-        // ★ Windows 배포본은 perl 스크립트가 아니라 단독 실행 파일(exiftool.exe)을 쓴다.
-        //   유닉스용 perl 스크립트를 먼저 집으면 perl 이 없는 PC 에서 메타데이터가 통째로 실패한다.
-#ifdef Q_OS_WIN
-        QString bundledExiftool = bundledResourcesDir() + "/tools/exiftool/exiftool.exe";
-        if (!QFile::exists(bundledExiftool))
-            bundledExiftool = QCoreApplication::applicationDirPath() + "/exiftool.exe";
-#else
-        QString bundledExiftool = bundledResourcesDir() + "/tools/exiftool/exiftool";
-#endif
-        qDebug() << "[Common] exiftool probe:" << bundledExiftool
-                 << "exists=" << QFile::exists(bundledExiftool);
-        if (QFile::exists(bundledExiftool)) {
-            exiftoolPath = bundledExiftool;
-#ifdef Q_OS_WIN
-            // exiftool.exe 는 perl 을 내장한 단독 실행 파일 — perl 인터프리터/@INC 설정이 필요 없다.
-            qDebug() << "[Common] bundled exiftool.exe:" << exiftoolPath;
-#else
-            exiftoolPerlLib = bundledResourcesDir() + "/tools/exiftool/lib/perl5";
-            // ★ 번들 Perl 우선 (자체완결 — 시스템 perl 없어도 동작). 없으면 시스템 perl 폴백.
-            QString bundledPerl = bundledResourcesDir() + "/tools/perl/bin/perl";
-            if (QFile::exists(bundledPerl)) {
-                exiftoolPerl = bundledPerl;
-                exiftoolPerlCoreLib = bundledResourcesDir() + "/tools/perl/lib";  // 번들 perl 코어 @INC
-            } else {
-                QStringList perls = {"/usr/bin/perl", "/usr/bin/perl5.34", "/usr/bin/perl5.30"};
-                for (const QString &p : perls) {
-                    if (QFile::exists(p)) { exiftoolPerl = p; break; }
-                }
-                if (exiftoolPerl.isEmpty()) exiftoolPerl = "perl";
-            }
-            qDebug() << "[Common] bundled exiftool:" << exiftoolPath
-                     << "perl:" << exiftoolPerl << "lib:" << exiftoolPerlLib;
-#endif
-        } else {
-            QStringList candidates = {
-#ifdef Q_OS_WIN
-                QCoreApplication::applicationDirPath() + "/exiftool.exe",
-#endif
-                "/opt/homebrew/bin/exiftool",
-                "/usr/local/bin/exiftool",
-                "/usr/bin/exiftool",
-            };
-            for (const QString &c : candidates) {
-                if (QFile::exists(c)) { exiftoolPath = c; break; }
-            }
-            if (exiftoolPath.isEmpty()) exiftoolPath = "exiftool";
-            qDebug() << "[Common] system exiftool:" << exiftoolPath;
-        }
-    }
-
     QProcess proc;
     proc.setProcessEnvironment(bundledProcessEnv());
 #ifdef Q_OS_WIN
@@ -463,24 +514,19 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
     //   exiftool 이 뜨기도 전에 파일이 사라져서 "Error opening arg file" 로 매번 실패했다.
     //   실측: 이 기계의 로그에 1668건 전부 그 오류. EXIF 가 하나도 안 쓰이고 있었다.
     //   여기서 만들면 함수가 끝날 때까지 — waitForFinished 이후까지 — 살아 있다.
-    QTemporaryFile argFile(QDir::tempPath() + "/predormition_exif_XXXXXX.args");
+    //   (임시 파일 이름은 맥과 같게 앱 이름에서 — APP_NAME_ASCII)
+    QTemporaryFile argFile(QDir::tempPath() + "/" + QStringLiteral(APP_NAME_ASCII).toLower() + "_exif_XXXXXX.args");
     // ★ 줄바꿈이 든 값(트윗 본문 등)을 담을 파일들. argfile 과 같은 수명이어야 한다 —
     //   exiftool 이 다 읽기 전에 사라지면 안 된다(argfile 이 그래서 한 번 물렸다).
-    QTemporaryDir valDir(QDir::tempPath() + "/predormition_exifval_XXXXXX");
+    QTemporaryDir valDir(QDir::tempPath() + "/" + QStringLiteral(APP_NAME_ASCII).toLower() + "_exifval_XXXXXX");
 #endif
-    if (!exiftoolPerl.isEmpty()) {
-        // 번들 exiftool: perl -I<lib> exiftool <args>
-        QStringList perlArgs;
-        // ★ 번들 perl 코어 @INC (arch lib + base) 먼저 — 시스템 /System/Library/Perl 없이도 동작.
-        if (!exiftoolPerlCoreLib.isEmpty()) {
-            perlArgs << "-I" + exiftoolPerlCoreLib + "/darwin-thread-multi-2level";
-            perlArgs << "-I" + exiftoolPerlCoreLib;
-        }
-        if (!exiftoolPerlLib.isEmpty())
-            perlArgs << "-I" + exiftoolPerlLib;
-        perlArgs << exiftoolPath;
+    QStringList lead;
+    const QString prog = exiftoolProgram(&lead);
+    if (!lead.isEmpty()) {
+        // 번들 exiftool: perl -I<코어> -I<exiftool lib> exiftool <args>
+        QStringList perlArgs = lead;
         perlArgs.append(args);
-        proc.start(exiftoolPerl, perlArgs);
+        proc.start(prog, perlArgs);
     } else {
 #ifdef Q_OS_WIN
         // ★ Windows: 인자를 UTF-8 argfile 로 넘긴다.
@@ -533,15 +579,17 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
         }
         argFile.close();
         // argfile 자체는 exiftool 이 읽기만 하므로 8.3 로 넘겨도 안전하다.
-        proc.start(asciiSafeExiftool(exiftoolPath), {"-@", ansiSafePath(argFile.fileName())});
+        // 실행 파일은 asciiSafeExiftool — 경로에 ANSI 로 못 쓰는 글자가 있으면 옮겨 둔 사본을 띄운다
+        // (8.3 단축 경로만으로는 8.3 이 꺼진 드라이브에서 exiftool_files 를 못 찾는다 — Common.h 설명).
+        proc.start(asciiSafeExiftool(prog), {"-@", ansiSafePath(argFile.fileName())});
 #else
-        proc.start(exiftoolPath, args);
+        proc.start(prog, args);
 #endif
     }
     if (!proc.waitForStarted(3000)) {
         if (exiftoolAvailable == -1) {
             qWarning() << "[Common] exiftool not found — EXIF metadata disabled"
-                       << "path:" << exiftoolPath << "perl:" << exiftoolPerl
+                       << "prog:" << prog << "lead:" << lead.join(' ')
                        << "error:" << proc.errorString();
             exiftoolAvailable = 0;
         }
@@ -900,6 +948,11 @@ QString scriptOverrideDir()
 }
 QString activeToolScriptPath(const QString &name)
 {
+    // 쓰는 순서: 서명이 맞은 고침 꾸러미 > 이 맥의 자가수리가 고친 것 > 번들 원본
+    if (hotfixTools().contains(name)) {
+        const QString hf = hotfixToolsDir() + "/" + name;
+        if (QFileInfo::exists(hf)) return hf;
+    }
     const QString ov = scriptOverrideDir() + "/" + name;
     if (QFileInfo::exists(ov)) return ov;
     return bundledToolsDir() + "/" + name;
@@ -937,9 +990,340 @@ static QJsonObject loadApiOverrides()
 
 QString apiOverride(const QString &key, const QString &builtinDefault)
 {
+    // 순서: 이 맥에서 손으로(또는 스스로 되살리며) 넣은 값 > 고침 꾸러미 > 코드에 박힌 기본값
     const QJsonObject o = loadApiOverrides();
     const QString v = o.value(key).toString();
-    return v.isEmpty() ? builtinDefault : v;
+    if (!v.isEmpty()) return v;
+    const QString r = remoteOverride(key);
+    return r.isEmpty() ? builtinDefault : r;
+}
+
+// ── 고침 꾸러미 ────────────────────────────────────────────────────────────
+namespace {
+QReadWriteLock g_hotfixLock;
+QHash<QString, QString> g_remoteOverrides;
+QHash<QString, QStringList> g_shapeAliases;
+QList<HotfixRule> g_remoteRules;
+std::atomic<bool> g_hasAliases{false};
+
+// 열쇠마다 받아도 되는 값의 모양. 여기 없는 열쇠는 받지 않는다.
+bool overrideValueOk(const QString &key, const QString &v, QString *why)
+{
+    static const QRegularExpression twPath(R"(^/i/api/graphql/[A-Za-z0-9_-]{10,40}/[A-Za-z]{3,40}$)");
+    static const QRegularExpression bearer(R"(^[A-Za-z0-9%_=-]{40,300}$)");
+    static const QRegularExpression docId(R"(^\d{8,25}$)");
+    static const QRegularExpression providers(R"(^__relay_internal__pv__[A-Za-z0-9_]+relayprovider(,__relay_internal__pv__[A-Za-z0-9_]+relayprovider){0,30}$)");
+    if (key == QLatin1String("twitter.bearer")) {
+        if (bearer.match(v).hasMatch()) return true;
+        *why = QStringLiteral("bearer 모양이 아님"); return false;
+    }
+    if (key.startsWith(QLatin1String("twitter."))) {
+        // 경로만 받는다 — 주소를 통째로 받으면 요청(과 쿠키)을 딴 곳으로 돌릴 수 있다
+        if (twPath.match(v).hasMatch()) return true;
+        *why = QStringLiteral("x.com GraphQL 경로 모양이 아님"); return false;
+    }
+    if (key.startsWith(QLatin1String("instagram.")) && key.endsWith(QLatin1String("DocId"))) {
+        if (docId.match(v).hasMatch()) return true;
+        *why = QStringLiteral("doc_id 는 숫자여야 함"); return false;
+    }
+    if (key.startsWith(QLatin1String("instagram.")) && key.endsWith(QLatin1String("Providers"))) {
+        if (providers.match(v).hasMatch()) return true;
+        *why = QStringLiteral("provider 이름 목록 모양이 아님"); return false;
+    }
+    *why = QStringLiteral("모르는 열쇠");
+    return false;
+}
+
+// 수리 규칙의 글 — 링크·연락처·비밀을 달라는 글이 끼면 받지 않는다(낚시 막기)
+bool ruleTextOk(const QString &s)
+{
+    static const QRegularExpression bad(R"(://|www\.|https?|@|토큰\s*값|비밀번호|password|cookie\s*값|붙여넣)",
+                                        QRegularExpression::CaseInsensitiveOption);
+    return !s.isEmpty() && s.size() <= 220 && !bad.match(s).hasMatch();
+}
+} // namespace
+
+HotfixApplyResult applyHotfix(const QJsonObject &overrides, const QJsonObject &aliases,
+                              const QJsonArray &rules, bool dryRun)
+{
+    HotfixApplyResult res;
+    QHash<QString, QString> ov;
+    for (auto it = overrides.constBegin(); it != overrides.constEnd(); ++it) {
+        const QString v = it.value().toString();
+        QString why;
+        if (overrideValueOk(it.key(), v, &why)) ov.insert(it.key(), v);
+        else res.rejected << QStringLiteral("값 %1 — %2").arg(it.key(), why);
+    }
+    static const QRegularExpression name(R"(^[A-Za-z0-9_]{1,64}$)");
+    QHash<QString, QStringList> al;
+    for (auto it = aliases.constBegin(); it != aliases.constEnd() && al.size() < 500; ++it) {
+        if (!name.match(it.key()).hasMatch()) { res.rejected << QStringLiteral("별명 열쇠 %1").arg(it.key().left(40)); continue; }
+        QStringList vs;
+        for (const auto &v : it.value().toArray()) {
+            const QString s = v.toString();
+            if (name.match(s).hasMatch() && !vs.contains(s) && vs.size() < 40) vs << s;
+            else res.rejected << QStringLiteral("별명 %1→%2").arg(it.key(), s.left(40));
+        }
+        if (!vs.isEmpty()) al.insert(it.key(), vs);
+    }
+    // 무늬는 글자 그대로의 대안(가|나|다)만 — 겹친 반복 같은 복잡한 정규식은 앱을 멈추게 할 수 있다
+    static const QRegularExpression literalAlts(R"(^[^()*+?{}\[\]\\|]{2,80}(\|[^()*+?{}\[\]\\|]{2,80}){0,20}$)");
+    static const QStringList okActions = {QString(), QStringLiteral("refreshAllTokens"),
+                                          QStringLiteral("updateModules"), QStringLiteral("repairPython")};
+    QList<HotfixRule> rl;
+    for (const auto &v : rules) {
+        const QJsonObject o = v.toObject();
+        const QString pat = o.value("pattern").toString();
+        const QString cause = o.value("cause").toString(), advice = o.value("advice").toString();
+        const QString action = o.value("action").toString();
+        if (!literalAlts.match(pat).hasMatch()) { res.rejected << QStringLiteral("규칙 무늬 %1").arg(pat.left(40)); continue; }
+        if (!okActions.contains(action)) { res.rejected << QStringLiteral("규칙 할 일 %1").arg(action.left(40)); continue; }
+        if (!ruleTextOk(cause) || !ruleTextOk(advice)) { res.rejected << QStringLiteral("규칙 글 %1").arg(cause.left(40)); continue; }
+        QRegularExpression re(pat, QRegularExpression::CaseInsensitiveOption);
+        if (!re.isValid()) { res.rejected << QStringLiteral("규칙 무늬 %1").arg(pat.left(40)); continue; }
+        rl.append({re, cause, advice, action});
+        if (rl.size() >= 200) break;
+    }
+    res.overrides = ov.size(); res.aliases = al.size(); res.rules = rl.size();
+    if (!dryRun) {
+        QWriteLocker lk(&g_hotfixLock);
+        g_remoteOverrides = ov; g_shapeAliases = al; g_remoteRules = rl;
+        g_hasAliases.store(!al.isEmpty());
+    }
+    return res;
+}
+
+QString remoteOverride(const QString &key)
+{
+    QReadLocker lk(&g_hotfixLock);
+    return g_remoteOverrides.value(key);
+}
+
+QStringList shapeAliasesFor(const QStringList &keys)
+{
+    if (!g_hasAliases.load(std::memory_order_relaxed)) return keys;   // 대개 여기서 끝난다(빠른 길)
+    QStringList out = keys;
+    QReadLocker lk(&g_hotfixLock);
+    for (const QString &k : keys)
+        for (const QString &a : g_shapeAliases.value(k))
+            if (!out.contains(a)) out << a;
+    return out;
+}
+
+QList<HotfixRule> remoteRepairRules()
+{
+    QReadLocker lk(&g_hotfixLock);
+    return g_remoteRules;
+}
+
+QString hotfixDir()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/hotfix";
+}
+
+namespace { QHash<QString, QString> g_hotfixTools; }
+QString hotfixToolsDir() { return hotfixDir() + "/tools"; }
+void setHotfixTools(const QHash<QString, QString> &m) { QWriteLocker lk(&g_hotfixLock); g_hotfixTools = m; }
+QHash<QString, QString> hotfixTools() { QReadLocker lk(&g_hotfixLock); return g_hotfixTools; }
+
+// ── 프록시(VPN) ────────────────────────────────────────────────────────────
+namespace {
+struct ProxyCfg {
+    bool enabled = false;
+    QString host, user, pass;
+    int port = 1080;
+    // ★ 연결 방식 — 이름 붙은 프로필에는 HTTP 프록시도 들어온다(윈도우 프로필의 type).
+    //   예전엔 SOCKS5 만 받았으므로 비면 socks5 로 본다.
+    QString type = QStringLiteral("socks5");
+};
+QMutex   g_proxyMutex;
+ProxyCfg g_proxy;                 // 전역(기본) 프록시 — 계정별 지정이 없을 때 쓴다
+
+// ★ 계정마다 다른 프록시를 쓰려면 '스레드마다 다른 값' 이어야 한다.
+//   수집은 스레드로 병렬로 돈다(병렬 다중 수집). 전역 하나만 두고 계정마다
+//   바꿔 끼우면, 동시에 도는 두 수집이 서로의 설정을 덮어써서 엉뚱한 IP 로 나간다.
+//   그래서 수집 스레드가 자기 것을 들고, 지정이 없으면 전역으로 떨어진다.
+thread_local ProxyCfg *t_proxy = nullptr;
+
+// 중계기는 '상위 프록시마다' 하나씩 둔다. 계정별로 상위가 다르면 중계기도 달라야
+// 한다 — 하나를 돌려쓰면 모든 계정이 같은 IP 로 나간다(계정별 지정이 무의미해진다).
+struct Relay { QProcess *proc = nullptr; int port = 0; };
+QHash<QString, Relay> g_relays;   // 키: 상위 프록시 서명(host:port:user)
+}
+
+// 지금 이 스레드에 적용되는 프록시. 스레드 지정이 있으면 그것, 없으면 전역.
+static ProxyCfg effectiveProxy()
+{
+    if (t_proxy) return *t_proxy;
+    QMutexLocker lock(&g_proxyMutex);
+    return g_proxy;
+}
+
+static QString proxySignature(const ProxyCfg &c)
+{
+    // ★ 종류도 서명에 넣는다 — 같은 주소라도 SOCKS5 와 HTTP 는 다른 중계기여야 한다.
+    // ★ 비밀번호의 지문도 넣는다(값 자체는 넣지 않는다). 프로필의 비밀번호를 고친 뒤에도 옛 중계기가
+    //   옛 비밀번호로 계속 쓰였다 — 연결 시험은 새 비밀번호로 통과하는데 캡처만 실패했다.
+    const QString passTag = QString::fromLatin1(
+        QCryptographicHash::hash(c.pass.toUtf8(), QCryptographicHash::Sha256).toHex().left(12));
+    return c.type + QStringLiteral("://") + c.host + QLatin1Char(':') + QString::number(c.port)
+         + QLatin1Char(':') + c.user + QLatin1Char('#') + passTag;
+}
+
+void setThreadProxy(bool enabled, const QString &host, int port,
+                    const QString &user, const QString &pass, const QString &type)
+{
+    clearThreadProxy();
+    t_proxy = new ProxyCfg{enabled, host, user, pass, port,
+                           type.isEmpty() ? QStringLiteral("socks5") : type.toLower()};
+}
+
+void clearThreadProxy()
+{
+    delete t_proxy;
+    t_proxy = nullptr;
+}
+
+void setProxyConfig(bool enabled, const QString &host, int port,
+                    const QString &user, const QString &pass, const QString &type)
+{
+    const QString t = type.isEmpty() ? QStringLiteral("socks5") : type.toLower();
+    QMutexLocker lock(&g_proxyMutex);
+    const bool changed = (g_proxy.enabled != enabled) || (g_proxy.host != host)
+                      || (g_proxy.port != port) || (g_proxy.user != user)
+                      || (g_proxy.pass != pass) || (g_proxy.type != t);
+    g_proxy = {enabled, host, user, pass, port, t};
+    if (changed) {     // 설정이 바뀌면 중계기를 모두 정리한다(다음 요청 때 새로 뜬다)
+        for (auto it = g_relays.begin(); it != g_relays.end(); ++it) {
+            if (!it->proc) continue;
+            it->proc->kill();
+            it->proc->waitForFinished(2000);
+            it->proc->deleteLater();
+        }
+        g_relays.clear();
+    }
+}
+
+bool proxyEnabled()
+{
+    const ProxyCfg c = effectiveProxy();
+    return c.enabled && !c.host.isEmpty() && c.port > 0;
+}
+
+QString proxyUrl()
+{
+    const ProxyCfg c = effectiveProxy();
+    if (!c.enabled || c.host.isEmpty() || c.port <= 0) return QString();
+    // ★ HTTPS 프록시(프록시까지 TLS)는 Qt 도 파이썬 urllib 도 말하지 못한다 — 그대로 넘기면 평문으로
+    //   붙어 아이디·비밀번호가 그대로 흘렀다. 중계기(socks_relay.py)만 상위에 TLS 로 붙는다.
+    //   그래서 https 는 언제나 중계기 주소(127.0.0.1 · 자격증명 없음)를 준다.
+    //   중계기를 못 띄우면 빈 값이다 — 부르는 쪽(HttpClient·bundledProcessEnv)이 닫힌 길로 막는다.
+    if (c.type == QLatin1String("https")) return proxyLocalRelayUrl();
+    QString auth;
+    if (!c.user.isEmpty()) {
+        auth = QString::fromLatin1(QUrl::toPercentEncoding(c.user) + ":"
+                                   + QUrl::toPercentEncoding(c.pass) + "@");
+    }
+    // 프로필의 종류를 그대로 scheme 으로 쓴다 — httpx·yt-dlp·curl 이 모두 이 모양을 읽는다.
+    // ★ 이어 붙인다. arg() 를 겹쳐 쓰면 비밀번호의 퍼센트 코드(%2F · %3A …)를 다음 arg() 가
+    //   자리표시로 읽어 비밀번호와 포트가 함께 깨졌다('/' 나 ':' 가 든 비밀번호).
+    return (c.type.isEmpty() ? QStringLiteral("socks5") : c.type) + QStringLiteral("://")
+         + auth + c.host + QLatin1Char(':') + QString::number(c.port);
+}
+
+QString proxyExitTag()
+{
+    if (!proxyEnabled()) return QString();
+    const ProxyCfg c = effectiveProxy();
+    const QString id = c.type + QStringLiteral("://") + c.host + QLatin1Char(':')
+                     + QString::number(c.port) + QLatin1Char(':') + c.user;
+    return QString::fromLatin1(QCryptographicHash::hash(id.toUtf8(), QCryptographicHash::Sha256).toHex().left(10));
+}
+
+QString proxyLocalRelayUrl()
+{
+    if (!proxyEnabled()) return QString();
+    const ProxyCfg cfg = effectiveProxy();
+    // ★ 인증 없는 HTTP(S) 프록시는 중계기가 필요 없다 — 크로미움이 그대로 받는다.
+    //   인증이 붙은 HTTP 프록시는 중계기가 상위로 HTTP CONNECT 를 쓴다(socks_relay.py).
+    //   HTTPS 는 인증이 없어도 중계기로 간다 — Qt·파이썬 쪽(proxyUrl)이 이 주소를 같이 쓰기 때문이다.
+    if (cfg.type == QLatin1String("http") && cfg.user.isEmpty())
+        return QStringLiteral("http://") + cfg.host + QLatin1Char(':') + QString::number(cfg.port);
+    const QString sig = proxySignature(cfg);
+    {
+        QMutexLocker lock(&g_proxyMutex);
+        const Relay r = g_relays.value(sig);
+        if (r.proc && r.proc->state() != QProcess::NotRunning && r.port > 0)
+            return QStringLiteral("socks5://127.0.0.1:%1").arg(r.port);
+    }
+
+    const QString script = activeToolScriptPath(QStringLiteral("socks_relay.py"));
+    const QString python = bundledPythonPath();
+    if (!QFileInfo::exists(script) || !QFileInfo::exists(python)) {
+        qWarning() << "[proxy] 중계기를 띄울 수 없습니다 — 스크립트나 파이썬이 없습니다";
+        return QString();
+    }
+
+    // ★ 잠금을 쥐지 않은 채 띄운다.
+    //   예전엔 여기서 잠금을 잡고 기동(최대 5초)과 준비 신호(최대 8초)를 기다렸다.
+    //   그동안 다른 수집 스레드의 effectiveProxy() 조회가 전부 이 잠금에서 멈췄다 —
+    //   병렬 수집이 최대 13초씩 통째로 얼어붙는다.
+    //   대신 마지막에 잠금을 짧게 잡고, 그 사이 남이 먼저 만들었으면 내 것을 버린다.
+    auto *p = new QProcess();
+    p->setProcessEnvironment(QProcessEnvironment::systemEnvironment());
+    p->start(python, {script, QStringLiteral("--stdin-args")});
+    if (!p->waitForStarted(5000)) { p->deleteLater(); return QString(); }
+
+    // ★ 자격증명은 stdin 첫 줄로만 넘긴다 — 명령줄에 실으면 ps 로 남이 읽는다.
+    // type 은 상위 프록시의 종류 — 중계기가 SOCKS5 와 HTTP CONNECT 를 이것으로 가른다.
+    QJsonObject init{{"listen_port", 0}, {"type", cfg.type},
+                     {"host", cfg.host}, {"port", cfg.port},
+                     {"user", cfg.user}, {"pass", cfg.pass}};
+    p->write(QJsonDocument(init).toJson(QJsonDocument::Compact) + "\n");
+    p->waitForBytesWritten(3000);
+
+    // 준비 신호를 기다린다.
+    int port = 0;
+    QByteArray acc;
+    while (p->waitForReadyRead(8000)) {
+        acc += p->readAllStandardOutput();
+        const int nl = acc.indexOf('\n');
+        if (nl < 0) continue;
+        const QJsonObject o = QJsonDocument::fromJson(acc.left(nl)).object();
+        if (o.value("ready").toBool()) { port = o.value("port").toInt(); }
+        break;
+    }
+    if (port <= 0) {
+        qWarning() << "[proxy] 중계기가 준비되지 않았습니다";
+        p->kill(); p->waitForFinished(2000); p->deleteLater();
+        return QString();
+    }
+    {
+        QMutexLocker lock(&g_proxyMutex);
+        // 기다리는 사이에 다른 스레드가 같은 상위 프록시로 먼저 띄웠을 수 있다.
+        const Relay other = g_relays.value(sig);
+        if (other.proc && other.proc->state() != QProcess::NotRunning && other.port > 0) {
+            lock.unlock();
+            p->kill(); p->waitForFinished(2000); p->deleteLater();
+            return QStringLiteral("socks5://127.0.0.1:%1").arg(other.port);
+        }
+        g_relays.insert(sig, Relay{p, port});
+    }
+    qInfo() << "[proxy] 로컬 중계기 준비 — 127.0.0.1:" << port
+            << "(상위" << cfg.host << ")";
+    return QStringLiteral("socks5://127.0.0.1:%1").arg(port);
+}
+
+void stopProxyRelay()
+{
+    QMutexLocker lock(&g_proxyMutex);
+    for (auto it = g_relays.begin(); it != g_relays.end(); ++it) {
+        if (!it->proc) continue;
+        it->proc->kill();
+        it->proc->waitForFinished(2000);
+        it->proc->deleteLater();
+    }
+    g_relays.clear();
 }
 
 bool setApiOverride(const QString &key, const QString &value)
@@ -993,6 +1377,299 @@ QString appBundlePath()
 }
 
 // 번들 안에 파일을 쓴 뒤 봉인을 복구한다. 실패하면 false + 사유.
+static QAtomicInt g_resealInFlight(0);
+bool resealInFlight() { return g_resealInFlight.loadAcquire() != 0; }
+
+static std::atomic<bool> g_appQuitting{false};
+void markAppQuitting() { g_appQuitting.store(true, std::memory_order_release); }
+bool appQuitting() { return g_appQuitting.load(std::memory_order_acquire); }
+
+int capturePortBase()
+{
+    bool ok = false;
+    const int v = qEnvironmentVariableIntValue("HANISHIKI_CAPTURE_PORT", &ok);
+    return (ok && v >= 1024 && v <= 65000) ? v : 9223;
+}
+
+#ifdef Q_OS_WIN
+// ── 윈도우: --user-data-dir 전체 경로로 캡처 Chrome 고르기 ─────────────────────
+// ★ 맥의 `ps -axww -o pid=,command=` 자리. taskkill 은 명령줄로 거르지 못하므로
+//   (HanishikiBackend 의 killByCommandLine 설명) WMI(Win32_Process)의 CommandLine 을 읽는다.
+//   ★ 실행 파일 이름(chrome.exe · msedge.exe …)으로 거르지 않는다 — 맥처럼 --user-data-dir 값만 본다.
+//     번들 Chromium · Chrome · Edge · Brave 무엇으로 떴든 같은 프로필이면 잡히고, 다른 프로필이면 안 잡힌다.
+//   ★ 명령줄은 base64(UTF-8) 로 받는다. 파이프로 나오는 PowerShell 글은 콘솔 코드페이지라
+//     사용자 이름의 한글·일본어가 '?' 로 뭉개진다 — 그러면 전체 경로 비교가 늘 어긋나 아무것도 못 고른다.
+//   ★ 스크립트는 -EncodedCommand 로 넘기고 경로는 스크립트에 넣지 않는다. 비교는 아래 C++ 에서
+//     글자 그대로 한다 — 명령줄 인용 규칙 · -like 의 [ ] * 에 경로가 걸릴 일이 없다.
+namespace {
+struct ProcCmd { qint64 pid = 0; QString cmd; };
+
+QList<ProcCmd> processesWithUserDataDir()
+{
+    QList<ProcCmd> out;
+    const QString script = QStringLiteral(
+        "$ErrorActionPreference='SilentlyContinue';$ProgressPreference='SilentlyContinue';"
+        "Get-CimInstance Win32_Process -Filter \"CommandLine LIKE '%--user-data-dir=%'\" | "
+        "ForEach-Object { [string]$_.ProcessId + ' ' + "
+        "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$_.CommandLine)) }");
+    const QByteArray utf16le(reinterpret_cast<const char *>(script.utf16()),
+                             static_cast<int>(script.size()) * 2);
+    QProcess ps;
+    ps.start(QStringLiteral("powershell"),
+             {QStringLiteral("-NoProfile"), QStringLiteral("-NonInteractive"),
+              QStringLiteral("-EncodedCommand"), QString::fromLatin1(utf16le.toBase64())});
+    if (!ps.waitForStarted(5000)) return out;
+    if (!ps.waitForFinished(20000)) { ps.kill(); ps.waitForFinished(1000); return out; }
+    const QList<QByteArray> lines = ps.readAllStandardOutput().split('\n');
+    for (const QByteArray &raw : lines) {
+        const QByteArray line = raw.trimmed();
+        const int sp = line.indexOf(' ');
+        if (sp <= 0) continue;
+        const qint64 pid = line.left(sp).toLongLong();
+        if (pid <= 0) continue;
+        ProcCmd pc;
+        pc.pid = pid;
+        pc.cmd = QString::fromUtf8(QByteArray::fromBase64(line.mid(sp + 1)));
+        out.append(pc);
+    }
+    return out;
+}
+
+// --user-data-dir= 값이 시작하는 자리. 값만 따옴표로 감싼 꼴(--user-data-dir="C:\…" — Chrome 이 자식
+// 프로세스에 넘기는 꼴)이면 그 따옴표 뒤. 인자 전체를 감싼 꼴("--user-data-dir=C:/a b/…" — QProcess 가
+// 빈칸 든 인자를 넘기는 꼴)은 '=' 바로 뒤다.
+int userDataDirValueStart(const QString &cmd, int keyAt, int keyLen)
+{
+    int vs = keyAt + keyLen;
+    if (vs < cmd.size() && cmd.at(vs) == QLatin1Char('"')) ++vs;
+    return vs;
+}
+
+// 경로가 거기서 끝나는가 — 다음 글자가 '"' · 빈칸 · 끝.
+bool atValueEnd(const QString &cmd, int i)
+{
+    return i >= cmd.size() || cmd.at(i) == QLatin1Char('"') || cmd.at(i) == QLatin1Char(' ');
+}
+
+// 찾은 프로세스를 맥의 SIGTERM → 0.3초 → SIGKILL 과 같은 순서로 끝낸다.
+//   먼저 핸들을 쥔다 — 쥐고 있는 동안 그 pid 는 다른 프로세스에 다시 쓰이지 않으므로, 0.3초 뒤에
+//   다시 훑지 않고도 처음 고른 프로세스만 끊는다.
+//   taskkill(/F 없이)은 창에 닫으라고 보낸다 — 창이 있는 Chrome 은 프로필을 정리하고 끝난다
+//   (창 없는 자식 · 헤드리스는 거절하고 남는다). 0.3초 뒤에도 살아 있는 것은 TerminateProcess.
+void endProcessesGently(const QList<qint64> &pids)
+{
+    QList<HANDLE> handles;
+    QStringList soft;
+    for (qint64 pid : pids) {
+        HANDLE h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, static_cast<DWORD>(pid));
+        if (!h) continue;                                    // 이미 끝났다
+        handles << h;
+        soft << QStringLiteral("/PID") << QString::number(pid);
+    }
+    if (handles.isEmpty()) return;
+    QProcess::execute(QStringLiteral("taskkill"), soft);
+    QThread::msleep(300);                                    // 얌전히 끝날 틈
+    for (HANDLE h : handles) {
+        if (WaitForSingleObject(h, 0) == WAIT_TIMEOUT) TerminateProcess(h, 1);
+        CloseHandle(h);
+    }
+}
+} // namespace
+#endif
+
+QList<qint64> captureChromePids(const QString &profileDir, bool prefix)
+{
+    QList<qint64> out;
+#ifndef Q_OS_WIN
+    if (profileDir.isEmpty()) return out;
+    // pkill/pgrep -f 는 정규식이라 경로의 공백·괄호를 다루기 어렵다 — ps 를 한 번 읽어 글자 그대로 비교한다.
+    QProcess ps;
+    ps.start("/bin/ps", {"-axww", "-o", "pid=,command="});
+    if (!ps.waitForFinished(3000)) { ps.kill(); ps.waitForFinished(1000); return out; }
+    const QString key = QStringLiteral("--user-data-dir=") + profileDir;
+    const qint64 self = QCoreApplication::applicationPid();
+    const QStringList lines = QString::fromUtf8(ps.readAllStandardOutput()).split('\n', Qt::SkipEmptyParts);
+    for (const QString &raw : lines) {
+        const QString line = raw.trimmed();
+        const int sp = line.indexOf(QLatin1Char(' '));
+        if (sp <= 0) continue;
+        const qint64 pid = line.left(sp).toLongLong();
+        if (pid <= 0 || pid == self) continue;
+        const QString cmd = line.mid(sp + 1);
+        const int at = cmd.indexOf(key);
+        if (at < 0) continue;
+        const int end = at + key.size();
+        // 경로가 거기서 끝나야 한다(다음 글자가 빈칸이거나 끝). prefix 면 트랙·PEN 프로필(…_<이름>)도.
+        if (end < cmd.size()) {
+            const QChar c = cmd.at(end);
+            if (c != QLatin1Char(' ') && !(prefix && c == QLatin1Char('_'))) continue;
+        }
+        out << pid;
+    }
+#else
+    // 윈도우 — 맥과 같은 기준(--user-data-dir 의 전체 경로)으로 고른다. 대소문자는 보지 않고
+    // '\' 와 '/' 는 같게 본다(우리는 '/' 로 넘기는데 Chrome 은 자식에게 역슬래시로 적어 넘긴다).
+    if (profileDir.isEmpty()) return out;
+    const QString want = QDir::cleanPath(QDir::fromNativeSeparators(profileDir));
+    const QString key = QStringLiteral("--user-data-dir=");
+    const qint64 self = QCoreApplication::applicationPid();
+    for (const ProcCmd &pc : processesWithUserDataDir()) {
+        if (pc.pid == self) continue;
+        const QString cmd = QDir::fromNativeSeparators(pc.cmd);
+        for (int at = cmd.indexOf(key, 0, Qt::CaseInsensitive); at >= 0;
+             at = cmd.indexOf(key, at + key.size(), Qt::CaseInsensitive)) {
+            const int vs = userDataDirValueStart(cmd, at, key.size());
+            if (cmd.mid(vs, want.size()).compare(want, Qt::CaseInsensitive) != 0) continue;
+            const int end = vs + want.size();
+            // 경로가 거기서 끝나야 한다('"' · 빈칸 · 끝). prefix 면 트랙·PEN 프로필(…_<이름>)도.
+            if (!atValueEnd(cmd, end) && !(prefix && cmd.at(end) == QLatin1Char('_'))) continue;
+            out << pc.pid;
+            break;
+        }
+    }
+#endif
+    return out;
+}
+
+int killCaptureChromes(const QString &profileDir, bool prefix)
+{
+#ifndef Q_OS_WIN
+    const QList<qint64> found = captureChromePids(profileDir, prefix);
+    if (found.isEmpty()) return 0;
+    for (qint64 pid : found) ::kill(static_cast<pid_t>(pid), SIGTERM);
+    QThread::msleep(300);                                    // 얌전히 끝날 틈
+    for (qint64 pid : captureChromePids(profileDir, prefix)) ::kill(static_cast<pid_t>(pid), SIGKILL);
+    return found.size();
+#else
+    const QList<qint64> found = captureChromePids(profileDir, prefix);
+    if (found.isEmpty()) return 0;
+    endProcessesGently(found);
+    return found.size();
+#endif
+}
+
+QList<qint64> orphanedCaptureChromePids(const QString &appSupportRoot)
+{
+    QList<qint64> out;
+#ifndef Q_OS_WIN
+    if (appSupportRoot.isEmpty()) return out;
+    const QString root = QDir::cleanPath(appSupportRoot) + QLatin1Char('/');
+    QProcess ps;
+    ps.start("/bin/ps", {"-axww", "-o", "pid=,command="});
+    if (!ps.waitForFinished(3000)) { ps.kill(); ps.waitForFinished(1000); return out; }
+    const QString key = QStringLiteral("--user-data-dir=");
+    const QString mark = QStringLiteral("/chrome_capture_profile");
+    const qint64 self = QCoreApplication::applicationPid();
+    const QStringList lines = QString::fromUtf8(ps.readAllStandardOutput()).split('\n', Qt::SkipEmptyParts);
+    for (const QString &raw : lines) {
+        const QString line = raw.trimmed();
+        const int sp = line.indexOf(QLatin1Char(' '));
+        if (sp <= 0) continue;
+        const qint64 pid = line.left(sp).toLongLong();
+        if (pid <= 0 || pid == self) continue;
+        const QString cmd = line.mid(sp + 1);
+        const int at = cmd.indexOf(key);
+        if (at < 0) continue;
+        const int vs = at + key.size();
+        const int mk = cmd.indexOf(mark, vs);
+        if (mk < 0) continue;
+        // 경로가 …/chrome_capture_profile 또는 …/chrome_capture_profile_<이름> 에서 끝나야 한다(경로엔 빈칸이 있을 수 있다)
+        int end = mk + mark.size();
+        if (end < cmd.size() && cmd.at(end) == QLatin1Char('_'))
+            while (end < cmd.size() && cmd.at(end) != QLatin1Char(' ') && cmd.at(end) != QLatin1Char('/')) ++end;
+        if (end < cmd.size() && cmd.at(end) != QLatin1Char(' ')) continue;
+        if (!cmd.mid(vs, end - vs).startsWith(root)) continue;        // 이 홈의 Application Support 밖(격리 사본 등)은 두고
+        if (QFileInfo::exists(cmd.mid(vs, mk - vs))) continue;        // 데이터 폴더가 살아 있으면 고아가 아니다
+        out << pid;
+    }
+#else
+    // 윈도우 — appSupportRoot 는 %APPDATA%(조직 폴더가 있으면 그 아래). 그 밑 …/chrome_capture_profile[_…] 인데
+    // 데이터 폴더가 이제 없는 것만. 앱 이름이 바뀌어 데이터 폴더가 옮겨진 뒤 옛 판이 남긴 Chrome 이 여기 걸린다.
+    if (appSupportRoot.isEmpty()) return out;
+    const QString root = QDir::cleanPath(QDir::fromNativeSeparators(appSupportRoot)) + QLatin1Char('/');
+    const QString key = QStringLiteral("--user-data-dir=");
+    const QString mark = QStringLiteral("/chrome_capture_profile");
+    const qint64 self = QCoreApplication::applicationPid();
+    for (const ProcCmd &pc : processesWithUserDataDir()) {
+        if (pc.pid == self) continue;
+        const QString cmd = QDir::fromNativeSeparators(pc.cmd);
+        const int at = cmd.indexOf(key, 0, Qt::CaseInsensitive);
+        if (at < 0) continue;
+        const int vs = userDataDirValueStart(cmd, at, key.size());
+        const int mk = cmd.indexOf(mark, vs, Qt::CaseInsensitive);
+        if (mk < 0) continue;
+        // 경로가 …/chrome_capture_profile 또는 …/chrome_capture_profile_<이름> 에서 끝나야 한다(경로엔 빈칸이 있을 수 있다)
+        int end = mk + mark.size();
+        if (end < cmd.size() && cmd.at(end) == QLatin1Char('_'))
+            while (!atValueEnd(cmd, end) && cmd.at(end) != QLatin1Char('/')) ++end;
+        if (!atValueEnd(cmd, end)) continue;
+        if (!cmd.mid(vs, end - vs).startsWith(root, Qt::CaseInsensitive)) continue;   // 이 사용자의 앱 데이터 밖은 두고
+        if (QFileInfo::exists(cmd.mid(vs, mk - vs))) continue;                       // 데이터 폴더가 살아 있으면 고아가 아니다
+        out << pc.pid;
+    }
+#endif
+    return out;
+}
+
+int killOrphanedCaptureChromes(const QString &appSupportRoot)
+{
+#ifndef Q_OS_WIN
+    const QList<qint64> found = orphanedCaptureChromePids(appSupportRoot);
+    if (found.isEmpty()) return 0;
+    for (qint64 pid : found) ::kill(static_cast<pid_t>(pid), SIGTERM);
+    QThread::msleep(300);
+    for (qint64 pid : orphanedCaptureChromePids(appSupportRoot)) ::kill(static_cast<pid_t>(pid), SIGKILL);
+    return found.size();
+#else
+    const QList<qint64> found = orphanedCaptureChromePids(appSupportRoot);
+    if (found.isEmpty()) return 0;
+    endProcessesGently(found);
+    return found.size();
+#endif
+}
+
+SealState checkAppSeal(QString *detail)
+{
+#ifdef Q_OS_MACOS
+    const QString app = appBundlePath();
+    if (app.isEmpty()) return SealState::NotBundle;
+    auto verify = [&app](bool strict, QString *errOut) {
+        QProcess vf;
+        QStringList args{QStringLiteral("--verify"), QStringLiteral("--deep")};
+        if (strict) args << QStringLiteral("--strict");
+        args << app;
+        vf.start(QStringLiteral("/usr/bin/codesign"), args);
+        if (!vf.waitForFinished(900000)) { vf.kill(); vf.waitForFinished(3000); }
+        if (errOut) *errOut = QString::fromUtf8(vf.readAllStandardError());
+        return vf.exitStatus() == QProcess::NormalExit && vf.exitCode() == 0;
+    };
+    QString e;
+    if (verify(true, &e)) return SealState::Ok;
+    if (e.contains(QLatin1String("detritus"))) {
+        // 지울 수 있는 표시는 지운다 — 확장 속성만 지우고 파일 내용은 건드리지 않는다.
+        //   (없는 파일마다 'No such xattr' 를 찍으므로 출력은 버린다)
+        for (const char *attr : {"com.apple.FinderInfo", "com.apple.ResourceFork"}) {
+            QProcess x;
+            x.setStandardOutputFile(QProcess::nullDevice());
+            x.setStandardErrorFile(QProcess::nullDevice());
+            x.start(QStringLiteral("/usr/bin/xattr"), {QStringLiteral("-rd"), QString::fromLatin1(attr), app});
+            if (!x.waitForFinished(120000)) { x.kill(); x.waitForFinished(3000); }
+        }
+        if (verify(true, &e)) return SealState::Ok;
+        QString loose;
+        if (e.contains(QLatin1String("detritus")) && verify(false, &loose)) {
+            if (detail) *detail = e.left(300);
+            return SealState::OkFinderDetritus;
+        }
+    }
+    if (detail) *detail = e.left(300);
+    return SealState::Broken;
+#else
+    Q_UNUSED(detail);
+    return SealState::NotBundle;
+#endif
+}
+
 bool resealAppBundle(QString *err)
 {
 #ifdef Q_OS_MACOS
@@ -1029,15 +1706,19 @@ bool resealAppBundle(QString *err)
         return false;
     }
     if (cs.exitCode() != 0) {
-        if (err) *err = QString::fromUtf8(cs.readAllStandardError()).left(300);
+        // ★ 스크립트는 마지막에 엄격 검사를 한다. iCloud 폴더의 앱은 서명은 다 됐어도 앱 폴더의
+        //   Finder 표시 때문에 거기서만 걸린다(checkAppSeal 설명) — 그것이면 서명은 된 것이다.
+        if (checkAppSeal() == SealState::OkFinderDetritus) return true;
+        // 스크립트가 실패 사유를 표준출력에도 적는다(개별 서명 실패 목록 등).
+        const QString out = QString::fromUtf8(cs.readAllStandardOutput()).right(400);
+        const QString e   = QString::fromUtf8(cs.readAllStandardError()).left(300);
+        if (err) *err = (e.isEmpty() ? out : e);
         return false;
     }
 
-    QProcess vf;
-    vf.start("/usr/bin/codesign", {"--verify", "--deep", "--strict", app});
-    vf.waitForFinished(900000);
-    if (vf.exitCode() != 0) {
-        if (err) *err = "재서명 후 검증 실패: " + QString::fromUtf8(vf.readAllStandardError()).left(300);
+    QString why;
+    if (checkAppSeal(&why) == SealState::Broken) {
+        if (err) *err = "재서명 후 검증 실패: " + why;
         return false;
     }
     return true;
@@ -1124,8 +1805,17 @@ void ensureYtDlpReady(bool autoUpdate)
 #endif
 
     // 1) 사용자 폴더에 yt-dlp 없거나 너무 작으면 번들 복사 (앱과 함께 출하된 검증된 버전)
+    // ★ 번들이 1MB 도 안 되는 '껍데기'(맥: python -m yt_dlp 로 넘기는 셸 스크립트)면 복사하지 않는다.
+    //   읽는 쪽(ytDlpExecutable)은 1MB 미만 사본을 쓰지 않으니 복사해 봐야 쓰이지 않고,
+    //   이 껍데기는 번들 옆에서만 제 파이썬을 찾는다 — 데이터 폴더로 옮기면 시스템 파이썬(3.9)으로
+    //   떨어져 "unsupported version of Python" 으로 죽는다(실측 2026-09-19). 자가진단은 그 사본을 집어
+    //   yt-dlp 를 '건너뜀' 으로 적었다. 이미 생긴 작은 사본도 치운다.
+    if (!bundled.isEmpty() && QFileInfo(bundled).size() < 1000000) {
+        if (QFile::exists(userBin) && QFileInfo(userBin).size() < 1000000) QFile::remove(userBin);
+        if (!autoUpdate) return;
+    }
     bool needCopy = !QFile::exists(userBin) || QFileInfo(userBin).size() < 1000000;
-    if (needCopy && !bundled.isEmpty()) {
+    if (needCopy && !bundled.isEmpty() && QFileInfo(bundled).size() >= 1000000) {
         QFile::remove(userBin);
         if (QFile::copy(bundled, userBin)) {
             QFile::setPermissions(userBin,
@@ -1253,6 +1943,22 @@ void killProcessByPid(qint64 pid)
 #endif
 }
 
+// 사용자 쪽 꾸러미 덧씌우기 폴더.
+//   ★ 왜 번들을 직접 안 고치나.
+//     번들 python_env 에 pip 로 설치하면 codesign 봉인이 깨진다("a sealed resource is
+//     missing or invalid"). 그러면 앱이 스스로 재서명해야 하고, 그 과정이 실패하면
+//     앱 자체가 안 뜬다. 갱신하려다 앱을 못 쓰게 되는 것은 갱신을 안 하느니만 못하다.
+//   → 쓰기 가능한 곳에 새 판을 깔고 PYTHONPATH 로 '먼저' 읽게 한다. 번들은 손대지
+//     않으므로 봉인이 유지되고, 덧씌운 것을 지우면 즉시 원래 판으로 돌아온다.
+//   (윈도우에는 봉인이 없지만 맥과 같은 자리 · 같은 순서를 쓴다 — 자가수리 · 모듈 갱신이 이것을 부른다.)
+QString userPyOverlayDir()
+{
+    const QString d = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                      + "/pypkgs";
+    QDir().mkpath(d);
+    return d;
+}
+
 QString longPathTemplate(const QString &dir, const QString &tail)
 {
     QString t = tail;
@@ -1294,6 +2000,116 @@ QString longPathArg(const QString &path, int reserveChars)
     if (unc) return QLatin1String("\\\\?\\UNC\\") + n.mid(2);   // \\nas\share -> \\?\UNC\nas\share
     return QLatin1String("\\\\?\\") + n;
 #endif
+}
+
+// ★ 맥 bundledProcessEnv 에 윈도우 것을 얹은 하나뿐인 정의다. 아래(maskSecret 뒤)에 남아 있던
+//   윈도우 옛 정의는 지운다 — 둘이면 컴파일이 깨진다.
+//   맥에서 온 것: 번들 파이썬 경로(HANISHIKI_PYTHON) · 파이썬 경로(덧씌운 꾸러미 > 고침 꾸러미 도우미 >
+//   자가수리 도우미 > 번들 도우미) · 프록시 환경변수(출구를 못 얻으면 닫힌 길) · HANISHIKI_APP_NAME.
+//   윈도우에서 지킨 것: PYTHONPATH 구분자 ';' · 데이터 폴더의 네이티브 구분자와 PREDORMITION_DATA_DIR ·
+//   PYTHONUTF8 / PYTHONIOENCODING.
+QProcessEnvironment bundledProcessEnv()
+{
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    QString appDir = QCoreApplication::applicationDirPath();
+
+    // ★ 번들 파이썬 스크립트도 앱과 같은 데이터 폴더를 쓰게 한다.
+    //   스크립트가 경로를 스스로 지으면 앱 이름이 바뀔 때마다 갈라진다.
+    //   실제로 twitter_daemon.py 는 최초 이름("~/Library/Application Support/カメラ")에
+    //   멈춰 있어서, Miyo/ 밑도 아닌 곳에 캐시를 쌓고 있었다(앱을 지워도 남고
+    //   백업·정리 도구도 못 본다).
+    //
+    // ★ 그런데 '이름' 만 넘기는 것으로는 부족했다. 스크립트가 그 이름으로 경로를
+    //   다시 조립하는데, 조직 폴더(Miyo/)를 없앤 뒤로 그 조립식이 틀려졌다.
+    //   실제로 캐시가 다시 Application Support/Miyo/<앱>/ 에 쌓이고 있었다.
+    //   → 조립하지 말고 완성된 경로를 넘긴다. 앱이 실제로 쓰는 그 폴더다.
+    // ★ 프록시를 켰으면 자식 프로세스도 전부 같은 길로 내보낸다.
+    //   httpx(파이썬 데몬)·yt-dlp·rclone 은 모두 이 표준 환경변수를 읽는다.
+    //   명령줄이 아니라 환경으로 주는 이유: 명령줄은 같은 기계의 아무 프로세스나
+    //   ps 로 읽지만, 환경은 같은 사용자만 볼 수 있다.
+    {
+        // 번들 파이썬 경로 — 도구 껍데기(tools/yt-dlp 등)가 어디로 복사돼 불려도 이것을 먼저 쓴다.
+        //   앱이 외장 디스크에 있으면 껍데기의 '/Applications 훑기' 가 번들을 못 찾았다.
+        {
+            const QString py = bundledPythonPath();
+            if (!py.isEmpty() && QFileInfo(py).isExecutable()) env.insert("HANISHIKI_PYTHON", py);
+        }
+        // 파이썬 경로 — 앞에 있을수록 먼저 읽는다.
+        //   덧씌운 꾸러미(새 모듈) > 고침 꾸러미 도우미 > 자가수리가 고친 도우미 > 번들 도우미.
+        //   ★ 도우미가 옆 파일을 부른다(twitter_daemon→x_session, bluesky_daemon→exif_tags).
+        //     도우미를 번들 밖(고침 꾸러미·자가수리 폴더)에서 돌리면 파이썬은 그 폴더만 먼저 보므로
+        //     옆 파일을 못 찾았다. 번들 도우미 폴더까지 뒤에 붙여 둔다 — 쓰는 순서는 activeToolScriptPath 와 같다.
+        //   ★ 구분자는 QDir::listSeparator() 다(맥 ':' · 윈도우 ';'). 윈도우 파이썬은 PYTHONPATH 를 ';' 로 나눈다 —
+        //     맥처럼 ':' 로 이으면 'C:/…' 의 콜론과 섞여 엉뚱한 경로 몇 조각이 되고, 덧씌운 꾸러미 · 고침 꾸러미 ·
+        //     번들 도우미가 하나도 안 보인다.
+        {
+            QStringList parts;
+            const QString ov = userPyOverlayDir();
+            if (QDir(ov).exists()) parts << ov;
+            if (!hotfixTools().isEmpty() && QDir(hotfixToolsDir()).exists()) parts << hotfixToolsDir();
+            if (QDir(scriptOverrideDir()).exists()) parts << scriptOverrideDir();
+            parts << bundledToolsDir();
+            const QString cur = env.value("PYTHONPATH");
+            if (!cur.isEmpty()) parts << cur;
+            env.insert("PYTHONPATH", parts.join(QDir::listSeparator()));
+        }
+
+        QString pu = proxyUrl();
+        // ★ 출구가 있어야 하는데 주소를 못 얻었으면(HTTPS 중계기를 못 띄움) 닫힌 길을 준다.
+        //   비워 두면 데몬·rclone·curl 이 이 컴퓨터의 회선으로 조용히 나간다.
+        if (pu.isEmpty() && proxyEnabled()) pu = QStringLiteral("socks5://127.0.0.1:9");
+        if (!pu.isEmpty()) {
+            env.insert("ALL_PROXY",   pu);
+            env.insert("all_proxy",   pu);
+            env.insert("HTTP_PROXY",  pu);
+            env.insert("HTTPS_PROXY", pu);
+            env.insert("http_proxy",  pu);
+            env.insert("https_proxy", pu);
+            // 로컬 통신까지 프록시로 보내면 데몬 제어가 끊긴다.
+            env.insert("NO_PROXY",    "127.0.0.1,localhost");
+            env.insert("no_proxy",    "127.0.0.1,localhost");
+        }
+    }
+
+    // ★ 파이썬 도구가 자기 데이터를 어디에 둘지 여기서 알려 준다.
+    //   맥 쪽은 이미 이 계약(HANISHIKI_DATA_DIR)을 쓰는데 윈도우 사본은 안 받고 있어서,
+    //   twitter_daemon.py 가 맥 경로를 그대로 써 C:\Users\<사용자>\Library\
+    //   Application Support\カメラ\ 라는 가짜 트리를 사용자 홈에 만들고 있었다
+    //   (실측: 이 기계에 그 폴더와 graphql_hashes.json 이 실제로 있었다).
+    //   이름도 옛 코드네임이었다. 앱과 같은 자리를 쓰게 한다.
+    const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    env.insert("PREDORMITION_DATA_DIR", QDir::toNativeSeparators(dataDir));
+    env.insert("HANISHIKI_DATA_DIR", QDir::toNativeSeparators(dataDir));   // 맥 쪽과 같은 이름도 함께
+    env.insert("HANISHIKI_APP_NAME", QStringLiteral(APP_NAME_ASCII));
+    env.insert("MIYO_APP_NAME", QStringLiteral(APP_NAME_ASCII));   // 옛 이름 — 아직 읽는 스크립트가 있을 수 있다
+
+#ifdef Q_OS_WIN
+    // Windows: add exe dir to PATH for bundled tools
+    QString path = appDir + ";" + env.value("PATH");
+    env.insert("PATH", path);
+#else
+    // macOS/Linux: add Frameworks dir to DYLD_LIBRARY_PATH, bundled + homebrew to PATH
+    QString frameworksDir = appDir + "/../Frameworks";
+    QString existing = env.value("DYLD_LIBRARY_PATH");
+    env.insert("DYLD_LIBRARY_PATH", existing.isEmpty() ? frameworksDir : frameworksDir + ":" + existing);
+    // ★ 번들 tools 도 PATH 에 — yt-dlp/rclone 이 여기 있다. 이게 빠져 있어서
+    //   이름만으로 실행할 때 홈브루 것이 먼저 잡혔다(번들 우선 원칙 위반).
+    QString extraPaths = appDir + ":" + bundledToolsDir() + ":/opt/homebrew/bin:/usr/local/bin";
+    env.insert("PATH", extraPaths + ":" + env.value("PATH"));
+#endif
+
+    // ★ 파이썬 자식은 반드시 UTF-8 로 말하게 한다.
+    //   윈도우에서 파이썬 3.14 는 파이프로 나갈 때 시스템 ANSI 코드페이지를 쓴다.
+    //   이 기계는 cp1252 라서, 파이썬이 한글·일본어를 print 하는 순간
+    //   UnicodeEncodeError 로 데몬이 통째로 죽는다 (실측으로 재현했다).
+    //   C++ 쪽은 QString::fromUtf8 로 읽으므로 애초에 UTF-8 이어야 맞다.
+    //   지금 주요 데몬이 살아 있는 것은 json.dumps 가 기본값으로 \uXXXX 이스케이프를
+    //   하기 때문일 뿐이다 — email_watch.py 처럼 ensure_ascii=False 를 쓰는 곳은 실제로 죽고,
+    //   앞으로 누가 한글을 print 하면 또 죽는다. 원인 자체를 없앤다.
+    env.insert("PYTHONUTF8", "1");
+    env.insert("PYTHONIOENCODING", "utf-8");
+    env.insert("PYTHONDONTWRITEBYTECODE", "1");
+    return env;
 }
 
 // 자격증명은 값 대신 모양만 남긴다. 위 헤더의 설명 참고.

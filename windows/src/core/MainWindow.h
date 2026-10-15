@@ -26,14 +26,19 @@ public:
 
     QWebEngineView *webView() const { return m_webView; }
 
+    // ★ 본 창 + 메뉴막대로 띄운 기능 창 전부의 웹뷰.
+    //   백엔드가 화면에 무언가를 보낼 때 본 창에만 보내면, 기능 창은 명령은
+    //   보낼 수 있는데(채널 공유) 로그·진행·결과는 하나도 못 받는 반쪽이 된다.
+    QList<QWebEngineView *> allWebViews() const;
+
     // ★ 메인 UI 페이지에 JS 를 넣는 단 하나의 통로.
     //   페이지가 아직 안 읽혔으면 담아 두었다가 loadFinished 때 순서대로 흘린다.
     //
-    //   왜 필요한가 — setUrl() 은 비동기다. index.html 은 이 기계에서 2.6초 걸린다.
-    //   그 사이에 넣은 JS 는 "appendLog is not defined" 로 조용히 사라졌다.
-    //   실측으로 内閣会 자동 시작이 여기 물렸다: 수집은 도는데 setNaikakukaiRunning(true)
-    //   가 사라져서, 화면의 '중지' 버튼이 잠긴 채로 남아 멈출 수가 없었다.
-    //   "돌고 있는데 화면은 아니라고 한다" 는 조용한 고장이라 더 나쁘다.
+    //   왜 필요한가 — setUrl() 은 비동기다. index.html 은 한참 뒤에야 읽힌다
+    //   (윈도우 기계 실측 2.6초). 그 사이에 넣은 JS 는 "appendLog is not defined"
+    //   로 조용히 사라진다. 윈도우에서는 内閣会 자동 시작이 여기 물려서, 수집은
+    //   도는데 화면의 '중지' 버튼이 잠긴 채로 남았다.
+    //   맥에는 그 자동 시작이 없지만 시작 직후 로그가 사라지는 것은 똑같다.
     void runJsOnUi(const QString &js);
     bool uiReady() const { return m_uiReady; }
     QWebEngineView *browserView() const { return m_browserView; }
@@ -77,6 +82,47 @@ private:
     HanishikiBackend *m_backend = nullptr;
     PenBackend *m_penBackend = nullptr;   // ★ PEN 통합
     QMenu *m_dockMenu = nullptr;
+    QMenu *m_platformMenu = nullptr;   // 상단 막대의 '기능' 메뉴
+    // 별도 창으로 여는 기능들(탭이름 → 창). 같은 탭을 다시 열면 새로 만들지 않고
+    // 이미 있는 창을 앞으로 가져온다.
+    QHash<QString, QPointer<QWidget>> m_featureWindows;
+public:
+    // 화면이 뜬 뒤 사이드바에서 실제 항목을 읽어 '기능' 메뉴를 채운다.
+    void populatePlatformMenu();
+    // 창 크기에 맞춰 화면 배율을 맞춘다(글자·여백·아이콘이 한꺼번에 비례한다).
+    //   CSS 를 고치지 않는 이유: 이 화면은 px 지정이 1,200곳 넘고 font-size 규칙이
+    //   215개다. 하나씩 상대 단위로 바꾸면 빠뜨린 곳이 반드시 생기고, 그때부터
+    //   어떤 곳은 커지고 어떤 곳은 그대로인 어긋난 화면이 된다.
+    static qreal zoomForWidth(int w);
+    void applyZoom();
+    // 설정 '창 크기를 바꿀 때' — 배치 바꾸기 / 둘 다(기본) / 통째로 크기 조절
+    enum ScaleMode { ScaleLayout, ScaleBoth, ScaleWhole };
+    void setScaleMode(ScaleMode mode);
+    // 기능 하나를 별도 창으로 연다(이미 열려 있으면 앞으로).
+    void openFeatureWindow(const QString &tabId, const QString &title);
+    // 창 끌기 — JS 가 끌 수 있는 빈 곳에서 5px 넘게 끌면 부른다. 그때부터 왼쪽 버튼을
+    // 떼기까지 커서를 따라 커서 아래 창을 옮긴다(MainWindow.cpp 설명).
+    void armWindowMove();
+private:
+    void dragTick();
+    void startDragTimer();                 // 옛 방식(8ms 타이머) — 창 서버 끌기가 안 먹을 때만
+public:
+    // 화면(JS)이 '마우스가 끌 수 있는 곳 위에 있다/없다' 를 알린다. 누르는 순간 이 값으로 판단한다.
+    static void setDragHover(bool on);
+    // 화면이 끌 자리(사이드바·위쪽 띠)와 그 안 단추 자리를 CSS 픽셀 사각형으로 넘긴다.
+    static void setDragRegions(const QString &key, const QString &json);
+    static void noteNativeDrag();
+    static void installWindowDragFilter();
+protected:
+    // 창 폭이 바뀌면 화면 배율(applyZoom)을 50ms 에 한 번 맞춘다 — MainWindow.cpp 설명.
+    //   (맥 갈래에는 원래 위 protected 칸에 있던 선언이다. 윈도우 머리에는 없어서 여기서 함께 넣는다.)
+    void resizeEvent(QResizeEvent *event) override;
+private:
+    static qint64 s_nativeDragAt;
+    QPointer<QWidget> m_dragWin;           // 지금 끌고 있는 창(본 창 또는 기능 창)
+    QPoint m_dragOffset;                   // 커서 - 창 왼쪽 위
+    class QTimer *m_dragTimer = nullptr;   // 끄는 동안 8ms 마다 따라간다
+    class QTimer *m_zoomTimer = nullptr;   // 창 크기 바뀔 때 배율 맞추기를 50ms 에 한 번으로
 
 #ifdef Q_OS_MACOS
     IOPMAssertionID m_sleepAssertion = 0;

@@ -6,6 +6,8 @@
 #include <QJsonDocument>
 #include <QString>
 #include <QMap>
+#include <QRecursiveMutex>
+#include <QMutexLocker>
 
 struct AccountInfo {
     QString name;
@@ -73,6 +75,10 @@ public:
     QJsonArray proxyProfiles() const { return m_proxyProfiles; }
     void setProxyProfiles(const QJsonArray &a) { m_proxyProfiles = a; }
     QJsonArray naikakukaiWatches() const { return m_naikakukaiWatches; }
+    // 정리하기 — 대상마다 '받은 곳 → 정리할 곳' 규칙(tools/organize.py). organizeAuto 면 수집이 끝날 때마다 돈다.
+    QJsonArray organizeRules() const { return m_organizeRules; }
+    bool organizeAuto() const { return m_organizeAuto; }
+    bool organizeCaptures() const { return m_organizeCaptures; }
     void setNaikakukaiWatches(const QJsonArray &arr) { m_naikakukaiWatches = arr; }
     int naikakukaiInterval() const { return m_naikakukaiInterval; }
     // ★ '끌 때 돌고 있었나' — 앱을 켤 때 이어서 돌릴지 판단한다.
@@ -139,7 +145,44 @@ public:
     void setUnixFilenames(bool v) { m_unixFilenames = v; }
     void setNasAutoReconnect(bool b) { m_nasAutoReconnect = b; }
 
+    // ★ 内閣会·이메일 감시가 '앱을 끌 때 돌고 있었는가'. 켜면 이어서 돈다.
+    //   사용자가 중지를 눌러 끈 것은 false 로 남아 다시 켜지지 않는다.
+    bool naikakukaiResume() const { return m_naikakukaiResume; }
+    void setNaikakukaiResume(bool b) { m_naikakukaiResume = b; }
+    bool emailWatchResume() const { return m_emailWatchResume; }
+    void setEmailWatchResume(bool b) { m_emailWatchResume = b; }
+
     // ★ 동시 다운로드 개수 — 0 = 플랫폼별 기본값, 1~N = 모든 플랫폼 동시 작업 한도(전역 override)
+    // ── 프록시(VPN) ────────────────────────────────────────────────────────
+    //   ★ 켜면 '전부' 이 경로로 나가야 한다. Qt·파이썬 데몬·yt-dlp·rclone·
+    //     번들 크로미움 다섯 갈래 중 하나라도 빠지면 같은 세션이 두 IP 에서 온
+    //     것처럼 보여, 프록시를 안 쓰느니만 못하다.
+    //   (창 크기·위치 windowGeometry 는 아래 maxConcurrent 뒤에 한 번만 둔다.)
+    bool proxyEnabled() const { return m_proxyEnabled; }
+    void setProxyEnabled(bool v) { m_proxyEnabled = v; }
+    QString proxyHost() const { return m_proxyHost; }
+    void setProxyHost(const QString &v) { m_proxyHost = v; }
+    int proxyPort() const { return m_proxyPort; }
+    void setProxyPort(int v) { m_proxyPort = v; }
+    QString proxyUser() const { return m_proxyUser; }
+    void setProxyUser(const QString &v) { m_proxyUser = v; }
+    QString proxyPass() const { return m_proxyPass; }
+    void setProxyPass(const QString &v) { m_proxyPass = v; }
+    // ★ 이름 붙은 프록시 프로필 — 윈도우·맥이 같은 모양.
+    //   계정마다 다른 출구로 나가려면 프록시여야 한다. 시스템 VPN 은 기계 전체를
+    //   한 경로로 보내므로 계정별 분리가 불가능하다. NordVPN 등이 주는 SOCKS5
+    //   서버 자격증명을 여기에 넣어 쓴다.
+    //   [{provider,name,type,host,port,user,pass}, …]. 계정은 account["proxy"] 에 이름만 든다.
+    //   프로필을 고르지 않은 계정은 직접 연결로 나간다(윈도우와 같다 — 앱 전체 '기본 출구' 는 없다).
+    //   위의 proxyEnabled…proxyPass 는 옛 모양이다 — 읽어서 옮기고(migrateLegacyProxy), 쓸 때는
+    //   읽은 그대로 남겨 둔다(옛 판으로 되돌려도 예전 전역 설정 그대로 돌게). 새 코드는 안 쓴다.
+    //   ★ 잠금을 쥔다 — 수집 스레드(계정 출구 풀기)가 읽는 동안 메인 스레드가 목록을 바꿀 수 있다.
+    QJsonArray proxyProfiles() const { QMutexLocker l(&m_proxyMutex); return m_proxyProfiles; }
+    void setProxyProfiles(const QJsonArray &a) { QMutexLocker l(&m_proxyMutex); m_proxyProfiles = a; }
+    QJsonObject proxyProfileByName(const QString &name) const;   // 없으면 빈 객체
+    // 옛 설정을 옮겼다면 한 줄 알림(앱이 시작할 때 로그로 한 번 알리고 비운다).
+    QString takeProxyMigrationNote() { QString n = m_proxyMigrationNote; m_proxyMigrationNote.clear(); return n; }
+
     int maxConcurrent() const { return m_maxConcurrent; }
     void setMaxConcurrent(int n) { m_maxConcurrent = n; }
 
@@ -161,6 +204,9 @@ private:
     QString m_secondaryPath;
     QJsonArray m_proxyProfiles;
     QJsonArray m_naikakukaiWatches;
+    QJsonArray m_organizeRules;
+    bool m_organizeAuto = true;
+    bool m_organizeCaptures = false;
     int m_naikakukaiInterval = 30;
     // ★ 기본값이 true 인 것은 일부러다. 이 값이 없던 판에서 올라온 설정은 키가 없는데,
     //   그때의 동작은 '감시 대상이 있으면 켤 때 자동으로 돈다' 였다. false 로 두면
@@ -188,4 +234,15 @@ private:
     bool m_nasAutoReconnect = true;  // 기본 ON (대부분 원하는 동작)
     QString m_windowGeometry;
     int m_maxConcurrent = 0;         // 0 = 플랫폼별 기본값
+    bool m_proxyEnabled = false;
+    QString m_proxyHost;
+    int m_proxyPort = 1080;
+    QString m_proxyUser;
+    QString m_proxyPass;   // ★ 설정 파일은 0600 으로 조인다(Config::save 의 lockDown)
+    // ★ 이름 붙은 프로필(m_proxyProfiles — 위에 한 번만 선언)에는 비밀번호가 들어 있다. 화면(setConfig)으로 보내지 않는다
+    //   (HanishikiBackend::loadConfig 가 떼어 내고, 목록은 getProxyProfiles 가 hasPass 만 담아 보낸다).
+    mutable QRecursiveMutex m_proxyMutex;   // m_proxyProfiles 를 지킨다(옮기기가 안에서 다시 잠근다)
+    QString m_proxyMigrationNote;
+    // 옛 모양(전역 하나 + 계정마다 주소)을 프로필로 옮긴다. 몇 번 불러도 결과가 같다.
+    void migrateLegacyProxy(bool legacyGlobal);
 };

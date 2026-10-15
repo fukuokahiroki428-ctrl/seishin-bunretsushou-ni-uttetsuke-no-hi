@@ -51,7 +51,13 @@ SiteCrawler::SiteCrawler(HanishikiBackend *backend, QWebEngineProfile *sharedPro
     connect(m_page, &QWebEnginePage::loadFinished, this, &SiteCrawler::onPageLoaded);
 }
 
-SiteCrawler::~SiteCrawler() {}
+SiteCrawler::~SiteCrawler()
+{
+    // ★ 페이지를 프로필보다 먼저 지운다. 자식은 만든 순서(m_http → m_profile → m_page)로 지워져
+    //   자체 프로필이 페이지보다 먼저 사라졌다(Qt: "Release of profile requested but WebEnginePage still not deleted").
+    delete m_page;
+    m_page = nullptr;
+}
 
 void SiteCrawler::crawl(const QJsonObject &config)
 {
@@ -73,6 +79,10 @@ void SiteCrawler::crawl(const QJsonObject &config)
     m_sameDomainOnly = config["sameDomain"].toBool(true);
     m_saveExif = config["exif"].toBool(true);
     m_waitLogin = config["waitLogin"].toBool(false);
+    // ★ 화면의 '동적 스크롤'·'보안 검사' — 보내기만 하고 여기서 안 읽었다.
+    //   헤더에서 둘 다 true 로 초기화돼 있어 체크를 풀어도 늘 켜진 채 돌았다.
+    m_deepScroll = config["deepScroll"].toBool(true);
+    m_securityScan = config["securityScan"].toBool(true);
 
     QUrl baseUrl(startUrl);
     m_baseDomain = baseUrl.host();
@@ -108,6 +118,7 @@ void SiteCrawler::crawl(const QJsonObject &config)
     m_quarantineCount = 0;
     m_scanCount = 0;
     m_running = true;
+    m_finished = false;
 
     // 중지 시 진행 중 HTTP 다운로드 즉시 abort
     if (m_http) m_http->setRunFlag(&m_running);
@@ -187,10 +198,17 @@ void SiteCrawler::continueAfterLogin()
 
 void SiteCrawler::stop()
 {
+    const bool wasWaitingForLogin = m_waitingForLogin;
     m_running = false;
     m_waitingForLogin = false;
     m_backend->runJs("if(window.showCrawlLoginConfirm)window.showCrawlLoginConfirm(false)");
     m_page->triggerAction(QWebEnginePage::Stop);
+    // ★ 끝 예약은 '로그인 대기' 일 때만 한다 — 그때만 돌아올 콜백이 하나도 없다.
+    //   아무 때나 예약하면 processRenderedHtml(자원 받기)·트위터 버퍼 콜백이 HttpClient 의 중첩
+    //   QEventLoop 안에 있는 동안 그 루프가 finishCrawl → finished → (백엔드) deleteLater 까지 처리해,
+    //   크롤러와 m_http 가 제 함수 한가운데서 지워졌다(use-after-free).
+    //   동적 스크롤 대기는 deepScrollAndExtract 의 타이머가 끝을 맡는다.
+    if (wasWaitingForLogin) QTimer::singleShot(0, this, &SiteCrawler::finishCrawl);
 }
 
 void SiteCrawler::processNextInQueue()
@@ -1116,13 +1134,19 @@ void SiteCrawler::deepScrollAndExtract(int maxScrolls, int scrollWaitMs,
     QString probeJs = R"JS(
     (function(){
         var h = document.body.scrollHeight;
-        var articles = document.querySelectorAll('article[data-testid="tweet"], article[role="article"]').length;
+        var articles = document.querySelectorAll('article[data-testid="tweet"], article[data-testid="tweetDetail"], article[role="article"], div[data-testid="cellInnerDiv"] article').length;
 
         // 트위터: 현재 화면의 트윗 데이터를 누적 버퍼에 추가
         if (location.hostname === 'x.com' || location.hostname === 'twitter.com' ||
             location.hostname.endsWith('.x.com') || location.hostname.endsWith('.twitter.com')) {
             if (!window.__crawl_tweet_buffer) window.__crawl_tweet_buffer = {};
-            document.querySelectorAll('article[data-testid="tweet"]').forEach(function(art){
+            // 이름 하나만 믿지 않는다 — X 는 data-testid 를 조용히 갈아치운다.
+            //   그러면 글이 0개가 되는데 화면에는 아무 말도 없다.
+            var arts = document.querySelectorAll('article[data-testid="tweet"]');
+            if (!arts.length) arts = document.querySelectorAll('article[data-testid="tweetDetail"]');
+            if (!arts.length) arts = document.querySelectorAll('article[role="article"]');
+            if (!arts.length) arts = document.querySelectorAll('div[data-testid="cellInnerDiv"] article');
+            arts.forEach(function(art){
                 try {
                     var tweetLink = art.querySelector('a[href*="/status/"]');
                     var href = tweetLink ? tweetLink.href : '';
@@ -1131,11 +1155,15 @@ void SiteCrawler::deepScrollAndExtract(int maxScrolls, int scrollWaitMs,
                     var tid = idMatch[1];
                     if (window.__crawl_tweet_buffer[tid]) return;
 
-                    var textEl = art.querySelector('[data-testid="tweetText"]');
+                    var textEl = art.querySelector('[data-testid="tweetText"]')
+                               || art.querySelector('[data-testid="tweet-text-show-more-link"]')
+                               || art.querySelector('div[lang]');
                     var text = textEl ? textEl.textContent : '';
                     var timeEl = art.querySelector('time');
                     var dt = timeEl ? timeEl.getAttribute('datetime') : '';
-                    var authorA = art.querySelector('[data-testid="User-Name"] a');
+                    var authorA = art.querySelector('[data-testid="User-Name"] a')
+                                || art.querySelector('[data-testid="User-Names"] a')
+                                || art.querySelector('a[href^="/"][role="link"] span');
                     var author = authorA ? authorA.textContent : '';
                     var imgs = [];
                     art.querySelectorAll('img[src*="pbs.twimg.com/media"]').forEach(function(im){
@@ -1171,7 +1199,7 @@ void SiteCrawler::deepScrollAndExtract(int maxScrolls, int scrollWaitMs,
         m_page->runJavaScript("window.scrollTo(0, document.body.scrollHeight)");
 
         QTimer::singleShot(scrollWaitMs, this, [=]() {
-            if (!m_running) return;
+            if (!m_running) { finishCrawl(); return; }   // 중지 — 이 사슬이 끝을 낸다(stop() 은 로그인 대기만 예약)
             m_page->runJavaScript(probeJs, [=](const QVariant &newProbeVar) {
                 QJsonObject newProbe = QJsonDocument::fromJson(newProbeVar.toString().toUtf8()).object();
                 int newHeight = newProbe["h"].toInt();
@@ -1399,6 +1427,8 @@ bool SiteCrawler::shouldCrawl(const QString &url)
 
 void SiteCrawler::finishCrawl()
 {
+    if (m_finished) return;   // 이미 끝냈다 — 두 번째 finished 가 백엔드에서 터미널·상태를 또 건드렸다
+    m_finished = true;
     if (!m_running && m_pageCount == 0) {
         m_backend->log("크롤링 중단됨", "warning", "crawl");
         emit finished();
