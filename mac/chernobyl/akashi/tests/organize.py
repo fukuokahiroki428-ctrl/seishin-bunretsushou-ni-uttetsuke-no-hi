@@ -102,12 +102,15 @@ def main() -> int:
             check('정리하기 탭이 열린다', shown is True, shown)
             # 트위터 탭의 저장 경로 = 가짜 받은 곳의 뿌리, 규칙 하나(받은 곳은 비움 → 자동으로 찾기)
             p.eval("document.getElementById('twitter-path').value = %s" % json.dumps(str(dl)))
-            p.eval("organizeRestore([{platform:'twitter', target:'@akashi_demo', name:'', source:'', dest:%s}]); organizeSave();"
+            # r42 의 불러오기는 대상의 별명을 표시 이름에 넣었다 — 그런 옛 규칙은 '자동' 으로 되돌아가야 한다
+            p.eval("platformTargets.twitter = [{target:'akashi_demo', nickname:'별명', enabled:true}];"
+                   "organizeRestore([{platform:'twitter', target:'@akashi_demo', name:'별명', source:'', dest:%s}]); organizeSave();"
                    % json.dumps(str(dest)))
             time.sleep(1.0)
             cfg = json.loads((paths.data_dir(C.ISO / 'home') / paths.CONFIG_NAME).read_text(encoding='utf-8'))
             rules = cfg.get('organizeRules') or []
             check('규칙이 설정 파일에 남는다', len(rules) == 1 and rules[0].get('dest') == str(dest), rules)
+            check("별명이 들어간 옛 규칙은 표시 이름이 '자동' 으로", rules and rules[0].get('name') == '', rules and rules[0].get('name'))
             prev = p.eval("(document.querySelector('.org-preview')||{}).textContent||''") or ''
             check('미리보기 — 이름 칸이 비면 자리만(‹자동 이름›), 나머지는 실제 모양', '‹자동 이름›・@akashi_demo-(X ／ twitter.com)/' in prev and '年' in prev, prev)
 
@@ -160,6 +163,20 @@ def main() -> int:
             p.eval('organizeRunAll()')
             meta, _ = wait_done(p)
             check('원본을 다시 써도 같은 사진을 또 두지 않는다', meta == '끝' and len(tree(dest)) == 7, tree(dest))
+
+            # 5) 계정이 이름을 바꿨다 — 다음 수집이 profiles/target/<새 이름>(@핸들)/ 을 남긴다. 계정 폴더는 이름만 바뀌고 다시 복사하지 않는다
+            oldp = src / 'profiles' / 'target' / '공작함 아카시(@akashi_demo)'
+            os.utime(oldp, (time.mktime((2026, 10, 3, 9, 0, 0, 0, 0, -1)),) * 2)   # 실제처럼 예전 수집의 시각
+            newp = src / 'profiles' / 'target' / '새 이름(@akashi_demo)'
+            newp.mkdir(parents=True)
+            (newp / 'profile_20261015.jpg').write_bytes(b'N' * 11)
+            time.sleep(0.3)
+            p.eval('organizeRunAll()')
+            meta, _ = wait_done(p)
+            NEW = '새 이름・@akashi_demo-(X ／ twitter.com)'
+            names = sorted(x.name for x in dest.iterdir() if not x.name.startswith('.'))
+            check('이름이 바뀌면 계정 폴더 이름만 바뀐다(다시 복사 없음)', names == [NEW] and len(tree(dest)) == 8
+                  and (dest / NEW / '令和8年10月' / 'profile_20261015.jpg').exists(), '%s · %d개' % (names, len(tree(dest))))
             errs = C.page_errors(p)
             check('화면 JS 오류 없음', not errs, errs[:2])
     except Exception as e:  # noqa: BLE001 — 시험 도중의 어떤 실패도 판정 한 줄로

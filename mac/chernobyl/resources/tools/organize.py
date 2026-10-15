@@ -334,21 +334,107 @@ def account_folder(rule: dict, name: str) -> str:
     return safe_name('%s-%s' % (who, svc_suffix(rule)))
 
 
+def _xlsx_field(path: str, field: str) -> str:
+    """앱이 쓰는 프로필 엑셀(Field | Value 두 칸)에서 한 줄의 값 — 표준 라이브러리(zip + XML)만으로."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+    ns = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+    try:
+        with zipfile.ZipFile(path) as z:
+            shared = []
+            if 'xl/sharedStrings.xml' in z.namelist():
+                for si in ET.fromstring(z.read('xl/sharedStrings.xml')).iter(ns + 'si'):
+                    shared.append(''.join(t.text or '' for t in si.iter(ns + 't')))
+            sheets = sorted(n for n in z.namelist() if n.startswith('xl/worksheets/sheet') and n.endswith('.xml'))
+            if not sheets:
+                return ''
+            for row in ET.fromstring(z.read(sheets[0])).iter(ns + 'row'):
+                vals = []
+                for c in row.iter(ns + 'c'):
+                    t, v = c.get('t'), c.find(ns + 'v')
+                    if t == 's' and v is not None and (v.text or '').isdigit() and int(v.text) < len(shared):
+                        vals.append(shared[int(v.text)])
+                    elif t == 'inlineStr':
+                        vals.append(''.join(x.text or '' for x in c.iter(ns + 't')))
+                    else:
+                        vals.append(v.text if v is not None and v.text else '')
+                if len(vals) >= 2 and vals[0].strip().lower() == field.lower():
+                    return vals[1].strip()
+    except (OSError, zipfile.BadZipFile, ET.ParseError, ValueError):
+        pass
+    return ''
+
+
+def current_profile_name(sources: list, handle: str) -> str:
+    """그 계정의 '지금' 이름 — 앱이 수집 때마다 profiles/target/<이름>(@핸들)/ 을 남긴다(이름을 바꾸면 폴더가 하나 더 생긴다).
+    가장 최근 것을 고른다: 폴더 안 profile_/banner_YYYYMMDD 의 날짜와 프로필 엑셀의 시각 중 늦은 것. 이름은 엑셀의
+    'Name' 줄(원래 글자 그대로) > 폴더 이름의 앞부분(앱이 40자로 자르고 일부 글자를 뺀 것)."""
+    if not handle:
+        return ''
+    pat = re.compile(r'^(.+)\(@' + re.escape(handle) + r'\)$', re.I)
+    best = None   # (최근 시각, 엑셀 경로, 폴더 이름의 이름 부분)
+    for src in sources:
+        base = os.path.join(src, 'profiles', 'target')
+        try:
+            names = os.listdir(base)
+        except OSError:
+            continue
+        for d in names:
+            mm = pat.match(unicodedata.normalize('NFC', d))
+            if not mm:
+                continue
+            folder = os.path.join(base, d)
+            when, xlsx = 0.0, ''
+            try:
+                for fn in os.listdir(folder):
+                    full = os.path.join(folder, fn)
+                    dm = PROFILE_DATE.search(fn)
+                    if dm and _valid(*dm.groups()):
+                        v = _valid(*dm.groups())
+                        when = max(when, dt.datetime(v.year, v.month, v.day, tzinfo=JST).timestamp())
+                    if fn.lower().endswith('_profile.xlsx'):
+                        xlsx = full
+                        when = max(when, os.stat(full).st_mtime)
+                if not when:
+                    when = os.stat(folder).st_mtime
+            except OSError:
+                continue
+            if best is None or when > best[0]:
+                best = (when, xlsx, mm.group(1).strip())
+    if not best:
+        return ''
+    return (_xlsx_field(best[1], 'Name') if best[1] else '') or best[2]
+
+
+def existing_account_folder(rule: dict, dest: str) -> str:
+    """정리할 곳에 이미 있는 그 핸들 · 서비스의 계정 폴더 이름(없으면 '')."""
+    handle = (rule.get('target') or '').strip().lstrip('@')
+    tail = (('・@' + handle + '-') if handle else '-') + svc_suffix(rule)
+    try:
+        for n in sorted(os.listdir(dest)):
+            nn = unicodedata.normalize('NFC', n)
+            if nn.lower().endswith(tail.lower()) and len(nn) > len(tail) and os.path.isdir(os.path.join(dest, n)):
+                return n
+    except OSError:
+        pass
+    return ''
+
+
 def pick_name(rule: dict, dest: str, sources: list) -> str:
-    """표시 이름 — 규칙에 적힌 것 > 정리할 곳에 이미 있는 그 핸들의 폴더 > 전에 정한 이름 > 받은 곳의 profiles/target > 핸들.
-    이름을 바꿔 가며 폴더가 새로 생기면 전부를 다시 복사한다(검토 실측) — 한 번 정한 것을 계속 쓴다."""
+    """표시 이름 — 규칙에 직접 적은 이름 > 그 계정의 지금 이름(가장 최근 수집의 프로필) > 정리할 곳에 이미 있는 폴더의 이름 >
+    전에 정한 이름 > 핸들. 사용자 기준(2026-10-15): 'gaekkin' 자리에는 그 계정이 지금 트위터에서 쓰는 이름이 들어가야 한다.
+    이름이 바뀌면 run_rule 이 옛 폴더의 이름만 바꾼다(다시 복사하지 않는다)."""
     name = (rule.get('name') or '').strip()
     handle = (rule.get('target') or '').strip().lstrip('@')
     if name:
         return name
-    tail = ('・@' + handle + '-' + svc_suffix(rule)) if handle else ('-' + svc_suffix(rule))
-    try:
-        for n in sorted(os.listdir(dest)):
-            nn = unicodedata.normalize('NFC', n)
-            if nn.lower().endswith(tail.lower()) and os.path.isdir(os.path.join(dest, n)) and len(nn) > len(tail):
-                return nn[:-len(tail)]
-    except OSError:
-        pass
+    cur = current_profile_name(sources, handle)
+    if cur:
+        return cur
+    old = existing_account_folder(rule, dest)
+    if old:
+        tail = (('・@' + handle + '-') if handle else '-') + svc_suffix(rule)
+        return unicodedata.normalize('NFC', old)[:-len(tail)]
     key = '%s:%s' % (rule.get('platform') or '', handle.lower())
     try:
         with open(os.path.join(dest, NAMES_NAME), encoding='utf-8') as f:
@@ -358,22 +444,8 @@ def pick_name(rule: dict, dest: str, sources: list) -> str:
     except (OSError, ValueError):
         pass
     if handle:
-        pat = re.compile(r'^(.+)\(@' + re.escape(handle) + r'\)$', re.I)
-        best = None
-        for src in sources:
-            base = os.path.join(src, 'profiles', 'target')
-            try:
-                for d in os.listdir(base):
-                    m = pat.match(unicodedata.normalize('NFC', d))
-                    if m and m.group(1).strip():
-                        mt = os.stat(os.path.join(base, d)).st_mtime
-                        if best is None or mt > best[0]:
-                            best = (mt, m.group(1).strip())   # 이름을 바꾼 계정이면 가장 새것
-            except OSError:
-                pass
-        if best:
-            return best[1]
-    return handle or os.path.basename(sources[0]) if sources else (handle or '이름 없음')
+        return handle
+    return os.path.basename(sources[0]) if sources else '이름 없음'
 
 
 def remember_name(rule: dict, dest: str, name: str) -> None:
@@ -569,6 +641,18 @@ def run_rule(i: int, rule: dict, captures: bool, dry: bool) -> dict:
     handle = (rule.get('target') or '').strip().lstrip('@')
     name = pick_name(rule, dest, sources)
     folder = os.path.join(dest, account_folder(rule, name))
+    # 그 계정이 이름을 바꿨으면 옛 계정 폴더의 이름만 바꾼다 — 새 폴더를 만들어 전부를 다시 복사하지 않는다
+    old = existing_account_folder(rule, dest)
+    if old and not dry and os.path.join(dest, old) != folder:
+        if not os.path.exists(folder):
+            try:
+                os.rename(os.path.join(dest, old), folder)
+                log('규칙 %d (%s): 이름이 바뀌어 폴더 이름을 바꿨습니다 — %s → %s' % (i + 1, label, old, os.path.basename(folder)))
+            except OSError as ex:
+                log('규칙 %d (%s): 폴더 이름을 바꾸지 못해 옛 이름으로 둡니다 — %s' % (i + 1, label, ex.strerror or ex), 'warning')
+                folder = os.path.join(dest, old)
+        elif unicodedata.normalize('NFC', old).lower() != unicodedata.normalize('NFC', os.path.basename(folder)).lower():
+            log('규칙 %d (%s): 옛 이름의 폴더(%s)와 지금 이름의 폴더가 둘 다 있습니다 — 지금 이름 쪽에 둡니다' % (i + 1, label, old), 'warning')
     emit('resolved', index=i, id=res['id'], source=' · '.join(sources), name=name, folder=folder)
     errors: list = []
     if dry:

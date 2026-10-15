@@ -5880,7 +5880,16 @@
         window.organizeRestore = function(arr) {
             organizeRules = (Array.isArray(arr) ? arr : []).filter(r => r && typeof r === 'object').map(r => Object.assign(
                 { platform: 'twitter', target: '', name: '', source: '', dest: '' }, r, { id: r.id || _orgId() }));
+            // ★ r42 의 '대상 목록에서 불러오기' 는 대상의 별명을 표시 이름 칸에 넣었다 — 그 탓에 폴더 이름에 계정의 지금 이름 대신
+            //   별명('제로 1')이 들어갔다(사용자 2026-10-15). 별명과 같은 표시 이름은 비워 '자동' 으로 되돌린다.
+            let fixed = 0;
+            organizeRules.forEach(r => {
+                const nick = ((platformTargets[r.platform] || []).find(e => String(e.target || '').replace(/^@/, '').toLowerCase()
+                              === String(r.target || '').replace(/^@/, '').toLowerCase()) || {}).nickname;
+                if (r.name && nick && r.name.trim() === String(nick).trim()) { r.name = ''; fixed++; }
+            });
             renderOrganizeRules();
+            if (fixed) setTimeout(organizeSave, 0);
         };
         function renderOrganizeRules() {
             const box = document.getElementById('organize-rules');
@@ -5897,7 +5906,7 @@
                     + '<div class="org-row3">'
                     + '<div class="field"><label class="field-label">플랫폼</label><select class="input" onchange="organizeSet(' + i + ',\'platform\',this.value)"' + dis + '>' + opts + '</select></div>'
                     + '<div class="field"><label class="field-label">대상 (핸들)</label><input class="input" value="' + _orgEsc(r.target) + '" placeholder="@핸들" onchange="organizeSet(' + i + ',\'target\',this.value)"' + dis + '></div>'
-                    + '<div class="field"><label class="field-label">표시 이름</label><input class="input" value="' + _orgEsc(r.name) + '" placeholder="자동(프로필 이름 · 없으면 핸들)" onchange="organizeSet(' + i + ',\'name\',this.value)"' + dis + '></div>'
+                    + '<div class="field"><label class="field-label">표시 이름</label><input class="input" value="' + _orgEsc(r.name) + '" placeholder="자동(그 계정의 지금 이름)" onchange="organizeSet(' + i + ',\'name\',this.value)"' + dis + '></div>'
                     + '</div>'
                     + '<div class="field"><label class="field-label">받은 곳</label><div class="input-row"><input class="input" id="org-src-' + i + '" value="' + _orgEsc(r.source) + '" placeholder="' + _orgEsc(auto) + '" onchange="organizeSet(' + i + ',\'source\',this.value)"' + dis + '><button class="btn btn-secondary btn-sm" onclick="organizeBrowseField(\'org-src-' + i + '\')"' + dis + '>찾아보기</button></div></div>'
                     + '<div class="field"><label class="field-label">정리할 곳 (최상위 폴더 — 없으면 하나 만듦)</label><div class="input-row"><input class="input" id="org-dst-' + i + '" value="' + _orgEsc(r.dest) + '" placeholder="예: ~/Pictures/gaekkin" onchange="organizeSet(' + i + ',\'dest\',this.value)"' + dis + '><button class="btn btn-secondary btn-sm" onclick="organizeBrowseField(\'org-dst-' + i + '\')"' + dis + '>찾아보기</button></div></div>'
@@ -5948,7 +5957,8 @@
                 (platformTargets[plat] || []).forEach(e => {
                     const t = _orgHandle(e.target);
                     if (!t || organizeRules.some(r => r.platform === plat && String(r.target).replace(/^@/, '').toLowerCase() === t.toLowerCase())) return;
-                    organizeRules.push({ id: _orgId(), platform: plat, target: t, name: e.nickname || '', source: '', dest: '' });
+                    // 표시 이름은 비워 둔다(자동 = 그 계정의 지금 이름). 별명은 사용자가 붙인 것이지 계정 이름이 아니다(사용자 2026-10-15)
+                    organizeRules.push({ id: _orgId(), platform: plat, target: t, name: '', source: '', dest: '' });
                     n++;
                 });
             });
