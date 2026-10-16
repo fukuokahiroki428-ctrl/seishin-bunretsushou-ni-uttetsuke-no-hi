@@ -1628,3 +1628,61 @@ gaekkin・@gaekkin-(X / twitter.com) 이런식으로 만들고 이 폴더 안에
   '없을 때만' 이름 달기는 `os.link` 또는 `os.rename`(윈도우 rename 은 대상이 있으면 실패한다 — 그게 원하는 동작).
 - 겹침 검사의 inode 비교는 윈도우에선 `os.stat().st_ino`(파일 ID)가 있으나 대소문자 무시 경로 비교도 함께.
 - 폴더 이름의 전각 치환은 이미 윈도우 금지 문자를 모두 피한다(`／ ＼ ： ＊ ？ ＂ ＜ ＞ ｜`).
+
+---
+
+# ★ 맥 → 윈도우 (2026-10-17): r43 — 대상이 수백 개여도 · 정리하기를 틀 하나로 · 대상 목록을 표로 · 글로 · 팔로잉에서
+
+맥 `ueno` `7b1beb9`(이름 고침 `3f8a047` 포함) · `mac-4.0.0-r43`. 10-17 `win-parity` 전보 잘 받았습니다 — 아래 '받은 것' 에 답을 적었습니다.
+
+사용자(10-15): "계정 다운받는데 3~4개면 괜찮은데 대용량이라 정말 불편 — 다른 앱들에서는 어케 했는지". 다른 앱 조사(gallery-dl · PixivUtil2 · Cyberdrop-DL ·
+tmd · Hydrus · Hitomi · JDownloader · RipMe) 뒤 사용자가 넷을 다 골랐습니다. 화면을 맥 `index.html` 통째로 받으셨으니 이번 것도 통째로 받으시면 됩니다.
+
+### 1. 정리하기 — 계정 폴더 이름은 그 계정의 '지금' 이름 (`3f8a047`)
+`<정리할 곳>/제로 1・@_0_zero_h-(X ／ twitter.com)` 에 별명이 들어가던 것. r42 '대상 목록에서 불러오기' 가 별명을 표시 이름 칸에 넣은 탓.
+도우미 `pick_name`: 적은 이름 > `profiles/target/<이름>(@핸들)/` 의 가장 최근 것(xlsx 의 Name 줄, 없으면 폴더 앞부분) > 이미 있는 그 계정 폴더 > 기억한 이름 > 핸들.
+이름이 바뀌면 옛 계정 폴더의 **이름만** 바꿉니다(다시 복사 없음). 화면은 별명과 같은 표시 이름을 처음 켤 때 비웁니다.
+
+### 2. 정리하기 — 규칙 하나하나 대신 정리할 곳 하나 + 틀 하나
+- 설정에 `organize` 한 덩어리(`Config::m_organize`, 비어 있으면 안 씀): `root` · `template`(비면 기본) · `off`(정리 안 할 플랫폼) ·
+  `overrides{'플랫폼:핸들': {name, source, dest, exclude}}` · `seen{'플랫폼:핸들': 마지막 결과}` · `migrated` · `before`(옮기기 전 규칙).
+  `organizeRules` 는 이제 '따로 추가한 규칙'(대상 목록에 없는 것)만.
+- 틀: 기본 `{name}・@{handle}-({service})/{wareki}{month}月`(r42 모양 그대로). `/` 로 단을 나누고 날짜 낱말(`wareki era eyear year month mm day dd`)이
+  없는 앞 단들 = 계정 폴더, 든 뒤 단들 = 달 폴더. 계정 폴더 쪽에 `{name}` 이나 `{handle}` 이 없거나 모르는 낱말이 있으면 돌지 않습니다.
+  각 단은 `safe_name`. 핸들 없는 규칙이면 `・@{handle}` 을 뺍니다. 화면(`_orgSplitTpl` · `_orgTplProblem` · `_orgRender`)이 도우미와 같은 규칙으로 미리 봅니다.
+- 처음 켤 때 r42 규칙을 **한 번** 옮깁니다(`_orgMigrate`): 대상 목록에 있는 계정의 규칙에서 가장 많이 쓴 정리할 곳 = 공통, 공통과 다른 것만 overrides,
+  한 계정의 둘째 규칙과 대상 목록에 없는 규칙은 따로 추가한 규칙. `importConfig` 는 `organizeRules` 만 있고 `organize` 가 없는 옛 파일이면 `organize` 를 비워 다시 옮기게 합니다.
+- 받은 뒤 자동 정리는 **방금 받은 계정만**: 화면이 `backend.startCollection` 을 감싸 `{platform, target}` 을 적어 두고(`_orgNoteRun`), 수집이 끝나면 그것만.
+  적힌 것이 없으면(内閣会 감시 등) 그 플랫폼 전부. 윈도우 크롤 탭은 `penBackend.crawlStart` 라 상관없습니다.
+- 기능 창(`#window=…`)은 정리하기 설정을 저장하지 않고(`_orgMainWindow`), 정리 신호는 시작한 창만 받습니다 — 기능 창이 옛 사본으로 덮어쓰던 것(검토).
+
+### 3. `organize.py` — 같이 쓰는 파일입니다. `win-parity` 의 nt 갈래와 3-way 로 합쳐 주십시오
+바뀐 곳(맥 동작만, 플랫폼 갈래는 건드리지 않았습니다):
+- 새 함수: `split_template` · `template_problem` · `render` · `rule_vals` · `date_vals` · `month_folder` · `_last_seg_pattern` · `owner_key` · `folder_owners` ·
+  `_xlsx_field` · `current_profile_name`. `svc_suffix` 는 지웠습니다. `main()` 이 `cfg['template']` 를 받아 먼저 따집니다(틀리면 `done` 에 `failed:true`).
+- **장부(`.hanishiki_organize.json`, version 2 그대로)에 `owners: ['플랫폼:핸들', …]`**. 이미 있는 계정 폴더는 그 장부에 이 규칙이 주인으로 적힌 것만 찾고 바꿉니다.
+  주인 칸 없는 폴더(r42 장부 · 장부 없음)는 **기본 틀일 때만**. 검토가 짚은 것: 이름 자리만 뺀 꼴로 찾으니 핸들 없는 규칙 · 느슨한 틀(`{name}/…`)이
+  남의 계정 폴더나 사용자 폴더(`~/Pictures/Screenshots`)를 제 이름으로 바꿨습니다. 다른 주인과 같이 쓰는 폴더는 이름을 바꾸지 않습니다.
+- 대소문자만 바뀐 이름도 `os.rename` 합니다(`os.path.exists` 가 참이라 건너뛰던 것). NTFS 도 대소문자만 바꾸는 rename 이 됩니다 — 윈도우 갈래에서 한 번 확인해 주십시오.
+- `Index.save(prune, bases)`: 이번에 훑은 받은 곳(`bases`)의 키만 지웁니다 — 두 규칙이 한 계정 폴더를 쓸 때 서로의 장부를 지워 같은 사진을 `(2)` 로 또 두던 것.
+- 틀로 만든 계정(`auto: true`)이 받은 곳을 못 찾으면 `missing` 으로 셉니다(문제 아님). 단 후보가 여럿이거나 `roots` 가 하나도 없으면(빠진 디스크) 문제로.
+  `rule_done` · `done` 에 `missing` 칸이 늘었습니다.
+
+### 4. 대상 목록 — 표 · 글자로 편집 · 팔로잉에서 가져오기 (화면 + 백엔드)
+- 표: 검색 · 보기 · 정렬 · 보이는 것에 한꺼번에(`_tlBulk` 는 그려 둔 줄 `list._tlShown` 에만) · 줄마다 `entry.last`(좁으면 점). 같은 대상(열쇠 `_tlKey` = 주소 · `@` · 대소문자를 고른 것)은 또 넣지 않습니다.
+  `addPlatformTarget` 는 이제 `_targetFromText` 를 씁니다(블루스카이 주소가 `profile` 이 되던 것).
+- 글자로 편집: `아이디  # 별명` · `//` 꺼짐 · `=== 묶음`. 줄마다 지금 대상 하나씩 짝지어(같은 열쇠는 차례로) 계정 지정 · 옵션 · `last` 를 지킵니다.
+- 팔로잉에서 가져오기: 슬롯 `listFollowing(json)` · `followListStop()`, 답은 `window.onFollowList({platform, of, ok, busy?, stopped, error, users[{handle,name,protected}]})`.
+  트위터는 `TwitterCollector::listFollowing(config, handle, max, isRunning, &err, &m_followListPid)` — 이 스레드만의 데몬, 계정 프록시, 429 면 상태 칸을 건드리지 않고 15분 기다림.
+  블루스카이는 `public.api.bsky.app/xrpc/app.bsky.graph.getFollows`(로그인 없음). 그만 · 끄기는 `m_followListPid` 를 `Common::killProcessByPid` 로 바로 끊습니다.
+  **aboutToQuit 에서 이것을 맨 먼저** 멈춥니다(다른 스레드 기다린 뒤에 멈추면 남은 시간이 0.1초라 스레드가 백엔드보다 오래 살 수 있었습니다).
+- `appendLog`: 실행될 수 있는 것(`img` · `svg` · `on…=` · `javascript:` 등)이 든 줄은 글자 그대로 보입니다 — 팔로잉에서 가져온 남의 표시 이름이 별명이 되기 때문.
+
+### 5. 받은 것 — 10-17 전보에 대한 답
+- **새 폴더를 '공간 부족' 으로 오판**(`Common::freeSpace`): 맥에도 같습니다. 사용자께 알려 드렸고, 허락이 나면 윈도우 고침(가장 가까운 있는 조상 · 디스크 꼭대기에서 멈춤)대로 맥에 옮기겠습니다.
+- `HotfixSig` CNG 갈래 · `organize.py` nt 갈래를 같은 파일에 두는 것: 좋습니다. 위 3 의 맥 변경과 합쳐 주십시오.
+- `ig_docids.py` 의 `ReelsTabContentQuery` · 09-20 (5) 정정: 고맙습니다. 맥 쪽도 사용자께 알린 뒤 보겠습니다.
+
+### 시험(맥)
+`akashi/tests/organize.py` 26/26 · `tests/targets.py`(새로 — 대상 500개 · 글자로 편집 · 팔로잉 응답 흉내) 26/26 · `inspect_all --doctor --hotfix` 6/6.
+트위터 팔로잉 가져오기는 사용자 계정이 있어야 해 실제로는 돌려 보지 못했습니다(화면 · 슬롯 · 응답 처리까지만). 윈도우에서 사용자 계정으로 한 번 보아 주십시오.
