@@ -21019,12 +21019,57 @@ static QJsonArray cookiesToCdpJson(const QList<QNetworkCookie> &cookies)
     return arr;
 }
 
+// 도우미(crawl_record.py) 멈추기 — 맥은 SIGTERM. 윈도우의 QProcess::terminate() 는 WM_CLOSE 라 창 없는 콘솔 프로그램에
+//   닿지 않는다. 도우미는 stdin 이 닫히면 SIGTERM 과 같이 멈추므로(받은 것까지 쓰고 Chrome 을 내린다) 그것을 쓴다.
+//   20초 안에 안 끝나면 부르는 쪽이 kill 한다(맥과 같다).
+static void stopRecordHelper(QProcess &p)
+{
+#ifdef Q_OS_WIN
+    p.closeWriteChannel();
+#else
+    p.terminate();
+#endif
+}
+
+// 크롤 탭 '끝까지 기록' 입구 — 윈도우 크롤 탭은 PEN 이라 맥 화면처럼 startCollection 을 부르지 않는다.
+//   맥 화면이 보내는 것과 같은 설정(platform crawl · record)으로 바꿔 runCrawlCollection 의 기록 갈래를 탄다.
+//   그래서 결과 폴더(crawl_<시각>/record_<번호>_<호스트경로>)와 로그인 고르기 · 로그인 확인 · 진행 표시가 맥과 같다.
+void HanishikiBackend::crawlRecordStart(const QString &json)
+{
+    const QJsonObject in = QJsonDocument::fromJson(json.toUtf8()).object();
+    QStringList urls;
+    for (const QJsonValue &v : in.value(QStringLiteral("urls")).toArray()) {
+        const QString u = v.toString().trimmed();
+        if (!u.isEmpty()) urls << u;
+    }
+    if (urls.isEmpty()) {
+        const QString u = in.value(QStringLiteral("url")).toString().trimmed();
+        if (!u.isEmpty()) urls << u;
+    }
+    QJsonObject cfg;
+    cfg["platform"] = QStringLiteral("crawl");
+    cfg["url"] = urls.join(QLatin1Char('\n'));
+    cfg["path"] = in.value(QStringLiteral("savePath")).toString();
+    cfg["waitLogin"] = in.value(QStringLiteral("waitLogin")).toBool(false);
+    cfg["record"] = true;
+    cfg["loginCheckJs"] = in.value(QStringLiteral("loginCheckJs")).toString();
+    cfg["loginCookie"] = in.value(QStringLiteral("loginCookie")).toString();
+    startCollection(QString::fromUtf8(QJsonDocument(cfg).toJson(QJsonDocument::Compact)));
+}
+
+void HanishikiBackend::crawlRecordStop()
+{
+    stopCollection(QStringLiteral("crawl"));
+}
+
 bool HanishikiBackend::runCrawlRecord(const QString &url, const QString &outDir, const QList<QNetworkCookie> &cookies,
                                       bool headful, const QString &loginCheckJs, const std::function<bool()> &alive)
 {
     const QString script = Common::activeToolScriptPath(QStringLiteral("crawl_record.py"));
     QString python = Common::bundledPythonPath();
+#ifndef Q_OS_WIN
     if (!QFileInfo::exists(python)) python = QStringLiteral("/usr/bin/python3");   // 도우미는 표준 라이브러리만 쓴다
+#endif
     const QString chrome = RealChromeCrawler::findChromeExecutable();
     if (!QFileInfo::exists(script) || chrome.isEmpty()) {
         log(QString("끝까지 기록을 할 수 없습니다 — %1 없음").arg(chrome.isEmpty() ? QStringLiteral("Chrome")
@@ -21115,11 +21160,11 @@ bool HanishikiBackend::runCrawlRecord(const QString &url, const QString &outDir,
         } else if (loginSem && loginWait.elapsed() > 3600 * 1000 && !stopWait.isValid()) {
             log("로그인 대기 1시간 — 기록을 멈춥니다", "warning", "crawl");
             stopWait.start();
-            p.terminate();
+            stopRecordHelper(p);
         }
         if (!stopWait.isValid() && !alive()) {
             stopWait.start();
-            p.terminate();   // SIGTERM — 도우미가 Chrome 을 내리고, 받은 것까지 index · items 로 쓰고 끝난다
+            stopRecordHelper(p);   // 도우미가 Chrome 을 내리고, 받은 것까지 index · items 로 쓰고 끝난다
         }
         if (stopWait.isValid() && stopWait.elapsed() > 20000) {
             p.kill();

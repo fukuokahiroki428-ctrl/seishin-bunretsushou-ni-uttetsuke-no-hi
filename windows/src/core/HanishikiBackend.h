@@ -131,6 +131,11 @@ public slots:
     void organizeStop();
     void organizeBrowse(const QString &fieldId);   // 폴더를 골라 화면의 그 칸에(setOrganizeField)
 
+    // 크롤 탭(윈도우는 PEN) '끝까지 기록' — json = {url | urls[], savePath, waitLogin, loginCheckJs?, loginCookie?}.
+    //   맥 화면과 같은 crawl 설정(record:true)으로 바꿔 startCollection 을 부른다. 멈추기는 stopCollection("crawl").
+    void crawlRecordStart(const QString &json);
+    void crawlRecordStop();
+
     // Navigation
     void browsePath(const QString &platform);
     void openFolder(const QString &path);
