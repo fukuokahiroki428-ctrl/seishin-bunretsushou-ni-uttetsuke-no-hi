@@ -59,6 +59,18 @@ using FileHelper::sanitizeFilename;
 #endif
 #include <QRegularExpression>
 
+// ★ 산출물 폴더에 남기는 매니페스트 이름 — 맥(ueno)과 같다.
+//   예전엔 "__CHERNOBYL_MANIFEST__", 윈도우는 한동안 "__PREDORMITION_MANIFEST__" 였다. 앱 이름이 바뀔 때마다
+//   사용자의 백업 폴더마다 옛 이름이 박힌 파일이 쌓였다 — 그래서 브랜드를 빼고 역할로만 짓는다.
+//   쓰는 것은 새 이름, 알아보는 것은 옛 이름까지(이미 쌓인 것들 때문에).
+static const char *kManifestBase = "__ARCHIVE_MANIFEST__";
+static bool isManifestName(const QString &fn)
+{
+    return fn.startsWith(QLatin1String("__ARCHIVE_MANIFEST"))
+        || fn.startsWith(QLatin1String("__CHERNOBYL_MANIFEST"))
+        || fn.startsWith(QLatin1String("__PREDORMITION_MANIFEST"));   // 윈도우 옛 판이 쓴 것
+}
+
 class HanishikiBackend;
 // 계정이 고른 프록시 프로필을 이 스레드에 건다 — 정의와 설명은 startCollection 앞에 있다.
 //   (内閣会 폴링이 그보다 앞에서 쓰므로 미리 알린다. 기본 인자는 정의 쪽에 있다.)
@@ -390,6 +402,7 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
     // 옛 tail script 청소
     killByCommandLine("cmd.exe", "miyo_");
 #endif
+
 
     // ★ Chrome capture profile cache 자동 정리 (로그인 cookie는 보존)
     //   사용자가 자주 쓰면 profile 누적되어 메모리 폭주 → OOM kill.
@@ -1226,7 +1239,7 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
                  << "--exclude" << ".abiwa_**"
                  << "--exclude" << ".DS_Store"
                  << "--exclude" << ".git/**"
-                 << "--exclude" << "__PREDORMITION_MANIFEST__*"
+                 << "--exclude" << "__ARCHIVE_MANIFEST__*" << "--exclude" << "__PREDORMITION_MANIFEST__*"
                  // ★ 이름을 바꾸기 전에 만들어진 파일도 제외해야 한다 — 사용자 디스크에 이미 있다.
                  << "--exclude" << "__CHERNOBYL_MANIFEST__*";
             rc.start(rclonePath, args);
@@ -1393,7 +1406,7 @@ void HanishikiBackend::startRemoteBackup(const QString &configJson)
              << "--progress" << "--stats" << "2s" << "--stats-one-line"
              << "--retries" << "5" << "--low-level-retries" << "10"
              << "--exclude" << ".abiwa_**" << "--exclude" << ".DS_Store"
-             << "--exclude" << ".git/**" << "--exclude" << "__PREDORMITION_MANIFEST__*"
+             << "--exclude" << ".git/**" << "--exclude" << "__ARCHIVE_MANIFEST__*" << "--exclude" << "__PREDORMITION_MANIFEST__*"
              << "--exclude" << "__CHERNOBYL_MANIFEST__*";   // 이름 바꾸기 전 파일
         rc.start(rclonePath, args);
         int exitCode = -1;
@@ -1761,7 +1774,7 @@ void HanishikiBackend::backupNow()
             while (dit.hasNext()) {
                 QString f = dit.next();
                 QString fn = QFileInfo(f).fileName();
-                if (fn.startsWith(".abiwa_write_test") || (fn.startsWith("__PREDORMITION_MANIFEST") || fn.startsWith("__CHERNOBYL_MANIFEST"))) continue;
+                if (fn.startsWith(".abiwa_write_test") || isManifestName(fn)) continue;
                 existingBytes += QFileInfo(f).size();
                 existingFiles++;
             }
@@ -2190,7 +2203,7 @@ void HanishikiBackend::backupNow()
             while (dit.hasNext()) {
                 QString f = dit.next();
                 QString fn = QFileInfo(f).fileName();
-                if (fn.startsWith(".abiwa_write_test") || (fn.startsWith("__PREDORMITION_MANIFEST") || fn.startsWith("__CHERNOBYL_MANIFEST"))) continue;
+                if (fn.startsWith(".abiwa_write_test") || isManifestName(fn)) continue;
                 qint64 sz = QFileInfo(f).size();
                 finalDstBytes += sz;
                 finalDstFiles++;
@@ -2302,7 +2315,7 @@ void HanishikiBackend::backupNow()
 // ═════════════════════════════════════════════════════════════════════════
 // ═════════════════════════════════════════════════════════════════════════
 // writeDownloadManifest — 폴더 안 모든 파일 통계 manifest 생성.
-//   JSON (__PREDORMITION_MANIFEST__.json) + TXT (__PREDORMITION_MANIFEST__.txt) 둘 다 생성.
+//   JSON (__ARCHIVE_MANIFEST__.json) + TXT (__ARCHIVE_MANIFEST__.txt) 둘 다 생성.
 //   각 platform 수집 끝나면 자동 호출. 사용자 / 백업 검증용.
 //   대용량 (10만 파일+) 도 streaming 으로 처리 — 메모리 안 먹음.
 // ═════════════════════════════════════════════════════════════════════════
@@ -2329,7 +2342,7 @@ void HanishikiBackend::writeDownloadManifest(const QString &dir, const QString &
         QString f = it.next();
         QString fname = QFileInfo(f).fileName();
         // 시스템 / 매니페스트 자체 skip
-        if (fname.startsWith(".") || (fname.startsWith("__PREDORMITION_MANIFEST") || fname.startsWith("__CHERNOBYL_MANIFEST"))
+        if (fname.startsWith(".") || isManifestName(fname)
             || fname == "Thumbs.db" || fname == "desktop.ini") continue;
         if (f.contains("/.abiwa_") || f.contains("/.rsync-")) continue;
         qint64 sz = QFileInfo(f).size();
@@ -2421,7 +2434,7 @@ void HanishikiBackend::writeDownloadManifest(const QString &dir, const QString &
     root["top_files"] = topArr;
 
     // JSON 저장
-    QString jsonPath = dir + "/__PREDORMITION_MANIFEST__.json";
+    QString jsonPath = dir + "/" + kManifestBase + ".json";
     QFile jf(jsonPath);
     if (jf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         jf.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
@@ -2429,7 +2442,7 @@ void HanishikiBackend::writeDownloadManifest(const QString &dir, const QString &
     }
 
     // 3) TXT manifest (사람이 읽기 좋게)
-    QString txtPath = dir + "/__PREDORMITION_MANIFEST__.txt";
+    QString txtPath = dir + "/" + kManifestBase + ".txt";
     QFile tf(txtPath);
     if (tf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         QTextStream out(&tf);
@@ -2482,7 +2495,7 @@ void HanishikiBackend::writeDownloadManifest(const QString &dir, const QString &
 
         out << "═══════════════════════════════════════════════════════════════\n";
         out << "💡 무결성 확인: 파일 개수 / 사이즈 / 확장자별 카운트가 다음 백업과 일치해야 OK\n";
-        out << "💡 상세 정보: __PREDORMITION_MANIFEST__.json 에 모든 통계 + Top 50 파일 list\n";
+        out << QString("💡 상세 정보: %1.json 에 모든 통계 + Top 50 파일 list\n").arg(kManifestBase);
         out << "═══════════════════════════════════════════════════════════════\n";
         tf.close();
     }
