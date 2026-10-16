@@ -788,13 +788,13 @@ QString userPythonEnvDir()
            + "/python_env" KAMERA_PY_ARCH;
 }
 
-// ★ 이 두 헬퍼는 맥 전용 가드 안에 있었다. activePythonEnvDir 의 윈도우 갈래도 쓰게 되면서
-//   윈도우까지 열었다 — 가드를 그대로 두면 error C3861(identifier not found)로 빌드가 깨진다.
-#if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
-// 심볼릭 링크/실행권한 보존이 필요(standalone python 은 symlink 포함) → cp -a 로 복사.
+// ★ 이 두 헬퍼는 윈도우 activePythonEnvDir 의 '설치 폴더에 못 쓰면 쓰기가능 사본' 갈래와
+//   asciiSafeExiftool(exiftool_files 옮기기)만 쓴다. 맥(ueno)은 python_env 를 앱 안에 고정하고
+//   외부 사본을 버렸으므로 맥 갈래에는 필요 없다 — 윈도우 가드 안에만 둔다.
+#ifdef Q_OS_WIN
+// 깊은 경로 · 많은 파일을 통째로 복사한다.
 static bool copyTreePreserving(const QString &src, const QString &dst)
 {
-#ifdef Q_OS_WIN
     // robocopy 는 윈도우에 기본 탑재라 별도 의존성이 없고, 깊은 경로와 많은 파일에 강하다.
     //   ★ 종료 코드가 특이하다 — 0~7 이 성공(1=복사함, 2=여분 있음, …), 8 이상이 실패다.
     //     0 이 아니면 실패로 보면 정상 복사를 실패로 오인한다.
@@ -804,23 +804,16 @@ static bool copyTreePreserving(const QString &src, const QString &dst)
     if (!rc.waitForStarted(5000)) return false;
     if (!rc.waitForFinished(600000)) { rc.kill(); rc.waitForFinished(2000); return false; }
     return rc.exitStatus() == QProcess::NormalExit && rc.exitCode() < 8;
-#else
-    QProcess cp;
-    cp.start("/bin/cp", {"-a", src, dst});
-    if (!cp.waitForStarted(5000)) return false;
-    if (!cp.waitForFinished(180000)) { cp.kill(); cp.waitForFinished(2000); return false; }
-    return cp.exitStatus() == QProcess::NormalExit && cp.exitCode() == 0;
-#endif
 }
 
-// 외부 python_env 가 '완전한지' 검증 — bin/python3 는 있는데 핵심 패키지(twikit)가 빠진
+// 외부 python_env 가 '완전한지' 검증 — python.exe 는 있는데 핵심 패키지(twikit)가 빠진
 // 깨진/구 복사본(예: 옛 설치의 다른 파이썬 버전 · 패키지 0개)이면 번들에서 재시드해야 한다.
 // python 실행 없이 site-packages/twikit 디렉토리 존재로 판단(빠름).
 static bool pythonEnvHasCorePackages(const QString &envDir)
 {
     // ★ 윈도우 배치는 유닉스와 다르다 — <env>\Lib\site-packages\twikit 로 python3.x 층이 없다.
     //   유닉스 모양(lib/python3*/site-packages)만 보던 탓에 윈도우에서는 멀쩡한 env 를 두고도
-    //   언제나 false 를 돌려줬다. 지금은 맥 전용 경로에서만 불려서 드러나지 않았을 뿐이다.
+    //   언제나 false 를 돌려줬다. 유닉스 모양도 그대로 본다(옛 사본).
     if (QFileInfo::exists(envDir + "/Lib/site-packages/twikit"))
         return true;
     QDir libDir(envDir + "/lib");
@@ -836,57 +829,32 @@ static bool pythonEnvHasCorePackages(const QString &envDir)
 QString activePythonEnvDir()
 {
 #ifdef Q_OS_MACOS
-    // 번들은 codesign 으로 sealed → 외부 복사본을 쓴다. 없으면 번들에서 1회 시드.
-    static QMutex seedMutex;
-    const QString ext = userPythonEnvDir();
-    const QString extPy = ext + "/bin/python3";
-
+    // ★★ 앱 내부(번들) 고정 — 외부 복사본은 쓰지 않는다.
+    //
+    //   예전엔 '번들이 쓰기가능하면 번들, 아니면 외부로 복사해서 그걸 쓴다' 였다.
+    //   그런데 그 두 갈래가 층마다 다르게 가정돼 서로 어긋나 있었다. 실제로
+    //   upgradePythonEnv() 는 "외부가 아니면 중단" 이라 번들을 쓰는 지금 상태에서는
+    //   Python 업그레이드가 '항상' 중단됐다. 갈래가 둘이면 이런 어긋남이 계속 난다.
+    //
+    //   번들에 쓰면 codesign 봉인이 깨지지만, 설치 직후 resealAppBundle() 이 다시
+    //   서명해 복구한다(인증서가 있으면 그것으로, 없으면 ad-hoc — 둘 다 실제로
+    //   검증까지 통과하는 것을 확인했다).
+    //
+    //   번들이 읽기전용이면 예전처럼 몰래 외부로 새지 않는다. 그대로 번들을
+    //   돌려주고, 설치·업그레이드 쪽에서 '쓸 수 없다' 고 분명히 알린다.
+    //   조용히 다른 곳을 쓰는 것보다 안 되는 이유를 말하는 편이 낫다.
     QString bundled = bundledResourcesDir() + "/python_env" KAMERA_PY_ARCH;
-    // 호환: arch 별 디렉토리가 없으면 단일 python_env 로 폴백 (구 번들/단일 arch 빌드).
     if (!QFile::exists(bundled + "/bin/python3"))
-        bundled = bundledResourcesDir() + "/python_env";
-    const bool bundleReady = QFile::exists(bundled + "/bin/python3") && pythonEnvHasCorePackages(bundled);
-
-    // ★★ 앱 내부(번들) 우선 — 모듈/라이브러리를 앱 안에 두고 앱 안에 설치한다.
-    //   번들에 쓰면 codesign 봉인이 깨지지만, 설치·수리 직후 Common::resealAppBundle() 이
-    //   자동 재서명해 복구하므로 안전하다(재서명 실패 시에는 아래 외부 복사본 경로로 자연 폴백).
-    //   번들이 읽기전용(권한 없는 위치·검역 등)이면 예전처럼 외부 복사본을 쓴다.
-    if (bundleReady && isDirWritable(bundled))
-        return bundled;
-
-    // ★ 외부본이 존재하되 핵심 패키지(twikit)까지 있어야 그대로 사용한다.
-    //   bin/python3 만 있고 패키지가 빠진 깨진 복사본(옛 설치의 3.15b·패키지 0개 등)은
-    //   재시드 대상 — 이게 'twikit not installed' 로 트위터 수집이 죽던 근본 원인이었다.
-    //   (번들에 완전한 env 가 없으면 재시드해도 소용없으니 그때는 외부본을 그대로 둔다.)
-    if (QFile::exists(extPy) && (pythonEnvHasCorePackages(ext) || !bundleReady))
-        return ext;
-
-    QMutexLocker lock(&seedMutex);
-    if (QFile::exists(extPy) && (pythonEnvHasCorePackages(ext) || !bundleReady))
-        return ext;   // 락 대기 중 다른 스레드가 끝냈을 수 있음
-    if (!bundleReady)
-        return ext;   // 번들에도 완전한 env 없음 → 외부 경로 반환(새 설치/복구 대상)
-
-    QDir().mkpath(QFileInfo(ext).absolutePath());
-    const QString tmp = ext + ".seeding";
-    QDir(tmp).removeRecursively();
-    if (copyTreePreserving(bundled, tmp) && QFile::exists(tmp + "/bin/python3")) {
-        QDir(ext).removeRecursively();          // 깨진 기존 외부본이 있으면 교체
-        if (QDir().rename(tmp, ext) && QFile::exists(extPy)) {
-            qDebug() << "[Common] python_env seeded to writable location:" << ext;
-            return ext;
-        }
-    }
-    QDir(tmp).removeRecursively();
-    qWarning() << "[Common] python_env seed failed — using read-only bundle (upgrade disabled)";
-    return bundled;   // 복사 실패 → 읽기전용 번들 (upgrade/repair 가 거부함)
+        bundled = bundledResourcesDir() + "/python_env";   // 구 번들/단일 arch 폴백
+    return bundled;
 #elif defined(Q_OS_WIN)
-    // ★ 앱 안(번들) 우선 — 기본 설치 위치는 {localappdata}\Programs\Predormition 이고
+    // ★ 앱 안(번들) 우선 — 기본 설치 위치는 {localappdata}\Programs\<앱> 이고
     //   PrivilegesRequired=lowest 라 앱 폴더가 쓰기 가능하다. 그때는 예전처럼 그대로 쓴다.
     //   문제는 그렇지 않은 경우다 — 포터블 zip 을 읽기전용 위치에 풀거나, 관리자가
     //   Program Files 에 넣었거나, 폴더 권한이 잠긴 경우. 예전 코드는 쓰기 가능 여부를
     //   보지도 않고 앱 안 경로를 돌려줘서, pip 설치·패키지 복구가 조용히 실패했다.
-    //   맥은 진작 이 갈래를 갖고 있었다(거기선 codesign 봉인 때문). 같은 모양으로 맞춘다.
+    //   (맥 ueno 는 번들 고정이다 — 위 맥 갈래 설명. 윈도우는 Program Files · 읽기전용 위치의
+    //    설치가 실제로 있어 이 갈래를 플랫폼 몫으로 지킨다.)
     static QMutex seedMutex;
     const QString ext     = userPythonEnvDir();
     const QString extPy   = ext + "/python.exe";
@@ -955,7 +923,20 @@ QString activeToolScriptPath(const QString &name)
     }
     const QString ov = scriptOverrideDir() + "/" + name;
     if (QFileInfo::exists(ov)) return ov;
-    return bundledToolsDir() + "/" + name;
+
+    // 번들 원본 찾기.
+    //   tools/ 바로 밑에만 있는 게 아니다 — CMake 는 보관함 스크립트를
+    //   tools/archive/ 하위에 넣는다(archive_ask.py, archive_index.py).
+    //   예전엔 tools/ 만 봐서 그 둘의 원본을 못 찾았고, AI 자가수리 화면이
+    //   빈 편집기를 띄웠다(내용이 빈 문자열로 왔다). 하위 폴더도 본다.
+    const QString tools = bundledToolsDir();
+    const QStringList subs = { QString(), QStringLiteral("/archive") };
+    for (const QString &sub : subs) {
+        const QString p = tools + sub + "/" + name;
+        if (QFileInfo::exists(p)) return p;
+    }
+    // 못 찾으면 예전과 같은 경로를 돌려준다(호출부가 존재 여부를 다시 확인한다).
+    return tools + "/" + name;
 }
 
 // ── 외부 서비스 상수 런타임 오버라이드 ────────────────────────────────────────
@@ -1341,10 +1322,8 @@ bool setApiOverride(const QString &key, const QString &value)
     if (value.isEmpty()) o.remove(key);      // 빈 값 = 기본값으로 되돌리기
     else                 o[key] = value;
 
-    QFile f(p);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
-    f.write(QJsonDocument(o).toJson(QJsonDocument::Indented));
-    f.close();
+    // 통째로 갈아 끼운다 — 쓰는 도중에 앱이 죽어도 잘린 파일이 남지 않는다.
+    if (!writeFileAtomic(p, QJsonDocument(o).toJson(QJsonDocument::Indented))) return false;
     return true;
 }
 
@@ -1365,7 +1344,7 @@ bool isDirWritable(const QString &dir)
 QString appBundlePath()
 {
 #ifdef Q_OS_MACOS
-    // <...>/Predormition.app/Contents/MacOS  →  <...>/Predormition.app
+    // <...>/<앱 이름>.app/Contents/MacOS  →  <...>/<앱 이름>.app
     QDir d(QCoreApplication::applicationDirPath());
     if (!d.cdUp()) return QString();          // Contents
     if (!d.cdUp()) return QString();          // *.app
@@ -1685,24 +1664,43 @@ bool resealAppBundle(QString *err)
         for (const QString &c : caches) QDir(c).removeRecursively();
     }
 
-    // 서명 아이덴티티 탐색 — 있으면 그걸로, 없으면 ad-hoc(-). 로컬 실행에는 ad-hoc 로 충분하다.
-    QString identity = "-";
-    {
-        QProcess find;
-        find.start("/usr/bin/security", {"find-identity", "-v", "-p", "codesigning"});
-        if (find.waitForFinished(10000)) {
-            const QString out = QString::fromUtf8(find.readAllStandardOutput());
-            const QRegularExpression re("\\b([0-9A-F]{40})\\b");
-            const QRegularExpressionMatch m = re.match(out);
-            if (m.hasMatch()) identity = m.captured(1);
-        }
+    // ★ 번들에 동봉한 codesign_app.sh 로 재서명한다.
+    //   빌드가 쓰는 바로 그 스크립트다 — inside-out 으로 컴포넌트부터 서명하고
+    //   마지막에 --deep --strict 로 검증한다. 인증서 선택(Developer ID → Apple
+    //   Development → ad-hoc)과 entitlements 처리도 그 안에 이미 들어 있다.
+    //
+    //   예전엔 여기서 `codesign -f -s <id> --deep` 로 직접 서명했다. 동작은 했지만
+    //   빌드는 --deep 서명을 일부러 피하는데(애플도 배포용이 아니라고 한다) 런타임만
+    //   다른 방식을 쓰고 있었다. 두 갈래로 두면 언젠가 결과가 갈린다.
+    const QString signer = bundledToolsDir() + "/codesign_app.sh";
+    if (!QFile::exists(signer)) {
+        if (err) *err = QString("재서명 도구가 번들에 없습니다: %1").arg(signer);
+        return false;
     }
 
+    // ★ 재서명은 한 번에 하나만. 같은 번들에 codesign 두 개가 동시에 붙으면
+    //   서로의 중간 결과를 덮어써서 번들이 확실히 망가진다. 앱을 두 개 띄우거나,
+    //   앞선 재서명이 아직 끝나지 않았는데 또 시작하는 경우가 실제로 있다.
+    //   잠금은 번들 밖(임시 폴더)에 둔다 — 번들 안에 파일을 만들면 그것이 또 봉인을 깬다.
+    QLockFile lock(QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                   + "/hanishiki_reseal.lock");
+    lock.setStaleLockTime(30 * 60 * 1000);      // 30분이면 죽은 잠금으로 본다
+    if (!lock.tryLock(0)) {
+        if (err) *err = "다른 재서명이 이미 진행 중입니다 — 그것이 끝나기를 기다리십시오.";
+        return false;
+    }
+
+    // 종료 처리가 이 구간만은 기다려 준다(서명 도중에 잘리면 번들이 무효로 남는다).
+    struct InFlight {
+        InFlight()  { g_resealInFlight.storeRelease(1); }
+        ~InFlight() { g_resealInFlight.storeRelease(0); }
+    } _inFlight;
+
     QProcess cs;
-    cs.start("/usr/bin/codesign", {"-f", "-s", identity, "--deep", app});
-    if (!cs.waitForFinished(900000)) {                    // 번들이 크면(모델 포함) 수 분 걸릴 수 있음
+    cs.start("/bin/bash", {signer, app});
+    if (!cs.waitForFinished(1800000)) {         // 번들이 크면(모델 포함) 수 분 걸린다
         cs.kill(); cs.waitForFinished(3000);
-        if (err) *err = "codesign 시간 초과";
+        if (err) *err = "재서명 시간 초과";
         return false;
     }
     if (cs.exitCode() != 0) {
@@ -1904,8 +1902,14 @@ QStringList pythonCandidates()
 //   (browser_cookie3·cryptography 누락 → Python 업그레이드 후 쿠키 추출이 조용히 죽음).
 //   버전 고정(==)도 그대로 살려 넘긴다 — 고정해 둔 취지가 업그레이드 때 무너지지 않게.
 //   파일을 못 찾으면 빈 목록이 아니라 최소 필수 목록을 돌려준다(전부 실패보다 낫다).
-QStringList bundledRequirements()
+QStringList bundledRequirements(bool stripPins)
 {
+    // 'pkg[extra]==1.2.3 ; marker' → 'pkg[extra]'
+    auto nameOnly = [](const QString &line) {
+        static const QRegularExpression re(R"(^([A-Za-z0-9._\-]+(?:\[[^\]]+\])?))");
+        const auto m = re.match(line);
+        return m.hasMatch() ? m.captured(1) : line;
+    };
     QStringList out;
     QStringList cands;
     cands << bundledResourcesDir() + "/requirements.txt"
@@ -1917,7 +1921,7 @@ QStringList bundledRequirements()
         while (!f.atEnd()) {
             QString line = QString::fromUtf8(f.readLine()).trimmed();
             if (line.isEmpty() || line.startsWith('#')) continue;
-            out << line;
+            out << (stripPins ? nameOnly(line) : line);
         }
         f.close();
         if (!out.isEmpty()) {
@@ -2002,8 +2006,8 @@ QString longPathArg(const QString &path, int reserveChars)
 #endif
 }
 
-// ★ 맥 bundledProcessEnv 에 윈도우 것을 얹은 하나뿐인 정의다. 아래(maskSecret 뒤)에 남아 있던
-//   윈도우 옛 정의는 지운다 — 둘이면 컴파일이 깨진다.
+// ★ 맥 bundledProcessEnv 에 윈도우 것을 얹은 하나뿐인 정의다. 윈도우 옛 정의(maskSecret 뒤에 따로
+//   있던 것)는 이것으로 합치고 지웠다 — 둘이면 컴파일이 깨진다(C2084).
 //   맥에서 온 것: 번들 파이썬 경로(HANISHIKI_PYTHON) · 파이썬 경로(덧씌운 꾸러미 > 고침 꾸러미 도우미 >
 //   자가수리 도우미 > 번들 도우미) · 프록시 환경변수(출구를 못 얻으면 닫힌 길) · HANISHIKI_APP_NAME.
 //   윈도우에서 지킨 것: PYTHONPATH 구분자 ';' · 데이터 폴더의 네이티브 구분자와 PREDORMITION_DATA_DIR ·
@@ -2121,52 +2125,47 @@ QString maskSecret(const QString &value, const QString &who)
     return QStringLiteral("%1: 있음 (%2자, 가려짐)").arg(name).arg(value.length());
 }
 
-QProcessEnvironment bundledProcessEnv()
+// 이 경로가 놓일 디스크의 맨 위 — freeSpace 는 여기보다 위로 올라가 재지 않는다(다른 디스크를 재게 된다).
+//   윈도우 드라이브 "X:/" · 네트워크 공유 "//서버/공유" · 맥 외장 디스크 "/Volumes/이름" · 그 밖은 "/".
+//   p 는 '/' 구분자의 정리된 절대 경로다.
+static QString volumeTopOf(const QString &p)
 {
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    QString appDir = QCoreApplication::applicationDirPath();
-
-#ifdef Q_OS_WIN
-    // Windows: add exe dir to PATH for bundled tools
-    QString path = appDir + ";" + env.value("PATH");
-    env.insert("PATH", path);
-#else
-    // macOS/Linux: add Frameworks dir to DYLD_LIBRARY_PATH, bundled + homebrew to PATH
-    QString frameworksDir = appDir + "/../Frameworks";
-    QString existing = env.value("DYLD_LIBRARY_PATH");
-    env.insert("DYLD_LIBRARY_PATH", existing.isEmpty() ? frameworksDir : frameworksDir + ":" + existing);
-    QString extraPaths = appDir + ":/opt/homebrew/bin:/usr/local/bin";
-    env.insert("PATH", extraPaths + ":" + env.value("PATH"));
-#endif
-
-    // ★ 파이썬 도구가 자기 데이터를 어디에 둘지 여기서 알려 준다.
-    //   맥 쪽은 이미 이 계약(HANISHIKI_DATA_DIR)을 쓰는데 윈도우 사본은 안 받고 있어서,
-    //   twitter_daemon.py 가 맥 경로를 그대로 써 C:\Users\<사용자>\Library\
-    //   Application Support\カメラ\ 라는 가짜 트리를 사용자 홈에 만들고 있었다
-    //   (실측: 이 기계에 그 폴더와 graphql_hashes.json 이 실제로 있었다).
-    //   이름도 옛 코드네임이었다. 앱과 같은 자리를 쓰게 한다.
-    const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    env.insert("PREDORMITION_DATA_DIR", QDir::toNativeSeparators(dataDir));
-    env.insert("HANISHIKI_DATA_DIR", QDir::toNativeSeparators(dataDir));   // 맥 쪽과 같은 이름도 함께
-
-    // ★ 파이썬 자식은 반드시 UTF-8 로 말하게 한다.
-    //   윈도우에서 파이썬 3.14 는 파이프로 나갈 때 시스템 ANSI 코드페이지를 쓴다.
-    //   이 기계는 cp1252 라서, 파이썬이 한글·일본어를 print 하는 순간
-    //   UnicodeEncodeError 로 데몬이 통째로 죽는다 (실측으로 재현했다).
-    //   C++ 쪽은 QString::fromUtf8 로 읽으므로 애초에 UTF-8 이어야 맞다.
-    //   지금 주요 데몬이 살아 있는 것은 json.dumps 가 기본값으로 \uXXXX 이스케이프를
-    //   하기 때문일 뿐이다 — email_watch.py 처럼 ensure_ascii=False 를 쓰는 곳은 실제로 죽고,
-    //   앞으로 누가 한글을 print 하면 또 죽는다. 원인 자체를 없앤다.
-    env.insert("PYTHONUTF8", "1");
-    env.insert("PYTHONIOENCODING", "utf-8");
-    env.insert("PYTHONDONTWRITEBYTECODE", "1");
-    return env;
+    if (p.size() >= 3 && p.at(0).isLetter() && p.at(1) == QLatin1Char(':') && p.at(2) == QLatin1Char('/'))
+        return p.left(3);
+    if (p.startsWith(QLatin1String("//"))) {
+        const int s1 = p.indexOf(QLatin1Char('/'), 2);
+        if (s1 < 0) return p;
+        const int s2 = p.indexOf(QLatin1Char('/'), s1 + 1);
+        return s2 < 0 ? p : p.left(s2);
+    }
+    if (p.startsWith(QLatin1String("/Volumes/"))) {
+        const int s = p.indexOf(QLatin1Char('/'), 9);
+        return s < 0 ? p : p.left(s);
+    }
+    return QStringLiteral("/");
 }
 
 qint64 freeSpace(const QString &path)
 {
     if (path.isEmpty()) return 0;
-    QStorageInfo si(path);
+    // ★ 아직 없는 폴더는 가장 가까운 '있는' 조상 폴더로 잰다.
+    //   예전엔 QStorageInfo 에 그대로 넘겼다. 없는 폴더면 QStorageInfo 가 무효라 0 이 나오고,
+    //   pickSavePath 가 이것을 '1번 디스크 공간 부족' 으로 읽어 보조 경로로 보냈다
+    //   (2026-09-24 윈도우 실측: 새로 적은 저장 폴더 D:/igtest → F:/임시). 맥도 같은 코드라 같다.
+    //   단 디스크 맨 위(volumeTopOf)보다 위로는 가지 않는다 — 꽂히지 않은 외장 디스크 · 끊긴 공유는
+    //   예전처럼 0 이다(위로 올라가면 시스템 디스크의 공간을 재서 '넉넉하다' 고 잘못 본다).
+    QString p = path;
+    if (p.startsWith(QLatin1String("\\\\?\\UNC\\")))  p = QLatin1String("\\\\") + p.mid(8);
+    else if (p.startsWith(QLatin1String("\\\\?\\")))  p = p.mid(4);
+    p = QDir::cleanPath(QFileInfo(QDir::fromNativeSeparators(p)).absoluteFilePath());
+    const QString top = volumeTopOf(p);
+    while (!QFileInfo::exists(p)) {
+        if (p.size() <= top.size()) return 0;            // 디스크 자체가 없다
+        const int slash = p.lastIndexOf(QLatin1Char('/'));
+        if (slash < 0) return 0;
+        p = (slash < top.size()) ? top : p.left(slash);
+    }
+    QStorageInfo si(p);
     if (!si.isValid() || !si.isReady()) return 0;
     return si.bytesAvailable();
 }

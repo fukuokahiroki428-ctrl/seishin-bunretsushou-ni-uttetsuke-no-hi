@@ -119,16 +119,31 @@ TerminalWindow::TerminalWindow(const QString &key, const QString &title, Mode mo
     m_view->setWordWrapMode(QTextOption::WrapAnywhere);
     m_view->setFrameStyle(QFrame::NoFrame);
 
+    QFont f;
+#ifdef Q_OS_WIN
+    // ★ 글꼴 — 한글·일본어가 있는 고정폭부터 고른다.
+    //   conhost 와 달리 Qt 는 없는 글리프를 다른 글꼴에서 가져오는 폴백이 실제로 동작하지만,
+    //   처음부터 있는 것을 고르는 편이 줄 간격이 흐트러지지 않는다.
+    //   (맥 후보 SF Mono·Menlo·Monaco 는 윈도우에 하나도 없어, 그대로 두면 고정폭이 아닌
+    //    기본 글꼴로 떨어진다.)
+    const QStringList prefer = { "Cascadia Mono", "D2Coding", "Malgun Gothic", "MS Gothic", "Consolas" };
+#else
     // ★ 글꼴 — 맥의 고정폭부터 고른다. 한글·일본어는 CoreText 가 다른 글꼴에서
     //   가져와 그린다(윈도우 콘솔처럼 '?' 로 깨지지 않는다).
-    QFont f;
     const QStringList prefer = { "SF Mono", "Menlo", "Monaco" };
+#endif
     const QStringList have = QFontDatabase::families();
     for (const QString &name : prefer) {
         if (have.contains(name, Qt::CaseInsensitive)) { f.setFamily(name); break; }
     }
     f.setStyleHint(QFont::Monospace);
+#ifdef Q_OS_WIN
+    // 윈도우의 1pt 는 96dpi 기준이라 맥(72dpi 기준)보다 크게 나온다 — 10pt 가 맥 12pt 와 비슷한 크기다
+    //   (윈도우 판이 쓰던 값).
+    f.setPointSize(10);
+#else
     f.setPointSize(12);
+#endif
     m_view->setFont(f);
     lay->addWidget(m_view, 1);
 

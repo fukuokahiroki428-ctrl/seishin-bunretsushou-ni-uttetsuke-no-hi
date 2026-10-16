@@ -1,6 +1,7 @@
 #include "core/Common.h"
 #include "HttpClient.h"
 #include "FileHelper.h"
+#include <QUrl>
 #include <QTimer>
 #include <QElapsedTimer>
 #include <atomic>
@@ -29,11 +30,36 @@ static QString openFailureReason(const QString &path, const QString &qtError)
     return qtError;
 }
 
+// 다 받은 조각(.dl_<sha1>.part)을 진짜 이름으로 바꾼다.
+// ★ 윈도우는 막 닫힌 파일을 백신 · 색인기 · 탐색기 미리보기가 잠깐 잡고 있으면 rename 이 실패한다.
+//   곧 풀리는 경우가 많다 — 한 번만 해 보고 실패로 끝내면 다 받은 파일을 지우고 다시 받게 된다.
+//   FileHelper::moveFileSafe 와 같은 재시도(120ms × 5). 맥 · 리눅스는 잠금 때문에 실패하지 않으므로 한 번만.
+static bool replacePart(const QString &part, const QString &dst)
+{
+    // 진짜 이름에 0 바이트 잔재가 있으면 QFile::rename 이 실패하므로 먼저 치운다
+    // (size>0 이면 호출부 맨 위에서 이미 돌아갔다 — 여기 오는 것은 '없음' 이거나 0 바이트뿐이다).
+    QFile::remove(dst);
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (QFile::rename(part, dst)) return true;
+#ifdef Q_OS_WIN
+        QThread::msleep(120);      // 잠금이 풀릴 시간을 준다
+        QFile::remove(dst);
+#else
+        break;
+#endif
+    }
+    return false;
+}
+
 
 HttpClient::HttpClient(QObject *parent)
     : QObject(parent)
     , m_nam(new QNetworkAccessManager(nullptr))  // no parent — prevent double-delete race
 {
+    // ★ 프록시를 켜 두었으면 이 클라이언트도 그 길로 나간다.
+    //   여기가 빠지면 API 요청만 진짜 IP 로 새어 '한 세션 두 IP' 가 된다.
+    applyGlobalProxy();
+
     // Follow redirects automatically (critical for media CDN URLs)
     m_nam->setRedirectPolicy(QNetworkRequest::NoLessSafeRedirectPolicy);
 }
@@ -182,8 +208,12 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
     timer.setSingleShot(true);
 
     // Write data as it arrives (streaming)
+    // ★ write 의 반환값을 본다. 디스크가 차면 조용히 모자라게 쓰이고, 그 파일이
+    //   '받아 둔 것' 으로 남는다(아래 이어받기 검사가 size>0 만 보기 때문).
+    bool writeFailed = false;
     connect(reply, &QNetworkReply::readyRead, [&]() {
-        file.write(reply->readAll());
+        const QByteArray chunk = reply->readAll();
+        if (file.write(chunk) != chunk.size()) writeFailed = true;
     });
 
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
@@ -218,26 +248,39 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
     } else if (timer.isActive()) {
         timer.stop();
         // Write any remaining data
-        QByteArray remaining = reply->readAll();
-        if (!remaining.isEmpty()) file.write(remaining);
+        const QByteArray remaining = reply->readAll();
+        if (!remaining.isEmpty() && file.write(remaining) != remaining.size()) writeFailed = true;
 
         int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         success = (reply->error() == QNetworkReply::NoError) && (statusCode >= 200 && statusCode < 300);
+
+        // ★ 서버가 알려준 크기와 실제로 받은 크기를 대조한다.
+        //   서버나 중간 장비가 연결을 일찍 끊어도 상태 코드는 200 이고 error 도
+        //   NoError 로 오는 경우가 있다. 그러면 잘린 파일이 '완성본' 으로 남고,
+        //   맨 위 이어받기 검사(size>0 이면 건너뜀)가 그것을 영원히 완성본으로 본다.
+        //   보관 도구에서 가장 나쁜 고장이다 — 몇 년 뒤에나 발견된다.
+        //   (압축 전송이면 선언된 길이와 푼 크기가 달라지므로 그때는 대조하지 않는다)
+        const QVariant declared = reply->header(QNetworkRequest::ContentLengthHeader);
+        const bool encoded = !reply->rawHeader("Content-Encoding").isEmpty();
+        if (success && !encoded && declared.isValid() && declared.toLongLong() > 0
+            && file.size() != declared.toLongLong()) {
+            success = false;
+        }
     } else {
         reply->abort();
     }
 
+    if (!file.flush()) writeFailed = true;
     file.close();
+    if (writeFailed) success = false;
 
     // Remove empty/failed files
     if (!success || file.size() == 0) {
         QFile::remove(partPath);
         success = false;
     } else {
-        // 진짜 이름에 0 바이트 잔재가 있으면 QFile::rename 이 실패하므로 먼저 치운다
-        // (size>0 이면 맨 위에서 이미 돌아갔다 — 여기 오는 것은 '없음' 이거나 0 바이트뿐이다).
-        QFile::remove(filePath);
-        if (!QFile::rename(partPath, filePath)) {
+        // 0 바이트 잔재 치우기 · 윈도우 잠금 재시도는 replacePart 설명 참고.
+        if (!replacePart(partPath, filePath)) {
             QFile::remove(partPath);
             success = false;
         }
@@ -385,8 +428,8 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
         QFile::remove(partPath);
         result.success = false;
     } else {
-        QFile::remove(filePath);   // 0 바이트 잔재 — downloadFile 의 같은 자리 설명
-        if (!QFile::rename(partPath, filePath)) {
+        // 0 바이트 잔재 치우기 · 윈도우 잠금 재시도 — replacePart 설명 참고.
+        if (!replacePart(partPath, filePath)) {
             QFile::remove(partPath);
             result.success = false;
         }
@@ -401,15 +444,10 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
     return result;
 }
 
-void HttpClient::setProxy(const QString &host, int port, QNetworkProxy::ProxyType type)
-{
-    QNetworkProxy proxy(type, host, port);
-    m_nam->setProxy(proxy);
-}
-
 // ★ 프록시를 켜 두었으면(전역 설정 · 이 스레드의 계정 프록시 — Common::setThreadProxy) 이 클라이언트도 그 길로 나간다.
 //   생성자가 부른다. 여기가 빠지면 API 요청만 진짜 IP 로 새어 '한 세션 두 IP' 가 된다(맥 ueno 와 같은 본문).
-//   호출부가 뒤에 setProxyUrl 로 따로 주면 그것이 이긴다.
+//   (윈도우의 옛 setProxyUrl — 프로필 URL 을 호출부가 직접 넣던 것 — 은 이것과 같은 일이라 지웠다.
+//    프록시는 이제 Common 한 곳에서만 정하고, 계정별은 Common::setThreadProxy 로 이 스레드에 건다.)
 void HttpClient::applyGlobalProxy()
 {
     const QString u = Common::proxyUrl();
@@ -433,26 +471,9 @@ void HttpClient::applyGlobalProxy()
     m_nam->setProxy(p);
 }
 
-void HttpClient::setProxyUrl(const QString &url)
+void HttpClient::setProxy(const QString &host, int port, QNetworkProxy::ProxyType type)
 {
-    if (url.trimmed().isEmpty()) { clearProxy(); return; }
-
-    // QUrl 이 사용자·비밀번호까지 풀어 준다. 비밀번호에 @ 나 : 가 들어가도
-    // 퍼센트 인코딩돼 있으면 정확히 복원된다.
-    const QUrl u(url);
-    const QString host = u.host();
-    if (host.isEmpty()) { clearProxy(); return; }
-
-    const QString scheme = u.scheme().toLower();
-    QNetworkProxy::ProxyType type = QNetworkProxy::HttpProxy;
-    int defPort = 8080;
-    if (scheme.startsWith("socks")) { type = QNetworkProxy::Socks5Proxy; defPort = 1080; }
-
-    QNetworkProxy proxy(type, host, quint16(u.port(defPort)));
-    if (!u.userName().isEmpty()) {
-        proxy.setUser(u.userName());
-        proxy.setPassword(u.password());
-    }
+    QNetworkProxy proxy(type, host, port);
     m_nam->setProxy(proxy);
 }
 

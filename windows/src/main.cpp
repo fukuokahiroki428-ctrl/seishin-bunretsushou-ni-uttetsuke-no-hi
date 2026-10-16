@@ -7,6 +7,7 @@
 #include <QFileInfo>
 #include <QMenu>
 #include <QSystemTrayIcon>
+#include <QProcess>   // 맥: 이미 켜져 있을 때 osascript 로 기존 창 깨우기(셸 미경유)
 #include "core/MainWindow.h"
 #include "core/Common.h"
 #include <QSslSocket>
@@ -158,8 +159,10 @@ int main(int argc, char *argv[])
 #ifdef Q_OS_WIN
     qputenv("QTWEBENGINE_CHROMIUM_FLAGS",
         "--site-per-process "                      // ★ 보안 격리 유지
-        "--memory-pressure-off "
-        "--js-flags=--max-old-space-size=384 "
+        // ★ memory-pressure-off 는 '메모리가 빠듯해도 비우지 말라' 는 뜻이라
+        //   저용량 기계에서 켤 설정이 아니었다(정확히 반대다). 뺀다.
+        //   힙 상한도 384MB 는 너무 좁아 화면이 무거워지면 그대로 죽는다(맥 ebd9009).
+        "--js-flags=--max-old-space-size=768 "
         "--disk-cache-size=10485760 "
         "--media-cache-size=5242880 "
         "--aggressive-cache-discard");
@@ -173,8 +176,10 @@ int main(int argc, char *argv[])
         "--disable-accelerated-2d-canvas "
         "--disable-accelerated-video-decode "
         "--site-per-process "                      // ★ 보안 격리 유지
-        "--memory-pressure-off "
-        "--js-flags=--max-old-space-size=384 "
+        // ★ memory-pressure-off 는 '메모리가 빠듯해도 비우지 말라' 는 뜻이라
+        //   저용량 기계에서 켤 설정이 아니었다(정확히 반대다). 뺀다.
+        //   힙 상한도 384MB 는 너무 좁아 화면이 무거워지면 그대로 죽는다.
+        "--js-flags=--max-old-space-size=768 "
         "--disk-cache-size=10485760 "
         "--media-cache-size=5242880 "
         "--aggressive-cache-discard "
@@ -344,95 +349,10 @@ int main(int argc, char *argv[])
         }
     }
 
-    app.setApplicationName("Predormition");
-    // ★ 조직명을 비운다 — 사용자 데이터 경로를 이름과 일치시킨다.
-    //   Qt 는 %APPDATA%/<조직>/<앱> 을 쓰므로, 조직이 있으면 ...\Miyo\Predormition 이 되고
-    //   조직을 "Predormition" 으로 두면 ...\Predormition\Predormition 으로 겹친다.
-    //   비우면 %APPDATA%\Predormition 하나로 떨어진다.
-    //   ※ 이 앱은 QSettings 를 쓰지 않으므로 조직명은 이 경로 계산 외에 쓰이는 데가 없다.
-    app.setOrganizationName(QString());
-    // ★ 로그 핸들러보다 먼저 이전해야 한다.
-    //   핸들러가 로그 파일을 열면서 AppDataLocation 을 mkpath 해 버리는데,
-    //   그러면 아래 '새 자리가 없을 때만 옮긴다' 조건이 거짓이 돼 이전이 통째로 건너뛰어진다.
-    // ★ 사용자 데이터 자동 이전 — 이름이 바뀌어도 설정·토큰·AI 모델을 잃지 않는다.
-    //   이 앱은 カメラ → チェルノブイリ → Chernobyl → Predormition 으로 네 번 이름이 바뀌었고,
-    //   그때마다 AppDataLocation 이 따라 움직였다. 여기서 옛 자리를 새 자리로 옮긴다.
-    //
-    //   ★ 같은 볼륨 안 이동이라 QDir::rename 은 즉시 끝난다 — AI 모델이 9GB 라도 복사하지 않는다.
-    //     실패하면 옛 자리를 그대로 두고 넘어간다. 데이터를 잃느니 두 벌이 낫다.
-    {
-        const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-        const QString roaming = QFileInfo(appData).absolutePath();   // %APPDATA%
-        const QStringList olds = {
-            roaming + "/Miyo/Predormition",   // 조직명이 Miyo 이던 시절
-            roaming + "/Miyo/Chernobyl",      // 그 전 이름
-            roaming + "/Chernobyl",           // 조직명이 없던 더 이전
-        };
-        // ★ '새 자리가 없을 때만' 으로는 부족하다.
-        //   실측: 이 기계의 %APPDATA%\Predormition 에는 예전 버그가 남긴 로그 파일 하나가
-        //   이미 있었다(조직명을 정하기 전에 첫 메시지가 찍히던 시절의 잔재, 2026-08-08).
-        //   폴더가 '존재'한다는 이유로 이전이 통째로 건너뛰어지고, 앱은 설정도 python_env 도
-        //   없는 빈 폴더를 쓰게 된다 — 옛 자리에 11,951개 파일을 두고서.
-        //
-        //   그래서 '설정 파일이 있는가' 로 본다. miyo_config.json 은 우리만 쓰는 이름이고,
-        //   앱이 한 번이라도 떴으면 반드시 있다. 없으면 아직 이사 전이다.
-        //   ※ 맥 쪽은 이 판별을 폴더 이름 목록으로 넓혔다가 남의 앱 폴더를 가져가는 사고를
-        //     냈다(b121906). 여기서는 옛 자리 목록이 세 개로 고정이라 그 위험은 없지만,
-        //     판별 기준은 같은 이유로 설정 파일 하나로 좁힌다.
-        const bool alreadyMoved = QFileInfo::exists(appData + "/miyo_config.json");
-        if (!alreadyMoved) {
-            for (const QString &oldDir : olds) {
-                if (!QFileInfo::exists(oldDir)) continue;
-                QDir().mkpath(QFileInfo(appData).absolutePath());
-                // 잔재 폴더가 있으면 rename 이 실패한다 — 옆으로 치우고 옮긴 뒤 안의 것을 되돌린다.
-                QString parked;
-                if (QFileInfo::exists(appData)) {
-                    parked = appData + ".before-migration";
-                    QDir(parked).removeRecursively();
-                    if (!QDir().rename(appData, parked)) parked.clear();
-                }
-                if (QDir().rename(oldDir, appData)) {
-                    // 치워 둔 잔재를 새 폴더 안으로 되돌린다.
-                    // ★ 예전에는 QDir::Files 만 되돌리고 곧바로 removeRecursively 를 불렀다.
-                    //   그래서 치워 둔 자리에 '폴더'가 있으면 통째로 지워졌다.
-                    //   실제 상황: AI 설치 스크립트(scripts/win_install_ai.ps1)가 앱 첫 실행보다
-                    //   먼저 돌면 %APPDATA%\Predormition\llm 에 모델을 최대 9GB 내려받는다
-                    //   (그 스크립트도 '설치기가 먼저 돌 수도 있으므로' 라고 적어 두었다).
-                    //   그 상태에서 옛 자리가 남아 있으면 이 블록이 llm 을 영영 지웠다.
-                    //   실측: 같은 코드를 떼어 재현하니 model.gguf 가 사라지고 로그 파일만 남았다.
-                    //   폴더도 함께 되돌리고, 되돌리지 못한 것이 남으면 지우지 않는다.
-                    if (!parked.isEmpty()) {
-                        QDir pd(parked);
-                        const QDir::Filters allEntries =
-                            QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden;
-                        for (const QString &e : pd.entryList(allEntries)) {
-                            const QString from = parked + "/" + e;
-                            const QString to   = appData + "/" + e;
-                            // 옮겨 온 쪽에 같은 이름이 이미 있으면 건드리지 않는다 — 어느 쪽도 잃지 않기 위해서.
-                            if (QFileInfo::exists(to)) continue;
-                            if (!QDir().rename(from, to))
-                                qWarning() << "[startup] 되돌리지 못한 항목:" << from;
-                        }
-                        if (pd.entryList(allEntries).isEmpty())
-                            pd.removeRecursively();
-                        else
-                            qWarning() << "[startup] 되돌리지 못한 것이 남아 보관합니다 (직접 확인하세요):"
-                                       << parked;
-                    }
-                    qInfo() << "[startup] user data migrated:" << oldDir << "->" << appData;
-                    // 비어 버린 옛 조직 폴더는 치운다 (안에 다른 앱이 있으면 rmdir 이 실패하므로 안전)
-                    QDir().rmdir(roaming + "/Miyo");
-                } else {
-                    qWarning() << "[startup] user data migration failed (옛 자리를 그대로 둡니다):" << oldDir;
-                }
-                break;
-            }
-        }
-    }
-
 #ifdef Q_OS_WIN
     qInstallMessageHandler(predormitionLogHandler);
-    qInfo() << "[startup] Predormition starting — exe dir:" << QCoreApplication::applicationDirPath();
+    qInfo().noquote() << "[startup]" << QStringLiteral(APP_NAME_DISPLAY) << "starting — exe dir:"
+                      << QCoreApplication::applicationDirPath();
 #endif
 
     // ★ Mac 전용: Dock 컨벤션 — 창 닫아도 앱 살아있고 Dock 클릭으로 재오픈.
@@ -448,14 +368,30 @@ int main(int argc, char *argv[])
     if (!lockFile.tryLock(100)) {
         // Already running — activate existing window
 #ifdef Q_OS_MACOS
-        // ★ 번들 식별자(com.chernobyl.app) 기반으로 활성화 — 번들 이름(ASCII/일본어) 무관
-        system("osascript -e 'tell application id \"com.chernobyl.app\" to activate' &");
+        // ★ 기존 인스턴스 활성화 — 실제 번들 ID 를 런타임에 읽어서 사용.
+        //   하드코딩(com.chernobyl.app)은 -DAPP_ID 가 기본값(com.miyo.app)으로 빌드되면
+        //   대상 없음으로 조용히 실패했음. NSBundle.bundleIdentifier 로 빌드와 무관하게 일치.
+        id nsBundle = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(
+            reinterpret_cast<id>(objc_getClass("NSBundle")), sel_registerName("mainBundle"));
+        id nsId = nsBundle ? reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(
+            nsBundle, sel_registerName("bundleIdentifier")) : nullptr;
+        const char *bidC = nsId ? reinterpret_cast<const char *(*)(id, SEL)>(objc_msgSend)(
+            nsId, sel_registerName("UTF8String")) : nullptr;
+        const QString bundleId = bidC ? QString::fromUtf8(bidC) : QString();
+        if (!bundleId.isEmpty()) {
+            // 셸 미경유(QProcess argv). 번들 ID 는 우리 Info.plist 값(ASCII)이라 안전.
+            QProcess::startDetached("/usr/bin/osascript",
+                {"-e", QStringLiteral("tell application id \"%1\" to activate").arg(bundleId)});
+        }
 #elif defined(Q_OS_WIN)
-        // ★ MainWindow::setWindowTitle 과 반드시 같아야 기존 창을 잡는다.
-    //   이름을 Predormition 으로 바꿀 때 여기만 빠져서, 이미 켜져 있는데 아이콘을 다시
-    //   누르면 창이 앞으로 나오지 않고 아무 일도 안 일어났다.
-        //   (/utf-8 컴파일 플래그 덕분에 wide 리터럴 L"Predormition" 가 올바른 UTF-16 으로 들어감)
-        HWND hwnd = FindWindowW(nullptr, L"Predormition");
+        // ★ MainWindow 생성자의 setWindowTitle 과 같은 식이어야 기존 창을 잡는다.
+        //   FindWindowW 는 제목이 글자까지 같아야 찾는다. 창 제목은 '<표시 이름> — <판 이름>' 이라
+        //   표시 이름만으로 찾으면(맥 ueno 의 이 줄) 언제나 실패한다. 예전엔 옛 이름
+        //   L"Predormition" 으로 찾고 있어, 이미 켜져 있는데 아이콘을 다시 누르면 아무 일도 없었다.
+        const QString codename = QStringLiteral(PREDORMITION_CODENAME);
+        QString title = QStringLiteral(APP_NAME_DISPLAY);
+        if (!codename.isEmpty()) title += QStringLiteral(" — ") + codename;
+        HWND hwnd = FindWindowW(nullptr, reinterpret_cast<const wchar_t *>(title.utf16()));
         if (hwnd) {
             SetForegroundWindow(hwnd);
             if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
@@ -521,9 +457,20 @@ int main(int argc, char *argv[])
         id delegate = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(nsApp, sel_registerName("delegate"));
         if (delegate) {
             Class delegateClass = object_getClass(delegate);
-            class_addMethod(delegateClass,
-                sel_registerName("applicationShouldHandleReopen:hasVisibleWindows:"),
-                (IMP)appShouldHandleReopen, "B@:@B");
+            SEL sel = sel_registerName("applicationShouldHandleReopen:hasVisibleWindows:");
+            // ★ class_addMethod 는 그 클래스가 '이미 그 메서드를 갖고 있으면' 아무 일도
+            //   하지 않고 NO 만 돌려준다. Qt 의 QCocoaApplicationDelegate 가 바로 이
+            //   메서드를 이미 구현하고 있어서, 우리 처리기는 한 번도 설치된 적이 없었다.
+            //   그래서 창을 닫으면 Dock 아이콘을 눌러도 창이 돌아오지 않았다 —
+            //   앱은 살아 있는데 손이 닿지 않는 상태다. 사용자에겐 '튕긴 것' 으로 보인다.
+            //   (실측: open -a 를 해도 CPU 가 0% 에서 꿈쩍하지 않았다)
+            //   → class_replaceMethod 로 반드시 우리 것이 걸리게 한다.
+            class_replaceMethod(delegateClass, sel, (IMP)appShouldHandleReopen, "B@:@B");
+            const bool installed =
+                class_getMethodImplementation(delegateClass, sel) == (IMP)appShouldHandleReopen;
+            qInfo() << "[reopen] Dock 클릭 처리기 설치:" << (installed ? "성공" : "실패");
+        } else {
+            qWarning() << "[reopen] NSApplication delegate 없음 — Dock 클릭으로 창을 되살릴 수 없다";
         }
     }
 #endif

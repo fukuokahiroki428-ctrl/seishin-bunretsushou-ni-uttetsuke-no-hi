@@ -46,8 +46,9 @@ QString PenChromeCrawler::defaultProfileDir()
 
 // ★ PEN 이 수집 캡처와 프로필을 같이 쓰던 때의 로그인을 잃지 않게 — PEN 전용 프로필을 처음 만들 때 한 번,
 //   공용 프로필(chrome_capture_profile)의 로그인 파일만 복사한다. 이미 있으면(한 번 옮겼거나 '사용자 Chrome
-//   로그인 가져오기' 로 만들었으면) 건드리지 않는다. 쿠키 암호화 키는 프로필이 아니라 키체인(브라우저마다 하나)에
-//   있어 같은 Chrome 이면 복사본도 읽힌다. 캐시 · 확장 상태는 옮기지 않는다.
+//   로그인 가져오기' 로 만들었으면) 건드리지 않는다. 쿠키 암호화 키는 맥은 키체인(브라우저마다 하나), 윈도우는
+//   Local State 의 os_crypt(DPAPI — 같은 사용자)에 있다 — 그래서 Local State 를 꼭 같이 옮긴다. 그러면 같은 Chrome ·
+//   같은 사용자면 복사본도 읽힌다. 캐시 · 확장 상태는 옮기지 않는다.
 void PenChromeCrawler::carryLoginFromSharedProfile(const QString &penDir, PenBackend *backend)
 {
     if (QDir(penDir).exists()) return;
@@ -65,7 +66,7 @@ void PenChromeCrawler::carryLoginFromSharedProfile(const QString &penDir, PenBac
         copied++;
     if (backend)
         backend->log(QString("PEN 전용 프로필을 만들며 예전 공용 프로필의 로그인 파일 %1개를 옮겼습니다").arg(copied),
-                     "info", "penmirror");
+                     "info", "crawl");
 }
 
 QString PenChromeCrawler::findChromeExecutable() const
@@ -228,50 +229,37 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
     //   임시 프로필 모드에서는 항상 fresh start.
     if (!m_useUserProfile) {
 #ifdef Q_OS_WIN
+        // ★ 아래 맥 갈래와 같다. 고정 포트를 받았을 때만 그 포트를 본다 — 그리고 '듣고 있는(LISTENING)' 쪽만, 끄지 않는다.
+        //   예전엔 주인을 묻지 않고 그 포트의 프로세스를 taskkill 했다(10-05(3) P3). 우리 프로필의 Chrome 이면 아래에서
+        //   프로필로 끈다. 남의 것이 그 포트를 쥐고 있으면 띄우지 않는다 — 띄우면 포트를 못 얻고, 탐침은 남의 Chrome 에 붙는다.
+        //   (자체 프로필 모드는 포트 0 — Chrome 이 빈 포트를 고른다 — 이라 지금은 setDebugPort 를 줄 때만 돈다.)
         if (m_debugPort > 0) {
-        // Windows: netstat → PID → taskkill
-        QProcess netstat;
-        netstat.start("netstat", {"-ano"});
-        netstat.waitForFinished(3000);
-        QString netOut = QString::fromUtf8(netstat.readAllStandardOutput());
-        QString portStr = QString(":%1 ").arg(m_debugPort);
-        for (const QString &line : netOut.split('\n')) {
-            if (line.contains(portStr) && line.contains("LISTENING")) {
-                QStringList parts = line.simplified().split(' ');
-                if (!parts.isEmpty()) {
-                    QString pid = parts.last();
-                    QProcess::execute("taskkill", {"/PID", pid, "/F"});
-                    if (m_backend) m_backend->log(QString("이전 Chrome 좀비 종료 (PID %1)").arg(pid), "info", "crawl");
-                }
+            QProcess netstat;
+            netstat.start("netstat", {"-ano"});
+            netstat.waitForFinished(3000);
+            const QString netOut = QString::fromLocal8Bit(netstat.readAllStandardOutput());
+            const QList<qint64> ours = Common::captureChromePids(m_userDataDir, false);
+            const QString portStr = QString(":%1 ").arg(m_debugPort);
+            for (const QString &line : netOut.split('\n')) {
+                if (!line.contains(portStr) || !line.contains("LISTENING")) continue;
+                const qint64 pid = line.simplified().section(' ', -1).toLongLong();
+                if (pid <= 0 || ours.contains(pid)) continue;
+                if (m_backend)
+                    m_backend->log(QString("포트 %1 을 다른 프로그램(PID %2)이 쓰고 있어 Chrome 을 띄우지 않습니다")
+                                       .arg(m_debugPort).arg(pid), "error", "crawl");
+                if (done) done(false);
+                return;
             }
-        }
         }
         // ★ 포트 리스닝 여부와 무관하게(포트를 Chrome 이 고르는 0 이어도) — '같은 프로필' 을 쥔 잔존 Chrome 정리.
         //   안 그러면 새 캡쳐 Chrome 이 기존 인스턴스로 핸드오프되며 즉시 꺼진다("겹쳐서 꺼짐").
-        //   ★ --user-data-dir 전체 값이 우리 프로필일 때만 끈다(맥 0aa09aa · 10-05(3) P4).
+        //   ★ --user-data-dir 전체 값이 우리 프로필일 때만 끈다(맥 0aa09aa · 10-05(3) P4 — Common::killCaptureChromes 가
+        //     맥과 같은 기준으로 고른다: 대소문자 무시, '\' 와 '/' 같게, 따옴표 감싼 꼴도, 경로 바로 뒤가 '"'·빈칸·끝).
         //     예전엔 폴더 이름 부분 일치(-like '*chrome_capture_profile*')라 수집 캡처 · 트랙(…_<b64>) Chrome 까지 껐다.
-        //     윈도우는 경로가 따옴표로 감싸이거나 자식 프로세스에서 \ 로 바뀌어 있으니, 따옴표를 빼고 / 로 고쳐
-        //     소문자로 비교한다. 경로 바로 뒤가 빈칸이거나 끝이어야 한다(…_pen_x 같은 다른 프로필은 아니다).
         //   ★ chrome.exe 만 보면 안 된다 — findChromeExecutable() 은 번들 Chromium 이 없으면
-        //     Edge(EdgeCore 포함), 그것도 없으면 Brave 를 띄운다.
+        //     Edge(EdgeCore 포함), 그것도 없으면 Brave 를 띄운다(Common 쪽이 셋 다 본다).
         if (!m_userDataDir.isEmpty()) {
-            QString key = QStringLiteral("--user-data-dir=") + QDir::fromNativeSeparators(m_userDataDir).toLower();
-            key.replace("'", "''");
-            const QString ps = QString(
-                "$k = '%1'; "
-                "Get-CimInstance Win32_Process | "
-                "Where-Object { $_.Name -in @('chrome.exe','msedge.exe','brave.exe') } | "
-                "ForEach-Object { "
-                "$c = ([string]$_.CommandLine).Replace([string][char]34, '').Replace([string][char]92, '/').ToLowerInvariant(); "
-                "$i = $c.IndexOf($k, [StringComparison]::Ordinal); "
-                "if ($i -ge 0) { $e = $i + $k.Length; "
-                "if ($e -ge $c.Length -or $c[$e] -eq ' ') { "
-                "Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $_.ProcessId } } }"
-            ).arg(key);
-            QProcess pk;
-            pk.start("powershell", {"-NoProfile", "-NonInteractive", "-Command", ps});
-            if (!pk.waitForFinished(20000)) { pk.kill(); pk.waitForFinished(1000); }
-            const int n = QString::fromUtf8(pk.readAllStandardOutput()).split('\n', Qt::SkipEmptyParts).size();
+            const int n = Common::killCaptureChromes(m_userDataDir, false);
             if (n > 0 && m_backend)
                 m_backend->log(QString("이전 Chrome(프로필) 좀비 종료 (%1개)").arg(n), "info", "crawl");
         }
@@ -291,7 +279,7 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
                 if (pid <= 0 || ours.contains(pid)) continue;
                 if (m_backend)
                     m_backend->log(QString("포트 %1 을 다른 프로그램(PID %2)이 쓰고 있어 Chrome 을 띄우지 않습니다")
-                                       .arg(m_debugPort).arg(pid), "error", "penmirror");
+                                       .arg(m_debugPort).arg(pid), "error", "crawl");
                 if (done) done(false);
                 return;
             }
@@ -302,7 +290,7 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
         if (!m_userDataDir.isEmpty()) {
             const int n = Common::killCaptureChromes(m_userDataDir, false);
             if (n > 0 && m_backend)
-                m_backend->log(QString("이전 Chrome(프로필) 좀비 종료 (%1개)").arg(n), "info", "penmirror");
+                m_backend->log(QString("이전 Chrome(프로필) 좀비 종료 (%1개)").arg(n), "info", "crawl");
         }
 #endif
         QThread::msleep(500);
@@ -336,12 +324,18 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
         //   사이트 미러가 사용자 본인 신원으로 남의 사이트를 긁고 있었다는 뜻이다.
         //   이 크롤러는 로그인 유지를 위해 지속 프로필을 쓰므로 InPrivate 는 걸지 않되,
         //   브라우저가 스스로 계정을 끌어오는 것만은 확실히 끊는다.
+        //   ★ 끄는 기능(ms*)은 아래 --disable-features 한 목록에 넣는다. 크로미움은 같은 스위치가 여러 번 오면
+        //     마지막 것만 쓴다 — 예전엔 여기서 따로 준 목록이 아래 Translate,… 줄에 덮여 하나도 안 먹었다(10-05 S5).
+        QStringList disabledFeatures = {
+            QStringLiteral("Translate"), QStringLiteral("OptimizationHints"), QStringLiteral("MediaRouter"),
+            QStringLiteral("VizDisplayCompositor")};
         {
             const QString exeName = QFileInfo(chrome).fileName().toLower();
             if (exeName.contains("msedge")) {
-                args << "--disable-features=msImplicitSignin,msEdgeIdentityIntegration,"
-                        "msSingleSignOnOSForPrimaryAccount,msWebOAuth,EdgeAutofill"
-                     << "--no-service-autorun";
+                disabledFeatures << QStringLiteral("msImplicitSignin") << QStringLiteral("msEdgeIdentityIntegration")
+                                 << QStringLiteral("msSingleSignOnOSForPrimaryAccount") << QStringLiteral("msWebOAuth")
+                                 << QStringLiteral("EdgeAutofill");
+                args << "--no-service-autorun";
             }
             args << "--disable-signin-promo"
                  << "--disable-account-consistency"
@@ -352,7 +346,7 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
         args << "--no-first-run"
              << "--no-default-browser-check"
              // ★ 메모리 절감 — 8GB Mac에서 1.5GB 미만으로 작동하게
-             << "--disable-features=Translate,OptimizationHints,MediaRouter,VizDisplayCompositor"
+             << (QStringLiteral("--disable-features=") + disabledFeatures.join(QLatin1Char(',')))
              << "--disable-background-networking"
              << "--disable-component-update"
              << "--disable-domain-reliability"
@@ -361,8 +355,11 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
              << "--mute-audio"
              << "--disable-backgrounding-occluded-windows"
              << "--disable-renderer-backgrounding"
-             << "--memory-pressure-off"
-             << "--js-flags=--max-old-space-size=384"
+             // ★ RealChromeCrawler 와 같은 이유로 memory-pressure-off 를 뺐다.
+             //   저용량 기계에서 캐시를 안 비우게 만드는 설정이라 정반대였다.
+             //   페이지가 새 탭을 늘리지 못하게 하는 것도 같이 맞춘다.
+             << "--block-new-web-contents"
+             << "--js-flags=--max-old-space-size=1024"
              << "--disk-cache-size=10485760"
              << "--media-cache-size=5242880"
              << "--aggressive-cache-discard"
@@ -427,7 +424,7 @@ void PenChromeCrawler::start(std::function<void(bool)> done)
                 const int p = QString::fromUtf8(pf.readLine()).trimmed().toInt();
                 if (p > 0 && p < 65536) {
                     m_debugPort = p;
-                    if (m_backend) m_backend->log(QString("CDP 포트 %1 (Chrome 이 고른 빈 포트)").arg(p), "info", "penmirror");
+                    if (m_backend) m_backend->log(QString("CDP 포트 %1 (Chrome 이 고른 빈 포트)").arg(p), "info", "crawl");
                 }
             }
         }

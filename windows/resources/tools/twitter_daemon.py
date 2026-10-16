@@ -767,6 +767,19 @@ async def main():
                       "tid_reason": str(getattr(client.client_transaction, "reason", "")),
                       "_st_url": Endpoint.SEARCH_TIMELINE[-40:]}), flush=True)
 
+    # ★ twikit 서명기를 다시 세우는 데 성공했을 때 부른다.
+    #   위에서 처음 초기화가 실패하면 twikit 의 ClientTransaction 에 빈 서명 람다·ready=False·reason 을
+    #   붙여 둔다. twikit 의 init() 은 성공해도 None 만 돌려줄 뿐 그 셋을 걷어내지 않으므로,
+    #   재초기화가 '성공' 해도 계속 빈 서명으로 보내고 no_tid 로 읽혔다. 성공한 뒤에 여기서 걷어낸다.
+    #   x_session 은 init() 이 ready/reason 을 스스로 맞추므로 건드리지 않는다.
+    def _tid_reinit_ok():
+        if USING_SHIM:
+            return
+        _c = client.client_transaction
+        _c.__dict__.pop("generate_transaction_id", None)   # 클래스의 진짜 서명기로 돌아간다
+        _c.ready = True
+        _c.reason = "twikit 재초기화 성공"
+
     # Track 404 for auto-repair
     repair_count = 0          # How many repairs attempted
     last_repair_time = 0      # Timestamp of last repair
@@ -844,7 +857,8 @@ async def main():
                             'Referer': 'https://x.com',
                             'User-Agent': client._user_agent,
                         }
-                        await client.client_transaction.init(client.http, ct_headers)
+                        if await client.client_transaction.init(client.http, ct_headers) is not False:
+                            _tid_reinit_ok()
                         deduplicate_cookies(client)
                     except Exception:
                         pass
@@ -869,6 +883,7 @@ async def main():
                     try:
                         _ct._hn_reinit_at = time.time()
                         if await _ct.init(client.http, ct_headers) is not False:
+                            _tid_reinit_ok()
                             deduplicate_cookies(client)
                             print(json.dumps({"info": "TID 재초기화 성공 — 다시 보냅니다"}), flush=True)
                             result = await handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatten_params)
@@ -908,7 +923,8 @@ async def main():
                                 'Referer': 'https://x.com',
                                 'User-Agent': client._user_agent,
                             }
-                            await client.client_transaction.init(client.http, ct_headers)
+                            if await client.client_transaction.init(client.http, ct_headers) is not False:
+                                _tid_reinit_ok()
                             deduplicate_cookies(client)
                         except Exception:
                             pass

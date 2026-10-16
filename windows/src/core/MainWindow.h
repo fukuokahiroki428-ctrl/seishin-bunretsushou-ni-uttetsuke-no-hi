@@ -1,4 +1,6 @@
 #pragma once
+#include <QPointer>
+#include <QHash>
 
 #include <QMainWindow>
 #include <QWebEngineView>

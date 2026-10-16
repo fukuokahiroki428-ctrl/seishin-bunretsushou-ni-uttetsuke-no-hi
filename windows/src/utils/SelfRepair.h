@@ -383,9 +383,17 @@ inline SmokeResult smokeExiftool(const QString &exe)
         //   덤으로 shebang(#!/usr/bin/env perl)이 PATH 앞의 홈브루 perl 을 잡는 것도 막는다.
         // ★ 본체와 같은 함수로 실행 방법을 받는다. 여기서 따로 정하면 '시험은 되는데
         //   앱은 안 되는' (또는 그 반대) 상태가 생긴다 — 실제로 겪었다.
+        // ★ 윈도우는 앱 본체와 같은 asciiSafeExiftool 자리(launchPath)로 띄운다. exiftoolProgram 은
+        //   윈도우에서 appDir/exiftool.exe 를 그대로 주므로, 설치 경로에 한글이 있으면 perl5*.dll 을
+        //   못 찾아 앱 EXIF 는 써지는데 이 시험만 [실패] 가 된다(launchPath 주석의 그 사고).
+#ifdef Q_OS_WIN
+        p.start(launchPath(QStringLiteral("exiftool"), exe),
+                QStringList() << "-@" << Common::ansiSafePath(argPath));
+#else
         QStringList lead;
         const QString prog = Common::exiftoolProgram(&lead);
         p.start(prog, lead + (QStringList() << "-@" << Common::ansiSafePath(argPath)));
+#endif
         if (!p.waitForStarted(5000)) return false;
         if (!p.waitForFinished(20000)) { p.kill(); return false; }
         if (out) *out = p.readAllStandardOutput();
@@ -565,7 +573,9 @@ inline SmokeResult smokeBrowserCookies(const QString &python)
         "    except Exception as e:\n"
         "        m=str(e).lower()\n"
         "        # '없어서 못 찾음' 은 고장이 아니다 — 안 깔린 브라우저다.\n"
-        "        if any(k in m for k in ('could not find','not found','no such',\n"
+        // ★ browser_cookie3 0.20.1 이 실제로 내는 문구 — 크로미움 계열 'Failed to find cookies for X browser',
+        //   파이어폭스 'Failed to find X cookie file'. 이 낱말이 없어서 안 깔린 brave·arc·vivaldi 가 '복호화 실패' 로 적혔다.
+        "        if any(k in m for k in ('could not find','failed to find','not found','no such',\n"
         "                                'does not exist','no cookies')):\n"
         "            continue\n"
         "        broke.append('%s: %s' % (n, type(e).__name__))\n"
@@ -776,16 +786,6 @@ inline void clearPendingSync() { QFile::remove(pendingSyncPath()); }
 inline bool pythonBusy();
 // 점검이 이미 돌고 있는지 — 정의는 아래에 있다.
 inline QAtomicInt &maintenanceRunning();
-
-// pip 이름과 import 이름이 다른 것들 — 설치 뒤에 실제로 불러 봐야 하므로 필요하다.
-inline QString importNameOf(const QString &pkg)
-{
-    if (pkg.compare("Pillow", Qt::CaseInsensitive) == 0)         return "PIL";
-    if (pkg.compare("beautifulsoup4", Qt::CaseInsensitive) == 0) return "bs4";
-    if (pkg.compare("discord.py", Qt::CaseInsensitive) == 0)     return "discord";
-    if (pkg.compare("yt-dlp", Qt::CaseInsensitive) == 0)         return "yt_dlp";
-    return pkg;
-}
 
 // ── 꾸러미 신선도: 낡은 것을 찾아 스스로 맞춘다 ────────────────────────────
 //
@@ -1520,6 +1520,8 @@ inline QStringList cleanStaleState()
 
 inline QByteArray httpGet(const QString &url, int timeoutMs)
 {
+    // 앱이 끝나는 중이면 묻지 않는다 — 이 스레드는 끝날 때 기다려 주지 않는다(HttpClient 와 같은 까닭, Common::appQuitting)
+    if (Common::appQuitting()) return {};
     QNetworkAccessManager nam;
     QNetworkRequest req{QUrl(url)};
     QNetworkReply *rep = nam.get(req);
@@ -1646,7 +1648,7 @@ inline QString llmDiagnose(const QString &reportText)
     if (!data.isEmpty()) model = data.first().toObject().value("id").toString("default");
 
     QJsonObject sys{{"role", "system"},
-        {"content", "당신은 Predormition/Pen 데스크톱 앱의 유지보수 진단가다. "
+        {"content", "당신은 Hanishiki 데스크톱 앱의 유지보수 진단가다. "
                     "아래 자가진단 보고서를 읽고, 실패 항목의 가장 유력한 원인과 "
                     "사용자가 취할 구체적 조치를 한국어 5줄 이내로 답하라."}};
     QJsonObject usr{{"role", "user"}, {"content", reportText}};
@@ -1661,75 +1663,6 @@ inline QString llmDiagnose(const QString &reportText)
     return QJsonDocument::fromJson(resp).object()
         .value("choices").toArray().first().toObject()
         .value("message").toObject().value("content").toString().trimmed();
-}
-
-// ── 결과를 바깥(화면)으로 내보내는 통로 ─────────────────────────────────
-//
-// 예전에는 AppData 안의 텍스트 파일에만 남겼다. 그러면 아무도 안 본다.
-// EXIF 가 1668건 전부 실패하는 동안 앱은 화면에 한 마디도 하지 않았고,
-// 사람은 잘 되고 있다고 믿었다. 파일에만 적는 진단은 진단이 아니라 기록이다.
-//
-// 그래서 한 줄짜리 요약을 앱에 넘길 통로를 둔다. 넘기는 쪽은 백그라운드
-// 스레드이므로, 받는 쪽(백엔드)이 메인 스레드로 넘겨서 화면을 건드린다.
-// ─────────────────────────────────────────────────────────────────────────
-
-inline QMutex &stateMutex()      { static QMutex m;   return m; }
-inline QString &lastReportRef()  { static QString s;  return s; }
-
-using Notifier = std::function<void(QString, QString)>;   // (한 줄, 등급: success/error/info)
-
-// ★ 파이썬 꾸러미를 갈아 끼우기 전에 '지금 건드려도 되나' 를 물어본다.
-//   수집이 도는 중에 pip 가 파일을 바꾸면 그 수집이 중간에 죽는다.
-//   백엔드만 그걸 안다(m_pythonBusy, 진행 중인 수집). 그래서 물어볼 통로를 둔다.
-//   통로가 안 걸려 있으면 '바쁘다' 로 본다 — 모를 때는 건드리지 않는 쪽이 맞다.
-using BusyCheck = std::function<bool()>;
-inline BusyCheck &busyCheckRef() { static BusyCheck f; return f; }
-
-inline void setBusyCheck(BusyCheck f)
-{
-    QMutexLocker lk(&stateMutex());
-    busyCheckRef() = std::move(f);
-}
-
-inline bool pythonBusy()
-{
-    BusyCheck f;
-    { QMutexLocker lk(&stateMutex()); f = busyCheckRef(); }
-    return f ? f() : true;
-}
-inline Notifier &notifierRef()   { static Notifier f;  return f; }
-
-inline void setNotifier(Notifier f)
-{
-    QMutexLocker lk(&stateMutex());
-    notifierRef() = std::move(f);
-}
-
-inline void notify(const QString &line, const QString &level)
-{
-    Notifier f;
-    { QMutexLocker lk(&stateMutex()); f = notifierRef(); }
-    if (f) f(line, level);
-}
-
-inline QString reportPath()
-{
-    const QString d = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-                      + "/selfrepair";
-    QDir().mkpath(d);
-    return d + "/last_report.txt";
-}
-
-// 마지막 보고서 — 메모리에 있으면 그것, 없으면 지난 실행이 남긴 파일.
-// (앱을 막 켠 직후 화면이 물어보면 아직 이번 것이 없다. 그때는 지난 것이라도 보여 준다.)
-inline QString lastReport()
-{
-    { QMutexLocker lk(&stateMutex());
-      if (!lastReportRef().isEmpty()) return lastReportRef(); }
-    QFile f(reportPath());
-    if (f.open(QIODevice::ReadOnly | QIODevice::Text))
-        return QString::fromUtf8(f.readAll());
-    return QString();
 }
 
 // ── 결과를 바깥(화면)으로 내보내는 통로 ─────────────────────────────────
@@ -1758,6 +1691,27 @@ inline void notify(const QString &line, const QString &level)
     Notifier f;
     { QMutexLocker lk(&stateMutex()); f = notifierRef(); }
     if (f) f(line, level);
+}
+
+// ★ (윈도우) 파이썬 꾸러미를 갈아 끼우기 전에 '지금 건드려도 되나' 를 물어본다.
+//   수집이 도는 중에 pip 가 파일을 바꾸면 그 수집이 중간에 죽는다.
+//   백엔드만 그걸 안다(m_pythonBusy, 진행 중인 수집). 그래서 물어볼 통로를 둔다.
+//   통로가 안 걸려 있으면 '바쁘다' 로 본다 — 모를 때는 건드리지 않는 쪽이 맞다.
+//   (syncModulesToPins · updatePackagesIfDue 미루기 · 30분 주기 점검이 이것을 본다.)
+using BusyCheck = std::function<bool()>;
+inline BusyCheck &busyCheckRef() { static BusyCheck f; return f; }
+
+inline void setBusyCheck(BusyCheck f)
+{
+    QMutexLocker lk(&stateMutex());
+    busyCheckRef() = std::move(f);
+}
+
+inline bool pythonBusy()
+{
+    BusyCheck f;
+    { QMutexLocker lk(&stateMutex()); f = busyCheckRef(); }
+    return f ? f() : true;
 }
 
 inline QString reportPath()
@@ -1924,15 +1878,6 @@ inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
             report += "[CLEAN] stale lock 제거: " + c + "\n";
     }
 
-    if (broken > 0) {
-        report += QString("\n%1개 도구 복구 실패 — 로컬 LLM 진단 시도…\n").arg(broken);
-        const QString diag = llmDiagnose(report);
-        report += diag.isEmpty()
-            ? QStringLiteral("(로컬 LLM 미가동 — Ollama/LM Studio/llama.cpp 실행 또는 "
-                             "Resources/llm/ 에 llama-server+model.gguf 배치 시 자동 진단)\n")
-            : "┌ LLM 진단 ┐\n" + diag + "\n└──────────┘\n";
-    }
-
     // ★ 도구 밖의 상태도 본다 — 실제로 사람을 막는 것은 대부분 여기다(맥 판 checkEnvironment).
     //   파이썬 꾸러미 · AI 엔진 · 산출물 색인 · 저장 디스크 여유(설정 파일 권한은 맥에서만 본다).
     report += checkEnvironment();
@@ -2016,6 +1961,16 @@ inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
     }
 #endif
 
+    // LLM 진단은 맨 뒤에 — 환경 점검·꾸러미 갱신 결과까지 보고서에 담긴 뒤에 읽게 한다(맥과 같은 순서).
+    if (broken > 0) {
+        report += QString("\n%1개 도구 복구 실패 — 로컬 LLM 진단 시도…\n").arg(broken);
+        const QString diag = llmDiagnose(report);
+        report += diag.isEmpty()
+            ? QStringLiteral("(로컬 LLM 미가동 — Ollama/LM Studio/llama.cpp 실행 또는 "
+                             "Resources/llm/ 에 llama-server+model.gguf 배치 시 자동 진단)\n")
+            : "┌ LLM 진단 ┐\n" + diag + "\n└──────────┘\n";
+    }
+
     // ★ 한 줄 요약 — 이게 화면에 뜨는 문장이다. 길면 안 읽는다.
     //   고장이 하나라도 있으면 error — 화면은 error 일 때만 빨간 띠를 띄운다.
     QString summary, level;
@@ -2080,7 +2035,7 @@ inline void runStartupMaintenanceAsync(std::function<void(QString)> onDone = {},
     t->start(QThread::LowPriority);
 }
 
-// ★ 한 번에 하나만 돈다.
+// ★ (윈도우) 주기 점검의 세 규칙.
 //
 //   이건 크래시의 원인이어서 넣은 것이 아니다. 2026-08-31 00:05 크래시는
 //   BlueskyCollector 의 QProcess 부모 문제였고 따로 고쳤다(그쪽 주석 참고).
@@ -2090,11 +2045,10 @@ inline void runStartupMaintenanceAsync(std::function<void(QString)> onDone = {},
 //   그래도 이 셋은 남긴다. 점검이 도구를 실행하는 동안 수집도 도구를 실행하면,
 //   위와 같은 종류의 사고가 날 자리가 늘어난다. 이득도 없다 —
 //   무거운 확인을 30분마다 되풀이해서 새로 알게 되는 것은 거의 없다.
-//     1) 점검은 한 번에 하나만 (이 플래그)
+//     1) 점검은 한 번에 하나만 (maintenanceRunning — 정의는 위 통보 통로 절, 맥과 같은 자리)
 //     2) 수집이 도는 중에는 주기 점검을 건너뛴다
 //     3) 주기 점검은 가벼운 것만 — 무거운 실기능 확인은 앱을 켤 때 한 번
-inline QAtomicInt &maintenanceRunning() { static QAtomicInt v{0}; return v; }
-
+//
 // ★ 켜 두고 쓰는 기계를 위한 진입점.
 //
 //   시작 시 한 번만 보면, 한 달 내내 켜 둔 앱은 그 한 달 동안 아무도 안 본다.
@@ -2128,6 +2082,16 @@ inline void runPeriodicUpdateAsync()
         // 2) yt-dlp 갱신 — 안에서 7일에 한 번으로 다시 걸러진다.
         const QString line = updateYtDlpIfDue();
         if (!line.isEmpty()) qInfo().noquote() << "[SelfRepair]" << line.trimmed();
+
+        // 3) 덧씌우기 꾸러미 갱신 — 안에서 3일 도장(freshCheckDue)으로 다시 걸러진다.
+        //   ★ 켤 때 점검은 수집 중이면 이것을 미룬다. 켜자마자 内閣会가 이어 도는 기계는 그때 늘
+        //     '수집 중' 이라, 여기서 다시 해 주지 않으면 [지금 검사] 말고는 영영 안 돈다
+        //     (syncModulesToPins 가 겪은 '미루기만 하고 영영 안 함' 과 같은 꼴).
+        //     위 두 일이 도는 사이 수집이 시작됐을 수 있으니 한 번 더 묻는다.
+        if (!pythonBusy()) {
+            const QString u = updatePackagesIfDue(Common::bundledPythonPath(), /*allowNetwork=*/true);
+            if (!u.isEmpty()) qInfo().noquote() << "[SelfRepair]" << u.trimmed();
+        }
 
         // ★ 무거운 실기능 확인(유튜브 내려받기·ffmpeg·exiftool·파이썬 import)은
         //   여기서 하지 않는다. 앱을 켤 때 한 번이면 충분하다. 30분마다 되풀이해도

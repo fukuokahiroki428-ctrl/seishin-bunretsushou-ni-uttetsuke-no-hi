@@ -413,7 +413,10 @@ void MainWindow::openFeatureWindow(const QString &tabId, const QString &title)
 void MainWindow::setChromeTheme(bool dark)
 {
     // HTML 의 --bg 와 같은 값이어야 창 가장자리가 본문과 이어져 보인다.
-    const QString bg = dark ? QStringLiteral("#101114") : QStringLiteral("#FFFFFF");
+    //   (라이트 #FFFFFF / 다크 #16181C — index.html 의 darkroom-graft 토큰과 일치. 맥과 같은 값)
+    //   예전 다크 값 #101114 는 토큰이 바뀐 뒤 따라오지 않아, 창 가장자리·크기 조절 중에
+    //   본문과 다른 색 띠가 비쳤다.
+    const QString bg = dark ? QStringLiteral("#16181C") : QStringLiteral("#FFFFFF");
     setStyleSheet(QStringLiteral("QMainWindow { background-color: %1; }").arg(bg) + R"(
 
         QDockWidget {
@@ -460,9 +463,17 @@ void MainWindow::setChromeTheme(bool dark)
 
 QMenu *MainWindow::createDockMenu()
 {
+    // ★ 이 함수는 두 번 불린다 — 생성자에서 한 번(m_dockMenu 에 담으려고),
+    //   main.cpp 에서 한 번(NSApp setDockMenu: 에 넘기려고).
+    //   예전엔 부를 때마다 새로 만들었다. 그래서 Dock 에 실제로 붙은 메뉴와
+    //   updateDockMenu() 가 고치는 메뉴가 서로 달랐고, Dock 우클릭 메뉴의
+    //   상태·통계는 처음 만든 그대로 "상태: 대기" 에서 영영 멈춰 있었다.
+    //   한 번 만든 것을 계속 돌려준다.
+    if (m_dockMenu) return m_dockMenu;
+
     auto *menu = new QMenu(this);
 
-    auto *showAction = menu->addAction("Predormition 열기");
+    auto *showAction = menu->addAction(QStringLiteral(APP_NAME_DISPLAY) + QStringLiteral(" 열기"));
     connect(showAction, &QAction::triggered, this, [this]() {
         show();
         raise();
@@ -498,6 +509,7 @@ QMenu *MainWindow::createDockMenu()
         }
     });
 
+    m_dockMenu = menu;
     return menu;
 }
 
@@ -589,6 +601,23 @@ void MainWindow::setupMenu()
     quitAction->setShortcut(QKeySequence("Ctrl+Q"));
     connect(quitAction, &QAction::triggered, this, &QMainWindow::close);
     fileMenu->addAction(quitAction);
+
+    // ── 기능 메뉴 ─────────────────────────────────────────────────────────
+    //   ★ 왜 필요한가. 각 플랫폼으로 들어가는 길이 앱 안 사이드바 하나뿐이었다.
+    //     창을 좁히면 그 목록이 자리를 많이 먹고, macOS 상단 막대에는 File·창밖에
+    //     없어서 '어디로 가야 하는지' 가 앱 안에만 있었다.
+    //     상단 막대에서도 바로 들어갈 수 있게 한다.
+    //
+    //   ★ 이름을 코드에 박지 않는다. 탭이 늘거나 이름이 바뀌면 메뉴만 옛것으로
+    //     남는다 — 이 저장소에서 그런 어긋남을 여러 번 겪었다.
+    //     화면이 다 뜬 뒤 사이드바에서 실제 항목을 읽어 메뉴를 만든다.
+    //   ※ 윈도우는 테두리 없는 창이라 메뉴막대를 숨긴다(생성자). 그래서 이 메뉴는 윈도우에서
+    //     눈에 보이지 않는다 — 별도 창 전용 기능(data-window-only)으로 가는 길은 화면 쪽이 낸다.
+    {
+        m_platformMenu = menubar->addMenu("기능");
+        auto *loading = m_platformMenu->addAction("목록을 읽는 중…");
+        loading->setEnabled(false);
+    }
 
     // ── 창(Window) 메뉴 ────────────────────────────────────────────────────
     //   ★ Windows 판은 FramelessWindowHint 라 OS 가 주는 최대화 버튼이 아예 없다.
@@ -911,7 +940,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     if (m_backend && m_backend->isAnyRunning()) {
         auto reply = QMessageBox::question(
             this,
-            "Predormition",
+            QStringLiteral(APP_NAME_DISPLAY),
             "수집이 진행 중입니다. 종료하시겠습니까?",
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No
@@ -965,7 +994,7 @@ void MainWindow::holdAwake()
     if (m_sleepAssertionHeld) return;
 
     // 1. IOPMAssertion — Prevent System Sleep
-    CFStringRef reason = CFSTR("Predormition active — preventing sleep");
+    CFStringRef reason = CFSTR("Hanishiki active — preventing sleep");
     IOReturn result = IOPMAssertionCreateWithName(
         kIOPMAssertionTypePreventSystemSleep,
         kIOPMAssertionLevelOn,
@@ -981,7 +1010,7 @@ void MainWindow::holdAwake()
     IOPMAssertionCreateWithName(
         kIOPMAssertionTypeNoIdleSleep,  // 두 번째 layer
         kIOPMAssertionLevelOn,
-        CFSTR("Predormition user activity"),
+        CFSTR("Hanishiki user activity"),
         &userActiveAssertion
     );
 
@@ -1188,40 +1217,7 @@ void MainWindow::applyDarkTitlebar()
 }
 
 // ★ 창 상태(최대화/복원) 변경 시 JS 의 최대화 버튼 아이콘 갱신 (Win+↑ 등 외부 변경도 반영)
-// ★ 메인 UI 페이지에 JS 를 넣는 단 하나의 통로 — MainWindow.h 의 설명 참고.
-void MainWindow::runJsOnUi(const QString &js)
-{
-    if (!m_webView || js.isEmpty()) return;
-    if (m_uiReady) {
-        m_webView->page()->runJavaScript(js);
-        return;
-    }
-    // 아직 안 읽혔다 — 담아 둔다.
-    //   한도를 둔다. 페이지가 끝내 안 뜨는 경우 무한히 쌓이면 그게 다음 고장이다.
-    //   넘치면 오래된 것부터 버린다(로그 배칭이 이미 쓰는 규칙과 같게).
-    constexpr int kMaxPending = 500;
-    m_pendingJs.append(js);
-    if (m_pendingJs.size() > kMaxPending) {
-        m_pendingJs.removeFirst();
-        ++m_droppedJs;
-    }
-}
-
-void MainWindow::flushPendingJs()
-{
-    if (m_droppedJs > 0) {
-        // 버린 것을 말하지 않으면 "다 전달됐다" 로 읽힌다.
-        qWarning() << "[UI] 페이지가 뜨기 전 JS" << m_droppedJs << "개를 버렸다(한도 초과)";
-        m_droppedJs = 0;
-    }
-    if (m_pendingJs.isEmpty()) return;
-    const QStringList queued = m_pendingJs;
-    m_pendingJs.clear();
-    // 한 덩어리로 합치지 않는다 — 중간 하나가 던지면 뒤가 통째로 죽는다.
-    for (const QString &js : queued)
-        m_webView->page()->runJavaScript(js);
-}
-
+//   (runJsOnUi · flushPendingJs 는 맥과 같은 자리 — updateDockMenu 바로 뒤 — 에 하나만 둔다.)
 void MainWindow::changeEvent(QEvent *event)
 {
     if (event->type() == QEvent::WindowStateChange && m_backend) {

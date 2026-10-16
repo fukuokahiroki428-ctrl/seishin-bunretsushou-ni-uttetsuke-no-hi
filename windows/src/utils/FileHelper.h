@@ -16,28 +16,6 @@ void setFinderComment(const QString &filePath, const QString &comment);
 
 // Sanitize filename
 QString sanitizeFilename(const QString &name, int maxLength = 200);
-// ★ 어느 파일시스템에 저장해도 같은 이름이 되게 다듬는다.
-//   sanitizeFilename 과 달리 '문자를 바꾸지 않는다' — 이미 받아 둔 이름이 달라지면
-//   보관함이 둘로 갈리기 때문이다. 보통 이름에는 아무 일도 일어나지 않는다.
-//     ① NFC 정규화       — HFS+(맥 옛 디스크)는 NFD 를 강제한다. 맞춰 두지 않으면
-//                          같은 계정인데 맥과 윈도우의 폴더 바이트가 달라진다.
-//     ② 끝의 점·공백 제거 — 윈도우가 조용히 떼어내 이름이 달라진다.
-//     ③ 예약어 앞에 _    — CON·PRN·AUX·NUL·COM1~9·LPT1~9 는 윈도우에서 못 만든다.
-//     ④ UTF-8 바이트 상한 — ext4·APFS 는 바이트 기준(255)이고 NTFS 는 UTF-16 칸 기준이다.
-//                          짧은 쪽에 맞춘다. 서로게이트 짝은 깨지 않는다.
-//   ※ 확장자가 붙은 완성된 파일명에는 쓰지 말 것 — ④가 뒤에서 자르므로 확장자가 잘린다.
-//     그런 자리는 본문 쪽을 미리 줄여서 맞춘다(downloadTweetMedia 가 그렇게 한다).
-QString portableName(const QString &name, int maxBytes = 255);
-
-// ★ 대소문자(·유니코드 정규화)만 다른 이름을 새로 만들지 않는다.
-//   parentDir 안에 name 과 '대소문자만 다른' 항목이 이미 있으면 그 기존 이름을 돌려준다.
-//   없으면 name 그대로(그리고 같은 판에서 뒤에 오는 변형도 이 이름을 쓰게 기억해 둔다).
-//
-//   왜 — 프로필 폴더를 '표시이름(@아이디)' 로 짓는데, 같은 계정이 표시이름의 대소문자만
-//   바꾸면(Foopa → foopa) 폴더가 둘로 갈렸다. 이 보관 디스크는 대소문자를 구분하는 APFS 라
-//   둘 다 만들어지지만, 보관함을 통째로 NAS·일반 맥 디스크(대소문자 무시)로 옮기면 바로
-//   그 자리에서 막힌다. 실측: 보충 안에 4묶음.
-QString reuseExistingName(const QString &parentDir, const QString &name);
 
 // ★ 대소문자(·유니코드 정규화)만 다른 이름을 새로 만들지 않는다.
 //   parentDir 안에 name 과 '대소문자만 다른' 항목이 이미 있으면 그 기존 이름을 돌려준다.

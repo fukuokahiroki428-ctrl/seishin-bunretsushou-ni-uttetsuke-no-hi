@@ -46,13 +46,33 @@ Config::Config(QObject *parent)
 
 QString Config::defaultConfigPath()
 {
-    // ★ 외부 user data 위치 — ~/Library/Application Support/Miyo/Predormition/miyo_config.json
-    //   이전엔 앱 내부(Contents/Resources)에 저장했으나 매 save 시 codesign seal 깨짐
-    //   → macOS 보안 정책이 "변조된 앱"으로 판단 → 캡쳐/CDP 등 보안 동작 차단 → 앱 크래시.
-    //   외부 저장하면 번들은 read-only 유지 → 서명 유효 → macOS 권한 영구 유지.
+    // ★ 외부 user data 위치 — %APPDATA%\<앱이름>\hanishiki_config.json
+    //   (맥은 ~/Library/Application Support/<앱이름>/ — 이전엔 앱 내부(Contents/Resources)에
+    //   저장했으나 매 save 시 codesign seal 이 깨져 macOS 가 "변조된 앱" 으로 판단했다.
+    //   외부 저장하면 번들은 read-only 유지 → 서명 유효 → macOS 권한 영구 유지.)
     QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(dataDir);
-    return dataDir + "/miyo_config.json";
+    // ★ 이름을 바꾸되 옛 파일을 잃지 않는다.
+    //   그냥 새 이름만 쓰면 설정·계정 토큰이 통째로 사라진 것처럼 보인다.
+    //   옛 파일이 있고 새 파일이 없을 때 딱 한 번 옮긴다(rename — 복사가 아니다).
+    //   옮기지 못하면(권한 등) 옛 파일을 그대로 쓴다 — 잃는 것보다 낫다.
+    const QString cur = dataDir + "/hanishiki_config.json";
+    const QString prev = dataDir + "/miyo_config.json";
+    // ★ 이 함수는 여러 곳에서 불린다. rename 을 매번 시도하지 않도록 한 번만 판단한다.
+    //   (두 스레드가 동시에 들어와도 rename 은 원자적이라 한쪽만 성공하고 나머지는
+    //    이미 옮겨진 상태를 본다 — 어느 쪽이든 cur 을 돌려주면 맞다.)
+    static bool checked = false;
+    static bool useOld  = false;
+    if (!checked) {
+        checked = true;
+        if (!QFileInfo::exists(cur) && QFileInfo::exists(prev)) {
+            if (QFile::rename(prev, cur))
+                qInfo() << "[config] 설정 파일 이름 옮김: miyo_config.json → hanishiki_config.json";
+            else
+                useOld = true;   // 옮기지 못하면 옛 파일을 그대로 쓴다 — 잃는 것보다 낫다
+        }
+    }
+    return useOld ? prev : cur;
 }
 
 QString Config::backupConfigPath()
@@ -60,7 +80,13 @@ QString Config::backupConfigPath()
     // 백업: 같은 디렉토리에 .backup.json 으로 (이전 in-bundle 호환용 path 변환)
     QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(dataDir);
-    return dataDir + "/miyo_config.backup.json";
+    // 새 이름을 쓰되, 옛 백업이 있고 새것이 없으면 그것을 쓴다.
+    //   백업은 설정이 깨졌을 때만 읽히는 최후 수단이라, 이름만 바꿔 놓고
+    //   옛 파일을 못 읽으면 정작 필요한 순간에 없는 것이 된다.
+    const QString cur = dataDir + "/hanishiki_config.backup.json";
+    const QString prev = dataDir + "/miyo_config.backup.json";
+    if (!QFileInfo::exists(cur) && QFileInfo::exists(prev)) return prev;
+    return cur;
 }
 
 // 읽어서 '쓸 수 있는 설정인지' 까지 본다.
@@ -91,20 +117,20 @@ QStringList Config::recoveryCandidates() const
     c << QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/ABIWA/miyo_config.json";
 
     // ★ 앱 이름이 바뀐 뒤의 옛 폴더 — 이게 없어서 이름을 바꿀 때마다 설정이 통째로
-    //   버려졌다. 이 앱만 해도 カメラ → チェルノブイリ → Chernobyl → Predormition
-    //   으로 네 번 바뀌었다. AppDataLocation 은 .../Miyo/<앱이름> 이라, 이름이 바뀌면
+    //   버려졌다. 이 앱만 해도 カメラ → チェルノブイリ → Chernobyl → Predormition → ハンイシキ
+    //   로 다섯 번째 이름이다. AppDataLocation 은 <바탕>/<앱이름> 이라, 이름이 바뀌면
     //   폴더도 바뀌어 계정·쿠키·NAS 설정이 한 번에 사라진 것처럼 보인다.
     //   이름을 목록에 박아 두면 '다음 번' 이름 변경 때 또 같은 일이 난다. 그래서
     //   형제 폴더를 훑어 설정 파일이 있는 것을 찾고 최근에 쓴 것부터 시도한다.
     //   설정 파일 이름으로만 거르므로 남의 앱을 잘못 집지 않는다.
     {
-        QDir siblings(QFileInfo(sup).absolutePath());   // .../Miyo
+        QDir siblings(QFileInfo(sup).absolutePath());   // <바탕> — 조직명이 비어 있어 윈도우는 %APPDATA%
         QFileInfoList found;
         const auto dirs = siblings.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
         for (const QFileInfo &d : dirs) {
             if (d.absoluteFilePath() == QFileInfo(sup).absoluteFilePath()) continue;   // 내 폴더
-            QFileInfo cfg(d.absoluteFilePath() + "/miyo_config.json");
-            if (!cfg.exists()) cfg = QFileInfo(d.absoluteFilePath() + "/hanishiki_config.json");
+            QFileInfo cfg(d.absoluteFilePath() + "/hanishiki_config.json");
+            if (!cfg.exists()) cfg = QFileInfo(d.absoluteFilePath() + "/miyo_config.json");
             if (cfg.exists() && cfg.size() > 0) found << cfg;
         }
         std::sort(found.begin(), found.end(), [](const QFileInfo &a, const QFileInfo &b) {
@@ -254,15 +280,12 @@ QJsonObject Config::toJson() const
     if (!m_platformTargets.isEmpty()) root["platformTargets"] = m_platformTargets;
     root["debugLogs"] = m_debugLogs;
     if (!m_secondaryPath.isEmpty()) root["secondaryPath"] = m_secondaryPath;
-    if (!m_proxyProfiles.isEmpty()) root["proxyProfiles"] = m_proxyProfiles;
     if (!m_naikakukaiWatches.isEmpty()) root["naikakukaiWatches"] = m_naikakukaiWatches;
     // 비어 있어도 적는다 — 마지막 규칙을 지운 것이 저장되어야 한다
     root["organizeRules"] = m_organizeRules;
     root["organizeAuto"] = m_organizeAuto;
     root["organizeCaptures"] = m_organizeCaptures;
     root["naikakukaiInterval"] = m_naikakukaiInterval;
-    root["naikakukaiResume"] = m_naikakukaiResume;
-    root["emailWatchResume"] = m_emailWatchResume;
     if (!m_webdavUrl.isEmpty())  root["webdavUrl"]  = m_webdavUrl;
     if (!m_webdavUser.isEmpty()) root["webdavUser"] = m_webdavUser;
     if (!m_webdavPass.isEmpty()) root["webdavPass"] = m_webdavPass;
@@ -312,14 +335,11 @@ void Config::fromJson(const QJsonObject &obj)
     if (obj.contains("platformTargets")) m_platformTargets = obj["platformTargets"].toObject();
     if (obj.contains("debugLogs")) m_debugLogs = obj["debugLogs"].toBool();
     if (obj.contains("secondaryPath")) m_secondaryPath = obj["secondaryPath"].toString();
-    if (obj.contains("proxyProfiles")) m_proxyProfiles = obj["proxyProfiles"].toArray();
     if (obj.contains("naikakukaiWatches")) m_naikakukaiWatches = obj["naikakukaiWatches"].toArray();
     if (obj.contains("organizeRules"))     m_organizeRules = obj["organizeRules"].toArray();
     if (obj.contains("organizeAuto"))      m_organizeAuto = obj["organizeAuto"].toBool(true);
     if (obj.contains("organizeCaptures"))  m_organizeCaptures = obj["organizeCaptures"].toBool(false);
     if (obj.contains("naikakukaiInterval")) m_naikakukaiInterval = obj["naikakukaiInterval"].toInt(30);
-    if (obj.contains("naikakukaiResume")) m_naikakukaiResume = obj["naikakukaiResume"].toBool(false);
-    if (obj.contains("emailWatchResume")) m_emailWatchResume = obj["emailWatchResume"].toBool(false);
     if (obj.contains("webdavUrl"))      m_webdavUrl  = obj["webdavUrl"].toString();
     if (obj.contains("webdavUser"))     m_webdavUser = obj["webdavUser"].toString();
     if (obj.contains("webdavPass"))     m_webdavPass = obj["webdavPass"].toString();

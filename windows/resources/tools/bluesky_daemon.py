@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bluesky collection daemon for カメラ - based on AINU (ainu_smart.py).
+"""Bluesky collection daemon for ハンイシキ - based on AINU (ainu_smart.py).
 
 Usage: python3 bluesky_daemon.py '{"handle":"...","password":"..."}'
 Then send JSON commands on stdin, receive JSON responses on stdout.
@@ -502,17 +502,32 @@ def main():
                         # ★ ffmpeg 는 http:// 프록시(http_proxy)만 쓰고 SOCKS 는 모른다. 앱이 socks5:// 를 걸어 둔 채로
                         #   부르면 프록시를 건너뛰고 이 컴퓨터 회선으로 직접 나간다(앱의 '닫힌 길' socks5://127.0.0.1:9 도
                         #   무시된다). 그때는 받지 않는다 — 실패로 남겨 다음 판(프록시를 바꾼 뒤)에 다시 본다.
-                        _pk = ('http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY')
-                        _anyp = any(os.environ.get(k) for k in _pk)
-                        if _anyp and not os.environ.get('http_proxy', '').lower().startswith('http://'):
-                            raise RuntimeError('프록시가 HTTP 가 아니라 HLS 영상은 받지 않습니다'
-                                               '(ffmpeg 는 SOCKS 를 몰라 직접 연결로 샙니다)')
+                        # ★ (윈도우) 앱은 출구를 환경만이 아니라 init_args['proxy'](_PROXY)로도 준다. 환경만 보면
+                        #   _PROXY 에 socks5:// 가 걸려 있어도 통과해 HLS 영상만 이 컴퓨터 회선으로 샌다.
+                        #   그래서 _PROXY 가 있으면 그것으로 판정하고, http:// 이면 ffmpeg 에 환경(http_proxy)으로 건넨다.
+                        #   ('-http_proxy' 인자로 주면 프록시 비밀번호가 명령줄에 실린다. ffmpeg 의 http·tls 는 둘 다
+                        #    getenv("http_proxy") 를 읽으므로 환경으로 주는 것이 같은 효과다.)
+                        _ffenv = None
+                        if _PROXY:
+                            if not _PROXY.lower().startswith('http://'):
+                                raise RuntimeError('프록시가 HTTP 가 아니라 HLS 영상은 받지 않습니다'
+                                                   '(ffmpeg 는 SOCKS 를 몰라 직접 연결로 샙니다)')
+                            # 윈도우 환경 이름은 대소문자를 가리지 않는다 — 다른 꼴(HTTP_PROXY)을 걷어내고 하나만 둔다.
+                            _ffenv = {k: v for k, v in os.environ.items() if k.lower() != 'http_proxy'}
+                            _ffenv['http_proxy'] = _PROXY
+                        else:
+                            _pk = ('http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY')
+                            _anyp = any(os.environ.get(k) for k in _pk)
+                            if _anyp and not os.environ.get('http_proxy', '').lower().startswith('http://'):
+                                raise RuntimeError('프록시가 HTTP 가 아니라 HLS 영상은 받지 않습니다'
+                                                   '(ffmpeg 는 SOCKS 를 몰라 직접 연결로 샙니다)')
                         ff = shutil.which('ffmpeg')
                         if not ff:
                             raise RuntimeError('ffmpeg 를 찾지 못해 HLS 영상을 받을 수 없습니다')
                         r = subprocess.run([ff, '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
                                             '-i', url, '-c', 'copy', '-f', 'mp4', part],
-                                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=1800)
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=1800,
+                                           env=_ffenv)
                         if r.returncode != 0 or not os.path.exists(part) or os.path.getsize(part) == 0:
                             raise RuntimeError('ffmpeg 실패: ' + (r.stderr or b'').decode('utf-8', 'replace')[-300:])
                     else:

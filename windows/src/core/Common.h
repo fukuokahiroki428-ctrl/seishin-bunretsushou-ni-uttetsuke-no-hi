@@ -51,13 +51,18 @@ QString asciiSafeExiftool(const QString &exePath);
 // Windows: <exe_dir>/python_env/python.exe
 QString bundledPythonPath();
 
-// ★ 쓰기가능 python_env 경로 (~/Library/Application Support/.../python_env).
-//   macOS 는 .app 번들이 codesign 으로 sealed → 번들 내부 python_env 에 pip install 하면
-//   "sealed resource invalid" → macOS 가 앱을 SIGKILL. 그래서 외부 복사본을 두고 사용한다.
+// ★ (윈도우) 쓰기가능 python_env 경로 (%APPDATA%\...\python_env).
+//   설치 폴더에 쓸 수 없을 때(Program Files · 읽기전용 위치의 포터블)만 activePythonEnvDir 가
+//   번들을 여기로 한 번 복사(시드)해 쓴다. 맥은 쓰지 않는다(아래 — 번들 고정).
 QString userPythonEnvDir();
 // 실제 사용할 python_env 디렉토리.
-//   macOS: 외부 복사본 우선 — 없으면 번들에서 1회 자동 복사(시드). 복사 실패 시 읽기전용 번들.
-//   Windows/Linux: 설치 위치의 python_env 그대로 (서명 seal 없음 → 제자리 수정 안전).
+//   macOS: 앱 내부(번들) 고정. 예전엔 '외부 복사본 우선, 없으면 시드' 였는데
+//     그 두 갈래를 층마다 다르게 가정해 서로 어긋났다(업그레이드가 늘 중단되는
+//     고장이 실제로 있었다). 지금은 한 갈래다 — 번들에 설치하고, 설치 직후
+//     resealAppBundle() 로 다시 서명해 codesign 봉인을 복구한다.
+//     번들에 쓸 수 없으면 몰래 다른 곳으로 새지 않고 호출부가 그 사실을 알린다.
+//   Windows: 설치 위치의 python_env — 거기에 쓸 수 없으면 userPythonEnvDir 의 시드 사본.
+//   Linux: 설치 위치의 python_env 그대로 (서명 seal 없음).
 QString activePythonEnvDir();
 
 // macOS: Contents/Resources/tools/
@@ -71,7 +76,7 @@ QString activeToolScriptPath(const QString &name); // override 있으면 그것,
 //     - 값은 쓰기가능 위치의 api_overrides.json 에 저장된다.
 //     - 없으면 코드에 박힌 기본값을 그대로 쓴다(동작 무변화).
 //   X 가 query ID 를 회전시키면 예전엔 앱을 다시 빌드해야 했다 — 이제 이 파일만 고치면 되고,
-//   로컬 AI(오픈클로)나 사용자가 설정 화면에서 바로 바꿀 수 있다.
+//   로컬 AI(ハニワ)나 사용자가 설정 화면에서 바로 바꿀 수 있다.
 QString apiOverride(const QString &key, const QString &builtinDefault);
 bool setApiOverride(const QString &key, const QString &value);   // 빈 값이면 해당 키 삭제(기본값 복귀)
 QString apiOverridesPath();
@@ -109,11 +114,13 @@ bool appQuitting();
 // ★ 이 앱이 띄운 캡처 Chrome 만 — 명령줄의 --user-data-dir 가 profileDir 와 같거나(prefix 면) profileDir_… 인
 //   프로세스(자기 자신은 뺀다). 예전엔 이름(chrome_capture_profile)만 보고 pkill 해서, 같은 맥의 다른 사본
 //   (공작함 격리 사본 · 옛 판)이 켜지는 순간 사용자 앱의 수집 Chrome 까지 꺼졌다. 앱 데이터 폴더가 다르면
-//   전체 경로가 다르니, 전체 경로로 고르면 남의 것은 걸리지 않는다. Windows 에서는 빈 목록/0.
+//   전체 경로가 다르니, 전체 경로로 고르면 남의 것은 걸리지 않는다.
+//   윈도우는 PowerShell Get-CimInstance Win32_Process 의 CommandLine 으로 같은 판정을 한다.
 QList<qint64> captureChromePids(const QString &profileDir, bool prefix);
-// 위 프로세스를 SIGTERM → 0.3초 뒤 남은 것을 SIGKILL. 처음 찾은 수를 돌려준다.
+// 위 프로세스를 끝낸다 — 맥 SIGTERM → 0.3초 → SIGKILL, 윈도우 taskkill(부드럽게) → 0.3초 → TerminateProcess.
+//   처음 찾은 수를 돌려준다.
 int killCaptureChromes(const QString &profileDir, bool prefix);
-// ★ 사라진 데이터 폴더의 캡처 Chrome — appSupportRoot(이 홈의 Application Support) 아래 …/chrome_capture_profile[_…]
+// ★ 사라진 데이터 폴더의 캡처 Chrome — appSupportRoot(이 홈의 Application Support · 윈도우는 %APPDATA%) 아래 …/chrome_capture_profile[_…]
 //   인데 그 데이터 폴더가 이제 없는 것. 앱 이름이 바뀌어 폴더가 옮겨진 뒤(main.cpp 의 이전) 옛 판이 죽으며 남긴 Chrome 이
 //   여기 걸린다 — 예전 이름만 보던 pkill 은 잡았지만 위의 전체 경로 정리는 못 잡는다. 같은 홈의 살아 있는 사본은
 //   ABIWA.lock 이 막고, 격리 사본은 홈이 달라 appSupportRoot 밖이라 걸리지 않는다.
@@ -139,7 +146,7 @@ bool resealInFlight();
 // 디렉토리에 실제로 쓸 수 있는지(임시파일 생성/삭제로 확인).
 bool isDirWritable(const QString &dir);
 
-// ★ 사용자 도구 폴더 (~/Library/Application Support/Predormition/tools/)
+// ★ 사용자 도구 폴더 (앱 데이터 폴더/tools — 맥 ~/Library/Application Support/<앱>/tools, 윈도우 %APPDATA%\<앱>\tools)
 //   yt-dlp 자동 업데이트 시 여기에 저장. 우선순위 더 높음.
 QString userToolsDir();
 // ★ yt-dlp 경로 — 사용자 폴더 우선, 없으면 번들.
@@ -168,8 +175,6 @@ QString resolveTempBase(const QString &userConfigTempDir);
 //   결과: 정상이면 빈 string, 손상이면 원인 메시지.
 QString checkFileIntegrity(const QString &filePath);
 
-// macOS: Contents/Resources/
-// Windows: <exe_dir>/
 // ── 요청에 실을 User-Agent ────────────────────────────────────────────────
 // ★ 왜 코드에 박으면 안 되나.
 //   이 앱은 사용자의 '진짜 브라우저 세션 쿠키' 로 요청한다. 그런데 윈도우판의 UA 는
@@ -224,8 +229,16 @@ void  stopProxyRelay();
 //   설정 파일처럼 '망가지면 계정·토큰이 통째로 날아가는' 것에 쓴다.
 bool writeFileAtomic(const QString &path, const QByteArray &bytes, QString *err = nullptr);
 
+// macOS: Contents/Resources/
+// Windows: <exe_dir>/
 QString bundledResourcesDir();
-QStringList bundledRequirements();   // 번들 requirements.txt 의 패키지 목록(버전 고정 포함)
+// requirements.txt 의 패키지 목록.
+//   stripPins=false : 'yt-dlp==2026.7.4' 그대로. 환경을 '다시 만들' 때 쓴다(재현성).
+//   stripPins=true  : 'yt-dlp' 만. '최신으로 올릴' 때 쓴다.
+// ★ 예전엔 이 구분이 없어서 갱신도 고정본을 그대로 pip 에 넘겼다.
+//   pip 는 "Requirement already satisfied" 로 끝내고, 앱은 그걸 "최신" 이라고
+//   보고했다. 실제로는 한 판도 올라가지 않는데 올라간 줄 알게 되는 형태였다.
+QStringList bundledRequirements(bool stripPins = false);   // 번들 requirements.txt 의 패키지 목록(버전 고정 포함)
 
 
 // Get list of Python candidates (bundled first, then system fallbacks)
@@ -242,7 +255,8 @@ QProcessEnvironment bundledProcessEnv();
 //   윈도우/시스템 exiftool: exiftool 경로를 돌려주고 leadingArgs 는 비어 있다.
 QString exiftoolProgram(QStringList *leadingArgs);
 
-// 저장 경로의 남은 공간 (바이트). 경로 없거나 마운트 안 됐으면 0.
+// 저장 경로의 남은 공간 (바이트). 아직 없는 폴더면 같은 디스크의 가장 가까운 '있는' 조상 폴더로 잰다
+//   (새 저장 폴더를 '공간 부족' 으로 오판하지 않게). 디스크 자체가 없거나 마운트 안 됐으면 0.
 qint64 freeSpace(const QString &path);
 
 // 저장 경로 2개 중 공간 충분한 곳 선택. primary가 thresholdGB 이상이면 그대로 primary,

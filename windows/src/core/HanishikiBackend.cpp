@@ -195,21 +195,9 @@ static void killTreeByCommandLine(const QString &imageName, const QString &needl
     QProcess::execute("powershell", {"-NoProfile", "-NonInteractive", "-Command", ps});
 }
 
-// 캡쳐에 쓰일 수 있는 Chromium 계열 실행 파일 이름 전부.
-//   ★ chrome.exe 만 보면 안 된다. findChromeExecutable() 은 Chrome 이 없으면 Edge 를,
-//     그것도 없으면 Brave 를 쓴다. Chrome 이 안 깔린 기계(윈도우 기본 상태가 그렇다)에서는
-//     캡쳐 브라우저가 msedge.exe 로 뜨는데, 정리 코드가 chrome.exe 만 찾아서 한 번도
-//     정리되지 않았다 — 프로세스와 프로필 폴더가 세션마다 쌓인다.
-//     맥은 `pkill -f chrome_capture_profile` 이라 이름을 안 보고 잡아서 이 문제가 없다.
-//     윈도우로 옮기며 이미지 이름 필터를 넣을 때 chrome.exe 하나로 좁힌 것이 원인이다.
-//   ※ 명령줄 필터(needle)는 그대로 둔다 — 그게 없으면 사용자 브라우저까지 죽는다.
-static void killCaptureBrowsers(const QString &needle)
-{
-    for (const QString &img : { QStringLiteral("chrome.exe"),
-                                QStringLiteral("msedge.exe"),
-                                QStringLiteral("brave.exe") })
-        killByCommandLine(img, needle);
-}
+// ※ 캡처 Chrome 정리는 여기 있던 killCaptureBrowsers(이름 부분 일치) 대신
+//   Common::killCaptureChromes / killOrphanedCaptureChromes(이 앱 데이터 폴더의 전체 --user-data-dir 경로)로 한다.
+//   실행 파일 이름(chrome.exe · msedge.exe · brave.exe)을 가리지 않고 프로필 경로만 보므로 Edge · Brave 로 뜬 것도 잡힌다.
 
 // ★ 모니터링 터미널의 한글·일본어가 전부 '?' 로 나오던 문제.
 //   원인은 인코딩이 아니다. 확인한 것:
@@ -389,13 +377,16 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
     QProcess::execute("/usr/bin/pkill", {"-f", "miyo_.*_tail.command"});
     QProcess::execute("/usr/bin/pkill", {"-f", "miyo_backup_tail.command"});
 #elif defined(Q_OS_WIN)
-    killCaptureBrowsers("chrome_capture_profile");
-    // ★ 여기 있던 두 줄은 지웠다:
-    //     taskkill /F /IM "Chrome for Testing.exe"
-    //     taskkill /F /IM chrome_crashpad_handler.exe
-    //   필터가 없어서 사용자가 따로 쓰던 Chrome for Testing 도, 사용자 본인 Chrome 의
-    //   크래시 핸들러도 함께 죽었다. 우리 인스턴스는 명령줄에 chrome_capture_profile
-    //   이 들어 있으므로 위 한 줄로 충분하다.
+    // ★ 맥과 같은 기준 — 이름(chrome_capture_profile 부분 일치)이 아니라 '이 앱 데이터 폴더의'
+    //   전체 --user-data-dir 경로로 고른다(Common 의 윈도우 갈래가 WMI 명령줄로 비교).
+    //   같은 기계의 다른 사본 · 옛 판이 수집 중인 Chrome 은 두고, 옮겨진 옛 데이터 폴더의 고아만 따로 거둔다.
+    //   ※ 예전 두 줄(taskkill /F /IM "Chrome for Testing.exe" · chrome_crashpad_handler.exe)은
+    //     필터가 없어 사용자 본인 Chrome 의 크래시 핸들러까지 죽였기에 지운 채로 둔다.
+    {
+        const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        Common::killCaptureChromes(appData + "/chrome_capture_profile", true);
+        Common::killOrphanedCaptureChromes(QFileInfo(appData).absolutePath());
+    }
     // 옛 tail script 청소
     killByCommandLine("cmd.exe", "miyo_");
 #endif
@@ -461,7 +452,7 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
             //   Config::load 가 이름이 바뀐 옛 폴더에서 설정을 되살려 오는데, 여기서 먼저
             //   지워 버리면 되살릴 것이 없어진다(계정·쿠키·NAS 설정이 통째로 날아간다).
             //   순서에 기대지 않고, 설정이 남아 있는 폴더는 아예 건드리지 않는다.
-            if (QFile::exists(p + "/miyo_config.json")) {
+            if (QFile::exists(p + "/hanishiki_config.json") || QFile::exists(p + "/miyo_config.json")) {
                 log(QString("옛 폴더에 설정이 남아 있어 두었습니다: %1").arg(name), "info", "settings");
                 continue;
             }
@@ -562,53 +553,6 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
         // ★ 다른 뒷일 스레드의 요청도(프록시 시험 · 감시 · 수집 …) — 모두 0.1초 안에 멈추므로 보통 곧 끝난다. 합쳐 3초까지.
         if (!HttpClient::waitIdle(qMax(0, 3000 - int(quitWait.elapsed()))))
             qWarning() << "[종료] 진행 중인 요청이 3초 안에 끝나지 않았습니다";
-    });
-
-    // ★ 신글 감시 자동 시작 — 감시 대상이 저장돼 있으면 앱을 켜는 순간 알아서 돈다.
-    //   예전엔 앱을 켤 때마다 内閣会 탭에 들어가 직접 시작해야 했다. 그러면 켜 두는 걸
-    //   잊은 동안 올라온 글을 놓친다 — 자동 감시의 의미가 없다.
-    //   설정에 대상이 없으면 아무 일도 하지 않는다(처음 쓰는 사람에게는 조용하다).
-    //
-    //   ※ 여기 주석이 예전에 "창이 다 뜨고 나서 시작하도록" 이라고 적혀 있었는데
-    //     사실이 아니었다. singleShot(0) 은 생성자 밖으로 한 바퀴 미룰 뿐이고,
-    //     index.html 은 그 뒤로도 한참 더 읽힌다(이 기계에서 2.6초). 그래서 아래
-    //     startNaikakukai() 안의 setNaikakukaiRunning(true) 가 사라졌고, 수집은
-    //     도는데 화면의 '중지' 버튼만 잠긴 채로 남았다.
-    //     지금은 MainWindow::runJsOnUi 가 페이지가 뜰 때까지 담아 두므로,
-    //     수집은 곧바로 시작하고 화면은 페이지가 뜨는 순간 맞춰진다.
-    QTimer::singleShot(0, this, [this]() {
-        if (!m_config) return;
-        // ★ '설정이 있으면' 이 아니라 '끌 때 돌고 있었으면' 이어서 돈다.
-        //   설정만 보고 켜면 사용자가 일부러 멈춰 둔 감시도 되살아난다.
-        if (!m_config->naikakukaiResume()) return;
-        const QJsonArray watches = m_config->naikakukaiWatches();
-        if (watches.isEmpty()) return;
-        QJsonObject cfg;
-        cfg["watches"] = watches;
-        cfg["intervalMin"] = m_config->naikakukaiInterval();
-        log(QString("신글 감시 이어 돌림 — 대상 %1개, %2분마다 (끄기 전에 돌고 있었습니다)")
-                .arg(watches.size()).arg(m_config->naikakukaiInterval()),
-            "info", "naikakukai");
-        startNaikakukai(QString::fromUtf8(QJsonDocument(cfg).toJson(QJsonDocument::Compact)));
-    });
-
-    // ★ 이메일 감시도 저장된 설정이 있으면 알아서 시작한다.
-    //   설정은 남는데 켤 때마다 '감시 시작' 을 눌러야 하면 자동 감시가 아니다 —
-    //   전원이 한 번 나갔다 들어오면 그 뒤로는 영영 안 돈다. 1년을 켜 두는 물건이다.
-    //   설정이 비어 있으면 아무 일도 하지 않는다(처음 쓰는 사람에게는 조용하다).
-    QTimer::singleShot(0, this, [this]() {
-        if (!m_config) return;
-        if (!m_config->emailWatchResume()) return;   // 위와 같은 이유
-        const QJsonObject f = m_config->formData();
-        const QString server = f.value(QStringLiteral("email-server")).toString().trimmed();
-        const QString user   = f.value(QStringLiteral("email-user")).toString().trimmed();
-        const QString pass   = f.value(QStringLiteral("email-pass")).toString();
-        if (server.isEmpty() || user.isEmpty() || pass.isEmpty()) return;
-        log(QStringLiteral("📧 이메일 감시 이어 돌림 — 저장된 설정을 씁니다"), "info", "naikakukai");
-        startEmailWatch(server, f.value(QStringLiteral("email-port")).toString().toInt(),
-                        user, pass,
-                        f.value(QStringLiteral("email-filter-from")).toString().trimmed(),
-                        f.value(QStringLiteral("email-filter-subject")).toString().trimmed());
     });
 }
 
@@ -784,147 +728,6 @@ void HanishikiBackend::memoryMonitorTick()
 //         수집기는 이미 파일 존재 여부로 중복 스킵 → 신글만 자동 추가됨
 // ─────────────────────────────────────────────
 
-// ═════════════════════════════════════════════════════════════════════════
-// 프록시(VPN) — 계정마다 다른 출구로 나가게 한다.
-//
-//   시스템 VPN 은 기계 전체를 한 경로로 보내므로 계정별 분리가 안 된다.
-//   앱이 연결마다 다른 출구를 고르려면 프록시여야 한다. NordVPN 같은 곳이 주는
-//   SOCKS5 서버 자격증명을 프로필로 등록해 두고, 계정에 이름으로 붙인다.
-// ═════════════════════════════════════════════════════════════════════════
-
-// ★ 비밀번호는 UI 로 돌려보내지 않는다. 화면에 뿌린 값은 로그·스크린샷·개발자도구로
-//   새어나갈 수 있다. 등록돼 있는지 여부(hasPass)만 알려 준다.
-// 이 트랙(계정)이 쓰는 프록시 URL. 수집 시작 때 기억해 두고 캡쳐 브라우저도 같은 출구로 보낸다.
-//   수집과 캡쳐가 다른 IP 로 나가면 계정을 나누는 의미가 없다.
-QString HanishikiBackend::resolveProxyUrlFor(const QString &trackKey) const
-{
-    QMutexLocker lock(&m_proxyPerTrackMutex);
-    return m_proxyPerTrack.value(trackKey.isEmpty() ? QStringLiteral("*") : trackKey);
-}
-
-void HanishikiBackend::getProxyProfiles()
-{
-    QJsonArray out;
-    const QJsonArray src = m_config ? m_config->proxyProfiles() : QJsonArray();
-    for (const QJsonValue &v : src) {
-        QJsonObject p = v.toObject();
-        QJsonObject safe;
-        safe["provider"] = p["provider"];   // 업체 분류 — 목록을 묶어 보여주는 데 쓴다
-        safe["name"] = p["name"];
-        safe["type"] = p["type"];
-        safe["host"] = p["host"];
-        safe["port"] = p["port"];
-        safe["user"] = p["user"];
-        safe["hasPass"] = !p["pass"].toString().isEmpty();
-        out.append(safe);
-    }
-    runJs(QString("if(window.onProxyProfiles)onProxyProfiles(%1);")
-              .arg(QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact))));
-}
-
-void HanishikiBackend::setProxyProfiles(const QString &json)
-{
-    QJsonArray incoming = QJsonDocument::fromJson(json.toUtf8()).array();
-    // ★ 비밀번호가 빈 채로 오면 지우라는 뜻이 아니라 '안 바꿈' 이다.
-    //   위에서 비밀번호를 안 내려보내므로, 그대로 저장하면 편집할 때마다 지워진다.
-    const QJsonArray old = m_config ? m_config->proxyProfiles() : QJsonArray();
-    QMap<QString, QString> keep;
-    for (const QJsonValue &v : old) {
-        const QJsonObject p = v.toObject();
-        if (!p["pass"].toString().isEmpty()) keep[p["name"].toString()] = p["pass"].toString();
-    }
-    QJsonArray merged;
-    for (const QJsonValue &v : incoming) {
-        QJsonObject p = v.toObject();
-        if (p["pass"].toString().isEmpty() && keep.contains(p["name"].toString()))
-            p["pass"] = keep[p["name"].toString()];
-        merged.append(p);
-    }
-    if (m_config) { m_config->setProxyProfiles(merged); m_config->save(); }
-    log(QString("프록시 프로필 %1개 저장").arg(merged.size()), "success", "settings");
-    getProxyProfiles();
-}
-
-QString HanishikiBackend::proxyUrl(const QJsonObject &p, bool withCredentials)
-{
-    const QString host = p["host"].toString();
-    const int port = p["port"].toInt();
-    if (host.isEmpty() || port <= 0) return QString();
-    QString scheme = p["type"].toString().toLower();
-    if (scheme.isEmpty()) scheme = "socks5";
-    QString auth;
-    if (withCredentials) {
-        const QString u = p["user"].toString(), pw = p["pass"].toString();
-        if (!u.isEmpty())
-            auth = QUrl::toPercentEncoding(u) + (pw.isEmpty() ? QByteArray() : ":" + QUrl::toPercentEncoding(pw)) + "@";
-    }
-    return QString("%1://%2%3:%4").arg(scheme, auth, host).arg(port);
-}
-
-QJsonObject HanishikiBackend::proxyForAccount(const QJsonObject &account) const
-{
-    const QString want = account["proxy"].toString();
-    if (want.isEmpty() || !m_config) return QJsonObject();
-    for (const QJsonValue &v : m_config->proxyProfiles()) {
-        const QJsonObject p = v.toObject();
-        if (p["name"].toString() == want) return p;
-    }
-    return QJsonObject();
-}
-
-// 실제로 그 프록시로 나가지는지 확인한다 — 나가는 IP 를 받아 온다.
-void HanishikiBackend::testProxy(const QString &json)
-{
-    QJsonObject p = QJsonDocument::fromJson(json.toUtf8()).object();
-    // 저장된 비밀번호를 쓴다(UI 는 비밀번호를 갖고 있지 않다)
-    if (p["pass"].toString().isEmpty()) {
-        const QJsonObject saved = proxyForAccount(QJsonObject{{"proxy", p["name"]}});
-        if (!saved.isEmpty()) p["pass"] = saved["pass"];
-    }
-    const QString url = proxyUrl(p);
-    if (url.isEmpty()) {
-        runJs("if(window.onProxyTest)onProxyTest(false,'주소나 포트가 비어 있습니다');");
-        return;
-    }
-    log(QString("프록시 시험 → %1").arg(proxyUrl(p, false)), "info", "settings");
-
-    // curl 로 확인한다 — SOCKS5 인증까지 그대로 처리하고, 앱 네트워크 설정을 건드리지 않는다.
-    // ★ 주소는 명령줄이 아니라 환경변수로 준다. --proxy 로 주면 자격증명이
-    //   프로세스 명령줄에 그대로 남는다(yt-dlp 쪽에서 막은 것과 같은 종류).
-    QProcess *proc = new QProcess(this);
-    {
-        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-        env.insert(QStringLiteral("ALL_PROXY"), url);
-        env.insert(QStringLiteral("HTTPS_PROXY"), url);
-        proc->setProcessEnvironment(env);
-    }
-    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-        [this, proc](int code, QProcess::ExitStatus) {
-            const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
-            const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
-            proc->deleteLater();
-            if (code == 0 && !out.isEmpty()) {
-                log(QString("프록시 정상 — 나가는 IP %1").arg(out), "success", "settings");
-                runJs(QString("if(window.onProxyTest)onProxyTest(true,%1);")
-                          .arg(Common::jsStringLiteral(out)));
-            } else {
-                // 종료코드로 원인을 가른다 — 주소를 고쳐야 하는지 비밀번호를 고쳐야 하는지.
-                QString why;
-                switch (code) {
-                case 5:  why = QStringLiteral("주소를 찾을 수 없습니다 — 서버가 없어졌거나 주소가 틀렸습니다"); break;
-                case 7:  why = QStringLiteral("연결할 수 없습니다 — 포트가 막혔거나 서버가 꺼져 있습니다"); break;
-                case 28: why = QStringLiteral("응답이 없습니다(시간 초과)"); break;
-                case 97: why = QStringLiteral("프록시가 거절했습니다 — 아이디·비밀번호를 확인하세요"); break;
-                default: why = err.isEmpty() ? QString("연결 실패 (curl %1)").arg(code) : err.left(200); break;
-                }
-                log(QString("프록시 실패 — %1").arg(why), "error", "settings");
-                runJs(QString("if(window.onProxyTest)onProxyTest(false,%1);")
-                          .arg(Common::jsStringLiteral(why)));
-            }
-        });
-    proc->start("curl", {"-s", "--max-time", "20", "https://api.ipify.org"});
-}
-
 void HanishikiBackend::startNaikakukai(const QString &configJson)
 {
     QJsonDocument doc = QJsonDocument::fromJson(configJson.toUtf8());
@@ -971,8 +774,6 @@ void HanishikiBackend::startNaikakukai(const QString &configJson)
     m_naikakukaiTimer->setInterval(m_naikakukaiIntervalMin * 60 * 1000);
     m_naikakukaiTimer->start();
 
-    // 끌 때 돌고 있었다는 표시 — 다음에 켤 때 이어서 돌린다.
-    if (m_config) { m_config->setNaikakukaiResume(true); m_config->save(); }
     log(QString("内閣会 시작 — 대상 %1개 | 주기 %2분")
         .arg(m_naikakukaiWatches.size()).arg(m_naikakukaiIntervalMin), "success", "naikakukai");
     runJs("setNaikakukaiRunning(true)");
@@ -1913,7 +1714,7 @@ void HanishikiBackend::backupNow()
     // ★ 모니터 종료 시 STOP sentinel 파일 만들어짐 (script trap) → 워치독이 발견하면 백업 중지
     QString stopSentinel = m_terminalLogPaths.value("backup") + ".STOP";
     QFile::remove(stopSentinel);
-    writeTerminalLog("\033[1;36m📦 Predormition 백업 시작 — 파일별 병렬 cp 모드 (한국어/일본어/NAS 안전)\033[0m", "backup");
+    writeTerminalLog("\033[1;36m📦 " APP_NAME_DISPLAY " 백업 시작 — 파일별 병렬 cp 모드 (한국어/일본어/NAS 안전)\033[0m", "backup");
     writeTerminalLog(QString("\033[90m  📂 백업 위치:\033[0m %1").arg(backupRoot), "backup");
     writeTerminalLog(QString("\033[90m  🕐 시작 시각:\033[0m %1").arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss")), "backup");
     writeTerminalLog(QString("\033[90m  📁 대상 폴더:\033[0m %1 개  /  \033[90m🚀 병렬 워커:\033[0m %2").arg(platformDirs.size()).arg(CONCURRENT), "backup");
@@ -2563,7 +2364,9 @@ void HanishikiBackend::writeDownloadManifest(const QString &dir, const QString &
     // 2) JSON manifest
     QJsonObject root;
     root["version"] = 1;
-    root["app"] = "Predormition";
+    // 앱 이름을 손으로 적지 않는다 — Chernobyl → Predormition → Hanishiki 로 두 번
+    //   바뀌는 동안 여기가 옛 이름에 멈춰 있었다. 빌드가 정해 주는 이름을 쓴다.
+    root["app"] = QStringLiteral(APP_NAME_ASCII);
     root["platform"] = platform;
     root["dir"] = dir;
     root["created_at"] = QDateTime::currentDateTime().toString(Qt::ISODate);
@@ -2632,7 +2435,7 @@ void HanishikiBackend::writeDownloadManifest(const QString &dir, const QString &
         QTextStream out(&tf);
         out.setEncoding(QStringConverter::Utf8);
         out << "═══════════════════════════════════════════════════════════════\n";
-        out << "  📦 Predormition — " << platform.toUpper() << " 다운로드 manifest\n";
+        out << "  📦 " APP_NAME_DISPLAY " — " << platform.toUpper() << " 다운로드 manifest\n";
         out << "═══════════════════════════════════════════════════════════════\n";
         out << "생성: " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n";
         out << "위치: " << dir << "\n";
@@ -2774,7 +2577,7 @@ void HanishikiBackend::exportConfig()
     QJsonObject root = m_config->toJson();
     // 메타 추가 — version + 생성 시각 + app
     QJsonObject meta;
-    meta["app"] = "Predormition";
+    meta["app"] = QStringLiteral(APP_NAME_ASCII);
     meta["version"] = QCoreApplication::applicationVersion().isEmpty() ? "1.0" : QCoreApplication::applicationVersion();
     meta["exported_at"] = QDateTime::currentDateTime().toString(Qt::ISODate);
     meta["exported_unix"] = QDateTime::currentSecsSinceEpoch();
@@ -2818,7 +2621,7 @@ void HanishikiBackend::importConfig()
     QJsonDocument doc = QJsonDocument::fromJson(bytes, &err);
     if (err.error != QJsonParseError::NoError || !doc.isObject()) {
         log(QString("❌ JSON 파싱 실패: %1").arg(err.errorString()), "error", "settings");
-        runJs(QString("alert('❌ JSON 파싱 실패:\\n%1\\n\\n올바른 Predormition config 파일이 아닙니다.');").arg(err.errorString()));
+        runJs(QString("alert('❌ JSON 파싱 실패:\\n%1\\n\\n올바른 설정 파일이 아닙니다.');").arg(err.errorString()));
         return;
     }
     QJsonObject root = doc.object();
@@ -2826,8 +2629,11 @@ void HanishikiBackend::importConfig()
     QString fromApp = root["__meta__"].toObject()["app"].toString();
     QString fromVer = root["__meta__"].toObject()["version"].toString();
     QString fromTime = root["__meta__"].toObject()["exported_at"].toString();
-    // 옛 이름(Predormition)으로 내보낸 config 도 그대로 받는다 — 앱 이름만 바뀌었을 뿐 형식은 동일.
-    if (!fromApp.isEmpty() && fromApp != "Predormition" && fromApp != "Chernobyl") {
+    // 옛 이름으로 내보낸 config 도 그대로 받는다 — 앱 이름만 바뀌었을 뿐이다.
+    //   ★ 맥(Hanishiki)이 내보낸 것도 같은 앱이다 — 경고하지 않는다.
+    static const QStringList kKnownAppNames = {
+        QStringLiteral(APP_NAME_ASCII), "Predormition", "Chernobyl", "Hanishiki"};
+    if (!fromApp.isEmpty() && !kKnownAppNames.contains(fromApp)) {
         log(QString("⚠ 다른 앱의 config (%1) — 그래도 시도").arg(fromApp), "warning", "settings");
     }
 
@@ -3347,7 +3153,6 @@ void HanishikiBackend::startEmailWatch(const QString &server, int port,
     }
     m_emailWatchTimer->setInterval(30000);  // 30초
     m_emailWatchTimer->start();
-    if (m_config) { m_config->setEmailWatchResume(true); m_config->save(); }
     log(QString("📧 이메일 감시 시작 — %1:%2 (from=%3, subject=%4)")
         .arg(server).arg(port).arg(filterFrom.isEmpty() ? "*" : filterFrom)
         .arg(filterSubject.isEmpty() ? "*" : filterSubject), "success", "naikakukai");
@@ -3601,7 +3406,9 @@ void HanishikiBackend::naikakukaiTick()
         if (gone && !m_naikakukaiDiskGoneLogged) {
             m_naikakukaiDiskGoneLogged = true;
             log(QString("디스크가 붙어 있지 않습니다: %1\n   감시는 그대로 돕니다 — 임시 파일만 %2 에 씁니다. 설정은 그대로입니다.")
-                    .arg(td, Common::resolveTempBase(QString())), "warning", "naikakukai");
+                    .arg(QDir::toNativeSeparators(td),
+                         QDir::toNativeSeparators(Common::resolveTempBase(QString()))),
+                "warning", "naikakukai");
         } else if (!gone && m_naikakukaiDiskGoneLogged) {
             m_naikakukaiDiskGoneLogged = false;
             log("디스크가 다시 붙었습니다 — 임시 파일도 제자리로 돌아갑니다.", "success", "naikakukai");
@@ -3621,28 +3428,6 @@ void HanishikiBackend::naikakukaiTick()
         log(QString("内閣会: %1 은(는) 현재 수집 중 — 다음 tick으로 연기")
             .arg(platform), "info", "naikakukai");
         return;
-    }
-
-    // ★ 디스크가 안 붙어 있어도 감시는 멈추지 않는다 — 1년 무인 실행이 이 기능의 존재
-    //   이유고, 여기서 막으면 '껐다 켜도 이어 돌게' 한 것과 정반대가 된다. 저장 경로(path)는
-    //   디스크 설정과 별개라 받은 파일은 제자리로 가고, 임시 파일만 폴백으로 간다.
-    //   설정을 더는 지우지 않으므로 남는 피해도 없다. 다만 조용히 넘어가지는 않는다 —
-    //   처음 한 번만 알린다(매 tick 마다 적으면 1년치 로그가 그 줄로 덮인다).
-    //   맥과 같은 선택이다(2026-09-20 합의).
-    if (m_config) {
-        const QString td = m_config->tempDir();
-        if (!td.isEmpty() && !QDir(td).exists()) {
-            if (!m_tempFallbackWarned) {
-                m_tempFallbackWarned = true;
-                log(QString("디스크가 붙어 있지 않습니다: %1").arg(td), "warning", "naikakukai");
-                log(QString("   감시는 그대로 돕니다 — 임시 파일만 %1 에 씁니다. 설정은 그대로입니다.")
-                        .arg(QDir::toNativeSeparators(Common::resolveTempBase(td))),
-                    "info", "naikakukai");
-            }
-        } else if (m_tempFallbackWarned) {
-            m_tempFallbackWarned = false;   // 다시 붙었다 — 다음에 빠지면 또 알린다
-            log("디스크가 다시 붙었습니다 — 임시 파일도 제자리로 돌아갑니다.", "success", "naikakukai");
-        }
     }
 
     log(QString("内閣会 폴링 → %1 / %2").arg(platform, target), "info", "naikakukai");
@@ -4408,55 +4193,6 @@ void HanishikiBackend::closeAllTerminalLogs()
 #endif
 }
 
-// ★ Windows: .bat 을 자체 콘솔 창 + Predormition 자식 프로세스로 실행.
-//   - CREATE_NEW_CONSOLE: 자체 콘솔 창 (사용자가 진행 상황을 봄)
-//   - STARTF_USESTDHANDLES 해제: 출력이 QProcess 파이프가 아닌 새 콘솔로 → 창에 보임
-//   - QProcess(this) 소유 + start(): cmd 가 Predormition.exe 의 자식 → 작업관리자에서 nested
-//   - 추적(m_childConsoleProcs) → closeAllTerminalLogs 에서 트리 kill (앱 종료 시 같이 종료)
-void HanishikiBackend::launchChildConsole(const QString &scriptPath)
-{
-    // ★ 수집 모니터링 터미널 — CREATE_NEW_CONSOLE 로 콘솔 창을 띄우되 카메라의 자식 QProcess 로
-    //   생성(작업관리자에서 카메라 휘하로 중첩). 다중/병렬 수집 시 진행 상황을 별도 창으로 본다.
-    //   (작업관리자 문제였던 detached 'cmd /c start' 최상위 콘솔은 계속 제거 유지 — 이건 그것과 별개.)
-#ifdef Q_OS_WIN
-    QProcess *p = new QProcess(this);
-    p->setProgram("cmd.exe");
-    p->setArguments({"/c", QDir::toNativeSeparators(scriptPath)});
-    p->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) {
-        // ★ Qt 는 부모가 콘솔 없는 GUI 앱(Predormition)이면 자식에 CREATE_NO_WINDOW 를 자동으로 붙인다
-        //   (GetConsoleWindow()==NULL). 그러면 CREATE_NEW_CONSOLE 를 줘도 새 콘솔이 숨겨져 안 뜬다.
-        //   → CREATE_NO_WINDOW 를 반드시 끄고, 창을 보이게 표시.
-        a->flags |= CREATE_NEW_CONSOLE;
-        a->flags &= ~CREATE_NO_WINDOW;
-        if (a->startupInfo) {
-            a->startupInfo->dwFlags &= ~STARTF_USESTDHANDLES;
-            a->startupInfo->dwFlags |= STARTF_USESHOWWINDOW;
-            a->startupInfo->wShowWindow = SW_SHOWNORMAL;
-        }
-    });
-    QProcess *raw = p;
-    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-        [this, raw](int, QProcess::ExitStatus) {
-            m_childConsoleProcs.removeAll(raw);
-            raw->deleteLater();
-        });
-    // ★ 진단: 콘솔 프로세스가 안 뜰 때 원인을 in-app 로그로 노출 (cmd 미해결/권한 등).
-    connect(p, &QProcess::errorOccurred, this, [this, scriptPath](QProcess::ProcessError e) {
-        qWarning() << "[launchChildConsole] errorOccurred" << e << scriptPath;
-        log(QString("⚠️ 모니터링 터미널 실행 실패 (QProcess error %1: %2)")
-                .arg(int(e)).arg(scriptPath), "warning");
-    });
-    connect(p, &QProcess::started, this, [scriptPath]() {
-        qWarning() << "[launchChildConsole] started OK" << scriptPath;
-    });
-    m_childConsoleProcs.append(p);
-    qWarning() << "[launchChildConsole] starting" << scriptPath;
-    p->start();
-#else
-    Q_UNUSED(scriptPath);
-#endif
-}
-
 void HanishikiBackend::updateStats(int posts, int media, const QString &status, const QString &platform)
 {
     QString p = platform.isEmpty() ? m_currentPlatform : platform;
@@ -4555,7 +4291,7 @@ void HanishikiBackend::loadConfig()
 
     m_config->load();
     // ★ 프록시 프로필·비밀번호는 화면으로 보내지 않는다. 목록은 getProxyProfiles 가 hasPass 만
-    //   담아 따로 보낸다. (윈도우는 여기로 프로필을 비밀번호째 통째로 보내고 있다 — 고칠 것.)
+    //   담아 따로 보낸다.
     QJsonObject cfgForUi = m_config->toJson();
     cfgForUi.remove("proxyProfiles");
     cfgForUi.remove("proxyPass");
@@ -4582,7 +4318,6 @@ void HanishikiBackend::loadConfig()
     // ★ 프록시 프로필 목록을 폼 복원보다 먼저 보낸다. 니코동 '프록시' 칸은 목록이 와야
     //   옵션이 생긴다 — 순서가 바뀌면 저장된 이름이 잠깐 '직접 연결' 로 보인다
     //   (화면 쪽 fillProxySelect 가 dataset.want 로 한 번 더 막는다).
-    //   윈도우는 시작 때 목록을 아예 안 보낸다(loadProxyProfiles 를 부르는 곳이 없다).
     getProxyProfiles();
 
     // Restore form inputs (대상, 경로, 유형, 옵션 등)
@@ -4937,9 +4672,9 @@ void HanishikiBackend::autoResumeWatchers()
 
     if (m_config->naikakukaiResume() && !m_naikakukaiRunning) {
         const QJsonArray watches = m_config->naikakukaiWatches();
-        if (watches.isEmpty()) {
-            log("内閣会: 끄기 전에 돌고 있었는데 감시 대상이 비어 있어 이어 돌리지 않습니다", "warning", "naikakukai");
-        } else {
+        // ★ 윈도우는 naikakukaiResume 기본값이 true 다(옛 설정 호환) — 대상이 비었으면 조용히 넘어간다
+        //   (처음 쓰는 사람에게 켤 때마다 경고를 찍지 않게).
+        if (!watches.isEmpty()) {
             log("内閣会 이어 돌림 — 앱을 끄기 전에 돌고 있었습니다", "info", "naikakukai");
             QJsonObject cfg;
             cfg["intervalMin"] = m_config->naikakukaiInterval();
@@ -5100,12 +4835,18 @@ void HanishikiBackend::setAllPathsToNas()
 
         log(QString("🌐 NAS 일괄 적용: %1").arg(root), "success", "settings");
         // 각 input 값 일괄 갱신
-        // ★ 앱 이름이 바뀌어도 기존 아카이브가 갈라지지 않게: 이미 쓰던 Predormition 폴더가 있으면 그대로 쓴다.
-        const QString brandDir = QFileInfo::exists(root + "/Chernobyl") ? QStringLiteral("Chernobyl")
-                                                                       : QStringLiteral("Predormition");
+        // ★ 앱 이름이 바뀌어도 기존 아카이브가 갈라지지 않게: 이미 쓰던 Chernobyl 폴더가 있으면 그대로 쓴다.
+        // ★ 실제 저장 경로는 root/<플랫폼> 이다 — 브랜드 폴더를 만들지 않는다.
+        //   여기만 옛 이름으로 한 겹 더 만들고 있어서, 이 기능을 되살리면 사용자의
+        //   NAS 에 있지도 않던 Predormition/ 폴더가 생긴다. 이미 쓰던 옛 폴더가
+        //   있으면 그것만 존중하고, 없으면 겹을 두지 않는다.
+        QString brandDir;
+        for (const QString &legacy : {QStringLiteral("Chernobyl"), QStringLiteral("Predormition")})
+            if (QFileInfo::exists(root + "/" + legacy)) { brandDir = legacy; break; }
         QString js = "(function(){ var c=0;";
         for (const auto &m : mappings) {
-            QString fullPath = root + "/" + brandDir + "/" + m.subdir;
+            QString fullPath = brandDir.isEmpty() ? (root + "/" + m.subdir)
+                                                : (root + "/" + brandDir + "/" + m.subdir);
             QDir().mkpath(fullPath);  // 미리 폴더 생성
             QString p = fullPath;
             QString safeInput  = Common::jsStringLiteral(QString(m.inputId));
@@ -5260,82 +5001,6 @@ void HanishikiBackend::setStorageMode(const QString &mode)
                       " })();").arg(safeMode, safeRoot);
         runJs(js);
     }, Qt::QueuedConnection);
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// 자가진단 — 화면에서 부르는 쪽
-//
-//   runSelfDiagnosis()      : 지금 검사한다. 네트워크 확인까지 전부 한다.
-//   loadLastSelfDiagnosis() : 마지막 결과를 다시 띄운다 (설정 탭을 열 때).
-//
-//   검사는 최대 1~2분 걸린다(유튜브에서 실제로 데이터를 받아 보므로).
-//   그래서 백그라운드 스레드에서 돌리고, 결과만 메인 스레드로 넘긴다.
-// ═════════════════════════════════════════════════════════════════════════
-void HanishikiBackend::pushSelfDiagnosisReport(const QString &report)
-{
-    // JSON 으로 감싸서 넘긴다. 따옴표·줄바꿈을 손으로 이스케이프하면 언젠가 깨진다
-    //   — 실제로 이 파일 곳곳의 replace("'","\\'") 방식이 한글 경로에서 깨졌다.
-    const QByteArray j = QJsonDocument(QJsonObject{{"report", report}})
-                             .toJson(QJsonDocument::Compact);
-    runJs("if(window.onSelfDiagnosisReport) onSelfDiagnosisReport("
-          + QString::fromUtf8(j) + ");");
-}
-
-void HanishikiBackend::runSelfDiagnosis()
-{
-    log("🩺 자가진단 시작 — 도구가 '실제로 되는지' 까지 확인합니다. "
-        "유튜브에서 데이터를 받아 보므로 1~2분 걸릴 수 있습니다.", "info", "settings");
-    runJs("if(window.onSelfDiagnosisBusy) onSelfDiagnosisBusy(true);");
-
-    QPointer<HanishikiBackend> self(this);
-    QThread *t = QThread::create([self]() {
-        const QString rep = SelfRepair::runStartupMaintenance(/*deep=*/true);
-        QMetaObject::invokeMethod(qApp, [self, rep]() {
-            if (!self) return;
-            self->pushSelfDiagnosisReport(rep);
-            self->runJs("if(window.onSelfDiagnosisBusy) onSelfDiagnosisBusy(false);");
-        }, Qt::QueuedConnection);
-    });
-    connect(t, &QThread::finished, t, &QObject::deleteLater);
-    t->start(QThread::LowPriority);
-}
-
-void HanishikiBackend::loadLastSelfDiagnosis()
-{
-    const QString rep = SelfRepair::lastReport();
-    pushSelfDiagnosisReport(rep.isEmpty()
-        ? QStringLiteral("아직 결과가 없습니다. [지금 검사] 를 누르면 도구를 실제로 돌려 봅니다.")
-        : rep);
-}
-
-void HanishikiBackend::openSelfDiagnosisFolder()
-{
-    openFolder(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/selfrepair");
-}
-
-void HanishikiBackend::openDiagnosticsFolder()
-{
-    // 예전에는 index.html 이 backend.openFolder('~/Library/Logs/DiagnosticReports') 를
-    // 직접 불렀다. 윈도우에서는 openFolder 가 ~ 를 C:\Users\<사용자> 로 펼친 뒤
-    // mkpath 까지 해서, 있지도 않은 C:\Users\<사용자>\Library\Logs\DiagnosticReports 를
-    // 새로 만들고 그 빈 폴더를 열었다. 사용자는 아무 로그도 못 보고 홈에 가짜 맥 트리만 남았다.
-#ifdef Q_OS_MACOS
-    openFolder(QDir::homePath() + "/Library/Logs/DiagnosticReports");
-#elif defined(Q_OS_WIN)
-    // 윈도우에서 실제로 볼 것이 있는 자리 두 곳.
-    //   1) 앱이 직접 남긴 로그 — 대개 이쪽이 답을 갖고 있다.
-    //   2) 윈도우가 남긴 크래시 덤프.
-    const QString appLog = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    const QString dumps  = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
-                           + "/CrashDumps";
-    // 앱 로그 폴더 하나만 연다 — 대개 이쪽이 답을 갖고 있고, 창을 둘 띄우면 성가시다.
-    openFolder(appLog);
-    // 윈도우 크래시 덤프 자리는 있을 때만 알려 준다. 없는 폴더를 만들어 주지 않는다.
-    if (QDir(dumps).exists())
-        log("윈도우 크래시 덤프도 있습니다: " + QDir::toNativeSeparators(dumps), "info", "settings");
-#else
-    openFolder(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
-#endif
 }
 
 void HanishikiBackend::openFolder(const QString &path)
@@ -5534,18 +5199,6 @@ void HanishikiBackend::startCollection(const QString &configJson)
             runJs("showDiskModal()");
             return;
         }
-        if (!QDir(td).exists()) {
-            // ★ 설정을 지우지 않는다(위 loadConfig 의 설명과 같은 이유).
-            //   이번 판만 멈추고, 디스크가 돌아오면 다음 차례부터 그대로 쓴다.
-            //   설정 창도 띄우지 않는다 — 고칠 것이 없다. 꽂으면 된다.
-            dbg("EARLY RETURN: 디스크 미연결", platformName);
-            log(QString("디스크가 연결되어 있지 않습니다: %1").arg(td), "error", platformName);
-            log("   이번 수집만 멈춥니다 — 설정은 그대로이고, 연결되면 그대로 씁니다.",
-                "info", platformName);
-            updateStats(0, 0, "대기", trackKey);
-            runJs(QString("setRunning('%1', false)").arg(platformName));
-            return;
-        }
     }
     dbg(QString("disk OK: %1").arg(m_config->tempDir()), platformName);
 
@@ -5574,7 +5227,8 @@ void HanishikiBackend::startCollection(const QString &configJson)
         dbg("EARLY RETURN: 저장 경로 없음", platformName);
         log("저장 경로가 비어 있습니다 — 이 플랫폼 탭에서 저장 경로를 먼저 정해 주세요.",
             "error", platformName);
-        runJs(QString("setRunning('%1', false)").arg(platformName));
+        runJsAll(QString("setRunning('%1', false)").arg(platformName));
+        updateStats(0, 0, "대기", trackKey);   // 화면이 시작할 때 '수집 중' 으로 바꿔 둔 것을 되돌린다
         return;
     }
     if (!QDir().mkpath(savePath)) {
@@ -5583,12 +5237,13 @@ void HanishikiBackend::startCollection(const QString &configJson)
                     "   드라이브가 연결돼 있는지, 쓰기 권한이 있는지 확인해 주세요.")
                 .arg(QDir::toNativeSeparators(savePath)),
             "error", platformName);
-        runJs(QString("setRunning('%1', false)").arg(platformName));
+        runJsAll(QString("setRunning('%1', false)").arg(platformName));
+        updateStats(0, 0, "대기", trackKey);
         return;
     }
     config["path"] = savePath;   // ~ 를 펼친 결과를 아래로 넘긴다
 
-    // Open terminal log window — 병렬이면 각 trackKey마다 별도 터미널 (개별 .command)
+    // Open terminal log window — 병렬이면 각 trackKey마다 별도 창
     openTerminalLog(trackKey, savePath);
 
     // Prevent system sleep during collection
@@ -5833,13 +5488,7 @@ void HanishikiBackend::stopCollection(const QString &platformName)
         // 앱 안 창에도 멈췄다고 적는다(창은 닫지 않는다 — 멈춘 뒤에도 읽을 수 있어야 한다).
         //   예전엔 1.5초 뒤 tail 스크립트를 이름으로 pkill 했다. 이제 그 스크립트가 없다.
         for (const QString &pk : platKeys) terminalWindowDone(pk, QStringLiteral("중지됨"), true);
-#ifdef Q_OS_WIN
-        // COMMANDLINE 은 taskkill 에 없는 필터라 아무것도 안 죽었다(그래서 옛 터미널
-        // 창이 계속 남았다). 명령줄로 PID 를 골라 그것만 죽인다.
-        QTimer::singleShot(1500, this, [this, platformName]() {
-            killByCommandLine("cmd.exe", "miyo_" + platformName + "_tail.bat");
-        });
-#endif
+        //   (윈도우도 같다 — .bat tail 창을 더는 만들지 않는다. 옛 판이 남긴 것은 시작 때 정리가 거둔다.)
     }
 
     // 2) 플랫폼별 "블로킹 지점" 즉시 해제 — 데몬 프로세스에 SIGTERM 쏴서
@@ -5994,8 +5643,20 @@ void HanishikiBackend::openDiagnosticsFolder()
     //   를 직접 불렀다. 맥에선 맞는 경로지만, 같은 화면을 쓰는 윈도우 판에선 openFolder 가 ~ 를
     //   윈도우 사용자 홈으로 펼친 뒤 mkpath 까지 해서 있지도 않은 맥 폴더를 새로 만들고 그 빈 폴더를 열었다.
     //   화면에 OS 경로를 박아 두면 한쪽 판에서 반드시 틀린다.
+#if defined(Q_OS_WIN)
+    // 윈도우에서 실제로 볼 것이 있는 자리 — 앱이 직접 남긴 로그(대개 이쪽이 답을 갖고 있다).
+    //   창을 둘 띄우면 성가시므로 앱 로그 폴더 하나만 연다. 윈도우 크래시 덤프 자리는
+    //   있을 때만 알려 준다 — 없는 폴더를 만들어 주지 않는다.
+    const QString appLog = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const QString dumps  = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+                           + "/CrashDumps";
+    openFolder(appLog);
+    if (QDir(dumps).exists())
+        log("윈도우 크래시 덤프도 있습니다: " + QDir::toNativeSeparators(dumps), "info", "settings");
+#else
     //   macOS 가 크래시 보고서(.ips)를 남기는 자리가 여기다.
     openFolder(QDir::homePath() + "/Library/Logs/DiagnosticReports");
+#endif
 }
 
 void HanishikiBackend::killZombieChromes()
@@ -6028,9 +5689,13 @@ void HanishikiBackend::killZombieChromes()
         if (QProcess::execute("/usr/bin/pkill", {"-9", "-f", absPath}) == 0) killed++;
     }
 #elif defined(Q_OS_WIN)
-    // COMMANDLINE 은 taskkill 에 없는 필터라 아무것도 안 죽었고, 나머지 둘은 필터가
-    // 없어 사용자가 쓰던 Chrome for Testing·본인 Chrome 의 크래시 핸들러까지 죽였다.
-    killCaptureBrowsers("chrome_capture_profile");
+    // 맥 '패턴 1' 과 같은 기준 — 이 앱 데이터 폴더의 전체 --user-data-dir 경로로만(Common 윈도우 갈래).
+    //   예전 killCaptureBrowsers("chrome_capture_profile") 는 명령줄 부분 일치라 다른 사본의 Chrome 까지 껐다.
+    {
+        const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        if (Common::killCaptureChromes(appData + "/chrome_capture_profile", true) > 0) killed++;
+        if (Common::killOrphanedCaptureChromes(QFileInfo(appData).absolutePath()) > 0) killed++;
+    }
 #endif
     log(QString("좀비 정리 완료 — capture chrome + 앱 내부 Chromium + helper/crashpad").arg(killed),
         "success", "settings");
@@ -6261,7 +5926,7 @@ void HanishikiBackend::testProxyProfile(const QString &json)
             QProcess c;
             c.setProcessEnvironment(env);
 #ifdef Q_OS_WIN
-            // 윈도우 10 이상은 System32 의 curl.exe — 기존 윈도우 proxyUsable 과 같은 이름으로 부른다.
+            // 윈도우 10 이상은 System32 의 curl.exe — proxyProblem 과 같이 이름으로 부른다.
             c.start(QStringLiteral("curl"), {"-sS", "--max-time", "20", "https://api.ipify.org"});
 #else
             c.start("/usr/bin/curl", {"-sS", "--max-time", "20", "https://api.ipify.org"});
@@ -7228,10 +6893,6 @@ void HanishikiBackend::stopNiconico()
     // 남은 것이 있으면 보조로 한 번 더 (명령줄에 앱 임시 폴더가 든 경우).
     killByCommandLine("yt-dlp.exe", killTag);
     killByCommandLine("ffmpeg.exe", killTag);
-#else
-    // 맥도 같은 이유로 우리 임시 폴더를 쓰는 것만 고른다.
-    QProcess::execute("pkill", {"-f", "yt-dlp.*abiwa_"});
-    QProcess::execute("pkill", {"-f", "ffmpeg.*abiwa_"});
 #endif
     QString statusFile = tempDir + "/miyo_yt_status.txt";
     QFile sf(statusFile);
@@ -7407,7 +7068,7 @@ bool HanishikiBackend::captureRealTweetPage(const QString &tweetUrl,
                     }
                     QString out = html;
                     QString metaTag = QString(
-                        "\n<!-- Predormition real Twitter capture (rendered DOM) -->\n"
+                        "\n<!-- Hanishiki real Twitter capture (rendered DOM) -->\n"
                         "<!-- source: %1 -->\n"
                         "<!-- captured: %2 -->\n")
                         .arg(tweetUrl.toHtmlEscaped(),
@@ -7544,7 +7205,7 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
             b64.replace("=", "").replace("/", "_").replace("+", "_");
             tkSuffix = "_" + b64;
         }
-        QMetaObject::invokeMethod(this, [this, chromePtr, needStart, checkDone, port, tkSuffix, trackKey, capProxyOn, capProxy]() {
+        QMetaObject::invokeMethod(this, [this, chromePtr, needStart, checkDone, port, tkSuffix, capProxyOn, capProxy]() {
             // 이미 떠 있는 Chrome 이 다른 출구로 떠 있으면 내리고 새로 띄운다 — 계정이 바뀌었다
             //   (하나를 같이 쓰는 순차 모드). 출구가 있어야 하는데 주소가 비었으면 역시 내린다 —
             //   새로 띄우려다 실패로 끝나야 직접 연결로 새지 않는다.
@@ -7556,7 +7217,6 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
             }
             if (!*chromePtr) {
                 *chromePtr = new RealChromeCrawler(this, this);
-                (*chromePtr)->setProxy(resolveProxyUrlFor(trackKey));
                 (*chromePtr)->setUseUserProfile(false);
                 (*chromePtr)->setDebugPort(port);
                 if (!tkSuffix.isEmpty()) {
@@ -8279,7 +7939,6 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
         }
         if (!*chromePP) {
             *chromePP = new RealChromeCrawler(this, this);
-            (*chromePP)->setProxy(resolveProxyUrlFor(trackKey));
             (*chromePP)->setUseUserProfile(false);
             (*chromePP)->setDebugPort(reservedPort);
             (*chromePP)->setProxyServer(capProxy, capProxyOn);
@@ -9503,21 +9162,15 @@ void HanishikiBackend::runTwitterCollection(const QJsonObject &config)
     // 병렬 모드: _parallelKey가 있으면 thread-local collector + 그 키의 isRunning 사용
     //   - 멤버 m_twitterCollector 덮어쓰기 race 방지
     //   - "새 트윗 확인" 기능은 sequential (단일) 수집 후에만 의미 있으므로 멤버 유지 안 함
-    // ★ 프록시(VPN) — 이 수집이 쓸 계정에 붙은 출구를 찾는다.
-    //   계정마다 다른 IP 로 나가게 하는 것이 목적이므로, 계정을 고른 뒤에 정해야 한다.
+    // ★ 프록시(VPN) — 데몬(initArgs proxy)도 이 수집 스레드에 걸린 출구와 같은 곳으로 보낸다.
+    //   출구는 수집을 띄운 쪽(startCollection · 内閣会)이 applyAccountProxyToCurrentThread 로
+    //   accountIdx 기준으로 이미 걸었다. 여기서 따로 첫 계정을 고르면 Qt 요청과 데몬이 다른 출구로 갈렸다.
+    //   HTTPS 프로필은 Common::proxyUrl() 이 중계기 주소를 준다 — 자격증명 든 https 주소를 평문으로 넘기지 않게.
     QString proxyUrlForRun;
-    {
-        const QJsonArray accs = enrichedConfig["accounts"].toArray();
-        const QJsonObject acct = accs.isEmpty() ? enrichedConfig : accs.first().toObject();
-        const QJsonObject prof = proxyForAccount(acct);
-        if (!prof.isEmpty()) {
-            proxyUrlForRun = proxyUrl(prof);
-            log(QString("프록시 사용 — 프로필 '%1' (%2)")
-                    .arg(prof["name"].toString(), proxyUrl(prof, false)), "info", "twitter");
-            QMutexLocker lock(&m_proxyPerTrackMutex);
-            const QString tk = config["_parallelKey"].toString();
-            m_proxyPerTrack[tk.isEmpty() ? QStringLiteral("*") : tk] = proxyUrlForRun;
-        }
+    if (Common::proxyEnabled()) {
+        proxyUrlForRun = Common::proxyUrl();
+        // 중계기를 못 띄웠으면 닫힌 길로 — 직접 연결로 새지 않게(bundledProcessEnv 와 같다)
+        if (proxyUrlForRun.isEmpty()) proxyUrlForRun = QStringLiteral("socks5://127.0.0.1:9");
     }
 
     const QString parallelKey = config["_parallelKey"].toString();
@@ -9590,21 +9243,11 @@ void HanishikiBackend::runBlueskyCollection(const QJsonObject &config)
     QDir().mkpath(tempDir);
     enrichedConfig["tempDir"] = tempDir;
 
-    // ★ 프록시(VPN) — 트위터 쪽과 같은 방식. 이 수집이 쓸 계정에 붙은 출구를 찾는다.
-    //   계정마다 다른 IP 로 나가게 하는 것이 목적이므로 계정을 고른 뒤에 정한다.
+    // ★ 프록시(VPN) — 트위터 쪽과 같은 방식. 데몬도 이 수집 스레드에 걸린 출구(accountIdx 기준)로.
     QString proxyUrlForRun;
-    {
-        const QJsonArray accs = enrichedConfig["accounts"].toArray();
-        const QJsonObject acct = accs.isEmpty() ? enrichedConfig : accs.first().toObject();
-        const QJsonObject prof = proxyForAccount(acct);
-        if (!prof.isEmpty()) {
-            proxyUrlForRun = proxyUrl(prof);
-            log(QString("프록시 사용 — 프로필 '%1' (%2)")
-                    .arg(prof["name"].toString(), proxyUrl(prof, false)), "info", "bluesky");
-            QMutexLocker lock(&m_proxyPerTrackMutex);
-            const QString tk = config["_parallelKey"].toString();
-            m_proxyPerTrack[tk.isEmpty() ? QStringLiteral("*") : tk] = proxyUrlForRun;
-        }
+    if (Common::proxyEnabled()) {
+        proxyUrlForRun = Common::proxyUrl();
+        if (proxyUrlForRun.isEmpty()) proxyUrlForRun = QStringLiteral("socks5://127.0.0.1:9");   // 닫힌 길
     }
 
     // 병렬 모드: trackKey 별 isRunning 참조 + thread-local collector
@@ -11809,79 +11452,6 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-//  프록시가 살아 있는지 쓰기 전에 본다.
-//    죽은 프록시를 그냥 넘기면 yt-dlp 가 한참 헤매다 영어 예외 한 줄만 남기고 끝난다.
-//    실제로 겪었다(2026-09-19): 프로필 '일본1' 의 jp.socks.nordhold.net 이 사라져
-//    "getaddrinfo failed" 만 반복했고, 화면에는 아무 설명도 없었다.
-//    1년을 무인으로 도는 물건에서 '조용히 실패' 는 안 된 것보다 나쁘다 —
-//    사용자는 받고 있다고 믿는다.
-//  이름이 풀리나 · 포트가 열리나 둘만 본다. 프록시가 실제로 통과시켜 주는지까지는
-//  보지 않는다(그건 testProxy 가 나가는 IP 로 확인한다).
-//  프록시가 '실제로 쓸 수 있는 상태' 인지 본다.
-//    이름이 풀리고 포트가 열려 있어도 아이디·비밀번호를 거절하면 못 쓴다. 그 둘을
-//    가려 주지 않으면 사용자는 무엇을 고쳐야 할지 알 수 없다 — 주소를 바꿔야 하는지,
-//    비밀번호를 다시 받아야 하는지.
-//    curl 로 한 번 실제로 나가 보고 종료코드로 가른다(실측, 2026-09-19):
-//        5 주소 못 찾음 · 7 연결 실패 · 28 시간 초과 · 97 프록시가 거절 · 0 정상
-//    ★ 자격증명은 명령줄에 올리지 않는다. 환경변수로 준다 —
-//      curl 이 ALL_PROXY 를 읽는 것도 종료코드가 갈리는 것도 실측으로 확인했다.
-//    curl 을 못 띄우면 막지 않는다. 확인 수단이 없다고 받기를 멈추면 그게 더 나쁘다.
-static bool proxyUsable(const QString &urlWithCreds, QString *why, int timeoutSec = 15)
-{
-    QProcess c;
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert(QStringLiteral("ALL_PROXY"), urlWithCreds);
-    env.insert(QStringLiteral("HTTPS_PROXY"), urlWithCreds);
-    c.setProcessEnvironment(env);
-    c.start(QStringLiteral("curl"),
-            {QStringLiteral("-s"), QStringLiteral("--max-time"), QString::number(timeoutSec),
-             QStringLiteral("https://api.ipify.org")});
-    if (!c.waitForStarted(5000)) {
-        if (why) *why = QStringLiteral("curl 을 실행할 수 없어 확인을 건너뜁니다");
-        return true;                       // 확인 불가 — 막지 않는다
-    }
-    if (!c.waitForFinished((timeoutSec + 5) * 1000)) {
-        c.kill();
-        c.waitForFinished(2000);
-        if (why) *why = QStringLiteral("응답이 없습니다(시간 초과)");
-        return false;
-    }
-    const int code = c.exitCode();
-    if (code == 0) return true;
-    if (why) {
-        switch (code) {
-        case 5:  *why = QStringLiteral("주소를 찾을 수 없습니다 — 서버가 없어졌거나 주소가 틀렸습니다"); break;
-        case 7:  *why = QStringLiteral("연결할 수 없습니다 — 포트가 막혔거나 서버가 꺼져 있습니다"); break;
-        case 28: *why = QStringLiteral("응답이 없습니다(시간 초과)"); break;
-        case 97: *why = QStringLiteral("프록시가 거절했습니다 — 아이디·비밀번호를 확인하세요"); break;
-        default: *why = QStringLiteral("연결 실패 (curl %1)").arg(code); break;
-        }
-    }
-    return false;
-}
-
-static bool proxyReachable(const QString &host, int port, QString *why, int timeoutMs = 6000)
-{
-    if (host.isEmpty() || port <= 0) {
-        if (why) *why = QStringLiteral("주소나 포트가 비어 있습니다");
-        return false;
-    }
-    const QHostInfo info = QHostInfo::fromName(host);
-    if (info.error() != QHostInfo::NoError || info.addresses().isEmpty()) {
-        if (why) *why = QStringLiteral("이름을 풀 수 없습니다(DNS) — 서버가 없어졌을 수 있습니다");
-        return false;
-    }
-    QTcpSocket sock;
-    sock.connectToHost(info.addresses().first(), quint16(port));
-    if (!sock.waitForConnected(timeoutMs)) {
-        if (why) *why = QStringLiteral("포트가 열리지 않습니다(%1초 기다림)").arg(timeoutMs / 1000);
-        return false;
-    }
-    sock.disconnectFromHost();
-    return true;
-}
-
 void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
 {
     // ★ platform: "youtube"(기본) 또는 "niconico" — yt-dlp 파이프라인 공용(니코동도 yt-dlp 가 nicovideo 처리).
@@ -11927,10 +11497,12 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     //     9 + 50 + 1 + 140 + 14(" [ID]") = 214바이트 — '.f251-drc.webm.part' · '.comments.txt' 가 붙어도 255 안쪽.
     //     잘린 두 제목이 같아도 ID 가 갈라 준다. 'channel' 의 이름은 예전 그대로 둔다.
     //   니코동 탭도 같은 칸을 보내고(niconico-save-layout), 内閣会의 니코동 감시는 그 탭에 저장된 값을 쓴다.
+    //   ★ 서식(꼬리)은 여기 한 곳에만 둔다 — 윈도우 .bat 도 이 꼬리를 longPathTemplate 로 감싸 쓴다.
     const bool flatLayout = config.value("saveLayout").toString() == QLatin1String("flat");
-    const QString ytOutTemplate = flatLayout
-        ? ytTypeDir + "/%(upload_date)s_%(channel,uploader).50B_%(title).140B [%(id)s].%(ext)s"
-        : ytTypeDir + "/%(channel,uploader)s/%(upload_date)s_%(title)s.%(ext)s";
+    const QString ytOutTail = flatLayout
+        ? QStringLiteral("%(upload_date)s_%(channel,uploader).50B_%(title).140B [%(id)s].%(ext)s")
+        : QStringLiteral("%(channel,uploader)s/%(upload_date)s_%(title)s.%(ext)s");
+    const QString ytOutTemplate = ytTypeDir + "/" + ytOutTail;
 
     // ★ 입력 형태별 URL 리졸버 — 전체 URL 뿐 아니라 핸들(@foo)·채널명(foo)·채널ID(UC…)·스킴없는 URL 도 허용.
     //   (기존엔 http 로 시작하는 줄만 받아 핸들/이름 입력이 무시됐고, 잘못된 핸들은 yt-dlp 가 404 [youtube:tab]).
@@ -12116,12 +11688,11 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
 
     // ★ 파일명 크로스플랫폼 — yt-dlp 가 Windows 금지문자/예약어를 모든 OS에서 회피하도록 강제.
     //   Windows-safe ⊂ macOS-safe 라 맥/윈도우 어디서나 열리는 이름이 됨 (NAS·이동 시 안전).
-    // ★ --trim-filenames 는 '채널별 폴더' 일 때만. yt-dlp 는 이 값으로 파일 이름이 아니라 -o 로 나온
-    //   경로 전체(폴더 포함)를 자른다(YoutubeDL._prepare_filename: no_ext[:trim_file_name]).
-    //   '폴더 없이' 에 걸면 이름 끝의 " [ID]" 가 잘려, 겹친 이름을 --no-overwrites 가 '이미 받음' 으로
-    //   건너뛰고 장부에까지 적는다(인계 10-06 L1). 그 이름은 .50B/.140B 로 이미 짧게 잘라 둔다.
+    // ★ --trim-filenames 는 쓰지 않는다(맥과 같다). yt-dlp 는 이 값으로 파일 이름이 아니라 -o 로 나온
+    //   경로 전체(폴더 포함)를 자른다(YoutubeDL._prepare_filename: no_ext[:trim_file_name]) — 그래서
+    //   윈도우 이름만 저장 폴더 깊이에 따라 맥보다 짧아져 두 판의 파일 이름이 갈라졌다.
+    //   260자는 아래 Common::longPathTemplate 의 \\?\ 접두어(폴더 몫)로 막는다.
     baseArgs << "--windows-filenames";
-    if (!flatLayout) baseArgs << "--trim-filenames" << "150";
 
     // ★ 프록시 경유 — 지역 제한이 걸린 영상(니코동의 일본 전용 so… 등)은 실제 접속 IP 를
     //   본다. yt-dlp 의 --geo-bypass·--xff(헤더 위조)는 통하지 않는다: 니코동 추출기가
@@ -12133,7 +11704,8 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     //   파일과 cmd.exe·yt-dlp 의 명령줄에 그대로 남는다 — 916c093 에서 메일 비밀번호를
     //   막은 것과 같은 종류다(맥 쪽에서 짚어 주었다, 2026-09-19).
     //   대신 자식 프로세스의 환경변수로 넘긴다(아래 cmd.exe 를 띄우는 자리). 파일에도, 명령줄에도 남지 않는다.
-    //   (맥은 인증이 있으면 로컬 중계기 주소를 --proxy 로 준다 — 윈도우는 이 길이라 중계기 없이 된다.)
+    //   (맥은 인증이 있으면 로컬 중계기 주소를 --proxy 로 준다 — 윈도우는 이 길이라 SOCKS5 · HTTP 는 중계기 없이 된다.
+    //    HTTPS 프로필만 중계기 주소가 된다 — 아래 Common::proxyUrl 설명.)
     //   yt-dlp 가 HTTP_PROXY/HTTPS_PROXY 를 읽는 것은 실측으로 확인했다:
     //     없이        → sm9 정상 수집
     //     죽은 주소   → "Unable to connect to proxy ... 127.0.0.1:9"
@@ -12160,11 +11732,12 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
                 return;
             }
             {
-                // ★ 쓰기 전에 살아 있는지 본다(위 proxyReachable 설명).
-                QString why;
-                // 먼저 이름·포트(빠르다), 그 다음 실제로 나가 본다(curl 종료 코드 — 자격증명까지 걸러진다).
-                if (!proxyReachable(prof["host"].toString(), prof["port"].toInt(), &why)
-                    || !proxyUsable(purl, &why)) {
+                // ★ 쓰기 전에 살아 있는지 본다 — 모든 판 입구와 같은 판정(proxyProblem: 이름을 먼저 풀고,
+                //   curl 종료 코드로 '주소가 틀림 · 서버가 꺼짐 · 비밀번호 거절' 을 가른다). 윈도우는 System32 curl.exe.
+                const QString why = proxyProblem(prof["host"].toString(), purl,
+                    platform == QLatin1String("niconico") ? QStringLiteral("https://www.nicovideo.jp/")
+                                                          : QStringLiteral("https://www.youtube.com/"));
+                if (!why.isEmpty()) {
                     // 주소는 자격증명 없는 형태로만 적는다.
                     log(QString("프록시 '%1' 에 닿지 않습니다 — %2\n"
                                 "   주소: %3\n"
@@ -12183,65 +11756,25 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
                                    prof["user"].toString(), prof["pass"].toString(),
                                    prof["type"].toString());
             _ytProxy.on = true;
-            proxyEnvUrl = purl;
-            // 로그에는 자격증명 없는 형태만 적는다(proxyUrl 의 두 번째 인자).
-            log(QString("%1 프록시 경유: %2 (미리 확인 통과)").arg(plabel, proxyUrl(prof, false)), "info", platform);
-        }
-    }
-
-    // ★ 프록시 경유 — 니코동의 일본 전용(so…) 영상은 실제 접속 IP 를 본다. yt-dlp 의
-    //   --geo-bypass·--xff(헤더 위조)는 안 통한다(니코동 추출기가 _GEO_BYPASS = False,
-    //   윈도우 실측 2026-09-18). 경유만이 방법이다.
-    //   프록시는 새로 받지 않고 '프록시 (VPN)' 탭에 이름 붙여 등록해 둔 프로필을 쓴다(proxyForAccount).
-    //   ★ 인증이 있으면 로컬 중계기(127.0.0.1)를 준다 — 이 인자들은 .command 스크립트 파일에
-    //     그대로 적히므로, 비밀번호를 넣으면 디스크와 명령줄(ps)에 남는다.
-    // ★ 고른 출구는 이 함수가 끝날 때까지 이 스레드에 걸어 둔다(끝나면 푼다).
-    //   예전엔 yt-dlp 인자만 만들고 곧바로 풀어서, 다운로드 뒤 '진짜 페이지 캡쳐' 가 출구 없이
-    //   — 이 컴퓨터의 회선으로 — 니코동 페이지를 열었다(일본 경유를 고른 의미가 거기서 깨졌다).
-    //   캡처(captureRealPageCDPLoginAware)는 이 스레드의 출구를 읽어 Chrome 에 그대로 건다.
-    struct YtProxyScope { bool on = false; ~YtProxyScope() { if (on) Common::clearThreadProxy(); } } _ytProxy;
-    {
-        const QString wantProxy = config["proxy"].toString().trimmed();
-        if (!wantProxy.isEmpty()) {
-            const QJsonObject prof = proxyForAccount(QJsonObject{{"proxy", wantProxy}});
-            QString arg;
-            if (!proxyUrl(prof).isEmpty()) {
-                // ★ 종류도 넘긴다 — HTTP 프로필이면 중계기가 상위로 HTTP CONNECT 를 쓴다(socks_relay.py).
-                Common::setThreadProxy(true, prof["host"].toString(), prof["port"].toInt(),
-                                       prof["user"].toString(), prof["pass"].toString(),
-                                       prof["type"].toString());
-                _ytProxy.on = true;
-                // 인증 없는 SOCKS5·HTTP 는 주소 그대로, 인증이 있거나 HTTPS 면 로컬 중계기(127.0.0.1)로 —
-                //   yt-dlp 인자는 스크립트 파일에 적히므로 비밀번호를 넣지 않는다. HTTPS 프록시는 중계기만
-                //   상위에 TLS 로 붙는다.
-                if (prof["user"].toString().isEmpty() && prof["type"].toString() != QLatin1String("https"))
-                    arg = proxyUrl(prof);
-                else
-                    arg = Common::proxyLocalRelayUrl();
-            }
-            // ★ 프록시를 못 쓰면 멈춘다 — 직접 연결로 몰래 넘어가지 않는다(윈도우 cba34f5 와 같은 뜻).
-            //   프록시를 켠 이유가 바로 그것이다. 지역 제한을 넘으려던 것이면 직접 연결은 어차피
-            //   막히고, 주소를 숨기려던 것이면 진짜 주소가 그대로 나간다. 예전엔 "직접 연결로
-            //   진행합니다" 하고 갔고, 죽은 프록시는 yt-dlp 가 몇 분 헤매다 영어 한 줄로 끝났다.
-            const QString pname = (wantProxy == QLatin1String("global")) ? QStringLiteral("기본 (예전 설정)") : wantProxy;
-            if (arg.isEmpty()) {
-                log(QString("프록시 '%1' 을 찾을 수 없습니다 — 다운로드를 멈춥니다. "
-                            "'프록시 (VPN)' 탭에 그 이름으로 등록돼 있는지(주소·포트까지) 확인하세요.").arg(pname), "error", platform);
-                showSystemNotification(QString(APP_NAME_DISPLAY) + " — " + plabel, QStringLiteral("프록시를 찾을 수 없어 다운로드를 멈췄습니다"));
+            // ★ yt-dlp 에 줄 주소는 이 스레드에 건 출구 그대로(Common::proxyUrl) — HTTPS 프로필이면
+            //   중계기 주소(127.0.0.1 · 자격증명 없음)가 된다. yt-dlp(파이썬)는 프록시까지 TLS 를 말하지 못해
+            //   https://아이디:비밀번호@… 를 그대로 주면 평문으로 붙는다. 중계기를 못 띄웠으면 멈춘다.
+            proxyEnvUrl = Common::proxyUrl();
+            if (proxyEnvUrl.isEmpty()) {
+                log(QString("프록시 '%1' — 중계기를 띄우지 못했습니다(HTTPS 프록시는 중계기로만 나갑니다). 다운로드를 멈춥니다.")
+                        .arg(pname), "error", platform);
+                showSystemNotification(QString(APP_NAME_DISPLAY) + " — " + plabel,
+                                       QStringLiteral("프록시 중계기를 띄우지 못해 다운로드를 멈췄습니다"));
                 updateStats(0, 0, "오류", platform);
                 return;
             }
-            const QString why = proxyProblem(prof["host"].toString(), proxyUrl(prof),
-                platform == QLatin1String("niconico") ? QStringLiteral("https://www.nicovideo.jp/") : QStringLiteral("https://www.youtube.com/"));
-            if (!why.isEmpty()) {
-                // 주소는 자격증명 없는 형태로만 적는다.
-                log(QString("프록시 '%1' 에 닿지 않습니다 — %2\n   주소: %3\n   다운로드를 멈춥니다.")
-                        .arg(pname, why, proxyUrl(prof, false)), "error", platform);
-                showSystemNotification(QString(APP_NAME_DISPLAY) + " — " + plabel, QStringLiteral("프록시에 닿지 않아 다운로드를 멈췄습니다 — ") + why);
-                updateStats(0, 0, "오류", platform);
-                return;
-            }
-            baseArgs << "--proxy" << arg;
+#ifndef Q_OS_WIN
+            // 맥 · 리눅스 갈래는 환경 변수 대신 --proxy 로 준다 — 인자는 스크립트 파일에 적히므로
+            //   인증이 있으면 로컬 중계기(127.0.0.1)로만(비밀번호를 파일 · 명령줄에 남기지 않게).
+            baseArgs << "--proxy"
+                     << ((prof["user"].toString().isEmpty() && prof["type"].toString() != QLatin1String("https"))
+                             ? proxyEnvUrl : Common::proxyLocalRelayUrl());
+#endif
             // 로그에는 자격증명 없는 형태만 적는다(proxyUrl 의 두 번째 인자).
             log(QString("%1 프록시 경유: %2 (미리 확인 통과)").arg(plabel, proxyUrl(prof, false)), "info", platform);
         }
@@ -12296,7 +11829,7 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     script += "@echo off\r\nsetlocal enabledelayedexpansion\r\nchcp 65001 >nul\r\n";
     // ★ 한글/유니코드 채널·제목 파일명 — Python(yt-dlp) UTF-8 강제 (윈도우 ANSI 코드페이지 폴백 → UnicodeError 방지)
     script += "set PYTHONUTF8=1\r\nset PYTHONIOENCODING=UTF-8\r\n";
-    script += "title Predormition - " + plabel + "\r\n";
+    script += "title " APP_NAME_DISPLAY " - " + plabel + "\r\n";
     // ★ exe 디렉토리를 PATH 앞에 추가 — yt-dlp 가 번들된 deno(JS 런타임)/ffmpeg 를 자동 탐지.
     //   yt-dlp 2025+ 는 YouTube 추출에 JS 런타임(deno) 필요 — 없으면 포맷 누락/실패 경고.
     //   (.bat 은 새 cmd 환경에서 실행되어 앱의 bundledProcessEnv PATH 를 못 받으므로 여기서 직접 설정)
@@ -12305,7 +11838,7 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     script += "set \"STOP_MARKER=" + QDir::toNativeSeparators(stopMarker) + "\"\r\n";
     script += "echo STARTED > \"%STATUS%\"\r\n";
     script += "echo =========================================\r\n";
-    script += "echo   Predormition - " + plabel + " Download\r\n";
+    script += "echo   " APP_NAME_DISPLAY " - " + plabel + " Download\r\n";
     script += QString("echo   총 %1개 URL\r\n").arg(urls.size());
     script += "echo =========================================\r\n";
     script += "echo.\r\nset SUCCESS=0\r\nset FAIL=0\r\n\r\n";
@@ -12314,8 +11847,8 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     //   %(channel,uploader)s 가 빈 문자열로 치환되어 파일명이 깨지는 버그 수정
     // ★ yt-dlp 는 파이썬이라 260자 넘는 출력 경로에서 죽는다 — 접두어를 붙인다.
     //   %% 로 바꾸는 것보다 반드시 앞에 와야 한다. (Common.h 의 longPathArg 설명)
-    QString outTemplate = Common::longPathTemplate(
-        ytTypeDir, "%(channel,uploader)s/%(upload_date)s_%(title)s.%(ext)s");
+    //   서식은 위 ytOutTail(저장 방식 channel|flat) 하나를 쓴다 — 두 군데 박아 두면 한쪽만 바뀐다.
+    QString outTemplate = Common::longPathTemplate(ytTypeDir, ytOutTail);
     outTemplate.replace("%", "%%");
 
     for (int i = 0; i < urls.size(); i++) {
@@ -12395,7 +11928,7 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     script += "STOP_MARKER=" + esc(stopMarker) + "\n";
     script += "echo 'STARTED' > \"$STATUS\"\n\n";
     script += "echo '========================================='\n";
-    script += "echo '  Predormition - YouTube ダウンロード'\n";
+    script += "echo '  " APP_NAME_DISPLAY " - " + plabel + " ダウンロード'\n";
     script += QString("echo '  총 %1개 URL'\n").arg(urls.size());
     script += "echo '========================================='\n";
     script += "echo ''\n\n";
@@ -12702,37 +12235,6 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
 
                 // 메타데이터 적용 + _complete 미러
                 if (!mediaPath.isEmpty()) {
-                    // ★ 댓글(--write-comments) → 읽기 좋은 .comments.txt (작성자 이름 + 프로필 + 텍스트 + 좋아요).
-                    //   info.json 의 comments[] 에 author/author_thumbnail/author_url/text/like_count 가 들어있음.
-                    {
-                        QJsonArray comments = info["comments"].toArray();
-                        QString commentsPath = base + ".comments.txt";
-                        if (!comments.isEmpty() && !QFileInfo::exists(commentsPath)) {
-                            QString out = info["title"].toString() + "\n"
-                                        + info["webpage_url"].toString() + "\n"
-                                        + QString("댓글 %1개\n").arg(comments.size())
-                                        + QString(60, '=') + "\n\n";
-                            for (const auto &cv : comments) {
-                                QJsonObject c = cv.toObject();
-                                QString author = c["author"].toString();
-                                QString prof = c["author_url"].toString();
-                                if (prof.isEmpty()) prof = c["author_thumbnail"].toString();
-                                QString text = c["text"].toString();
-                                int likes = c["like_count"].toInt();
-                                out += "■ " + author + (c["author_is_uploader"].toBool() ? " [작성자]" : "") + "\n";
-                                if (!prof.isEmpty()) out += "  프로필: " + prof + "\n";
-                                out += "  " + text.replace("\n", "\n  ") + "\n";
-                                if (likes > 0) out += QString("  👍 %1\n").arg(likes);
-                                out += "\n";
-                            }
-                            QFile cf(commentsPath);
-                            if (cf.open(QIODevice::WriteOnly | QIODevice::Text)) {
-                                cf.write(out.toUtf8());
-                                cf.close();
-                                log(QString("댓글 %1개 저장: %2").arg(comments.size()).arg(QFileInfo(commentsPath).fileName()), "success", platform);
-                            }
-                        }
-                    }
                     QString ytUrl = info["webpage_url"].toString();
                     QString uploader = info["uploader"].toString();
                     QString title = info["title"].toString().left(200);
@@ -12816,9 +12318,6 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
                                     .arg(QFileInfo(base + ".comments.txt").fileName()),
                                 "success", platform);
                         }
-                        // ※ 영상별 페이지 캡처(capturePageHtml) 제거 — YouTube 는 JS shell 이라
-                        //   캡처가 무의미한데 영상마다 30초 네트워크 요청이라 대형 채널 후처리를
-                        //   사실상 멈추게 하는 병목이었음. _complete 미러가 최우선.
                     }
                 }
 
@@ -14399,7 +13898,7 @@ void HanishikiBackend::startTrad(const QString &configJson)
         {
             QJsonObject manifest;
             manifest["version"] = "1";
-            manifest["app"] = "Predormition";
+            manifest["app"] = QStringLiteral(APP_NAME_ASCII);
             manifest["app_version"] = QCoreApplication::applicationVersion().isEmpty()
                 ? QString("1.0") : QCoreApplication::applicationVersion();
             manifest["format"] = "PNG+ZIP Polyglot";
@@ -15204,7 +14703,7 @@ void HanishikiBackend::startTrad(const QString &configJson)
         // 임시 폴더 정리 (.trad_tmp)
         QDir(tempDir).removeRecursively();
 
-        FileHelper::setDownloadMeta(outputPath, "Predormition trad");
+        FileHelper::setDownloadMeta(outputPath, "Hanishiki trad");
 
         // ★ WebDAV 자동 업로드 (활성화 시)
         QMetaObject::invokeMethod(this, [this, outputPath]() {
@@ -16181,7 +15680,14 @@ void HanishikiBackend::getSystemInfo()
 
         QStringList info;
         info << "═══════════════════════════════════";
-        info << "  Predormition 시스템 정보";
+        // ★ 옛 이름(カメラ)이 그대로 남아 있었다 — 앱 이름이 네 번 바뀌는 동안 여기만
+        //   따라오지 못했다. 판 이름은 CODENAME 에서 온다.
+        {
+            const QString codename = QStringLiteral(PREDORMITION_CODENAME);
+            info << QString("  %1%2 시스템 정보")
+                        .arg(QStringLiteral(APP_NAME_DISPLAY),
+                             codename.isEmpty() ? QString() : (" " + codename));
+        }
         info << "═══════════════════════════════════";
 
         // App version
@@ -16352,7 +15858,13 @@ void HanishikiBackend::updateModules()
         //   업그레이드하면 Instagram 쿠키 추출이 조용히 죽었다. 버전 고정도 없어서
         //   업그레이드마다 최신판을 받아 오던 것도 문제였다(pin 의 취지가 무너진다).
         //   번들된 requirements.txt 를 읽어 한 곳에서만 관리한다.
-        QStringList packages = Common::bundledRequirements();
+        // ★ 여기는 '최신으로 올리는' 자리라 버전 고정을 떼고 넘긴다.
+        //   예전엔 'yt-dlp==2026.7.4' 를 그대로 넘겨서 pip 가 늘
+        //   "Requirement already satisfied" 로 끝냈고, 앱은 그걸 "최신" 이라고
+        //   적었다. 화면 문구는 '최신 버전으로 업데이트' 인데 실제로는 한 판도
+        //   올라가지 않았다 — 가장 알아채기 어려운 형태의 고장이다.
+        //   (환경을 '다시 만드는' 쪽은 고정본 그대로 쓴다 — 재현성이 거기선 목적이다)
+        QStringList packages = Common::bundledRequirements(/*stripPins=*/true);
 
         int updated = 0;
         int failed = 0;
@@ -16926,7 +16438,7 @@ void HanishikiBackend::llmChat(const QString &historyJson)
 {
     const QJsonArray history = QJsonDocument::fromJson(historyJson.toUtf8()).array();
     QThread *t = QThread::create([this, history]() {
-        // ★ 자율 자가수리 라우팅 — 사용자가 '코드 점검/수리'를 부탁하면, 대화 응답 대신 오픈클로가
+        // ★ 자율 자가수리 라우팅 — 사용자가 '코드 점검/수리'를 부탁하면, 대화 응답 대신 ハニワ가
         //   스스로 앱을 점검·수리한다(자동 자가수리 발동). 소소한 잡담/질문은 그대로 대화로 처리.
         {
             QString lastUser;
@@ -17063,10 +16575,10 @@ void HanishikiBackend::llmChat(const QString &historyJson)
             if (f.open(QIODevice::ReadOnly)) { report = QString::fromUtf8(f.readAll()).left(2000); f.close(); }
         }
         const QString sys = QString(
-            "너는 이 컴퓨터 안에서(인터넷 없이) 돌아가는 로컬 AI '오픈클로'야. 무엇이든 자유롭게 대화하는 "
+            "너는 이 컴퓨터 안에서(인터넷 없이) 돌아가는 로컬 AI 'ハニワ'야. 무엇이든 자유롭게 대화하는 "
             "친근한 AI 비서지 — 질문 답하기, 아이디어 내기, 글쓰기, 번역, 코드, 그냥 잡담까지 뭐든 편하게 도와줘. "
             "부드러운 존댓말로 자연스럽고 사람스럽게, 설명서 같은 딱딱한 말투는 피하고. 이모지도 가끔 써도 좋아. "
-            "너는 마침 카메라(소셜 미디어 아카이빙) 앱 안에 들어와 있어서 그 앱 문제도 도울 수 있어 — 수집이 "
+            "너는 마침 " + QStringLiteral(APP_NAME_DISPLAY) + "(소셜 미디어 아카이빙) 앱 안에 들어와 있어서 그 앱 문제도 도울 수 있어 — 수집이 "
             "안 되면 원인을 짚고 설정→환경 복구·모듈 업데이트·토큰 추출·yt-dlp 갱신·자가진단 같은 기능을 권해줘. "
             "하지만 앱 얘기만 하는 게 아니라, 사용자가 뭘 물어보든 편하게 응해. 답은 필요한 만큼만, 모르면 솔직히 "
             "모른다고 해. 사용자가 짧게 시키면(예: '고쳐') 되묻기보다 아는 것으로 먼저 답해.\n\n"
@@ -17112,7 +16624,7 @@ void HanishikiBackend::llmChat(const QString &historyJson)
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// openLlmTerminal — ハニワ(로컬 LLM)를 대화형 창으로 띄운다. 맥은 앱 안 창(TerminalWindow), 윈도우는 cmd 창(.bat).
+// openLlmTerminal — ハニワ(로컬 LLM)를 앱 안 대화형 창(TerminalWindow)으로 띄운다(맥 · 윈도우 같다).
 //   기존 openTerminalLog 는 로그를 tail 하는 '단방향' 뷰어였다. 이건 사용자가
 //   직접 타이핑해 로컬 AI 와 대화하는 '양방향' 셸 (127.0.0.1:8737 /v1/chat).
 //   ★ 이 터미널은 로컬 전용이다. 온라인 API 로 붙이려면 생성되는 파이썬 스크립트에
@@ -17134,24 +16646,24 @@ void HanishikiBackend::openLlmTerminal()
 
     // 1) 서버가 꺼져 있으면 먼저 기동 (REPL 이 준비될 때까지 폴링하므로 논블로킹)
     if (!(m_llmProc && m_llmProc->state() != QProcess::NotRunning)) {
-        log("🖥 오픈클로 터미널 — AI 서버를 기동합니다 (모델 로딩에 수 초 소요)...", "info", "settings");
+        log("🖥 ハニワ 터미널 — AI 서버를 기동합니다 (모델 로딩에 수 초 소요)...", "info", "settings");
         startLocalLlm(m_llmModelHint);   // 드롭다운에서 고른 모델로 기동
     } else {
-        log("🖥 오픈클로 터미널을 엽니다...", "info", "settings");
+        log("🖥 ハニワ 터미널을 엽니다...", "info", "settings");
     }
 
     const QString base = Common::resolveTempBase(m_config ? m_config->tempDir() : QString());
-    const QString dir  = base + "/abiwa_openclaude";
+    const QString dir  = base + "/abiwa_haniwa";
     QDir().mkpath(dir);
 
-    const QString replPath   = dir + "/openclaude_repl.py";
+    const QString replPath   = dir + "/haniwa_repl.py";
     const QString reportPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
                                + "/selfrepair/last_report.txt";
 
     // ── 대화형 REPL 클라이언트 (stdlib only) — SSE 스트리밍으로 토큰 실시간 출력 ──
     static const char *REPL_PY = R"PYEOF(#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 오픈클로 대화형 터미널 — Predormition 내장 로컬 LLM 클라이언트.
+# ハニワ 대화형 터미널 — @@APPNAME@@ 내장 로컬 LLM 클라이언트.
 # 127.0.0.1:8737 (llama-server, OpenAI 호환) 와 SSE 스트리밍으로 대화한다.
 import json, os, sys, time, urllib.request
 try:
@@ -17160,7 +16672,7 @@ except Exception:
     pass
 
 BASE   = "http://127.0.0.1:8737"
-REPORT = os.environ.get("OPENCLAUDE_REPORT", "")
+REPORT = os.environ.get("HANIWA_REPORT", "")
 C = {"reset":"\033[0m","dim":"\033[90m","user":"\033[1;35m","ai":"\033[1;36m",
      "ok":"\033[1;32m","warn":"\033[1;33m","err":"\033[1;31m","brand":"\033[1;35m"}
 # 앱 안 창(파이프)이면 색 코드를 쓰지 않는다 — 콘솔이 아니면 해석되지 않는다.
@@ -17186,7 +16698,7 @@ def report_text():
             pass
     return "(보고서 없음)"
 
-SYS = ("너는 이 컴퓨터 안에서(인터넷 없이) 돌아가는 로컬 AI '오픈클로'야. 무엇이든 자유롭게 대화하는 친근한 "
+SYS = ("너는 이 컴퓨터 안에서(인터넷 없이) 돌아가는 로컬 AI 'ハニワ'야. 무엇이든 자유롭게 대화하는 친근한 "
        "AI 비서지 — 질문 답하기, 아이디어, 글쓰기, 번역, 코드, 잡담까지 뭐든 편하게 도와줘. 부드러운 존댓말로 "
        "자연스럽고 사람스럽게, 딱딱한 설명서 말투는 피하고. 마침 카메라(소셜 미디어 아카이빙) 앱 안에 있어서 "
        "그 앱 문제도 도울 수 있어 — 수집이 안 되면 원인을 짚고 설정→환경 복구·모듈 업데이트·토큰 추출·"
@@ -17251,7 +16763,7 @@ def main():
         if u.lower() in ("exit","quit") or u in ("종료","끝"):
             break
         messages.append({"role":"user","content":user})
-        sys.stdout.write(C["ai"] + "오픈클로 > " + C["reset"]); sys.stdout.flush()
+        sys.stdout.write(C["ai"] + "ハニワ > " + C["reset"]); sys.stdout.flush()
         reply = stream(messages)
         print()
         messages.append({"role":"assistant","content":reply})
@@ -17262,47 +16774,44 @@ if __name__ == "__main__":
 )PYEOF";
     {
         QFile f(replPath);
-        if (f.open(QIODevice::WriteOnly | QIODevice::Text)) { f.write(REPL_PY); f.close(); }
-        else { log("❌ 오픈클로 REPL 파일 생성 실패", "error", "settings"); return; }
+        // ★ 원시 문자열 안에서는 매크로 이어붙이기가 안 된다 — 표식을 두고 여기서 바꾼다.
+        QString repl = QString::fromUtf8(REPL_PY);
+        repl.replace(QStringLiteral("@@APPNAME@@"), QStringLiteral(APP_NAME_DISPLAY));
+        if (f.open(QIODevice::WriteOnly | QIODevice::Text)) { f.write(repl.toUtf8()); f.close(); }
+        else { log("❌ ハニワ REPL 파일 생성 실패", "error", "settings"); return; }
     }
 
-#ifdef Q_OS_WIN
-    const QString bundlePyW   = Common::bundledResourcesDir() + "/python_env/python.exe";
-    QString scriptPath = dir + "/openclaude.bat";
-    QFile script(scriptPath);
-    if (script.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QString c;
-        c += "@echo off\r\n";
-        c += "chcp 65001 >nul\r\n";
-        c += "title 오픈클로 - 카메라 로컬 AI\r\n";
-        c += "set PYTHONDONTWRITEBYTECODE=1\r\n";
-        c += "set OPENCLAUDE_REPORT=" + QDir::toNativeSeparators(reportPath) + "\r\n";
-        c += "set REPL=" + QDir::toNativeSeparators(replPath) + "\r\n";
-        c += "for %%P in (\"" + QDir::toNativeSeparators(bundlePyW) + "\") do if exist \"%%~P\" (\"%%~P\" \"%REPL%\" & goto :done)\r\n";
-        c += "python \"%REPL%\"\r\n";
-        c += ":done\r\n";
-        c += "echo.\r\n";
-        c += "pause >nul\r\n";
-        script.write(c.toUtf8());
-        script.close();
-    }
-    QProcess::startDetached("cmd.exe", {"/c", "start", "오픈클로", QDir::toNativeSeparators(scriptPath)});
-#else
     // ★ 앱 안 대화형 창으로 연다(예전엔 .command 를 만들어 Terminal.app 으로 띄웠다).
     //   파이썬을 앱이 직접 돌리고, 창 아래 입력 줄의 글을 표준입력으로 넘긴다.
     //   터미널 앱을 부리지 않으니 '자동화' 허락을 묻지 않고, 앱을 끄면 대화도 같이 끝난다.
+    //   ★ 윈도우도 같은 창이다. 예전엔 cmd 창(.bat · start)을 따로 띄웠는데, 콘솔 글꼴(Consolas)에
+    //     한글 · 가타카나 글리프가 없어 'ハニワ' 가 '?' 로 깨졌고, 앱을 꺼도 창이 남았다
+    //     (윈도우 a03567d · c0b90fd 가 수집 콘솔을 없앤 것과 같은 까닭 — 맥 인계도 '앱 안 TerminalWindow').
     //
     // python 후보: 쓰기가능 env → 번들(arch) → 번들 → 시스템 (전부 앱 내부 우선)
     // 외부 복사본은 더 이상 쓰지 않는다(activePythonEnvDir 이 앱 내부 고정).
     //   옛 설치에서 남은 외부본이 있으면 그게 먼저 잡혀 '고친 줄 알았는데 옛 환경이
     //   도는' 상태가 되므로, 후보에서 뺀다.
     QString py;
+#ifdef Q_OS_WIN
+    for (const QString &cand : { Common::activePythonEnvDir() + "/python.exe",
+                                 Common::bundledResourcesDir() + "/python_env/python.exe" }) {
+        if (QFileInfo::exists(cand)) { py = cand; break; }
+    }
+    if (py.isEmpty()) {
+        // 마지막 수단 — PATH 의 python(예전 .bat 의 'python "%REPL%"' 자리).
+        //   스토어 스텁(WindowsApps\python.exe)은 돌리면 스토어를 열 뿐이라 건너뛴다.
+        const QString sysPy = QStandardPaths::findExecutable(QStringLiteral("python"));
+        if (!sysPy.isEmpty() && !sysPy.contains(QLatin1String("WindowsApps"), Qt::CaseInsensitive)) py = sysPy;
+    }
+#else
     for (const QString &cand : { Common::activePythonEnvDir() + "/bin/python3",
                                  Common::bundledResourcesDir() + "/python_env_arm64/bin/python3",
                                  Common::bundledResourcesDir() + "/python_env/bin/python3",
                                  QStringLiteral("/usr/bin/python3") }) {
         if (QFileInfo(cand).isExecutable()) { py = cand; break; }
     }
+#endif
     if (py.isEmpty()) {
         log("❌ python3 을 찾지 못해 ハニワ 창을 열 수 없습니다.", "error", "settings");
         return;
@@ -17359,7 +16868,6 @@ if __name__ == "__main__":
     p->start();
     if (!p->waitForStarted(3000))
         log("❌ ハニワ 대화를 시작하지 못했습니다: " + p->errorString(), "error", "settings");
-#endif
 }
 
 // 창 끌어서 옮기기(winStartMove)는 윈도우에선 위쪽 'Frameless 창 컨트롤' 자리에 있다.
@@ -17397,6 +16905,7 @@ void HanishikiBackend::setWindowChrome(bool dark)
     if (m_window) m_window->setChromeTheme(dark);
 }
 
+// 드롭다운에서 모델을 바꾸면 호출 — 이후 자동기동(터미널/채팅/자동수리)이 이 모델을 쓴다.
 void HanishikiBackend::setLlmModel(const QString &hint)
 {
     m_llmModelHint = hint;
@@ -17510,7 +17019,7 @@ void HanishikiBackend::aiFixScript(const QString &name, const QString &problem)
 {
     if (!kEditableScripts.contains(name)) { log("편집 불가 스크립트", "error", "settings"); return; }
     if (m_scriptFixBusy.exchange(true)) { log("AI 스크립트 수리가 이미 진행 중입니다.", "warning", "settings"); return; }
-    log(QString("🤖 오픈클로가 %1 을(를) 읽고 수정안을 만드는 중...").arg(name), "info", "settings");
+    log(QString("🤖 ハニワ가 %1 을(를) 읽고 수정안을 만드는 중...").arg(name), "info", "settings");
 
     QThread *t = QThread::create([this, name, problem]() {
         const QString base = llmBase();
@@ -17523,7 +17032,7 @@ void HanishikiBackend::aiFixScript(const QString &name, const QString &problem)
         QMetaObject::invokeMethod(this, [this, name, out]() {
             if (out.trimmed().isEmpty()) { log("⚠️ AI 가 수정안을 만들지 못했습니다.", "warning", "settings"); }
             else { QString err; if (applyScriptPatchImpl(name, out, err))
-                       log(QString("✅ 오픈클로가 %1 을(를) 고쳐 적용했습니다(문법검증 통과). 문제 있으면 '원본으로 초기화'.").arg(name), "success", "settings");
+                       log(QString("✅ ハニワ가 %1 을(를) 고쳐 적용했습니다(문법검증 통과). 문제 있으면 '원본으로 초기화'.").arg(name), "success", "settings");
                    else log(QString("❌ AI 수정안이 문법검증에서 걸려 적용 안 함(안전). 사유: %1").arg(err), "error", "settings"); }
             getScriptSource(name);
             m_scriptFixBusy = false;
@@ -17583,10 +17092,18 @@ static QString webSearchSnippets(const QString &apiKey, const QString &query)
 static QString archiveScriptPath(const QString &name)
 {
     const QStringList cands = {
+        // ★ AI 자가수리가 고친 사본이 맨 앞이다(맥과 같다).
+        //   예전엔 이 목록에 override 가 없어서, AI 가 archive_ask.py 를 고쳐
+        //   override 에 저장해도 실행은 늘 번들 원본으로 됐다. 즉 '고쳤다' 는
+        //   말만 나오고 동작은 하나도 안 바뀌는, 알아채기 힘든 고장이었다.
+        //   getScriptSource/applyScriptPatch 쪽(activeToolScriptPath)과 우선순위를
+        //   같게 맞춘다 — 읽기와 실행이 다른 파일을 보면 안 된다.
+        Common::scriptOverrideDir() + "/" + name,
         Common::bundledResourcesDir() + "/tools/archive/" + name,
         Common::bundledResourcesDir() + "/../../../../scripts/" + name,   // 개발 트리
         QCoreApplication::applicationDirPath() + "/scripts/" + name,      // 윈도우 배포
         QCoreApplication::applicationDirPath() + "/tools/archive/" + name,
+        QCoreApplication::applicationDirPath() + "/tools/" + name,        // 윈도우 CMake 가 실제로 싣는 자리
     };
     for (const QString &c : cands)
         if (QFileInfo::exists(c)) return QFileInfo(c).canonicalFilePath();
@@ -17652,6 +17169,87 @@ void HanishikiBackend::archiveStatus()
     a[1] = a[1].arg(QString(db).replace('\'', ""));
     cnt->setArguments(a);
     cnt->start();
+}
+
+// 보관물 대조 — 남겨 둔 기록과 지금을 견준다.
+//   ★ 왜 필요한가. 폴더마다 __ARCHIVE_MANIFEST__.json 을 남기고 있었는데 그것을
+//     다시 읽는 코드가 없었다. 몇 년 뒤 파일이 조용히 사라져도 아무도 모른다.
+//     보관이 목적인 앱에서 그건 가장 나쁜 고장이다.
+void HanishikiBackend::archiveVerify(const QString &root, bool record)
+{
+    const QString script = archiveScriptPath("archive_verify.py");
+    if (script.isEmpty()) {
+        log("❌ 대조 스크립트를 찾을 수 없습니다 (번들 손상).", "error", "settings");
+        return;
+    }
+    QString dir = root.trimmed();
+    if (dir.isEmpty() && m_config) dir = m_config->tempDir();
+    if (dir.isEmpty() || !QDir(dir).exists()) {
+        log(QString("❌ 산출물 폴더가 없습니다: %1").arg(dir.isEmpty() ? "(지정 안 됨)" : dir),
+            "error", "settings");
+        return;
+    }
+
+    log(record ? "해시를 남기는 중… (처음 한 번은 오래 걸립니다)"
+               : "보관물을 대조하는 중…", "info", "settings");
+
+    QThread *t = QThread::create([this, script, dir, record]() {
+        QProcess p;
+        QProcessEnvironment env = Common::bundledProcessEnv();
+        env.insert("PYTHONIOENCODING", "utf-8");
+        p.setProcessEnvironment(env);
+        QStringList args{script};
+        if (record) args << "--record";
+        args << dir;
+        p.start(Common::bundledPythonPath(), args);
+        if (!p.waitForStarted(10000)) {
+            QMetaObject::invokeMethod(this, [this]() {
+                log("❌ 대조를 시작하지 못했습니다.", "error", "settings"); });
+            return;
+        }
+        // 수만 건이면 오래 걸린다 — 넉넉히 기다리되 영원히는 아니다.
+        p.waitForFinished(30 * 60 * 1000);
+        const QByteArray out = p.readAllStandardOutput();
+        const QJsonObject o = QJsonDocument::fromJson(out).object();
+
+        QMetaObject::invokeMethod(this, [this, o, record]() {
+            if (o.contains("error")) {
+                log(QString("❌ %1").arg(o.value("error").toString()), "error", "settings");
+                return;
+            }
+            if (record) {
+                const QJsonArray a = o.value("recorded").toArray();
+                for (const QJsonValue &v : a) {
+                    const QJsonObject r = v.toObject();
+                    log(QString("🔒 %1 — %2개 기록 (새로 %3 · 그대로 %4)")
+                            .arg(r.value("dir").toString())
+                            .arg(r.value("total").toInt())
+                            .arg(r.value("hashed").toInt())
+                            .arg(r.value("reused").toInt()), "info", "settings");
+                }
+                log(QString("✅ 해시 기록 완료 — 폴더 %1곳").arg(a.size()), "success", "settings");
+                return;
+            }
+            const int fail = o.value("fail").toInt();
+            const int warn = o.value("warn").toInt();
+            for (const QJsonValue &v : o.value("results").toArray()) {
+                const QJsonObject r = v.toObject();
+                const QString lv = r.value("level").toString();
+                const QString mark = (lv == "fail") ? "❌" : (lv == "warn") ? "⚠" : "✅";
+                log(QString("%1 %2 — %3").arg(mark, r.value("dir").toString(),
+                                              r.value("msg").toString()),
+                    lv == "fail" ? "error" : (lv == "warn" ? "warning" : "info"), "settings");
+            }
+            if (fail == 0 && warn == 0)
+                log(QString("✅ 대조 완료 — 폴더 %1곳, 잃은 것 없음")
+                        .arg(o.value("checked").toInt()), "success", "settings");
+            else
+                log(QString("대조 완료 — 문제 %1 · 주의 %2").arg(fail).arg(warn),
+                    fail ? "error" : "warning", "settings");
+        }, Qt::QueuedConnection);
+    });
+    connect(t, &QThread::finished, t, &QObject::deleteLater);
+    t->start();
 }
 
 void HanishikiBackend::archiveIndex(const QString &root)
@@ -17789,7 +17387,7 @@ void HanishikiBackend::autoRepair()
         }
 
         // 1.5) ★ 코드 자가수리 — 편집가능 스크립트 문법(py_compile)을 자동 점검하고, 깨진 스크립트는
-        //       오픈클로가 스스로 코드를 다시 써서 고친다. 백업·문법검증·실패 시 자동 원복(안전).
+        //       ハニワ가 스스로 코드를 다시 써서 고친다. 백업·문법검증·실패 시 자동 원복(안전).
         say("info", "앱 스크립트 코드를 점검하는 중입니다…");
         {
             QStringList broken, fixed, kept;
@@ -17804,7 +17402,7 @@ void HanishikiBackend::autoRepair()
                 if (pc.exitStatus() == QProcess::NormalExit && pc.exitCode() == 0) continue;  // 문법 정상
                 const QString err = QString::fromUtf8(pc.readAllStandardError()).left(400);
                 broken << sc;
-                say("run", "🩺 " + sc + " 문법 오류 감지 → 오픈클로가 코드 수리 시도");
+                say("run", "🩺 " + sc + " 문법 오류 감지 → ハニワ가 코드 수리 시도");
                 const QString newSrc = aiRewriteScriptSync(sc, "파이썬 문법 오류(py_compile 실패):\n" + err);
                 if (newSrc.trimmed().isEmpty()) { say("error", "⚠️ " + sc + " — AI 가 수정안을 만들지 못함"); continue; }
                 QString e2;
@@ -17831,7 +17429,7 @@ void HanishikiBackend::autoRepair()
 
         // 3) AI 에게 '어떤 수리를 돌릴지' JSON 으로만 결정하게 한다.
         const QString sys = QString::fromUtf8(
-            "너는 Predormition 앱의 자동 수리 결정 엔진이다. 아래 '자가진단'을 읽고 실행할 수리 동작을 고른다.\n"
+            "너는 " APP_NAME_DISPLAY " 앱의 자동 수리 결정 엔진이다. 아래 '자가진단'을 읽고 실행할 수리 동작을 고른다.\n"
             "선택 가능한 동작(정확히 이 영어 이름만 사용):\n"
             "- repairPython : 파이썬 실행환경이 깨졌을 때(모듈 import 실패, twikit/atproto 없음, site-packages 손상)\n"
             "- updateModules : 모듈이 오래되어 수집이 실패할 때 pip 업그레이드(twikit, yt-dlp, atproto 등)\n"
@@ -19137,6 +18735,10 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
         QStringList headers2 = {"id","title","fee","url","published","type","like_count","comment_count","cover_image"};
         for (int c = 0; c < headers2.size(); ++c) doc.write(1, c+1, headers2[c]);
         int row = 2;
+    // ★ 버퍼가 조용히 실패했으면(디스크 참·권한) 결과가 말없이 짧아진다. 반드시 알린다.
+    if (!allPosts.ok())
+        log("⚠ 수집 버퍼 쓰기에 실패한 항목이 있습니다 — 결과가 일부 빠졌을 수 있습니다."
+            " 저장 디스크의 남은 공간을 확인하십시오.", "error", "fanbox");
         QJsonArray all = allPosts.readAll();
         for (const auto &v : all) {
             QJsonObject o = v.toObject();
@@ -19406,7 +19008,7 @@ void HanishikiBackend::writeStartupLog()
 
     QTextStream ts(&f);
     ts << "═══════════════════════════════════\n";
-    ts << "  Predormition System Log\n";
+    ts << "  " APP_NAME_DISPLAY " System Log\n";
     ts << "  " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n";
     ts << "═══════════════════════════════════\n\n";
 
@@ -19535,26 +19137,9 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
     http.setTimeout(30000);
     http.setDownloadTimeout(120000);
     http.setRunFlag(runFlag("tumblr").get());  // 중지 시 즉시 abort
-
-    // ★ 프록시(VPN) — 트위터·블루스카이와 같은 방식. 계정(=API 키)에 붙은 출구로 나간다.
-    {
-        const QJsonArray pAccs = config["accounts"].toArray();
-        const QJsonObject pAcct = pAccs.isEmpty() ? config : pAccs.first().toObject();
-        const QJsonObject prof = proxyForAccount(pAcct);
-        if (!prof.isEmpty()) {
-            http.setProxyUrl(proxyUrl(prof));
-            log(QString("프록시 사용 — 프로필 '%1' (%2)")
-                    .arg(prof["name"].toString(), proxyUrl(prof, false)), "info", "tumblr");
-            // Qt 에는 '프록시로 가는 길 자체를 TLS 로 감싸는' 프록시 종류가 없다
-            // (QNetworkProxy 는 HttpProxy / Socks5Proxy 뿐). HTTPS 로 골라 두셨어도
-            // 프록시까지 가는 구간은 평문이 된다. 조용히 낮추지 않고 알린다.
-            // 목적지(api.tumblr.com)와의 HTTPS 는 그대로 유지되므로 내용은 보호된다.
-            if (prof["type"].toString().toLower() == "https")
-                log("HTTPS 프록시는 Qt 가 지원하지 않아 HTTP 프록시로 연결합니다 — "
-                    "프록시로 가는 구간은 평문입니다. 감추려면 SOCKS5 를 쓰세요.",
-                    "warning", "tumblr");
-        }
-    }
+    // ※ 프록시(VPN)는 여기서 따로 걸지 않는다 — 수집을 띄운 쪽(startCollection · 内閣会)이
+    //   applyAccountProxyToCurrentThread 로 이 스레드에 건 출구를 HttpClient 가 만들 때 그대로 받는다
+    //   (applyGlobalProxy). HTTPS 프로필은 중계기로 나가므로 프록시까지 가는 구간도 평문이 아니다.
 
     QString blogId = blogName + ".tumblr.com";
 
@@ -19814,6 +19399,10 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
     // Excel — type별 + complete
     if (saveExcel && allPosts.count() > 0) {
         log("Excel 저장 중...", "info", "tumblr");
+    // ★ 버퍼가 조용히 실패했으면(디스크 참·권한) 결과가 말없이 짧아진다. 반드시 알린다.
+    if (!allPosts.ok())
+        log("⚠ 수집 버퍼 쓰기에 실패한 항목이 있습니다 — 결과가 일부 빠졌을 수 있습니다."
+            " 저장 디스크의 남은 공간을 확인하십시오.", "error", "tumblr");
         QJsonArray allPostsArray = allPosts.readAll();
         QStringList hdrs = {"ID", "Date", "Type", "Slug", "Summary", "Tags", "Notes", "URL"};
 

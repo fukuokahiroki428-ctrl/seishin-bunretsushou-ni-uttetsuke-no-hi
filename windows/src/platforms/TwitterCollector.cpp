@@ -242,8 +242,6 @@ TwitterCollector::TwitterCollector(HanishikiBackend *backend, QObject *parent)
     //   수명은 adoptHttpToCurrentThread() 와 소멸자가 직접 책임진다.
     , m_http(new HttpClient())
 {
-    delete m_http;                       // 옛것 정리(소멸자가 스레드 없는 NAM 도 처리한다)
-    m_http = new HttpClient();           // 부모 없음 — 생성자의 설명 참고
     m_http->setTimeout(30000);
 }
 
@@ -1989,7 +1987,7 @@ void TwitterCollector::saveExcel(const QString &saveDir, const QString &target, 
 
     QString filepath = saveDir + "/"+ target + "_"+ suffix + ".xlsx";
     writer.save(filepath);
-    FileHelper::setDownloadMeta(filepath, "Predormition Twitter");
+    FileHelper::setDownloadMeta(filepath, QStringLiteral(APP_NAME_DISPLAY) + QStringLiteral(" Twitter"));
     m_backend->log("저장: "+ filepath, "success", "twitter");
 }
 
@@ -2168,7 +2166,7 @@ void TwitterCollector::saveExcelStreaming(const QString &saveDir, const QString 
 
     writer.save(filepath);
 
-    FileHelper::setDownloadMeta(filepath, "(\"https://x.com\", \"Predormition\")");
+    FileHelper::setDownloadMeta(filepath, "(\"https://x.com\", \"Hanishiki\")");
 
     // 기존 행 메모리 즉시 해제
     existingRows.clear();
@@ -2234,7 +2232,7 @@ void TwitterCollector::saveProfileExcel(const QString &saveDir, const QString &t
     QString filepath = profileDateDir + "/"+ target + "_profile.xlsx";
     writer.save(filepath);
 
-    FileHelper::setDownloadMeta(filepath, "(\"https://x.com\", \"Predormition\")");
+    FileHelper::setDownloadMeta(filepath, "(\"https://x.com\", \"Hanishiki\")");
 
     m_backend->log(QString("프로필 Excel 저장: %1명 → %2").arg(m_profileBuffer->count()).arg(filepath), "success", "twitter");
 
@@ -2316,6 +2314,16 @@ void TwitterCollector::handleRateLimit(const QJsonArray &accounts, int &currentI
             } else {
                 // 이 계정엔 지정이 없다 — 앞 계정 것을 물려받지 않도록 반드시 지운다.
                 Common::clearThreadProxy();
+            }
+            // ★ (윈도우) 데몬은 출구를 initArgs["proxy"](m_proxyUrl)로도 받는다 — 백엔드가 수집을 띄울 때
+            //   첫 계정 기준으로 넣어 둔 값이다. 위에서 스레드 출구만 바꾸면 Qt 요청은 새 계정 출구로,
+            //   데몬은 앞 계정 출구로 나가 한 세션이 두 IP 가 된다. 방금 건 이 스레드의 출구로 다시 맞춘다
+            //   (HanishikiBackend::runTwitterCollection 의 proxyUrlForRun 과 같은 계산 — 지정이 없으면
+            //   전역 설정으로 떨어지고, HTTPS 는 중계기 주소, 중계기를 못 띄우면 닫힌 길).
+            m_proxyUrl.clear();
+            if (Common::proxyEnabled()) {
+                m_proxyUrl = Common::proxyUrl();
+                if (m_proxyUrl.isEmpty()) m_proxyUrl = QStringLiteral("socks5://127.0.0.1:9");   // 닫힌 길
             }
         }
 
@@ -2917,7 +2925,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
             QString pProfilePath = targetProfileDir + "/"+ target + "_profile.xlsx";
             writer.save(pProfilePath);
-            FileHelper::setDownloadMeta(pProfilePath, "Predormition Twitter");
+            FileHelper::setDownloadMeta(pProfilePath, QStringLiteral(APP_NAME_DISPLAY) + QStringLiteral(" Twitter"));
             QString profileImgUrl = userLegacy["profile_image_url_https"].toString().replace("_normal", "_400x400");
             if (!profileImgUrl.isEmpty()) {
                 QString pp = targetProfileDir + "/profile_"+ dateTag + ".jpg";
@@ -3054,6 +3062,13 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         // 8. Following
         m_backend->log("[8/8] 팔로잉 수집...", "info", "twitter");
         collect(makeSubConfig("following"), isRunning);
+
+        // 9. 🎙️ 스페이스 자동탐지 (타임라인에 공유된 스페이스 링크 → yt-dlp)
+        collectSpacesFromTimeline(config, target, userDir, isRunning);
+
+        // 10. 🧵 스레드 자동탐지 (자기-답글 체인 루트 → thread 재구성)
+        collectThreadsAuto(config, target, userDir, isRunning);
+
         // 11. 🔎 포스트 좁히기 자동 — '전체 시 좁히기 키워드'가 설정된 경우에만 실행.
         //     (키워드 없으면 step 2 의 from:user 전수 백필과 중복이므로 건너뜀)
         if (isRunning && !config["narrowQuery"].toString().trimmed().isEmpty()) {
@@ -3063,12 +3078,6 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             m_backend->log(QString("[자동] 🔎 포스트 좁히기: \"%1\"").arg(config["narrowQuery"].toString().trimmed()), "info", "twitter");
             collect(makeSubConfig("narrow"), isRunning);
         }
-
-        // 9. 🎙️ 스페이스 자동탐지 (타임라인에 공유된 스페이스 링크 → yt-dlp)
-        collectSpacesFromTimeline(config, target, userDir, isRunning);
-
-        // 10. 🧵 스레드 자동탐지 (자기-답글 체인 루트 → thread 재구성)
-        collectThreadsAuto(config, target, userDir, isRunning);
 
         m_backend->log("═══ 전체 수집 완료! ═══", "success", "twitter");
         return;
@@ -3273,7 +3282,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             writer.setColumnWidth(14, 50);  // Banner URL
             QString ffPath = userDir + "/"+ target + "_"+ type + ".xlsx";
             writer.save(ffPath);
-            FileHelper::setDownloadMeta(ffPath, "Predormition Twitter");
+            FileHelper::setDownloadMeta(ffPath, QStringLiteral(APP_NAME_DISPLAY) + QStringLiteral(" Twitter"));
             m_backend->log("Excel 저장 완료", "success", "twitter");
         }
 
@@ -3336,7 +3345,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             QDir().mkpath(pDateDir);
             QString pPath2 = pDateDir + "/"+ target + "_profile.xlsx";
             writer.save(pPath2);
-            FileHelper::setDownloadMeta(pPath2, "Predormition Twitter");
+            FileHelper::setDownloadMeta(pPath2, QStringLiteral(APP_NAME_DISPLAY) + QStringLiteral(" Twitter"));
             // 프로필 Excel은 profiles/ 폴더 안에만 저장
         }
         m_backend->log("프로필 저장 완료", "success", "twitter");
@@ -5526,6 +5535,9 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         int convTweetCount = 0;
 
         // collectedData에서 Reply 타입 + reply_count > 0 인 것들 추출
+        if (!collectedData.ok())
+            m_backend->log("⚠ 수집 버퍼 쓰기에 실패한 항목이 있습니다 — 결과가 일부 빠졌을 수 있습니다."
+                           " 저장 디스크의 남은 공간을 확인하십시오.", "error", "twitter");
         QJsonArray allData = collectedData.readAll();
         QList<QString> replyIdsWithConv;
         for (const auto &val : allData) {

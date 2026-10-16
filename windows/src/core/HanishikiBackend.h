@@ -109,6 +109,11 @@ public slots:
     void archiveStatus();                            // JS onArchiveStatus(json) — 색인 규모·AI 상태
     void archiveIndex(const QString &root);          // 색인 만들기/갱신 (증분). 진행은 onArchiveProgress
     void archiveIndexCancel();                       // 진행 중인 색인 중단
+
+    // 보관물 대조 — 예전에 남긴 기록(manifest·해시)과 지금 디스크를 견준다.
+    //   record=true 면 해시를 새로(또는 바뀐 것만) 남긴다. false 면 대조만 한다.
+    //   해시가 없으면 파일 수·크기만 본다 — 그것만으로도 '사라짐·잘림' 은 잡힌다.
+    void archiveVerify(const QString &root, bool record);
     void archiveAsk(const QString &question);        // 질문 → JS onArchiveAnswer(json)
     void setSearchKey(const QString &key);           // 웹 검색 API 키(Brave) 저장 — 읽기전용 인터넷 검색용
     void setLlmUseWeb(bool on);                       // AI 답변 시 웹 검색 참고 on/off (읽기전용)
@@ -129,10 +134,6 @@ public slots:
     // Navigation
     void browsePath(const QString &platform);
     void openFolder(const QString &path);
-    // ★ 진단 로그 자리는 운영체제마다 다르다. HTML 에는 전처리기가 없어서
-    //   경로를 JS 에 박아 두면 한쪽에서 반드시 틀린다 (실제로 맥 경로가 박혀 있었다).
-    //   어느 폴더를 열지는 여기서 정한다.
-    void openDiagnosticsFolder();
     void pasteToField(const QString &fieldId);
     void pasteClipboard();
 
@@ -210,28 +211,12 @@ public slots:
     void writeStartupLog();        // 앱 시작 시 상세 로그 기록
 
     // 内閣会 — 지정 사용자 신글 자동 감지/다운로드 (Twitter/Bluesky/Tumblr 공식 API)
-    // ── 프록시(VPN) ────────────────────────────────────────────────
-    Q_INVOKABLE void getProxyProfiles();                       // UI 로 목록 전달
-    Q_INVOKABLE void setProxyProfiles(const QString &json);    // 목록 저장
-    Q_INVOKABLE void testProxy(const QString &json);           // 한 개 연결 시험
-    //   계정에 붙은 프로필 이름으로 실제 프록시 설정을 찾는다. 없으면 빈 객체.
-    QJsonObject proxyForAccount(const QJsonObject &account) const;
-    QString resolveProxyUrlFor(const QString &trackKey) const;
-    //   프록시를 yt-dlp / Chrome / httpx 가 쓰는 URL 한 줄로 만든다.
-    static QString proxyUrl(const QJsonObject &p, bool withCredentials = true);
-
     void startNaikakukai(const QString &configJson);
     void stopNaikakukai();
     bool isNaikakukaiRunning() const { return m_naikakukaiRunning; }
 
     // 시스템 알림 (macOS osascript display notification — 다른 앱 쓰는 중에도 알림 옴)
     void showSystemNotification(const QString &title, const QString &body);
-
-    // ── 자가진단 (SelfRepair) — 설정 탭에서 호출 ──────────────────
-    //   보고서를 파일에만 적으면 아무도 안 본다. 화면으로 끌어낸다.
-    Q_INVOKABLE void runSelfDiagnosis();        // 지금 검사 (네트워크 확인까지 전부)
-    Q_INVOKABLE void loadLastSelfDiagnosis();   // 마지막 결과를 화면에 다시 띄우기
-    Q_INVOKABLE void openSelfDiagnosisFolder(); // 보고서 폴더 열기
 
     // 디버그 진단 — 설정 탭에서 호출
     // ── 프록시(VPN) — 이름 붙은 프로필(윈도우 MiyoBackend 와 같은 이름·같은 모양) ──
@@ -470,9 +455,8 @@ private:
     void openBackupTerminalLog();
     void writeTerminalLog(const QString &message, const QString &platform = QString());
     void closeTerminalLog(const QString &platform = QString());
-    // ★ Windows: .bat 을 자체 콘솔 창 + Predormition 자식 프로세스로 실행 (cmd /c start 분리 대신).
-    //   작업관리자에서 Predormition 아래 nested, 앱 종료 시 트리 kill. 다른 OS 에선 no-op.
-    void launchChildConsole(const QString &scriptPath);
+    // ★ Windows: 유튜브·니코동 .bat 을 앱의 자식 프로세스(cmd /c)로 돌린 것 — 출력은 앱 터미널 창으로.
+    //   작업관리자에서 앱 아래 nested, 앱 종료 시(closeAllTerminalLogs) 트리 kill. 다른 OS 에선 안 쓴다.
     QList<QProcess*> m_childConsoleProcs;  // 실행 중인 자식 콘솔 추적 (종료 시 정리)
     // ★ 앱 안 터미널 창 — 키(플랫폼·트랙)마다 하나. 메인 스레드에서만 만들고 만진다.
     QHash<QString, QPointer<TerminalWindow>> m_terminalWindows;
@@ -496,8 +480,6 @@ public:
     void closeAllTerminalWindows();   // 본 창을 닫을 때 — 앱 안 터미널 창도 같이 닫는다
     QString m_terminalLogPath;
     QMap<QString, QString> m_terminalLogPaths;
-    // 수집 모니터 창 — 트랙마다 하나씩 띄우는 별도 창(cmd 아님).
-    QMap<QString, class TerminalWindow *> m_terminalWindows;
     QMap<QString, qint64> m_lastStatsUpdate;
 
     // Log batching — 로그 배치 처리로 UI 부하 감소
@@ -518,9 +500,6 @@ public:
     // 内閣会 내부 상태
     void naikakukaiTick();
     QTimer *m_naikakukaiTimer = nullptr;
-    // 트랙별 프록시 URL — 수집과 캐쉬가 같은 출구를 쓰게 한다.
-    QMap<QString, QString> m_proxyPerTrack;
-    mutable QMutex m_proxyPerTrackMutex;
     QJsonArray m_naikakukaiWatches;
     int m_naikakukaiIntervalMin = 30;
     int m_naikakukaiCursor = 0;

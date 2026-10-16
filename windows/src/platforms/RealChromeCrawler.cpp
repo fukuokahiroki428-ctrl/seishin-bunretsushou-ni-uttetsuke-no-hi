@@ -49,20 +49,6 @@ RealChromeCrawler::~RealChromeCrawler()
     stop();
 }
 
-void RealChromeCrawler::setProxy(const QString &url)
-{
-    m_proxyUrl = url;
-    m_proxyUser.clear();
-    m_proxyPass.clear();
-    if (url.isEmpty()) return;
-    // ★ Chrome 은 --proxy-server 에 user:pass 를 받지 않는다. URL 에서 떼어 두었다가
-    //   CDP 의 Fetch.authRequired 가 오면 그때 넘긴다.
-    //   ※ setProxyServer 로 출구를 정해 받으면 그쪽(중계기 — 인증 없음)이 이긴다 — start() 참고.
-    const QUrl u(url);
-    m_proxyUser = u.userName();
-    m_proxyPass = u.password();
-}
-
 QString RealChromeCrawler::findChromeExecutable()
 {
     // 후보 경로 — 사용자가 어떤 Chromium 계열 브라우저든 깔려있을 가능성을 모두 검사
@@ -225,42 +211,39 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
     //   임시 프로필 모드에서는 항상 fresh start.
     if (!m_useUserProfile) {
 #ifdef Q_OS_WIN
-        // Windows: netstat → PID → taskkill
-        QProcess netstat;
-        netstat.start("netstat", {"-ano"});
-        netstat.waitForFinished(3000);
-        QString netOut = QString::fromUtf8(netstat.readAllStandardOutput());
-        QString portStr = QString(":%1 ").arg(m_debugPort);
-        for (const QString &line : netOut.split('\n')) {
-            if (line.contains(portStr) && line.contains("LISTENING")) {
-                QStringList parts = line.simplified().split(' ');
-                if (!parts.isEmpty()) {
-                    QString pid = parts.last();
-                    QProcess::execute("taskkill", {"/PID", pid, "/F"});
-                    if (m_backend) m_backend->log(QString("이전 Chrome 좀비 종료 (PID %1)").arg(pid), "info", "crawl");
-                }
+        // ★ 아래 맥 갈래와 같은 정책 — 포트를 쥔 프로세스는 '우리 캡처 프로필' 을 쓰는 Chrome 일 때만 끈다.
+        //   예전엔 주인을 묻지 않고 그 포트의 프로세스를 taskkill 했고, 프로필도 폴더 이름 부분 일치
+        //   (-like '*chrome_capture_profile*')로 골랐다. 그래서 순차 캡처 Chrome 이 뜰 때마다 크롤 탭의 PEN Chrome
+        //   (…_pen)과 트랙별(…_<b64>) 캡처 Chrome 까지 껐다(10-05(3) P4).
+        //   이제 --user-data-dir 의 전체 경로가 이 크롤러의 프로필일 때만 고른다(Common::captureChromePids — 맥과 같은 기준.
+        //   chrome.exe · msedge.exe · brave.exe 를 다 본다 — Chrome 이 없는 기계에서는 캡처 브라우저가 Edge 다).
+        const QList<qint64> ours = m_userDataDir.isEmpty() ? QList<qint64>()
+                                                            : Common::captureChromePids(m_userDataDir, false);
+        {
+            QProcess netstat;
+            netstat.start("netstat", {"-ano"});
+            netstat.waitForFinished(3000);
+            const QString netOut = QString::fromLocal8Bit(netstat.readAllStandardOutput());
+            const QString portStr = QString(":%1 ").arg(m_debugPort);
+            QList<qint64> warned;
+            for (const QString &line : netOut.split('\n')) {
+                if (!line.contains(portStr) || !line.contains("LISTENING")) continue;
+                const qint64 pid = line.simplified().section(' ', -1).toLongLong();
+                if (pid <= 0 || ours.contains(pid) || warned.contains(pid)) continue;   // 우리 것은 아래에서 프로필로 끈다
+                warned << pid;
+                if (m_backend)
+                    m_backend->log(QString("포트 %1 을 다른 프로그램(PID %2)이 쓰고 있어 끄지 않았습니다 — "
+                                           "앱을 둘 띄웠다면 하나를 닫으십시오").arg(m_debugPort).arg(pid),
+                                   "warning", "crawl");
             }
         }
-        // ★ 포트 리스닝 여부와 무관하게 — 같은 캡쳐 프로필(per-thread 포함)을 쓰는 잔존/고아 Chrome 정리.
+        // ★ 포트 리스닝 여부와 무관하게 — 같은 캡쳐 프로필을 쓰는 잔존/고아 Chrome 정리.
         //   안 그러면 새 캡쳐 Chrome 이 기존 인스턴스로 핸드오프되며 즉시 종료(m_ready=false → navigate 실패).
         //   앱 재시작 후 남은 고아 캡쳐 Chrome 이 "로그인 사전 navigate 실패" 의 원인.
-        {
-            QString ud = m_userDataDir; ud.replace('\\', '/');
-            QString marker = ud.section('/', -1);   // chrome_capture_profile[_<trackKey>]
-            marker.replace("'", "''");
-            if (!marker.isEmpty()) {
-                // ★ chrome.exe 만 보면 안 된다 — findChromeExecutable() 은 Chrome 이 없으면
-                //   Edge, 그것도 없으면 Brave 를 띄운다. Chrome 이 안 깔린 기계에서는 캡쳐
-                //   브라우저가 msedge.exe 라, 이 정리가 고아를 하나도 못 잡았다. 그 고아가
-                //   바로 위 주석이 말하는 "로그인 사전 navigate 실패" 의 원인이다.
-                QString ps = QString(
-                    "Get-CimInstance Win32_Process | "
-                    "Where-Object { $_.Name -in @('chrome.exe','msedge.exe','brave.exe') "
-                    "-and $_.CommandLine -like '*%1*' } | "
-                    "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
-                ).arg(marker);
-                QProcess::execute("powershell", {"-NoProfile", "-NonInteractive", "-Command", ps});
-            }
+        if (!ours.isEmpty()) {
+            const int n = Common::killCaptureChromes(m_userDataDir, false);
+            if (n > 0 && m_backend)
+                m_backend->log(QString("이전 Chrome(프로필) 좀비 종료 (%1개)").arg(n), "info", "crawl");
         }
 #else
         // ★ 포트를 쥔 프로세스는 '우리 캡처 프로필' 을 쓰는 Chrome 일 때만 끈다.
@@ -333,21 +316,12 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
             //   자격증명이 크로미움 명령줄에 실리지 않는 이점도 있다.
             //   ★ 출구가 있어야 하는데 중계 주소를 못 얻으면(파이썬 없음·중계기가 죽음) 띄우지 않는다.
             //     예전엔 그냥 --proxy-server 없이 띄워 그 Chrome 만 이 컴퓨터의 회선으로 나갔다.
-            //   ★ 윈도우: setProxy(url) 로 받은 출구는 정해 받은 출구(setProxyServer)도 중계 주소도 없을 때만 쓴다.
-            //     주소·포트만 명령줄에 싣고, 아이디·비밀번호는 CDP Fetch.authRequired 로 넘긴다(아래 connected 람다).
-            //     다른 출구로 떴으면 프록시 비밀번호는 들고 있지 않는다 — 그 비밀번호를 다른 곳에 줄 일이 없게.
-            //   ※ --proxy-server 는 여기서 한 번만 넣는다(예전 윈도우는 아래 #endif 뒤에서 따로 넣었다).
+            //   ※ 윈도우도 같은 중계기(socks_relay.py — python_env)다. 예전 윈도우의 setProxy(url)
+            //     (주소·포트만 명령줄로, 비밀번호는 CDP Fetch.authRequired 로)는 맥 프록시 층으로 바꾸며 뺐다.
+            //     --proxy-server 는 여기서 한 번만 넣고, 그 값을 m_proxyServerUsed 에 적는다(다시 띄우기 판정).
             {
                 const bool required = m_proxyPinned ? m_proxyRequired : Common::proxyEnabled();
-                QString relay = m_proxyPinned ? m_proxyServer : Common::proxyLocalRelayUrl();
-                if (!m_proxyPinned && relay.isEmpty() && !m_proxyUrl.isEmpty()) {
-                    const QUrl pu(m_proxyUrl);
-                    const QString scheme = pu.scheme().isEmpty() ? QStringLiteral("socks5") : pu.scheme();
-                    relay = QString("%1://%2:%3").arg(scheme, pu.host()).arg(pu.port(1080));
-                } else {
-                    m_proxyUser.clear();
-                    m_proxyPass.clear();
-                }
+                const QString relay = m_proxyPinned ? m_proxyServer : Common::proxyLocalRelayUrl();
                 if (required && relay.isEmpty()) {
                     if (m_backend)
                         m_backend->log("프록시 중계기를 띄우지 못해 Chrome 을 열지 않습니다 — 직접 연결로 새지 않게 멈춥니다",
@@ -375,12 +349,10 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
             //         · signin.allowed = true, 확장 프로그램 service worker 까지 로드됨
             //     즉 Chrome 이 안 깔린 기계에서는 캡쳐가 사용자 개인 신원으로 돌고 있었다.
             //     Edge 는 --inprivate 를 쓰고, 암묵적 로그인·계정 연동을 명시적으로 끈다.
+            //     (끄는 기능 ms* 는 아래 disabledFeatures 한 목록에 넣는다 — --disable-features 는 한 번만.)
             const QString exeName = QFileInfo(chrome).fileName().toLower();
             if (exeName.contains("msedge")) {
                 args << "--inprivate"
-                     << "--disable-features=msImplicitSignin,msEdgeIdentityIntegration,"
-                        "msSingleSignOnOSForPrimaryAccount,msWebOAuth,EdgeAutofill,"
-                        "msEdgeShoppingIO,msEntityExtraction"
                      << "--no-service-autorun"
                      << "--disable-background-mode";
             } else {
@@ -429,7 +401,11 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
              << "--js-flags=--max-old-space-size=1024"
              << "--disk-cache-size=10485760"
              << "--media-cache-size=5242880"
-             << "--aggressive-cache-discard";
+             << "--aggressive-cache-discard"
+             // ★ 페이지가 스스로 새 탭·창을 열지 못하게 한다. 크롤러는 탭 하나를
+             //   재사용하는데, 페이지가 팝업이나 target=_blank 로 탭을 늘리면
+             //   그만큼 메모리를 먹고 캡처 대상도 헷갈린다.
+             << "--block-new-web-contents";
 
         // ★ 사용자 임시 디스크 시스템 — Chrome disk cache 도 거기에. /tmp 사용 X.
         //   backend 의 Config 에서 tempDir 받아서 cache dir 강제 set.
@@ -590,20 +566,6 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
                         QJsonObject bp;
                         bp["enabled"] = true;
                         sendCommand("Page.setBypassCSP", bp, nullptr);
-                    }
-
-                    // ★ 프록시 인증 — Chrome 은 --proxy-server 로 자격증명을 받지 않는다.
-                    //   Fetch 를 켜고 authRequired 가 올 때 넘긴다. 이걸 안 하면 인증이 필요한
-                    //   프록시에서 캡쳐가 407 로 전부 실패한다.
-                    //   ※ Fetch 를 켜면 모든 요청이 일시정지되므로 requestPaused 도 반드시
-                    //     이어줘야 한다(안 그러면 페이지가 통째로 멈춘다 — handleEvent 의 요청 단계).
-                    //   ※ setCorsRelax 가 Fetch 를 다시 켜고 끌 때도 이 설정(handleAuthRequests)을 같이 넣는다.
-                    //     m_proxyUser 는 start() 에서 setProxy 의 출구로 떴을 때만 남는다.
-                    if (!m_proxyUser.isEmpty()) {
-                        QJsonObject fp;
-                        fp["handleAuthRequests"] = true;
-                        sendCommand("Fetch.enable", fp, nullptr);
-                        if (m_backend) m_backend->log("프록시 인증 대기 활성화", "info", "crawl");
                     }
                 }
                 // Network 자동 활성화
@@ -840,37 +802,10 @@ int RealChromeCrawler::sendCommand(const QString &method, const QJsonObject &par
 
 void RealChromeCrawler::handleEvent(const QString &method, const QJsonObject &params)
 {
-    // ★ 프록시가 자격증명을 요구할 때 — Chrome 은 명령줄로 못 받으므로 여기서 넘긴다.
-    if (method == "Fetch.authRequired") {
-        QJsonObject p;
-        p["requestId"] = params["requestId"];
-        QJsonObject ch;
-        // ★ 프록시 챌린지일 때만 준다. 사이트 자체가 요구하는 인증에 프록시 비밀번호를
-        //   보내면 그 사이트에 자격증명을 넘겨주는 셈이 된다.
-        const QString source = params["authChallenge"].toObject()["source"].toString();
-        if (source == "Proxy" && !m_proxyUser.isEmpty()) {
-            ch["response"] = "ProvideCredentials";
-            ch["username"] = m_proxyUser;
-            ch["password"] = m_proxyPass;
-        } else {
-            ch["response"] = "CancelAuth";
-        }
-        p["authChallengeResponse"] = ch;
-        sendCommand("Fetch.continueWithAuth", p, nullptr);
-        return;
-    }
-    // ★ Fetch 가로채기는 두 가지 쓰임이 한 핸들러로 온다 — 단계로 가른다.
-    //   · 요청 단계(responseStatusCode·responseErrorReason 이 없다): 프록시 인증 때문에 모든 요청을 세운 것.
-    //     반드시 이어줘야 페이지가 흐른다.
-    //   · 응답 단계: setCorsRelax(true) 동안 SingleFile 자원의 교차 출처 응답을 고친다(아래).
-    if (method == "Fetch.requestPaused") {
+    if (method == "Fetch.requestPaused") {   // setCorsRelax(true) 동안만 온다
         const QString rid = params["requestId"].toString();
         QJsonObject p;
         p["requestId"] = rid;
-        if (!params.contains("responseStatusCode") && !params.contains("responseErrorReason")) {
-            sendCommand("Fetch.continueRequest", p, nullptr);
-            return;
-        }
         if (params.contains("responseErrorReason")) {   // 네트워크 오류 — 그대로 실패시킨다
             p["errorReason"] = params["responseErrorReason"].toString();
             sendCommand("Fetch.failRequest", p, nullptr);

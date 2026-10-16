@@ -51,10 +51,6 @@ public:
     void setUseUserProfile(bool b) { m_useUserProfile = b; }
     void setDebugPort(int port) { m_debugPort = port; }
     void setUserDataDir(const QString &d) { m_userDataDir = d; }
-    // 프록시(VPN) — "socks5://user:pass@host:port". 비어 두면 직접 나간다. (윈도우)
-    //   주소·포트만 명령줄로, 아이디·비밀번호는 CDP Fetch.authRequired 로 넘긴다.
-    //   setProxyServer 로 출구를 정해 받으면 그쪽이 이긴다 — 그때 이 비밀번호는 쓰지 않고 버린다.
-    void setProxy(const QString &url);
     // ★ 출구를 정해서 넘긴다(캡처 Chrome). start() 는 메인 스레드에서 도는데, 계정 프록시는
     //   수집 스레드에만 걸려 있다(Common::setThreadProxy). 그래서 수집 스레드에서 구한 중계 주소를
     //   여기로 넘긴다. required 면 주소가 비었을 때 start 를 실패로 끝낸다 — 직접 연결로 새지 않게.
@@ -149,9 +145,6 @@ private:
     QPointer<QWebSocket> m_ws;
     QNetworkAccessManager *m_nam = nullptr;
 
-    QString m_proxyUrl;        // 프록시 URL (비면 미사용)
-    QString m_proxyUser;       // 프록시 인증 — Chrome 은 URL 로 못 받아 CDP 로 넘긴다
-    QString m_proxyPass;
     int m_debugPort = 9223;
     bool m_useUserProfile = false;
     bool m_ready = false;

@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QCryptographicHash>
+#include <QThread>
 #include <cstdio>
 
 ExcelWriter::ExcelWriter()
@@ -91,5 +92,16 @@ bool ExcelWriter::save(const QString &filePath)
     // rename(2) 로 덮어쓰지 못하는 곳(일부 네트워크 볼륨)은 지우고 바꾼다. 그래도 못 바꾸면 조각은
     // 지우지 않는다 — 원본을 이미 지웠으므로 새 데이터가 남은 유일한 사본이다.
     QFile::remove(filePath);
+#ifdef Q_OS_WIN
+    // ★ 윈도우는 대상이 있으면 위 rename 이 언제나 실패하므로 늘 여기로 온다. 그런데 막 닫힌 조각을
+    //   백신 · 색인기가 잠깐 잡고 있으면 이 rename 도 실패한다 — 원본은 이미 지웠으니 한 번에 포기하면
+    //   새 데이터가 숨은 조각에만 남는다. 짧게 다시 해 본다(HttpClient 의 replacePart 와 같은 120ms × 5).
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (QFile::rename(tmp, filePath)) return true;
+        QThread::msleep(120);
+    }
+    return false;
+#else
     return QFile::rename(tmp, filePath);
+#endif
 }

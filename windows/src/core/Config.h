@@ -32,9 +32,9 @@ public:
     void load(const QString &filePath = QString());
     void save(const QString &filePath = QString());
 
-    // 주 위치: app/Contents/Resources/miyo_config.json (앱 내부 — 사용자 요청)
+    // 주 위치: %APPDATA%/<앱이름>/hanishiki_config.json (옛 이름 miyo_config.json 은 처음 한 번 옮긴다)
     static QString defaultConfigPath();
-    // 백업: ~/Library/Application Support/Miyo/.../miyo_config.backup.json (재빌드 시 복원용)
+    // 백업: 같은 폴더의 hanishiki_config.backup.json (옛 miyo_config.backup.json 만 있으면 그것을 읽는다)
     static QString backupConfigPath();
     // 설정을 되찾아 올 자리들 (백업 -> 옛 위치 -> 앱 이름이 바뀌기 전 폴더).
     //   깨진 설정을 읽었을 때도 여기서 되찾는다.
@@ -67,13 +67,6 @@ public:
     void setSecondaryPath(const QString &p) { m_secondaryPath = p; }
 
     // 内閣会 감시 목록 + interval 영구 저장
-    // ── 프록시(VPN) 프로필 ──────────────────────────────────────────
-    //   계정마다 다른 출구로 나가려면 프록시여야 한다. 시스템 VPN 은 기계 전체를
-    //   한 경로로 보내므로 계정별 분리가 불가능하다. NordVPN 등이 주는 SOCKS5
-    //   서버 자격증명을 여기에 넣어 쓴다.
-    //   [{name, type:"socks5"|"http", host, port, user, pass}]
-    QJsonArray proxyProfiles() const { return m_proxyProfiles; }
-    void setProxyProfiles(const QJsonArray &a) { m_proxyProfiles = a; }
     QJsonArray naikakukaiWatches() const { return m_naikakukaiWatches; }
     // 정리하기 — 대상마다 '받은 곳 → 정리할 곳' 규칙(tools/organize.py). organizeAuto 면 수집이 끝날 때마다 돈다.
     QJsonArray organizeRules() const { return m_organizeRules; }
@@ -81,12 +74,6 @@ public:
     bool organizeCaptures() const { return m_organizeCaptures; }
     void setNaikakukaiWatches(const QJsonArray &arr) { m_naikakukaiWatches = arr; }
     int naikakukaiInterval() const { return m_naikakukaiInterval; }
-    // ★ '끌 때 돌고 있었나' — 앱을 켤 때 이어서 돌릴지 판단한다.
-    //   '설정이 차 있으면 켠다' 로 하면 사용자가 일부러 멈춰 둔 감시도 되살아난다.
-    bool naikakukaiResume() const { return m_naikakukaiResume; }
-    void setNaikakukaiResume(bool on) { m_naikakukaiResume = on; }
-    bool emailWatchResume() const { return m_emailWatchResume; }
-    void setEmailWatchResume(bool on) { m_emailWatchResume = on; }
     void setNaikakukaiInterval(int min) { m_naikakukaiInterval = min; }
 
     // WebDAV 업로드 설정 (시놀로지 등 NAS)
@@ -225,7 +212,7 @@ private:
     QString m_storageMode;  // "local" / "nas" / "external"
     QString m_storageRoot;  // /Volumes/X (mode != local 일 때)
     bool m_backupEnabled = false;
-    QString m_backupPath;   // NAS 마운트 경로 (예: /Volumes/공유폴더/Predormition_Backup)
+    QString m_backupPath;   // NAS 마운트 경로 (예: /Volumes/공유폴더/백업)
     bool m_ytDlpAutoUpdate = true;   // ★ 기본 ON — 장기지원: YouTube/Twitter 포맷 변경 시 yt-dlp 자동 갱신.
                                      //   yt-dlp SHA256 검증 + sanity(--version) + 실패 시 번들 복원 안전망 있음.
                                      //   최대 보안을 원하면 설정에서 OFF (그럼 포맷 변경 시 새 빌드 필요).
