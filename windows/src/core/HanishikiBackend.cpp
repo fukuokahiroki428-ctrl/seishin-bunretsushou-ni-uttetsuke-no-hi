@@ -20,6 +20,7 @@
 #include "utils/SelfRepair.h"
 #include <QPointer>
 #include "core/Common.h"
+#include "platforms/DiscordError.h"
 using FileHelper::sanitizeFilename;
 
 #include <QApplication>
@@ -49,9 +50,6 @@ using FileHelper::sanitizeFilename;
 #include <QFile>
 #include <QFileInfo>
 #include <QUrl>
-#include <QScopeGuard>
-#include <QHostInfo>
-#include <QTcpSocket>
 #include <QCoreApplication>
 #ifndef Q_OS_WIN
 #include <signal.h>
@@ -210,50 +208,6 @@ static void killTreeByCommandLine(const QString &imageName, const QString &needl
 // ※ 캡처 Chrome 정리는 여기 있던 killCaptureBrowsers(이름 부분 일치) 대신
 //   Common::killCaptureChromes / killOrphanedCaptureChromes(이 앱 데이터 폴더의 전체 --user-data-dir 경로)로 한다.
 //   실행 파일 이름(chrome.exe · msedge.exe · brave.exe)을 가리지 않고 프로필 경로만 보므로 Edge · Brave 로 뜬 것도 잡힌다.
-
-// ★ 모니터링 터미널의 한글·일본어가 전부 '?' 로 나오던 문제.
-//   원인은 인코딩이 아니다. 확인한 것:
-//     로그 파일   E3 82 AB E3 83 A1 E3 83 A9 …  = "Predormition" 정상 UTF-8, '?' 0개
-//     chcp 65001  \r\r\n 로 적혀 있어도 정상 적용됨(직접 시험)
-//     콘솔 글꼴   HKCU\Console FaceName = Consolas  ← 한글·일본어 글리프가 없다
-//   글꼴에 글자가 없으니 conhost 가 '?' 로 채운다. 파일도 코드페이지도 멀쩡한데 화면만 깨진다.
-//   레지스트리 기본값을 바꾸면 사용자의 다른 콘솔까지 건드리므로, 그 창에서만 바꾼다.
-//   실패하면 조용히 넘어간다 — 글꼴 때문에 모니터링을 못 열 이유는 없다.
-//   ★ CONSOLE_FONT_INFOEX 는 84바이트다. bMaximumWindow 는 구조체 멤버가 아니라 함수 인자다.
-//     멤버로 넣어 88바이트가 되면 cb 가 안 맞아 ERROR_INVALID_PARAMETER(87) 로
-//     조용히 실패한다 — 첫 판이 정확히 그러했고, 사용자 화면은 그대로 깨져 있었다.
-//     고친 뒤 실측: size=84 · before 'Consolas' h=14 → after 'MS Gothic' h=16 · ok=True
-static void writeConsoleFontHelper(const QString &dir)
-{
-    QFile f(dir + "/miyo_console_font.ps1");
-    if (!f.open(QIODevice::WriteOnly)) return;   // ★ Text 금지 — \n 이 \r\r\n 이 된다
-    const QString ps = QStringLiteral(
-        "$ErrorActionPreference='SilentlyContinue'\r\n"
-        "Add-Type -AssemblyName System.Drawing\r\n"
-        "$code=@'\r\n"
-        "using System;using System.Runtime.InteropServices;\r\n"
-        "public class CF{\r\n"
-        "  [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]\r\n"
-        "  public struct FI{public uint cb;public uint idx;\r\n"
-        "    public short x;public short y;public uint fam;public uint wt;\r\n"
-        "    [MarshalAs(UnmanagedType.ByValTStr,SizeConst=32)] public string fn;}\r\n"
-        "  [DllImport(\"kernel32.dll\",SetLastError=true)]\r\n"
-        "  public static extern IntPtr GetStdHandle(int n);\r\n"
-        "  [DllImport(\"kernel32.dll\",SetLastError=true,CharSet=CharSet.Unicode)]\r\n"
-        "  public static extern bool SetCurrentConsoleFontEx(IntPtr h,bool mx,ref FI f);\r\n"
-        "  public static bool Set(string name,short size){\r\n"
-        "    FI f=new FI();f.cb=(uint)Marshal.SizeOf(typeof(FI));\r\n"
-        "    f.idx=0;f.x=0;f.y=size;f.fam=54;f.wt=400;f.fn=name;\r\n"
-        "    return SetCurrentConsoleFontEx(GetStdHandle(-11),false,ref f);}}\r\n"
-        "'@\r\n"
-        "Add-Type -TypeDefinition $code\r\n"
-        "$have=(New-Object System.Drawing.Text.InstalledFontCollection).Families.Name\r\n"
-        "foreach($n in @('MS Gothic','NSimSun','Malgun Gothic','Meiryo')){\r\n"
-        "  if($have -contains $n){ [void][CF]::Set($n,16); break }\r\n"
-        "}\r\n");
-    f.write(ps.toUtf8());
-    f.close();
-}
 #endif
 
 // ───────────────────────────────────────────────────────────
@@ -1002,7 +956,7 @@ void HanishikiBackend::testBackup()
         return;
     }
     // 테스트 파일 작성
-    QString testFile = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/predormition_backup_test.txt";
+    QString testFile = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/.backup_write_test.txt";
     QFile f(testFile);
     if (f.open(QIODevice::WriteOnly)) {
         f.write(QString("백업 테스트 — %1\n").arg(QDateTime::currentDateTime().toString()).toUtf8());
@@ -1015,40 +969,144 @@ void HanishikiBackend::testBackup()
 // ═════════════════════════════════════════════════════════════════════════
 // NAS watchdog — 30초마다 backupPath 마운트 체크, 끊기면 자동 재마운트
 // ═════════════════════════════════════════════════════════════════════════
+// 현재 마운트된 네트워크 볼륨 목록.
+//   ★ /Volumes 만 보면 안 된다 — 마운트 도구마다 위치가 다르다. 특히 Mountain Duck 은
+//     ~/Library/Containers/io.mountainduck/.../Volumes.noindex/ 아래에 NFS 로 마운트하므로
+//     예전 워치독(/Volumes 접두사 검사)은 이 경우 한 번도 동작하지 않았다.
+QStringList HanishikiBackend::networkMountPoints() const
+{
+    QStringList out;
+#ifdef Q_OS_WIN
+    // ★ 윈도우: 백업 경로의 루트만 본다 — 드라이브면 X:\, UNC 면 \\서버\공유.
+    //   빠진 외장(F:)이든 끊긴 네트워크 드라이브(Z:)든 사라짐을 감지한다(맥의 /Volumes 블록과 같은 몫).
+    //   ★ 루트는 글자로만 구한다. 이 함수는 GUI 스레드에서 불리는데, 예전처럼 QStorageInfo 를 걸면
+    //     죽은 SMB·UNC 공유에서 리다이렉터가 수십 초 막혀 앱이 통째로 언다. 확인(파일 시스템 접근)은
+    //     probeMountAlive 가 별도 프로세스로 한다.
+    if (!m_config) return out;
+    QString bp = QDir::fromNativeSeparators(m_config->backupPath().trimmed());
+    if (bp.startsWith(QLatin1String("//?/UNC/"), Qt::CaseInsensitive)) bp = "//" + bp.mid(8);
+    else if (bp.startsWith(QLatin1String("//?/"))) bp = bp.mid(4);
+    if (bp.startsWith(QLatin1String("//"))) {
+        const QStringList parts = bp.mid(2).split(QLatin1Char('/'), Qt::SkipEmptyParts);
+        if (parts.size() >= 2)
+            out << QDir::toNativeSeparators("//" + parts[0] + "/" + parts[1]);   // \\서버\공유
+    } else if (bp.size() >= 2 && bp[1] == QLatin1Char(':') && bp[0].isLetter()) {
+        out << bp.left(1).toUpper() + QStringLiteral(":\\");                  // X:\ (로컬 외장 포함)
+    }
+    return out;
+#else
+    QProcess p;
+    p.start("/sbin/mount", {});
+    if (!p.waitForFinished(5000)) { p.kill(); p.waitForFinished(1000); return out; }
+    const QString txt = QString::fromUtf8(p.readAllStandardOutput());
+    // "<source> on <mountpoint> (<fstype>, ...)" 형식
+    static const QRegularExpression re(R"(^.* on (.+) \(([a-z0-9]+)[,)])",
+                                       QRegularExpression::MultilineOption);
+    auto it = re.globalMatch(txt);
+    while (it.hasNext()) {
+        const auto m = it.next();
+        const QString mp = m.captured(1).trimmed();
+        const QString fs = m.captured(2);
+        // 네트워크 파일시스템만 — 로컬 디스크(apfs/hfs)는 끊길 일이 없다.
+        if (fs == "nfs" || fs == "smbfs" || fs == "webdav" || fs == "afpfs" || fs == "ftp")
+            out << mp;
+    }
+    return out;
+#endif
+}
+
+// 마운트가 '실제로 살아있는지' 확인. 겸사겸사 keep-alive 역할도 한다.
+//   ★ 반드시 별도 프로세스로 확인한다. 세션이 끊긴 네트워크 마운트에 stat() 을 걸면
+//     커널에서 무한 대기(uninterruptible)에 빠져 앱 스레드가 통째로 멈춘다.
+//     프로세스는 타임아웃 시 죽일 수 있어 앱이 함께 얼지 않는다.
+bool HanishikiBackend::probeMountAlive(const QString &mountPoint, int timeoutMs)
+{
+    QProcess p;
+#ifdef Q_OS_WIN
+    // ★ 윈도우: cmd 의 dir 로 루트를 한 번 읽는다. 닿지 않는 드라이브·공유면 종료 코드 1,
+    //   리다이렉터가 막히면 시간 안에 안 끝난다(→ 죽인다). /a 는 숨김·시스템 항목까지 보아
+    //   빈 루트(System Volume Information 만 있는 외장)도 '살아 있음' 으로 본다.
+    //   출력은 버린다 — 목록이 필요한 게 아니라 '읽히는가' 만 본다.
+    p.setStandardOutputFile(QProcess::nullDevice());
+    p.setStandardErrorFile(QProcess::nullDevice());
+    p.start("cmd", {"/c", "dir", "/a", "/b", QDir::toNativeSeparators(mountPoint)});
+#else
+    p.start("/usr/bin/stat", {"-f", "%z", mountPoint});
+#endif
+    if (!p.waitForFinished(timeoutMs)) {
+        p.kill();
+        p.waitForFinished(1000);
+        return false;          // 응답 없음 = 세션 죽음
+    }
+    return p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0;
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// NAS watchdog — 30초마다
+//   ① 네트워크 마운트를 가볍게 건드려 세션을 살려둔다(keep-alive).
+//      공유기 NAT 와 서버는 유휴 TCP 세션을 몇 분~수십 분 뒤 끊는다. 그러면
+//      마운트는 그대로 보이는데 접근하는 순간 Broken pipe / Read timed out 이 난다.
+//      주기적으로 아주 작은 요청을 보내면 세션이 유휴 상태가 되지 않아 끊기지 않는다.
+//   ② 그래도 죽었으면(연속 2회 실패) 사용자에게 알리고 재마운트를 시도한다.
+// ═════════════════════════════════════════════════════════════════════════
 void HanishikiBackend::nasWatchdogTick()
 {
     if (!m_config) return;
     if (!m_config->nasAutoReconnect()) return;
-    // 체크 대상 — backupPath 가 NAS 경로이면 그 부모 마운트 확인
-    QString path = m_config->backupPath();
-    if (path.isEmpty()) return;
-#ifdef Q_OS_WIN
-    // Windows 의 NAS 경로는 드라이브 문자(Z:\\...) 또는 UNC(\\\\nas\\share).
-    //   예전엔 macOS 전용 "/Volumes/" 접두사만 검사해 Windows 에서는 감시가 항상 무동작이었다.
-    const bool isUnc   = path.startsWith("\\\\") || path.startsWith("//");
-    const bool isDrive = path.size() >= 2 && path[1] == QLatin1Char(':');
-    if (!isUnc && !isDrive) return;
-#else
-    if (!path.startsWith("/Volumes/")) return;
+    if (m_nasProbeInProgress) return;        // 앞 확인이 아직 안 끝났으면 겹치지 않게
+
+    QStringList targets = networkMountPoints();
+#ifndef Q_OS_WIN
+    // 백업 경로가 네트워크 마운트가 아니어도(예: 로컬 외장) 사라짐은 감지한다.
+    const QString bp = m_config->backupPath();
+    if (bp.startsWith("/Volumes/")) {
+        const int slash = bp.indexOf('/', QString("/Volumes/").length());
+        const QString mp = slash > 0 ? bp.left(slash) : bp;
+        if (!targets.contains(mp)) targets << mp;
+    }
 #endif
-    // 마운트 루트 계산 — 예전엔 Windows 경로에도 "/Volumes/" 길이(9)를 오프셋으로 써서
-    //   Z:\backup 처럼 '/' 가 없는 경로면 indexOf 가 -1 → 백업 폴더 전체를 마운트 루트로
-    //   오인했다(폴더가 없으면 항상 '연결 끊김' 판정).
+    if (targets.isEmpty()) return;
+
+    m_nasProbeInProgress = true;
+    QThread *t = QThread::create([this, targets]() {
+        QStringList dead;
+        for (const QString &mp : targets)
+            if (!probeMountAlive(mp, 8000)) dead << mp;
+
+        QMetaObject::invokeMethod(this, [this, targets, dead]() {
+            m_nasProbeInProgress = false;
+            for (const QString &mp : targets) {
+                if (!dead.contains(mp)) {
+                    // 살아있음 — 이전에 끊겼다 붙었으면 알린다.
+                    if (m_nasDeadStreak.value(mp) >= 2)
+                        log(QString("✅ NAS 연결 복구됨: %1").arg(mp), "success", "settings");
+                    m_nasDeadStreak.remove(mp);
+                    continue;
+                }
+                // 일시적 지연과 진짜 끊김을 구분 — 연속 2회(=1분)부터 끊김으로 본다.
+                const int n = m_nasDeadStreak.value(mp) + 1;
+                m_nasDeadStreak[mp] = n;
+                if (n != 2) continue;        // 1회는 무시, 3회 이상은 중복 로그 방지
+                log(QString("⚠ NAS 응답 없음: %1 — 세션이 끊겼습니다").arg(mp), "warning", "settings");
 #ifdef Q_OS_WIN
-    //   드라이브(Z:\) 든 UNC(\\\\nas\\share) 든 OS 가 아는 실제 루트를 쓴다.
-    QString mountPoint = QStorageInfo(path).rootPath();
-    if (mountPoint.isEmpty()) mountPoint = path.left(3);   // 최후 폴백: "Z:\"
+                // 윈도우는 앱이 다시 붙이지 않는다(silentRemountWebDav 는 무동작) — 할 일만 알린다.
+                log("  → 탐색기에서 네트워크 드라이브를 다시 연결해 주십시오"
+                    "(외장 디스크면 다시 꽂아 주십시오).", "info", "settings");
 #else
-    // /Volumes/X 의 X 마운트 디렉토리 존재 + 읽기 가능 여부
-    int slash = path.indexOf('/', QString("/Volumes/").length());
-    QString mountPoint = slash > 0 ? path.left(slash) : path;
+                // Mountain Duck 등 외부 도구가 만든 마운트는 우리가 되살릴 수 없다.
+                //   (그 도구 자신의 재연결에 맡기고, 사용자에게만 알린다.)
+                if (mp.contains("Volumes.noindex") || mp.contains("io.mountainduck")) {
+                    log("  → Mountain Duck 마운트입니다. 해당 앱이 재연결할 때까지 기다리거나 "
+                        "메뉴막대에서 다시 연결해 주세요.", "info", "settings");
+                    continue;
+                }
+                if (!m_nasReconnectInProgress) silentRemountWebDav();
 #endif
-    QDir d(mountPoint);
-    if (d.exists() && QFileInfo(mountPoint).isReadable()) return;  // 마운트 OK
-    // 끊김 — 자동 재마운트 시도
-    if (m_nasReconnectInProgress) return;
-    log(QString("⚠ NAS 마운트 끊김 감지: %1 — 자동 재연결 시도").arg(mountPoint), "warning", "settings");
-    silentRemountWebDav();
+            }
+        }, Qt::QueuedConnection);
+    });
+    connect(t, &QThread::finished, t, &QThread::deleteLater);
+    t->start();
 }
 
 void HanishikiBackend::silentRemountWebDav()
@@ -1140,21 +1198,6 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
         return;
     }
 
-    // ★ SFTP 지원 — URL 이 sftp:// 면 rclone 을 sftp 백엔드로 설정한다.
-    //   번들 rclone 이 sftp 를 기본 지원한다(rclone help backends → "sftp  SSH/SFTP").
-    //   WebDAV 는 url 하나에 경로까지 들어가지만 sftp 설정에는 host/port 만 들어간다.
-    //   그래서 URL 의 경로는 설정이 아니라 remote 스펙 앞에 붙여야 한다.
-    //     https://nas/dav        → abiwa_nas:<destSubPath>/<plat>
-    //     sftp://nas:22/vol1/bak → abiwa_nas:/vol1/bak/<destSubPath>/<plat>
-    const QUrl nasUrl(url);
-    const bool useSftp = nasUrl.scheme().compare(QLatin1String("sftp"), Qt::CaseInsensitive) == 0;
-    QString remotePrefix;
-    if (useSftp) {
-        QString p = nasUrl.path();
-        while (p.endsWith('/')) p.chop(1);
-        if (!p.isEmpty()) remotePrefix = p + "/";
-    }
-
     QString tempBase = Common::resolveTempBase(m_config->tempDir());
     QString confPath = tempBase + "/abiwa_rclone.conf";
 
@@ -1185,17 +1228,20 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
             log(QString("❌ rclone conf 생성 실패: %1").arg(confPath), "error", "settings");
             return;
         }
+        // ★ 프로토콜은 URL 스킴이 정한다 (sftp:// 면 SFTP, 그 외는 WebDAV).
+        //   설정 항목을 따로 두지 않는 편이, 나중에 항목끼리 어긋날 일이 없어 오래 간다.
         QString conf;
-        if (useSftp) {
+        if (url.trimmed().startsWith("sftp://", Qt::CaseInsensitive)) {
+            const QUrl u(url);
             conf = QString(
                 "[abiwa_nas]\n"
                 "type = sftp\n"
                 "host = %1\n"
-                "user = %2\n"
-                "pass = %3\n"
-            ).arg(nasUrl.host(), user, obscuredPass);
-            // 포트를 안 적었으면 22 를 쓴다. 아래 원격 백업(abiwa_remote) 의 sftp 설정과 같은 형태다.
-            conf += QString("port = %1\n").arg(nasUrl.port() > 0 ? nasUrl.port() : 22);
+                "port = %2\n"
+                "user = %3\n"
+                "pass = %4\n"
+                "known_hosts_file =\n"     // 호스트키를 물어보면 그 자리에서 멈춘다
+            ).arg(u.host()).arg(u.port(22)).arg(user, obscuredPass);
         } else {
             conf = QString(
                 "[abiwa_nas]\n"
@@ -1214,14 +1260,25 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
     log(QString("📦 rclone 백업 시작 — %1 폴더 → %2:%3").arg(srcDirs.size()).arg(url, destSubPath), "info", "settings");
 
     // 3) 각 src 폴더별 rclone copy 호출 (각각 자기 sub-folder 로)
-    QThread *t = QThread::create([this, srcDirs, destSubPath, rclonePath, confPath, remotePrefix]() {
+    // ★ WebDAV 는 conf 의 url 에 경로가 들어 있어 원격 루트가 곧 그 폴더다.
+    //   SFTP 는 다르다 — 원격 루트가 서버의 홈 디렉터리라, URL 에 적은 경로를
+    //   여기서 앞에 붙여 주지 않으면 파일이 엉뚱하게 홈 밑으로 쏟아진다.
+    QString remoteBase;
+    if (url.trimmed().startsWith("sftp://", Qt::CaseInsensitive)) {
+        remoteBase = QUrl(url).path();
+        while (remoteBase.startsWith('/')) remoteBase = remoteBase.mid(1);
+        while (remoteBase.endsWith('/'))   remoteBase.chop(1);
+    }
+
+    QThread *t = QThread::create([this, srcDirs, destSubPath, rclonePath, confPath, remoteBase]() {
         m_backupTerminalActive = true;
         m_backupStartMs = QDateTime::currentMSecsSinceEpoch();
         for (const QString &src : srcDirs) {
             if (!m_backupTerminalActive.load()) break;
             QString platName = QFileInfo(src).fileName();
-            // remotePrefix 는 sftp 일 때만 채워진다(WebDAV 는 url 에 경로가 이미 들어있음).
-            QString remote = QString("abiwa_nas:%1%2/%3").arg(remotePrefix, destSubPath, platName);
+            QString remote = remoteBase.isEmpty()
+                    ? QString("abiwa_nas:%1/%2").arg(destSubPath, platName)
+                    : QString("abiwa_nas:%1/%2/%3").arg(remoteBase, destSubPath, platName);
             writeTerminalLog(QString("\033[1;34m[rclone] %1 → %2\033[0m").arg(src, remote), "backup");
 
             QProcess rc;
@@ -1309,11 +1366,15 @@ void HanishikiBackend::startRemoteBackup(const QString &configJson)
         return;
     }
 
-    // rclone 탐색 (yt-dlp.exe 와 동일 레이아웃 — exe 옆)
-    QString rclonePath = QCoreApplication::applicationDirPath() + "/rclone.exe";
-#ifndef Q_OS_WIN
-    rclonePath = QCoreApplication::applicationDirPath() + "/../Resources/tools/rclone";
-    if (!QFile::exists(rclonePath)) rclonePath = QCoreApplication::applicationDirPath() + "/rclone";
+    // rclone 탐색 — 맥은 번들 Resources/tools, 윈도우는 exe 옆.
+    QString rclonePath = QCoreApplication::applicationDirPath() + "/../Resources/tools/rclone";
+#ifdef Q_OS_WIN
+    rclonePath = QCoreApplication::applicationDirPath() + "/rclone.exe";
+#else
+    if (!QFile::exists(rclonePath))
+        rclonePath = QCoreApplication::applicationDirPath() + "/../../../resources/tools/rclone";  // 개발 트리
+    if (!QFile::exists(rclonePath))
+        rclonePath = QCoreApplication::applicationDirPath() + "/rclone";
 #endif
     if (!QFile::exists(rclonePath)) {
         log("❌ rclone 바이너리 없음", "error", "settings");
@@ -2577,8 +2638,9 @@ void HanishikiBackend::logCollectionOptions(const QJsonObject &config, const QSt
 // ═════════════════════════════════════════════════════════════════════════
 void HanishikiBackend::exportConfig()
 {
-    QString defaultName = QString("predormition_config_%1.json")
-        .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
+    QString defaultName = QString("%1_config_%2.json")
+        .arg(QStringLiteral(APP_NAME_ASCII).toLower(),
+             QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
     QString path = QFileDialog::getSaveFileName(m_window,
         "💾 사용자 정보 내보내기 — JSON 파일 저장",
         QDir::homePath() + "/" + defaultName,
@@ -5089,9 +5151,17 @@ static QString findBundledTool(const QString &name)
         }
     }
 #else
-    // macOS: tools inside Contents/MacOS/
-    QString bundled = appDir + "/" + name;
-    if (QFile::exists(bundled)) return bundled;
+    // ★ 번들 도구는 두 곳에 나뉘어 있다 — ffmpeg/ffprobe/deno 는 Contents/MacOS,
+    //   yt-dlp 와 rclone 은 Contents/Resources/tools. 여기서 MacOS 만 보는 바람에
+    //   yt-dlp 는 늘 못 찾고 아래 폴백으로 떨어져 '시스템(홈브루) yt-dlp' 가 쓰였다.
+    //   홈브루가 없는 맥에서는 유튜브 분석·다운로드가 통째로 실패한다.
+    QStringList cand;
+    cand << appDir + "/" + name
+         << Common::bundledToolsDir() + "/" + name
+         << Common::bundledToolsDir() + "/" + name + "/" + name;  // exiftool 처럼 폴더 안에 든 경우
+    for (const QString &c : cand) {
+        if (QFileInfo(c).isFile()) return c;
+    }
 #endif
     // Fallback to system PATH
     return name;
@@ -5388,6 +5458,17 @@ void HanishikiBackend::startCollection(const QString &configJson)
             runAskedCollection(config);
         } else if (platformName == "fanbox") {
             runFanboxCollection(config);
+        } else {
+            // ★ 모르는 플랫폼이면 여기서 잡는다.
+            //   예전엔 else 가 없어서, 이 사슬에 없는 platform 이 들어오면 아무 일도
+            //   안 하고 그대로 아래로 내려가 '완료' 로 끝났다. 지금은 UI 가 보내는
+            //   10종이 모두 위에 있어 실제로 걸리지는 않지만, 플랫폼을 하나 더
+            //   붙이면서 여기에 줄을 빠뜨리면 '수집했다고 하는데 아무것도 없는'
+            //   고장이 된다 — 디스코드에서 겪은 바로 그 종류다. 조용히 넘기지 않는다.
+            log(QString("내부 오류: '%1' 을 처리할 수집기가 없습니다. "
+                        "이 플랫폼은 아직 연결되지 않았습니다.").arg(platformName),
+                "error", platformName);
+            ++m_collectionErrorCount;   // 완료로 위장하지 않도록(공용 실패 표시)
         }
         // ★ 수집 끝 — manifest 생성 (무결성 검증 + 통계 파일)
         //   ★ 저장 루트 전체(모든 플랫폼·유저, 수십 GB)를 매번 walk 하면 느리고,
@@ -5453,9 +5534,37 @@ void HanishikiBackend::startCollection(const QString &configJson)
             // ★ 터미널은 트랙마다 하나라 트랙이 끝나면 그 트랙 것만 닫는다 (맥과 같다).
             closeTerminalLog(trackKey);
             m_collectionThreads.remove(trackKey);
-            // 모든 수집이 끝났으면 절전 해제
+            // ★ 이 트랙의 캡쳐용 Chrome 창 자동 닫기 — 수집/다운로드 끝났으니 더 안 씀.
+            //   ★ take() 하면 안 된다 — 노드를 지우는 것이라 notifyCollectionEnded 에서
+            //     erase 를 없앤 것과 같은 이유로 위험하다. getChromePtr() 이 이 맵 노드의
+            //     '주소' 를 넘겨주고 진행 중인 CDP 콜백들이 그걸 붙들고 있는데, 바로 아래
+            //     stop() 이 그 콜백들을 취소가 아니라 강제 호출한다. 노드가 사라진 뒤
+            //     깨어난 콜백은 해제된 메모리를 역참조한다.
+            //     슬롯은 남기고 값만 비운다. 잠금은 풀고 나서 정리한다.
+            RealChromeCrawler *cc = nullptr;
+            {
+                QMutexLocker mapLock(&m_capChromeMapMutex);
+                auto it = m_captureChromesPerThread.find(trackKey);
+                if (it != m_captureChromesPerThread.end()) {
+                    cc = it.value();
+                    it.value() = nullptr;
+                }
+            }
+            if (cc) { cc->stop(); cc->deleteLater(); }
+            // 모든 수집이 끝났으면 절전 해제 + 남은 캡쳐 Chrome(단일/잔여) 전부 닫기
             if (m_collectionThreads.isEmpty()) {
                 if (m_window) m_window->releaseAwake();
+                if (m_captureChrome) {
+                    m_captureChrome->stop();
+                    m_captureChrome->deleteLater();
+                    m_captureChrome = nullptr;
+                    m_captureChromeStarted = false;
+                }
+                QMutexLocker mapLock(&m_capChromeMapMutex);
+                for (auto it = m_captureChromesPerThread.begin(); it != m_captureChromesPerThread.end(); ++it) {
+                    if (it.value()) { it.value()->stop(); it.value()->deleteLater(); }
+                }
+                m_captureChromesPerThread.clear();
             }
         });
     });
@@ -6184,7 +6293,7 @@ void HanishikiBackend::testSftpConnection(const QString &url, const QString &use
             obs.waitForFinished(5000);
             obscured = QString::fromUtf8(obs.readAllStandardOutput()).trimmed();
         }
-        const QString conf = QDir::tempPath() + "/predormition_sftp_test.conf";
+        const QString conf = QDir::tempPath() + "/" + QStringLiteral(APP_NAME_ASCII).toLower() + "_sftp_test.conf";
         { QFile f(conf);
           if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
               QMetaObject::invokeMethod(this, [this]() {
@@ -9354,6 +9463,12 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
     if (discordType == "all") {
         log("═══ 전체 수집 모드 ═══", "success", "discord");
         QStringList subTypes = {"messages", "pins"};
+        // ★ 하위 수집의 성패를 세어 둔다.
+        //   예전엔 runDiscordCollection() 이 void 라 하위가 전부 실패해도 결과를
+        //   보지 않고 마지막에 "전체 수집 완료!" 를 success 로 찍었다. 실제로
+        //   403 으로 한 건도 못 받은 채 '완료' 만 뜬 적이 있다. 아카이버에서
+        //   이건 가장 나쁜 고장이다 — 사용자가 받았다고 믿고 넘어가기 때문이다.
+        m_collectionErrorCount = 0;
         for (int i = 0; i < subTypes.size(); ++i) {
             if (!platformRunning("discord")) break;
             log(QString("▶ [%1/%2] %3 수집...").arg(i+1).arg(subTypes.size()).arg(subTypes[i]), "info", "discord");
@@ -9361,7 +9476,13 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
             subConfig["type"] = subTypes[i];
             runDiscordCollection(subConfig);
         }
-        log("═══ 전체 수집 완료! ═══", "success", "discord");
+        if (m_collectionErrorCount > 0) {
+            log(QString("═══ 전체 수집 실패 — %1건이 오류로 끝났습니다 ═══")
+                    .arg(m_collectionErrorCount), "error", "discord");
+            updateStats(0, 0, "오류", "discord");
+        } else {
+            log("═══ 전체 수집 완료! ═══", "success", "discord");
+        }
         return;
     }
 
@@ -9374,7 +9495,15 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
             QMap<QString, QString> gh;
             gh["Authorization"] = token;
             HttpResponse gResp = http.get(guildInfoUrl, gh);
-            if (gResp.isOk()) srvName = gResp.json()["name"].toString();
+            if (gResp.isOk()) {
+                srvName = gResp.json()["name"].toString();
+            } else {
+                // 예전엔 여기서 아무 말이 없었다. 서버 이름을 못 얻는다는 건 대개
+                // 그 서버에 접근할 수 없다는 첫 신호인데, 조용히 넘어가서 바로 뒤의
+                // 채널 목록 실패가 갑자기 튀어나온 것처럼 보였다.
+                log(QString("서버 정보 조회 실패: %1").arg(describeDiscordError(gResp)),
+                    "warning", "discord");
+            }
         }
         if (srvName.isEmpty()) srvName = serverId;
         log(QString("서버: %1 (%2)").arg(srvName, serverId), "info", "discord");
@@ -9385,8 +9514,10 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
         headers["Authorization"] = token;
         HttpResponse resp = http.get(url, headers);
         if (!resp.isOk()) {
-            log(QString("서버 채널 목록 조회 실패: HTTP %1").arg(resp.statusCode), "error", "discord");
+            log(QString("서버 채널 목록 조회 실패: %1").arg(describeDiscordError(resp)),
+                "error", "discord");
             updateStats(0, 0, "오류", "discord");
+            ++m_collectionErrorCount;   // 상위 'all' 루프가 이걸 보고 완료를 거짓말하지 않는다
             return;
         }
         QJsonArray channels = discordList(resp.data);
@@ -9462,6 +9593,7 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
     // ── 채널/서버 ID 둘 다 없으면 에러 ──
     if (channelId.isEmpty() && serverId.isEmpty()) {
         log("채널 ID 또는 서버 ID를 입력하세요.", "error", "discord");
+        ++m_collectionErrorCount;   // 이것도 실패다 — 상위 'all' 이 완료라고 하면 안 된다
         updateStats(0, 0, "오류", "discord");
         return;
     }
@@ -9907,6 +10039,10 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "success", "discord");
     log(QString("収集完了: メッセージ %1件, メディア %2件, ユーザー %3人")
         .arg(allMessages.count()).arg(mediaCount).arg(uniqueUsers.size()), "success", "discord");
+    // ★ 버퍼가 조용히 실패했으면(디스크 참·권한) 결과가 말없이 짧아진다. 반드시 알린다.
+    if (!allMessages.ok())
+        log("⚠ 수집 버퍼 쓰기에 실패한 항목이 있습니다 — 결과가 일부 빠졌을 수 있습니다."
+            " 저장 디스크의 남은 공간을 확인하십시오.", "error", "discord");
     log(QString("  保存先: %1").arg(channelDir), "info", "discord");
 
     if (saveExcel && allMessages.count() > 0) {
@@ -10151,11 +10287,9 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
         if (!channelInfo.isEmpty())
             index["channel_info"] = channelInfo;
 
-        QFile indexFile(channelDir + "/index.json");
-        if (indexFile.open(QIODevice::WriteOnly)) {
-            indexFile.write(QJsonDocument(index).toJson(QJsonDocument::Indented));
-            indexFile.close();
-        }
+        // 채널 색인 — 잘림 없이 통째로 갈아 끼운다(수집 도중 끊겨도 옛것이 남는다).
+        Common::writeFileAtomic(channelDir + "/index.json",
+                                QJsonDocument(index).toJson(QJsonDocument::Indented));
         log("인덱스 저장 완료.", "success", "discord");
     }
 }
@@ -11517,23 +11651,10 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
         : QStringLiteral("%(channel,uploader)s/%(upload_date)s_%(title)s.%(ext)s");
     const QString ytOutTemplate = ytTypeDir + "/" + ytOutTail;
 
-    // ★ 입력 형태별 URL 리졸버 — 전체 URL 뿐 아니라 핸들(@foo)·채널명(foo)·채널ID(UC…)·스킴없는 URL 도 허용.
-    //   (기존엔 http 로 시작하는 줄만 받아 핸들/이름 입력이 무시됐고, 잘못된 핸들은 yt-dlp 가 404 [youtube:tab]).
     QStringList urls;
     for (const auto &line : url.split('\n')) {
-        QString t = line.trimmed();
-        if (t.isEmpty()) continue;
-        if (t.startsWith("http://") || t.startsWith("https://")) {
-            urls.append(t);                                              // 전체 URL (영상/재생목록/채널 그대로)
-        } else if (t.contains("youtube.com") || t.contains("youtu.be")) {
-            urls.append("https://" + t);                                 // 스킴 없는 URL
-        } else if (t.startsWith("@")) {
-            urls.append("https://www.youtube.com/" + t + "/videos");     // @핸들 (이중 @ 방지)
-        } else if (t.startsWith("UC") && t.length() == 24) {
-            urls.append("https://www.youtube.com/channel/" + t + "/videos"); // 채널 ID
-        } else {
-            urls.append("https://www.youtube.com/@" + t + "/videos");    // 맨 핸들/채널명
-        }
+        QString trimmed = line.trimmed();
+        if (trimmed.startsWith("http")) urls.append(trimmed);
     }
 
     if (urls.isEmpty()) {
@@ -11596,39 +11717,19 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     }
 
     if (type == "audio") {
-        // 오디오: AAC(m4a) 우선 추출 → mp4/m4a 컨테이너로 맥·윈도우 모두 재생.
-        //   (mp3 재인코딩 대신 원본 AAC 유지; AAC 없을 때만 best 추출)
-        baseArgs << "-f" << "bestaudio[ext=m4a]/bestaudio/best";
-        baseArgs << "-x" << "--audio-format" << "m4a";
+        baseArgs << "-x" << "--audio-format" << "mp3";
     } else if (type == "thumbnail") {
         baseArgs << "--write-thumbnail" << "--skip-download";
     } else {
-        // ★ 호환 우선 포맷 — Mac(QuickTime)·Windows 모두 재생되도록 H.264(avc1)+AAC(m4a) mp4 선호.
-        //   YouTube 의 bestaudio 는 보통 opus(webm) 라 mp4 에 넣으면 일부 플레이어에서 소리가
-        //   안 나는 "오디오 코덱" 문제 발생 → m4a(AAC) 오디오를 우선 선택해 해결.
-        //   비디오도 mp4(H.264) 우선, 해당 화질이 mp4 로 없으면(예: 4K=AV1) best 로 폴백.
-        QMap<QString, QString> hMap = {
-            {"4K","2160"}, {"1440p","1440"}, {"1080p","1080"},
-            {"720p","720"}, {"480p","480"}, {"360p","360"},
+        QMap<QString, QString> qMap = {
+            {"4K","bestvideo[height<=2160]+bestaudio/best"},
+            {"1440p","bestvideo[height<=1440]+bestaudio/best"},
+            {"1080p","bestvideo[height<=1080]+bestaudio/best"},
+            {"720p","bestvideo[height<=720]+bestaudio/best"},
+            {"480p","bestvideo[height<=480]+bestaudio/best"},
+            {"360p","bestvideo[height<=360]+bestaudio/best"},
         };
-        QString h = hMap.value(quality);
-        QString fmt;
-        // 우선순위: H.264(avc1)+AAC(mp4a) → mp4(AV1 가능)+AAC → 임의비디오+AAC → 임의 → best.
-        //   1순위가 Mac QuickTime·Windows 모두 재생되는 완전 호환 조합. 해당 화질에 H.264 가
-        //   없으면(1440p/4K 는 보통 VP9/AV1 만 존재) 자동으로 다음 후보로 폴백.
-        if (h.isEmpty()) {
-            fmt = "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
-                  "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
-                  "bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best";
-        } else {
-            fmt = QString(
-                "bestvideo[height<=%1][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
-                "bestvideo[height<=%1][ext=mp4]+bestaudio[ext=m4a]/"
-                "bestvideo[height<=%1]+bestaudio[ext=m4a]/"
-                "bestvideo[height<=%1]+bestaudio/"
-                "best[height<=%1]/best").arg(h);
-        }
-        baseArgs << "-f" << fmt;
+        baseArgs << "-f" << qMap.value(quality, "bestvideo+bestaudio/best");
         baseArgs << "--merge-output-format" << "mp4";
     }
 
@@ -11638,11 +11739,9 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     if (config["playlist"].toBool()) baseArgs << "--yes-playlist"; else baseArgs << "--no-playlist";
     if (config["sponsor"].toBool()) baseArgs << "--sponsorblock-remove" << "all";
 
-    // 썸네일을 동영상에 임베드 + 설명 저장(.description 사이드카) + 설명을 파일 메타데이터에 임베드 + info JSON.
-    //   --embed-metadata 로 영상에 달린 "설명"을 mp4 메타데이터에 적용(파일 자체에 들어감).
+    // 썸네일을 동영상에 임베드 + 설명 저장 + info JSON (Excel 생성용)
     baseArgs << "--embed-thumbnail";
     baseArgs << "--write-description";
-    baseArgs << "--embed-metadata";        // ★ 설명+메타데이터를 파일에 임베드 (항상)
     baseArgs << "--embed-chapters";        // ★ 유튜브 챕터(타임스탬프 구간)를 mp4 챕터 마커로 임베드 — 챕터 없으면 자동 무시
     baseArgs << "--write-info-json";
     // ★ 댓글 수집(설정 토글) — info.json 에 comments[] 가 담기고, 후처리에서 .comments.txt 로 변환.
@@ -11655,31 +11754,33 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
         QString ea = "youtube:player_client=default,tv,web_safari";
         if (config["comments"].toBool()) ea += ";comment_sort=top;max_comments=300";
         baseArgs << "--extractor-args" << ea;
+#ifndef Q_OS_WIN
+        // 앱 폴더 youtube_cookies.txt(Netscape) 있으면 자동 사용 (--cookies-from-browser 는 Chrome v127+ 앱바운드 암호화로 불가)
+        QString ck = QCoreApplication::applicationDirPath() + "/youtube_cookies.txt";
+        if (QFile::exists(ck)) { baseArgs << "--cookies" << ck; log("youtube_cookies.txt 사용", "info", platform); }
+#endif
     }
-    // ★ 로그인 쿠키 — YouTube 봇 차단("Sign in to confirm you're not a bot") 우회 · 니코동 로그인 영상.
-    //   Chrome/Edge/Brave 는 v127+ 앱-바운드 쿠키 암호화(yt-dlp #10927, "Failed to decrypt with DPAPI")
-    //   때문에 윈도우에서 --cookies-from-browser 가 잘 안 된다 → 브라우저 확장으로 내보낸 cookies.txt(Netscape) 를 우선 사용.
-    //   관례: exe 폴더의 <platform>_cookies.txt (youtube_cookies.txt / niconico_cookies.txt) 가 있으면 UI 설정 없이 자동 사용.
-    //   니코동 탭의 'Chrome 쿠키'(browserCookies — 맥은 --cookies-from-browser chrome)는 쿠키 파일이 없을 때만 시도한다.
+#ifdef Q_OS_WIN
+    // ★ 윈도우: Chrome/Edge/Brave 는 v127+ 앱-바운드 쿠키 암호화(yt-dlp #10927, "Failed to decrypt with DPAPI")
+    //   때문에 --cookies-from-browser 가 잘 안 된다. 그래서 exe 폴더의 <platform>_cookies.txt
+    //   (youtube_cookies.txt / niconico_cookies.txt — 브라우저 확장으로 내보낸 Netscape 형식)가 있으면 그것을 쓰고,
+    //   니코동 탭의 'Chrome 쿠키'(browserCookies)는 쿠키 파일이 없을 때만 시도한다.
     {
-        QString cookiesFile = config["ytCookiesFile"].toString().trimmed();
-        if (cookiesFile.isEmpty()) {
-            QString def = appDir + "/" + platform + "_cookies.txt";
-            if (QFile::exists(def)) cookiesFile = def;
-        }
-        QString cookiesBrowser = config["ytCookiesBrowser"].toString().trimmed();
-        if (cookiesBrowser.isEmpty() && config["browserCookies"].toBool())
-            cookiesBrowser = QStringLiteral("chrome");
-        if (!cookiesFile.isEmpty() && QFile::exists(cookiesFile)) {
-            baseArgs << "--cookies" << QDir::toNativeSeparators(cookiesFile);
-            log(plabel + " 쿠키 파일 사용", "info", platform);
-        } else if (!cookiesBrowser.isEmpty() && cookiesBrowser != "none") {
-            // 비-Chromium(firefox 등)에서만 신뢰 가능. Chromium 은 DPAPI 로 실패할 수 있음.
-            baseArgs << "--cookies-from-browser" << cookiesBrowser;
-            log(QString("%1 쿠키: 브라우저 %2 에서 읽기 시도 — 안 되면 앱 폴더에 %3_cookies.txt 를 두세요")
-                    .arg(plabel, cookiesBrowser, platform), "info", platform);
+        const QString ck = appDir + "/" + platform + "_cookies.txt";
+        if (QFile::exists(ck)) {
+            baseArgs << "--cookies" << QDir::toNativeSeparators(ck);
+            log(QString("%1_cookies.txt 사용").arg(platform), "info", platform);
+        } else if (config["browserCookies"].toBool()) {
+            baseArgs << "--cookies-from-browser" << "chrome";
+            log(QString("%1 쿠키: Chrome 에서 읽기 시도 — 안 되면 앱 폴더에 %2_cookies.txt 를 두세요")
+                    .arg(plabel, platform), "info", platform);
         }
     }
+#else
+    // 니코동 로그인 필요 영상 — 사용자 Chrome 쿠키 사용(옵션)
+    if (config["browserCookies"].toBool())
+        baseArgs << "--cookies-from-browser" << "chrome";
+#endif
 
     // ★ 핸드오프 F/G: 이어받기 + 봇차단 수렴 (전 플랫폼) — 완료 ID 기록/스킵, .part 이어받기, 간헐 오류 무시.
     //   봇 차단으로 일부가 실패해도 재실행 시 완료분은 건너뛰고 실패분만 재시도한다. 차단이 간헐적이라
@@ -12252,48 +12353,44 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
                     QString uploader = info["uploader"].toString();
                     QString title = info["title"].toString().left(200);
                     QString descr = info["description"].toString();   // ★ 영상에 달린 설명
+                    // EXIF: description 필드에 '영상 설명' 적용 (없으면 제목으로 폴백)
+                    Common::addExifMetadata(mediaPath,
+                        uploader.isEmpty() ? "" : "@" + uploader,
+                        descr.isEmpty() ? title : descr,
+                        plabel + " @" + uploader, ytUrl,
+                        dt.isValid() ? dt.toString("yyyy:MM:dd HH:mm:ss") : "");
+                    // Finder/Spotlight 코멘트 = URL + 제목 + 설명(앞부분) → Get Info/검색에서 보임.
+                    //   (전체 설명은 yt-dlp --write-description 의 .description 사이드카에도 저장됨)
+                    QString ytComment = ytUrl;
+                    if (!title.isEmpty()) ytComment += "\n" + title;
+                    if (!descr.isEmpty()) ytComment += "\n\n" + descr.left(1800);
+                    FileHelper::setFinderComment(mediaPath, ytComment);
+                    FileHelper::applyPostMetadata(mediaPath, dt, ytUrl);
                     // _complete 미러 — 받은 쪽과 같은 모양(채널별 서브폴더 · 폴더 없이)
                     QString channelName = info["channel"].toString();
                     if (channelName.isEmpty()) channelName = info["uploader"].toString();
                     if (channelName.isEmpty()) channelName = "_unknown";
+                    // 파일시스템 안전 문자로 치환
                     channelName.replace(QRegularExpression("[\\\\/:*?\"<>|]"), "_");
                     // ★ 미러 자리는 이번 설정이 아니라 '그 파일이 실제로 있는 모양' 으로 정한다. 후처리는 유형 폴더의 info.json 을
                     //   예전 것까지 모두 다시 도는데, 설정을 따르면 저장 방식을 바꾼 첫 판에 지난 영상 전부를 _complete 에
                     //   한 벌 더 복사했다(700개면 700개 — 리뷰에서 잡힘). 채널 폴더 안의 것은 _complete/<채널>/,
                     //   유형 폴더 바로 아래의 것은 _complete/ 로.
                     //   윈도우는 구분자가 \ 로 올 수도 있어 / · \ 둘 다 본다(인계 10-06 L3).
-                    //   폴더는 아래 '아직 미러 안 된 것' 안에서 만든다 — 건너뛰는 파일 때문에 빈 폴더를 만들지 않게.
                     const QString mediaRel = QDir(ytTypeDir).relativeFilePath(mediaPath);
                     const bool fileIsFlat = !mediaRel.contains(QLatin1Char('/')) && !mediaRel.contains(QLatin1Char('\\'));
                     QString mirrorChannelDir = fileIsFlat ? ytCompleteDir : ytCompleteDir + "/" + channelName;
+                    QDir().mkpath(mirrorChannelDir);
                     QString mirrorPath = mirrorChannelDir + "/" + QFileInfo(mediaPath).fileName();
-                    // ★ 이미 미러된 파일은 무거운 후처리(메타데이터/복사) 전부 건너뜀.
-                    //   571개 같은 대형 채널에서 매 세션 전체를 재처리하면 사실상 끝나지 않아
-                    //   _complete 가 일부만 채워지던 문제 → 새 파일만 처리하므로 항상 완주.
-                    if (!QFile::exists(mirrorPath)) {
-                        // 원본에 메타데이터 (EXIF → comment → mtime) — 설명(description) 있으면 임베드
-                        Common::addExifMetadata(mediaPath,
-                            uploader.isEmpty() ? "" : "@" + uploader,
-                            descr.isEmpty() ? title : descr,
-                            plabel + " @" + uploader, ytUrl,
-                            dt.isValid() ? dt.toString("yyyy:MM:dd HH:mm:ss") : "");
-                        // 코멘트 = URL + 제목 + 설명(앞부분). 전체 설명은 .description 사이드카에도 저장됨.
-                        QString ytComment = ytUrl;
-                        if (!title.isEmpty()) ytComment += "\n" + title;
-                        if (!descr.isEmpty()) ytComment += "\n\n" + descr.left(1800);
-                        FileHelper::setFinderComment(mediaPath, ytComment);
-                        FileHelper::applyPostMetadata(mediaPath, dt, ytUrl);
-                        // _complete 로 복사 + 메타데이터
-                        QDir().mkpath(mirrorChannelDir);
-                        QFile::copy(mediaPath, mirrorPath);
-                        if (QFile::exists(mirrorPath)) {
-                            FileHelper::setFinderComment(mirrorPath, ytComment);
-                            FileHelper::applyPostMetadata(mirrorPath, dt, ytUrl);
-                        }
-                        // ※ 영상별 페이지 캡처(capturePageHtml) 제거 — YouTube 는 JS shell 이라
-                        //   캡처가 무의미한데 영상마다 30초 네트워크 요청이라 대형 채널 후처리를
-                        //   사실상 멈추게 하는 병목이었음. _complete 미러가 최우선.
+                    if (!QFile::exists(mirrorPath)) QFile::copy(mediaPath, mirrorPath);
+                    if (QFile::exists(mirrorPath)) {
+                        FileHelper::setFinderComment(mirrorPath, ytComment);
+                        FileHelper::applyPostMetadata(mirrorPath, dt, ytUrl);
                     }
+                    // 経済産業省 연계: 페이지 캡처
+                    QString ytCapturesDir = ytBaseDir + "/captures";
+                    FileHelper::capturePageHtml(ytCapturesDir, ytUrl,
+                        FileHelper::uploadOrderPrefix(dt) + info["id"].toString());
                 }
 
                 // ★ 댓글 → 읽기 좋은 <base>.comments.txt (info.json 의 comments[] 변환)
@@ -12471,6 +12568,10 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
     if (type == "all") {
         log("═══ 전체 수집 모드 ═══", "success", "pixiv");
         QStringList subTypes = {"user", "bookmarks"};
+        // ★ 디스코드와 같은 구조라 같은 고장이 있었다 — runPixivCollection() 이 void 라
+        //   하위 수집이 전부 실패해도 결과를 보지 않고 "전체 수집 완료!" 를 success 로
+        //   찍었다. 아카이버에서 이건 가장 나쁘다(받았다고 믿고 넘어간다).
+        m_collectionErrorCount = 0;
         for (int i = 0; i < subTypes.size(); ++i) {
             if (!platformRunning("pixiv")) break;
             log(QString("▶ [%1/%2] %3 수집...").arg(i+1).arg(subTypes.size()).arg(subTypes[i]), "info", "pixiv");
@@ -12478,7 +12579,13 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
             subConfig["type"] = subTypes[i];
             runPixivCollection(subConfig);
         }
-        log("═══ 전체 수집 완료! ═══", "success", "pixiv");
+        if (m_collectionErrorCount > 0) {
+            log(QString("═══ 전체 수집 실패 — %1건이 오류로 끝났습니다 ═══")
+                    .arg(m_collectionErrorCount), "error", "pixiv");
+            updateStats(0, 0, "오류", "pixiv");
+        } else {
+            log("═══ 전체 수집 완료! ═══", "success", "pixiv");
+        }
         return;
     }
 
@@ -12542,6 +12649,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
         userId = target;
     } else {
         log("올바른 유저 ID, 일러스트/소설 URL, 또는 유저 URL을 입력하세요.", "error", "pixiv");
+        ++m_collectionErrorCount;   // 상위 all 루프가 완료를 거짓말하지 않게
         return;
     }
 
@@ -13439,6 +13547,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
             HttpResponse profResp = http.get(profileUrl, apiHeaders);
             if (!profResp.isOk()) {
                 log(QString("유저 프로필 실패 (HTTP %1)").arg(profResp.statusCode), "error", "pixiv");
+                ++m_collectionErrorCount;   // 상위 all 루프가 완료를 거짓말하지 않게
                 return;
             }
 
@@ -14527,6 +14636,7 @@ void HanishikiBackend::startTrad(const QString &configJson)
                     log("ZIP LFH 재오픈 실패", "error", "pixiv");
                     outputFile.close();
                     QFile::remove(outputPath);
+                    ++m_collectionErrorCount;   // 상위 all 루프가 완료를 거짓말하지 않게
                     return;
                 }
                 const int WCHUNK = 8 * 1024 * 1024; // 8MB
@@ -15703,7 +15813,13 @@ void HanishikiBackend::getSystemInfo()
         }
         info << "═══════════════════════════════════";
 
-        // App version
+        // 판 이름. ★ 숫자는 사람에게 보이지 않는다 — 기계용이다.
+        //   예전엔 "판: 上野  (내부 4.0.0)" 처럼 숫자를 괄호로 곁들였는데,
+        //   그러면 결국 사람이 숫자를 읽고 그것으로 판을 부르게 된다.
+        //   숫자는 Info.plist(CFBundleShortVersionString)에만 남긴다.
+        info << QString("판: %1")
+                    .arg(QStringLiteral(PREDORMITION_CODENAME).isEmpty()
+                             ? QStringLiteral("(이름 없음)") : QStringLiteral(PREDORMITION_CODENAME));
         info << QString("앱 경로: %1").arg(QCoreApplication::applicationDirPath());
         info << QString("디스크 경로: %1").arg(m_config->tempDir().isEmpty() ? "(미설정)" : m_config->tempDir());
 
@@ -15998,18 +16114,48 @@ static QString llmInstallDir()
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/llm";
 }
 
+// 고른 모델에 짝이 되는 mmproj(그림 읽기 부속)를 찾는다. 없으면 빈 문자열.
+//   ★ 왜 이름으로 짝을 찾나. 한 폴더에 텍스트 모델과 시각 모델이 섞여 있을 수 있다.
+//     시각 모델이 아닌 것에 mmproj 를 붙이면 서버가 뜨지 않는다. 그래서
+//     ① 이름이 겹치는 mmproj 를 먼저 찾고
+//     ② 없으면, 고른 모델이 시각 모델(VL/vision)일 때만 폴더의 mmproj 를 쓴다.
+static QString mmprojFor(const QString &modelFile)
+{
+    QDir dir(llmDir());
+    const QStringList projs = dir.entryList(QStringList() << "mmproj*.gguf", QDir::Files, QDir::Name);
+    if (projs.isEmpty()) return QString();
+
+    // ① 이름 겹침 — "Qwen2.5-VL-3B-Instruct" 같은 알맹이를 뽑아 맞춰 본다.
+    QString base = modelFile;
+    base.remove(QRegularExpression("\\.gguf$", QRegularExpression::CaseInsensitiveOption));
+    base.remove(QRegularExpression("-(0\\d{4})-of-(\\d{5})$"));
+    base.remove(QRegularExpression("-(q|iq|f)\\d.*$", QRegularExpression::CaseInsensitiveOption));
+    if (!base.isEmpty())
+        for (const QString &pj : projs)
+            if (pj.contains(base, Qt::CaseInsensitive)) return dir.filePath(pj);
+
+    // ② 시각 모델일 때만 폴더의 것을 쓴다.
+    const bool looksVision = modelFile.contains("-vl", Qt::CaseInsensitive)
+                          || modelFile.contains("vision", Qt::CaseInsensitive)
+                          || modelFile.contains("llava",  Qt::CaseInsensitive);
+    return looksVision ? dir.filePath(projs.first()) : QString();
+}
+
 static QStringList bundledLlmModelHeads()
 {
     QDir dir(llmDir());
     const QStringList all = dir.entryList(QStringList() << "*.gguf", QDir::Files, QDir::Name);
     QStringList heads;
     for (const QString &g : all) {
+        // ★ mmproj 는 '모델' 이 아니라 그림을 읽게 해 주는 부속이다.
+        //   목록에 섞이면 사용자가 그걸 모델로 고를 수 있고, 고르면 서버가 뜨지 않는다.
+        if (g.startsWith("mmproj", Qt::CaseInsensitive)) continue;
         const int ofIdx = g.indexOf("-of-");
         if (ofIdx >= 5) {
             const QString part = g.mid(ofIdx - 5, 5);
             bool digits = (part.size() == 5);
             for (const QChar &c : part) if (!c.isDigit()) digits = false;
-            if (digits && part != QLatin1String("00001")) continue;
+            if (digits && part != QLatin1String("00001")) continue;  // 분할 continuation 제외
         }
         heads << g;
     }
@@ -16135,18 +16281,51 @@ void HanishikiBackend::getLlmStatus()
         QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))));
 }
 
+// 힌트로 어느 모델 파일을 쓸지 정한다.
+//   ★ 이 판단이 두 곳에 필요하다 — 기동할 때, 그리고 '이미 켜진 것과 같은 모델인가'
+//     를 볼 때. 규칙이 갈라지면 "바꿨다는데 안 바뀐" 상태가 된다.
+QString HanishikiBackend::resolveLlmModel(const QString &modelHint) const
+{
+    const QStringList heads = bundledLlmModelHeads();
+    if (heads.isEmpty()) return QString();
+    const QString hint = modelHint.isEmpty() ? m_llmModelHint : modelHint;
+    if (!hint.isEmpty())
+        for (const QString &h : heads)
+            if (h.contains(hint, Qt::CaseInsensitive)) return h;
+    // 기본: 코드 특화 중 가장 작은 것(빨리 뜨는 쪽). 없으면 첫 번째.
+    QStringList coders;
+    for (const QString &h : heads) if (h.contains("coder", Qt::CaseInsensitive)) coders << h;
+    coders.sort();
+    return coders.isEmpty() ? heads.first() : coders.first();
+}
+
 void HanishikiBackend::startLocalLlm(const QString &modelHint)
 {
+    // ★ 이미 켜져 있어도 '다른 모델을 골랐다면' 바꿔 줘야 한다.
+    //   예전엔 무조건 "이미 실행 중" 이라며 돌아갔다. 그래서 자가진단이 기본 모델로
+    //   먼저 켜 버린 뒤에는, 사용자가 목록에서 그림 읽는 모델을 골라 켜도 아무 일도
+    //   일어나지 않았다 — 글 전용 서버가 그대로 쓰이고, 그림을 보내면 서버가
+    //   "image input is not supported" 로 거절한다(실측). 이유는 화면에 안 나온다.
     if (m_llmProc && m_llmProc->state() != QProcess::NotRunning) {
-        log("로컬 AI 가 이미 실행 중입니다.", "info", "settings");
-        getLlmStatus();
-        return;
+        const QString want = resolveLlmModel(modelHint);
+        if (want.isEmpty() || want == m_llmRunningModel) {
+            log("로컬 AI 가 이미 실행 중입니다.", "info", "settings");
+            getLlmStatus();
+            return;
+        }
+        log(QString("모델을 바꿉니다: %1 → %2").arg(m_llmRunningModel, want), "info", "settings");
+        stopLocalLlm();
+        QThread::msleep(600);
     }
     // 이미 8737 포트에 서버가 떠 있으면(자동기동/직접실행/이전 세션 잔류) 중복 기동하지 않고 채택.
     //  — 중복 기동은 포트 충돌로 즉시 종료돼 '켜자마자 꺼짐'처럼 보였다.
+    //   우리 프로세스가 아닌 서버가 포트를 물고 있으면 그 모델을 알 수 없다.
+    //   그대로 쓰되, 고른 모델과 다를 수 있다는 것을 말해 준다 — 조용히 넘기면
+    //   "골랐는데 왜 안 되지" 가 된다.
     { HttpClient h; h.setTimeout(600);
       if (h.get(llmBase() + "/v1/models", llmHeaders()).isOk()) {
-          log("로컬 AI 가 이미 실행 중입니다(기존 서버 사용).", "info", "settings");
+          log("로컬 AI 가 이미 실행 중입니다(기존 서버 사용). "
+              "다른 모델로 바꾸려면 먼저 '끄기' 를 누르십시오.", "info", "settings");
           getLlmStatus();
           return;
       } }
@@ -16182,10 +16361,8 @@ void HanishikiBackend::startLocalLlm(const QString &modelHint)
     //     로딩을 마쳐 고아로 남아 포트를 물었다(다음에 켤 때 또 꼬인다).
     //     기본은 코드 특화 중 '가장 작은' 것으로 — 빨리 뜨는 쪽이 기본이어야 한다.
     //     더 큰 모델은 사용자가 고르면 그때 쓴다.
-    { QStringList coders; for (const QString &h : heads) if (h.contains("coder", Qt::CaseInsensitive)) coders << h;
-      coders.sort(); model = coders.isEmpty() ? heads.first() : coders.first(); }
-    if (!effHint.isEmpty())
-        for (const QString &h : heads) if (h.contains(effHint, Qt::CaseInsensitive)) { model = h; break; }
+    model = resolveLlmModel(effHint);
+    if (model.isEmpty()) { log("❌ 쓸 수 있는 모델을 찾지 못했습니다.", "error", "settings"); getLlmStatus(); return; }
 
     log(QString("🩺 로컬 AI 기동 중 (%1)...").arg(model), "info", "settings");
     m_llmProc = new QProcess(this);
@@ -16193,27 +16370,66 @@ void HanishikiBackend::startLocalLlm(const QString &modelHint)
     //   -c 는 AI 가 한 번에 기억하는 분량이다. 4096 은 보관함 질의(자료 수십 건을
     //   함께 넘긴다)에 모자랐다 — 넘친 만큼 앞쪽 지시문이 잘려 나가, 무엇을 하라고
     //   했는지 모르는 채 번호만 나열하는 답이 나왔다. 8192 로 늘린다.
-    m_llmProc->setArguments({"-m", dir + "/" + model, "--port", "8737",
-                             "--host", "127.0.0.1", "-c", "8192"});
+    QStringList llmArgs{"-m", dir + "/" + model, "--port", "8737",
+                        "--host", "127.0.0.1", "-c", "8192"};
+    // ★ 그림 읽기. 이 모델과 짝인 mmproj 가 있으면 넘긴다 — 없으면 예전처럼 글만 읽는다.
+    //   엔진(번들 llama-server)은 이미 --mmproj 를 지원한다. 막고 있던 건 모델뿐이었다.
+    const QString mmproj = mmprojFor(model);
+    if (!mmproj.isEmpty()) {
+        llmArgs << "--mmproj" << mmproj;
+        log(QString("🖼 그림 읽기 켜짐 — %1").arg(QFileInfo(mmproj).fileName()), "info", "settings");
+    }
+    m_llmProc->setArguments(llmArgs);
+    m_llmRunningModel = model;   // '다른 모델을 골랐나' 를 나중에 이걸로 본다
     m_llmProc->setWorkingDirectory(dir);
     connect(m_llmProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int, QProcess::ExitStatus) { getLlmStatus(); });
     m_llmProc->start();
 
+    // 준비될 때까지(모델 로딩) 백그라운드 폴링 후 상태 통지
     QThread *t = QThread::create([this]() {
-        for (int i = 0; i < 40; ++i) {
-            QThread::msleep(500);
-            HttpClient h;
-            if (h.get(llmBase() + "/v1/models", llmHeaders()).isOk()) {
+        // ★ 한도 20초는 너무 짧았다 — 7B 모델은 실측 49초가 걸린다. 그 사이 앱은 실패로
+        //   보고하고, 정작 서버는 로딩을 마쳐 고아 프로세스로 남아 포트를 물었다.
+        //   넉넉히 5분까지 기다리되, 조용히 있지 말고 진행 상황을 알린다.
+        constexpr int kTickMs = 500;
+        constexpr int kMaxTicks = 600;          // 5분
+        for (int i = 0; i < kMaxTicks; ++i) {
+            QThread::msleep(kTickMs);
+            // 프로세스가 죽었으면 더 기다릴 이유가 없다 — 바로 알린다.
+            if (m_llmProc && m_llmProc->state() == QProcess::NotRunning && i > 4) {
                 QMetaObject::invokeMethod(this, [this]() {
-                    log("✅ 로컬 AI 준비 완료 (127.0.0.1:8737) — 자가진단이 이 AI 를 사용합니다.", "success", "settings");
+                    // ★ stderr 는 QProcess 의 주인(메인) 스레드에서 읽는다 — QProcess 는 스레드 안전하지 않다.
+                    const QString err = m_llmProc
+                        ? QString::fromUtf8(m_llmProc->readAllStandardError()).trimmed() : QString();
+                    log("❌ 로컬 AI 가 시작하자마자 종료됐습니다." +
+                        (err.isEmpty() ? QString() : QString(" — %1").arg(err.section('\n', -1).left(160))),
+                        "error", "settings");
                     getLlmStatus();
                 }, Qt::QueuedConnection);
                 return;
             }
+            HttpClient h;
+            if (h.get(llmBase() + "/v1/models", llmHeaders()).isOk()) {
+                const int sec = (i + 1) * kTickMs / 1000;
+                QMetaObject::invokeMethod(this, [this, sec]() {
+                    log(QString("✅ 로컬 AI 준비 완료 (%1초, %2) — 자가진단이 이 AI 를 사용합니다.")
+                            .arg(sec).arg(llmBase()),
+                        "success", "settings");
+                    getLlmStatus();
+                }, Qt::QueuedConnection);
+                return;
+            }
+            // 10초마다 진행 상황 — 큰 모델은 1분 가까이 걸린다. 조용하면 멈춘 줄 안다.
+            if ((i + 1) % 20 == 0) {
+                const int sec = (i + 1) * kTickMs / 1000;
+                QMetaObject::invokeMethod(this, [this, sec]() {
+                    log(QString("   모델 읽는 중... %1초 경과 (큰 모델은 1분 넘게 걸릴 수 있습니다)").arg(sec),
+                        "info", "settings");
+                }, Qt::QueuedConnection);
+            }
         }
         QMetaObject::invokeMethod(this, [this]() {
-            log("⚠️ 로컬 AI 기동 확인 실패 (모델 로딩이 느리거나 실패).", "warning", "settings");
+            log("⚠️ 로컬 AI 가 5분 안에 준비되지 않았습니다. 설정에서 더 작은 모델을 골라 보세요.", "warning", "settings");
             getLlmStatus();
         }, Qt::QueuedConnection);
     });
@@ -16457,7 +16673,7 @@ void HanishikiBackend::llmChat(const QString &historyJson)
             QString lastUser;
             for (int i = history.size() - 1; i >= 0; --i) {
                 const QJsonObject m = history.at(i).toObject();
-                if (m.value("role").toString() == "user") { lastUser = m.value("content").toString(); break; }
+                if (m.value("role").toString() == "user") { lastUser = messageText(m.value("content")); break; }
             }
             auto has = [&lastUser](const QString &k) { return lastUser.contains(k, Qt::CaseInsensitive); };
             const bool wantsRepair =
@@ -16609,7 +16825,7 @@ void HanishikiBackend::llmChat(const QString &historyJson)
             QString lastUser;
             for (int i = history.size() - 1; i >= 0; --i) {
                 const QJsonObject m = history.at(i).toObject();
-                if (m.value("role").toString() == "user") { lastUser = m.value("content").toString(); break; }
+                if (m.value("role").toString() == "user") { lastUser = messageText(m.value("content")); break; }
             }
             const QString web = webSearchSnippets(m_searchKey, lastUser);
             if (!web.isEmpty())
@@ -16932,7 +17148,11 @@ void HanishikiBackend::setLlmUseWeb(bool on) { m_llmUseWeb = on; }
 //   실행부는 Common::activeToolScriptPath() 로 override 우선 사용.
 // ═════════════════════════════════════════════════════════════════════════
 static const QStringList kEditableScripts = {
-    "twitter_api.py", "twitter_tid.py", "twitter_daemon.py", "bluesky_daemon.py", "email_watch.py"};
+    "twitter_api.py", "twitter_tid.py", "twitter_daemon.py", "bluesky_daemon.py", "email_watch.py",
+    // ★ 보관함 스크립트도 AI 가 고칠 수 있게 한다. 이쪽이야말로 손볼 일이 잦다 —
+    //   검색 방식·질문 의도 판별·요약 계산이 전부 여기 있고, 고쳐도 앱을 다시
+    //   빌드할 필요가 없다(앱은 파일을 그때그때 읽어 실행한다).
+    "archive_ask.py", "archive_index.py"};
 
 void HanishikiBackend::getScriptSource(const QString &name)
 {
@@ -16955,15 +17175,18 @@ bool HanishikiBackend::applyScriptPatchImpl(const QString &name, const QString &
     const QString dir = Common::scriptOverrideDir();
     QDir().mkpath(dir);
     const QString ov = dir + "/" + name;
-    // 백업: 기존 override 있으면 그것, 없으면 번들 원본을 .bak 로
+    // 백업: 기존 override 있으면 그것, 없으면 '지금 실제로 쓰이는' 원본을 .bak 로.
+    //   ★ 예전엔 bundledToolsDir()+"/"+name 을 그대로 썼는데, 보관함 스크립트는
+    //     tools/archive/ 하위에 있어서 그 경로에 파일이 없다. 백업이 조용히
+    //     실패했다. activeToolScriptPath() 가 하위 폴더까지 찾아 준다.
+    const bool hadOverride = QFile::exists(ov);   // 원복 방식을 가르는 값 — 아래에서 쓴다
     const QString bak = ov + ".bak";
     QFile::remove(bak);
-    if (QFile::exists(ov)) QFile::copy(ov, bak);
-    else QFile::copy(Common::bundledToolsDir() + "/" + name, bak);
+    if (hadOverride) QFile::copy(ov, bak);
+    else             QFile::copy(Common::activeToolScriptPath(name), bak);
     // 쓰기
-    { QFile f(ov); if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) { err = "override 쓰기 실패"; return false; }
-      f.write(newContent.toUtf8()); f.close(); }
-    // 문법 검증
+    { QString werr; if (!Common::writeFileAtomic(ov, newContent.toUtf8(), &werr)) { err = "override 쓰기 실패: " + werr; return false; } }
+    // 문법 검증 — ast.parse 는 __pycache__ 를 만들지 않는다(py_compile 은 만들어 서명 봉인을 깬다).
     QProcess proc;
     proc.setProcessEnvironment(Common::bundledProcessEnv());
     proc.start(Common::bundledPythonPath(),
@@ -16972,9 +17195,14 @@ bool HanishikiBackend::applyScriptPatchImpl(const QString &name, const QString &
     const bool ok = (proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0);
     if (!ok) {
         err = QString::fromUtf8(proc.readAllStandardError()).left(300);
-        // 원복: .bak 이 있으면 되돌리고, 없으면 override 삭제(번들 사용)
-        if (QFile::exists(bak)) { QFile::remove(ov); QFile::copy(bak, ov); }
-        else QFile::remove(ov);
+        // 원복.
+        //   ★ 원래 override 가 '없었다면' 없던 상태로 되돌려야 한다.
+        //     예전엔 .bak(=번들 원본 사본)을 override 로 복사해 넣어서, 실패한
+        //     패치 한 번에 없던 override 가 생겼다. 내용은 같아 보이지만 그때의
+        //     번들 내용에 고정된 사본이라, 앱을 갱신해도 그 옛 스크립트가 계속
+        //     덮어쓴다. 조용히 옛 코드를 붙잡는 고장이 된다.
+        if (hadOverride && QFile::exists(bak)) { QFile::remove(ov); QFile::copy(bak, ov); }
+        else { QFile::remove(ov); QFile::remove(bak); }
         return false;
     }
     return true;
@@ -17496,20 +17724,55 @@ void HanishikiBackend::autoRepair()
         if (!pyAction.isEmpty()) plan << pyAction;
         if (doTokens) plan << "refreshAllTokens";
 
-        // ★ 결정론적 안전 가드: 진단에 '명백한 실패 신호'가 없으면 모델이 무엇을 골랐든 수리하지 않는다.
-        //   (작은 모델이 정상([OK]) 상태에서도 updateModules 를 고르는 오탐을 원천 차단.)
-        if (!plan.isEmpty()) {
-            static const QStringList failMarks{
-                QStringLiteral("❌"), QStringLiteral("실패"), QStringLiteral("Traceback"),
-                QStringLiteral("No module"), QStringLiteral("ModuleNotFound"),
-                QStringLiteral("not installed"), QStringLiteral("[FAIL"),
-                QStringLiteral("손상"), QStringLiteral("깨졌"), QStringLiteral("깨진")};
-            bool hasFail = false;
-            for (const QString &m : failMarks) if (report.contains(m, Qt::CaseInsensitive)) { hasFail = true; break; }
-            if (!hasFail) {
-                say("ok", "진단 결과 명백한 오류 신호가 없어 자동 수리를 건너뜁니다(정상). 실제 수집이 안 되면 위 대화창에서 증상을 알려주세요.");
-                m_autoRepairBusy = false; say("done", ""); return;
+        // ★ 신호와 행동을 묶는다.
+        //   예전에는 "진단에 실패 신호가 하나라도 있으면 모델이 고른 것을 실행" 이었다.
+        //   그래서 색인이 없다는 경고 하나 때문에 게이트가 열리고, 모델이 엉뚱하게
+        //   refreshAllTokens 를 골라 실행되는 일이 실제로 일어났다(둘은 아무 관계가 없다).
+        //   각 수리 동작은 '그 동작이 고칠 수 있는 신호' 가 진단서에 있을 때만 실행한다.
+        //   모델은 후보를 고를 뿐, 실행 여부는 진단서가 정한다.
+        {
+            auto has = [&report](std::initializer_list<const char *> marks) {
+                for (const char *m : marks)
+                    if (report.contains(QString::fromUtf8(m), Qt::CaseInsensitive)) return true;
+                return false;
+            };
+            // 파이썬 환경이 깨졌다는 신호
+            const bool pyBroken = has({"패키지 없음", "No module", "ModuleNotFound",
+                                       "[FAIL] python", "not installed", "Traceback"});
+            // 토큰·로그인 문제라는 신호
+            const bool tokenBad = has({"토큰", "token", "로그인", "login", "쿠키", "cookie",
+                                       "401", "403", "만료"});
+
+            QStringList kept, dropped;
+            for (const QString &act : plan) {
+                const bool ok = (act == "refreshAllTokens") ? tokenBad : pyBroken;
+                (ok ? kept : dropped) << act;
             }
+            if (!dropped.isEmpty())
+                say("info", QString("진단서에 근거가 없어 건너뜁니다: %1\n"
+                                    "  (AI 가 골랐지만 그 문제를 가리키는 신호가 진단에 없습니다)")
+                                .arg(dropped.join(", ")));
+            plan = kept;
+        }
+
+        // ★ 자동으로 고칠 수 없지만 사람이 하면 되는 것은, 무엇을 누르면 되는지 알린다.
+        //   예전엔 "고칠 항목을 찾지 못했습니다" 로 끝나서 사용자가 다음 수를 몰랐다.
+        {
+            QStringList todo;
+            if (report.contains("AI 엔진 미설치"))
+#ifdef Q_OS_WIN
+                todo << "AI 설치 — 앱 폴더의 scripts\\AI_설치_더블클릭.bat 을 두 번 누르세요";
+#else
+                todo << "AI 설치 — DMG 안 'AI 설치.command' 를 더블클릭하세요";
+#endif
+            if (report.contains("산출물 색인 없음"))
+                todo << "산출물 보관함 — 설정 탭에서 '색인 만들기' 를 누르세요";
+            if (report.contains("오래됐습니다"))
+                todo << "산출물 색인이 오래됐습니다 — '색인 갱신' 을 누르세요(바뀐 것만 합니다)";
+            if (report.contains("디스크 여유") && report.contains("[FAIL] 저장 디스크"))
+                todo << "저장 디스크가 거의 찼습니다 — 공간을 비우거나 저장 위치를 바꾸세요";
+            if (!todo.isEmpty())
+                say("info", "사람이 해야 하는 것:\n  · " + todo.join("\n  · "));
         }
 
         if (plan.isEmpty()) {
@@ -17548,13 +17811,36 @@ void HanishikiBackend::upgradePython()
     runJs("setPythonEnvBusy(true, '업그레이드 중...')");
 
     QThread *thread = QThread::create([this]() {
-        // ★ 경로는 OS 별 레이아웃을 Common 헬퍼가 처리 (mac: ../Resources/python_env/bin/python3,
-        //   win: <exe>/python_env/python.exe)
-        QString resDir = Common::bundledResourcesDir();
-        QString pythonDir = resDir + "/python_env";
+        // ★ 앱 내부(번들) python_env 에 설치한다. 끝나면 재서명해 봉인을 복구한다.
+        //   예전엔 여기서 "외부 복사본이 아니면 중단" 이었다. 그런데
+        //   activePythonEnvDir() 는 번들을 우선하도록 되어 있어서 이 조건이 '항상'
+        //   참이 되어 Python 업그레이드가 언제나 중단됐다. 두 층이 서로 반대 정책을
+        //   갖고 있었던 것이다. 이제 '앱 내부' 한 갈래로 통일한다.
+        //   ★ 윈도우: 대상 폴더는 지금 쓰고 있는 환경(activePythonEnvDir — 앱 폴더에 못 쓰면 AppData 사본)
+        //     하나로 정하고, python 도 그 폴더에서 바로 집는다. 예전엔 설치 폴더는 '번들' 로 박고
+        //     python 은 bundledPythonPath() 로 따로 구했는데, 갓 푼 새 파이썬에는 패키지가 없어
+        //     activePythonEnvDir() 가 외부 사본 쪽을 가리켰다 — 설치 직후 'Python 바이너리를 찾을 수
+        //     없습니다' 로 끝나거나 패키지가 엉뚱한 사본에 깔렸다.
+        QString pythonDir = Common::activePythonEnvDir();
+
+#ifdef Q_OS_MACOS
+        // 번들에 쓸 수 없으면(권한 없는 위치 등) 조용히 다른 곳으로 새지 않고 분명히 알린다.
+        if (!QFileInfo(pythonDir).isWritable()) {
+            log(QString("⚠️ 앱 내부에 쓸 수 없어 업그레이드를 중단합니다: %1 — "
+                        "앱을 응용 프로그램 폴더처럼 쓰기 가능한 위치로 옮긴 뒤 다시 시도해 주십시오.")
+                    .arg(pythonDir), "error", "settings");
+            m_pythonBusy = false;
+            runJs("setPythonEnvBusy(false, '중단')");
+            return;
+        }
+#endif
 
         // 1. 현재 패키지 목록 저장 (복원용)
-        QString python = Common::bundledPythonPath();
+#ifdef Q_OS_WIN
+        QString python = pythonDir + "/python.exe";
+#else
+        QString python = pythonDir + "/bin/python3";
+#endif
         QStringList frozenPkgs;
         if (QFile::exists(python)) {
             QProcess freeze;
@@ -17750,7 +18036,11 @@ void HanishikiBackend::upgradePython()
         }
         QDir(backupDir).removeRecursively();
 
-        python = Common::bundledPythonPath();
+#ifdef Q_OS_WIN
+        python = pythonDir + "/python.exe";
+#else
+        python = pythonDir + "/bin/python3";
+#endif
         if (!QFile::exists(python)) {
             log("  ❌ Python 바이너리를 찾을 수 없습니다", "error", "settings");
             m_pythonBusy = false;
@@ -17875,44 +18165,29 @@ void HanishikiBackend::repairPython()
             log(QString("    • %1").arg(p), "warning", "settings");
         }
 
-        // 2. Python 자체가 없으면 → 전체 재설치
+        // 2. Python 자체가 없으면 → 앱 내부 python_env 가 깨진 것이다.
+        //    예전엔 여기서 '번들 → 외부로 재시드' 를 시도했다. 이제 외부 복사본을
+        //    쓰지 않으므로(activePythonEnvDir 이 번들 고정) 그 재시드는 아무 일도
+        //    하지 않는 죽은 동작이었다. 앱 내부가 깨진 것은 여기서 고칠 수 없으므로
+        //    무엇을 해야 하는지 분명히 알린다.
         if (problems.contains("python_missing")) {
+#ifdef Q_OS_WIN
+            // ★ 윈도우: 앱이 직접 다시 받는다 — upgradePython() 의 다운로드+설치 경로 재사용
+            //   (bash/bundle_python.sh 가 없고, 파이썬이 통째로 없는 사용자는 업그레이드 단추를 찾기 어렵다).
+            //   upgradePython 이 m_pythonBusy 를 다시 획득하므로 여기서 먼저 해제한다.
             log("  Python 바이너리가 없습니다. 전체 재설치...", "warning", "settings");
             QFile::remove(pythonDir + "/.bundled_ok");  // marker 삭제 → 강제 재빌드
-#ifdef Q_OS_WIN
-            // Windows: bash/bundle_python.sh 없음 → upgradePython() 의 다운로드+설치 경로 재사용.
-            //   (upgradePython 이 m_pythonBusy 를 다시 획득하므로 여기서 먼저 해제)
             log("  Windows: 다운로드 기반 재설치로 전환합니다...", "info", "settings");
             m_pythonBusy = false;
             QMetaObject::invokeMethod(this, "upgradePython", Qt::QueuedConnection);
             return;
 #else
-            // bundle_python.sh 실행 (macOS/Linux)
-            QString appBundle = QCoreApplication::applicationDirPath() + "/../..";
-            QString scriptPath = appBundle + "/../../scripts/bundle_python.sh";
-
-            // 스크립트가 없으면 업그레이드로 전환
-            if (!QFile::exists(scriptPath)) {
-                log("  번들 스크립트를 찾을 수 없습니다. 업그레이드 기능을 사용하세요.", "error", "settings");
-                m_pythonBusy = false;
-                runJs("setPythonEnvBusy(false, '복구 실패')");
-                return;
-            }
-
-            QProcess proc;
-            proc.setProcessEnvironment(Common::bundledProcessEnv());
-            proc.start("bash", {scriptPath, appBundle});
-            proc.waitForFinished(600000);
-            log(QString::fromUtf8(proc.readAllStandardOutput()), "info", "settings");
-
-            if (!QFile::exists(python)) {
-                log("  ❌ 재설치 실패. 'Python 업그레이드'로 새로 받으세요.", "error", "settings");
-                m_pythonBusy = false;
-                runJs("setPythonEnvBusy(false, '복구 실패')");
-                return;
-            }
-            // 재진단
-            problems = diagnosePythonEnv(python);
+            log("  앱 내부 Python 이 없습니다.", "error", "settings");
+            log("  → 'Python 업그레이드' 로 새로 받거나, 앱을 다시 설치해 주십시오.",
+                "info", "settings");
+            m_pythonBusy = false;
+            runJs("setPythonEnvBusy(false, '복구 실패')");
+            return;
 #endif
         }
 
@@ -18027,6 +18302,9 @@ void HanishikiBackend::refreshTwitterTokens()
             "                    found = {'auth_token': toks['auth_token'], 'ct0': toks['ct0'], 'browser': fn_name}\n"
             "                    break\n"
             "            except Exception as e:\n"
+            "                _m = str(e).lower()\n"
+            "                if any(k in _m for k in ('could not find', 'not found', 'no such', 'does not exist', 'no cookies')):\n"
+            "                    continue\n"
             "                errors.append(f'{fn_name}/{dom}: {type(e).__name__}')\n"
             "        if found: break\n"
             "    if found:\n"
@@ -18142,7 +18420,12 @@ void HanishikiBackend::refreshInstagramSession()
             "                }\n"
             "                break\n"
             "        except Exception as e:\n"
-            "            errors.append(f'{fn_name}: {type(e).__name__}')\n"
+            "            _m = str(e).lower()\n"
+            // ★ 안 깔린 브라우저의 실패는 오류가 아니다. 예전엔 이것까지 모아
+            //   'librewolf: BrowserCookieError; edge: ...' 처럼 빨갛게 보여 줘서,
+            //   멀쩡한 상태인데 뭔가 고장난 것처럼 보였다. 조용히 넘긴다.
+            "            if not any(k in _m for k in ('could not find', 'not found', 'no such', 'does not exist', 'no cookies')):\n"
+            "                errors.append(f'{fn_name}: {type(e).__name__}')\n"
             "    if found:\n"
             "        print(json.dumps(found))\n"
             "    else:\n"
@@ -18295,7 +18578,12 @@ void HanishikiBackend::refreshPixivSession()
             "                    break\n"
             "            if found: break\n"
             "        except Exception as e:\n"
-            "            errors.append(f'{fn_name}: {type(e).__name__}')\n"
+            "            _m = str(e).lower()\n"
+            // ★ 안 깔린 브라우저의 실패는 오류가 아니다. 예전엔 이것까지 모아
+            //   'librewolf: BrowserCookieError; edge: ...' 처럼 빨갛게 보여 줘서,
+            //   멀쩡한 상태인데 뭔가 고장난 것처럼 보였다. 조용히 넘긴다.
+            "            if not any(k in _m for k in ('could not find', 'not found', 'no such', 'does not exist', 'no cookies')):\n"
+            "                errors.append(f'{fn_name}: {type(e).__name__}')\n"
             "    if found:\n"
             "        print(json.dumps(found))\n"
             "    else:\n"
@@ -18390,6 +18678,9 @@ void HanishikiBackend::refreshFanboxSession()
             "                    }\n"
             "                    break\n"
             "            except Exception as e:\n"
+            "                _m = str(e).lower()\n"
+            "                if any(k in _m for k in ('could not find', 'not found', 'no such', 'does not exist', 'no cookies')):\n"
+            "                    continue\n"
             "                errors.append(f'{fn_name}({dom or \"all\"}): {type(e).__name__}: {str(e)[:60]}')\n"
             "                continue\n"
             "        if found: break\n"
@@ -18922,7 +19213,12 @@ void HanishikiBackend::refreshDomainCookies(const QString &domain, const QString
             "                used_browser = fn_name\n"
             "                break\n"
             "        except Exception as e:\n"
-            "            errors.append(f'{fn_name}: {type(e).__name__}')\n"
+            "            _m = str(e).lower()\n"
+            // ★ 안 깔린 브라우저의 실패는 오류가 아니다. 예전엔 이것까지 모아
+            //   'librewolf: BrowserCookieError; edge: ...' 처럼 빨갛게 보여 줘서,
+            //   멀쩡한 상태인데 뭔가 고장난 것처럼 보였다. 조용히 넘긴다.
+            "            if not any(k in _m for k in ('could not find', 'not found', 'no such', 'does not exist', 'no cookies')):\n"
+            "                errors.append(f'{fn_name}: {type(e).__name__}')\n"
             "    if cookies:\n"
             "        cookie_str = '; '.join(f'{k}={v}' for k, v in cookies.items())\n"
             "        print(json.dumps({'cookie': cookie_str, 'count': len(cookies), 'browser': used_browser}))\n"
@@ -19012,10 +19308,15 @@ void HanishikiBackend::refreshAllTokens()
 void HanishikiBackend::writeStartupLog()
 {
     QString logDir = m_config->tempDir();
-    if (logDir.isEmpty()) logDir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/ABIWA";
+    // ★ 디스크가 아직 설정되지 않았을 때의 자리. 예전엔 여기가 Documents/ABIWA 였다 —
+    //   앱 이름이 네 번 바뀌는 동안 이 한 줄만 첫 이름에 머물러서, 새로 설치한 사람의
+    //   문서 폴더에 난데없이 'ABIWA' 가 생겼다(실제로 생겨 있었다).
+    //   이름을 손으로 적지 않는다. 앱 데이터 폴더 밑에 둔다 — 이름이 또 바뀌어도 따라온다.
+    if (logDir.isEmpty())
+        logDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/logs";
     QDir().mkpath(logDir);
 
-    QString logPath = logDir + "/abiwa_system.log";
+    QString logPath = logDir + "/system.log";
     QFile f(logPath);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return;
 

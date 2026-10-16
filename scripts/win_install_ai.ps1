@@ -1,5 +1,5 @@
 ﻿# ═══════════════════════════════════════════════════════════════════════════
-#  로컬 AI(오픈클로) 설치 — Windows
+#  로컬 AI(ハニワ) 설치 — Windows
 #
 #  설치본에는 앱만 들어간다. AI 모델은 1~9GB 라 설치 파일에 넣을 수 없어,
 #  이 스크립트가 받아서 앱 폴더 안(<앱>\llm)에 넣는다.
@@ -14,7 +14,9 @@
 $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$AppName       = 'Predormition'
+# ★ 앱 이름은 맥과 같다(APP_NAME_ASCII). 실행 파일 Hanishiki.exe · 설치 폴더 Programs\Hanishiki ·
+#   사용자 데이터 %APPDATA%\Hanishiki 가 모두 이 값으로 맞는다(predormition.iss · main.cpp).
+$AppName       = 'Hanishiki'
 $EngineMirror  = 'https://github.com/fukuokahiroki428-ctrl/seishin-bunretsushou-ni-uttetsuke-no-hi/releases/download/ai-engines-v1'
 $ModelMirror   = 'https://github.com/fukuokahiroki428-ctrl/seishin-bunretsushou-ni-uttetsuke-no-hi/releases/download/ai-assets-v1'
 $HF            = 'https://huggingface.co/Qwen'
@@ -62,7 +64,7 @@ function Confirm-Sha256([string]$path, [string]$name, $map, [string]$label) {
 
 Write-Host ''
 Write-Host '════════════════════════════════════════════'
-Write-Host "  $AppName — 로컬 AI(오픈클로) 설치"
+Write-Host "  $AppName — 로컬 AI(ハニワ) 설치"
 Write-Host '════════════════════════════════════════════'
 Write-Host ''
 
@@ -79,14 +81,19 @@ if (-not $curl) {
 #   ★ 설치 폴더는 사용자가 바꿀 수 있다(predormition.iss 의 DisableDirPage=auto).
 #     기본 위치만 뒤지면 "앱이 깔려 있는데 먼저 설치하라" 는 말을 듣게 된다(실측).
 #     Inno Setup 이 남긴 InstallLocation 을 1순위로 본다.
+#   ★ 표시 이름(DisplayName)으로 고르지 않는다 — Inno 의 표시 이름은 'ハンイシキ' 라
+#     "$AppName*" 와 맞지 않는다. 그 자리에 실행 파일이 실제로 있는지로 고른다.
 $fromRegistry = @()
 foreach ($root in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
                     'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
                     'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')) {
     Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {
         $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
-        if ($p -and $p.DisplayName -like "$AppName*" -and $p.InstallLocation) {
-            $fromRegistry += $p.InstallLocation.TrimEnd('\')
+        if ($p -and $p.InstallLocation) {
+            $loc = ([string]$p.InstallLocation).Trim().Trim('"').TrimEnd('\')
+            $hit = $false
+            try { $hit = $loc -and (Test-Path -LiteralPath (Join-Path $loc "$AppName.exe")) } catch { $hit = $false }
+            if ($hit) { $fromRegistry += $loc }
         }
     }
 }
@@ -106,7 +113,7 @@ if (-not $appDir) {
     Write-Host "먼저 $AppName 을 설치한 뒤 이 파일을 다시 실행해 주세요."
     Write-Host '설치돼 있는데도 이 메시지가 나오면, 이 파일을 앱 폴더'
     Write-Host "($AppName.exe 가 있는 곳) 안에 두고 다시 실행해 주세요."
-    Write-Host '(설치본: Predormition_Setup.exe)'
+    Write-Host '(설치본: Hanishiki_Setup.exe)'
     Exit-Script 1
 }
 Write-Host "앱 위치: $appDir"
@@ -116,18 +123,28 @@ Write-Host "앱 위치: $appDir"
 #   함께 사라져 그때마다 5GB 를 다시 받아야 한다(맥에서 실제로 그렇게 날렸다).
 #   사용자 데이터 폴더에 두면 앱을 몇 번을 다시 깔아도 남는다.
 #   (앱은 이 위치를 먼저 보고, 없으면 앱 폴더를 본다.)
-# ★ 이름 통일 뒤 사용자 데이터는 <APPDATA>\Predormition 이다.
-#   앱이 첫 실행에서 옆 자리(Miyo\<앱>)를 이쪽으로 옮긴다. 설치기가 먼저 돌 수도 있으므로
-#   여기서도 같은 이전을 해 둔다 — 안 그러면 9GB 를 두 번 받게 된다.
+# ★ 이름 통일(맥과 같게) 뒤 사용자 데이터는 <APPDATA>\Hanishiki 다. 앱(llmDir · 자가수리)은 이 아래 llm 만 본다.
+#   앱은 첫 실행에서 '설정 파일이 있는' 옛 자리만 이쪽으로 옮긴다 — 설치기가 옛 자리(<APPDATA>\Predormition 등)에
+#   llm 만 넣어 두었으면 그것은 영영 안 옮겨진다. 설치기가 먼저 돌 수도 있으므로 여기서 옛 자리들의 llm 을
+#   새 자리로 옮겨 둔다 — 안 그러면 9GB 를 두 번 받게 된다. 내용이 있는 첫 후보 하나만 옮긴다.
 $llmDir = Join-Path $env:APPDATA (Join-Path $AppName 'llm')
-$llmDirLegacy = Join-Path $env:APPDATA (Join-Path 'Miyo' (Join-Path $AppName 'llm'))
-if ((Test-Path $llmDirLegacy) -and -not (Test-Path $llmDir)) {
-    Write-Host '예전 자리의 AI 를 새 자리로 옮깁니다...'
-    try {
-        New-Item -ItemType Directory -Force -Path (Split-Path $llmDir -Parent) | Out-Null
-        Move-Item $llmDirLegacy $llmDir -ErrorAction Stop
-        Write-Host '  옮겼습니다 — 다시 받지 않아도 됩니다.'
-    } catch { Write-Host "  옮기지 못했습니다: $($_.Exception.Message)" }
+$llmDirLegacies = @(
+    (Join-Path $env:APPDATA 'Predormition\llm'),
+    (Join-Path $env:APPDATA 'Miyo\Predormition\llm'),
+    (Join-Path $env:APPDATA 'Miyo\Hanishiki\llm')
+)
+if (-not (Test-Path -LiteralPath $llmDir)) {
+    foreach ($legacy in $llmDirLegacies) {
+        if (-not (Test-Path -LiteralPath $legacy)) { continue }
+        if ((Get-ChildItem -LiteralPath $legacy -ErrorAction SilentlyContinue | Measure-Object).Count -eq 0) { continue }
+        Write-Host "예전 자리의 AI 를 새 자리로 옮깁니다... ($legacy)"
+        try {
+            New-Item -ItemType Directory -Force -Path (Split-Path $llmDir -Parent) | Out-Null
+            Move-Item -LiteralPath $legacy -Destination $llmDir -ErrorAction Stop
+            Write-Host '  옮겼습니다 — 다시 받지 않아도 됩니다.'
+        } catch { Write-Host "  옮기지 못했습니다: $($_.Exception.Message)" }
+        break
+    }
 }
 Write-Host "설치 위치: $llmDir"
 Write-Host '  (앱을 다시 설치해도 지워지지 않는 자리입니다)'

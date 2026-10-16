@@ -382,6 +382,8 @@ public:
 private:
     std::atomic<bool> m_tradCancelled{false};
     std::atomic<bool> m_pythonBusy{false};    // Python 환경 작업 중 (업그레이드/복구/업데이트 동시 방지)
+    QString resolveLlmModel(const QString &modelHint) const;  // 힌트 → 실제 모델 파일명
+    QString m_llmRunningModel;               // 지금 떠 있는 서버가 물고 있는 모델 파일명
     QProcess *m_llmProc = nullptr;            // 설정에서 켠 번들 로컬 LLM(llama-server) 프로세스
     // ── AI 대상(로컬/온라인)을 한 곳에서 정한다 ────────────────────────────
     //   예전엔 "http://127.0.0.1:8737" 이 16곳에 흩어져 있었다. 온라인을 넣으면서
@@ -559,6 +561,12 @@ public:
     bool m_nasReconnectInProgress = false;
     void nasWatchdogTick();
     void silentRemountWebDav();  // prompt 없는 재마운트 시도
+    // ★ NAS 연결 유지(keep-alive) — 공유기 NAT/서버가 유휴 TCP 세션을 끊어
+    //   "마운트는 보이는데 접근하면 Broken pipe" 가 되는 것을 막는다.
+    QStringList networkMountPoints() const;   // 현재 마운트된 네트워크 볼륨(마운틴 덕 포함)
+    bool probeMountAlive(const QString &mountPoint, int timeoutMs);  // 별도 프로세스로 안전 확인
+    bool m_nasProbeInProgress = false;
+    QMap<QString, int> m_nasDeadStreak;       // 마운트별 연속 실패 횟수
 
     // ★ 무결성 검사 워커 — config["integrityCheck"]=true 일 때 enqueue.
     void enqueueIntegrityCheck(const QString &localPath, const QString &platform);

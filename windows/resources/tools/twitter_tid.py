@@ -4,7 +4,7 @@ import sys
 import json
 import asyncio
 
-async def _load_init_args():
+def _load_init_args():
     """자격증명을 받는다.
     ★ 예전에는 JSON 을 argv 로 받았다. 윈도우에서 남의 프로세스 명령줄은 아무
       프로세스나 읽을 수 있어서(WMI Win32_Process, 작업 관리자의 '명령줄' 열)
@@ -18,7 +18,7 @@ async def _load_init_args():
     sys.exit(1)
 
 
-def main():
+async def main():
     args = _load_init_args()
     auth_token = args["auth_token"]
     ct0 = args["ct0"]

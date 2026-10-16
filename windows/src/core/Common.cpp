@@ -239,7 +239,7 @@ void setFileTimes(const QString &filePath, const QString &timestampStr)
 //     D:\임시\Predormition\exiftool.exe -ver
 //     → Could not find D:\??\Predormition\exiftool_files\perl5*.dll  (exit 1)
 //
-// 설치 기본 경로가 {localappdata}\Programs\Predormition 이므로 Windows 사용자 이름이
+// 설치 기본 경로가 {localappdata}\Programs\<앱> 이므로 Windows 사용자 이름이
 // 한글·일본어면 일반 사용자 환경에서 그대로 재현된다. EXIF 가 조용히 안 써진다.
 //
 // 8.3 단축 경로는 항상 ASCII 이므로 이를 우회로 쓴다.
@@ -274,43 +274,80 @@ static bool copyTreePreserving(const QString &src, const QString &dst);
 //   원래는 8.3 단축 경로로 우회했는데, 이 기계의 D: 는 8.3 생성이 꺼져 있어서
 //   (dir /x 로 확인 — 단축 이름 칸이 비어 있다) 우회가 아예 불가능했다.
 //
-//   그래서 ANSI 로 표현 가능한 임시 폴더에 exiftool.exe 와 exiftool_files 를 한 번 복사해
-//   두고 그쪽을 실행한다. 복사는 처음 한 번만 한다.
+//   그래서 ANSI 로 표현 가능한 임시 폴더에 exiftool.exe 와 exiftool_files 를 복사해
+//   두고 그쪽을 실행한다. 원본의 판이 그대로면 다시 복사하지 않는다(아래 '판 표식').
 //   실패하면 원본 경로를 그대로 돌려준다 — 그때는 지금까지처럼 경고만 남는다.
 QString asciiSafeExiftool(const QString &exePath)
 {
     if (exePath.isEmpty() || ansiRepresentable(exePath)) return exePath;
 
+    // ★ EXIF 는 여러 수집 스레드가 동시에 쓴다. 한 스레드가 복사하는 동안 다른 스레드가
+    //   '이미 시도함 · 결과 없음' 을 보고 원본(뭉개지는) 경로로 띄우지 않도록 잠근다.
+    static QMutex mutex;
+    QMutexLocker lock(&mutex);
     static QString cached;
     static bool tried = false;
     if (tried) return cached.isEmpty() ? exePath : cached;
     tried = true;
 
     // ANSI 로 표현 가능한 후보를 순서대로 — 쓸 수 있는 첫 자리를 쓴다.
+    //   (폴더 이름은 앱 이름에서 — addExifMetadata 의 임시 argfile 이름과 같은 방식)
     QStringList bases;
     bases << QDir::tempPath()
-          << QString::fromLatin1(qgetenv("SystemRoot")) + "/Temp"
-          << QString::fromLatin1(qgetenv("ProgramData")) + "/Predormition";
+          << QString::fromLatin1(qgetenv("SystemRoot")) + "/Temp";
+    const QString programData = QString::fromLatin1(qgetenv("ProgramData"));
+    if (!programData.isEmpty())
+        bases << programData + "/" + QStringLiteral(APP_NAME_ASCII);
+    const QString copyDirName = QStringLiteral(APP_NAME_ASCII).toLower() + "_exiftool";
     for (const QString &base : bases) {
         if (base.isEmpty() || !ansiRepresentable(base)) continue;
-        const QString dir = base + "/predormition_exiftool";
+        const QString dir = base + "/" + copyDirName;
         if (!QDir().mkpath(dir)) continue;
 
         const QString dstExe = dir + "/exiftool.exe";
         const QFileInfo srcInfo(exePath);
-        // 이미 같은 크기로 복사돼 있으면 다시 복사하지 않는다.
-        if (QFileInfo(dstExe).size() != srcInfo.size()) {
-            QFile::remove(dstExe);
-            if (!QFile::copy(exePath, dstExe)) continue;
-        }
         // exiftool_files 는 exe 옆에 있어야 한다. 없으면 exe 만으로는 못 돈다.
         const QString srcFiles = srcInfo.absolutePath() + "/exiftool_files";
-        if (QDir(srcFiles).exists()) {
-            const QString dstFiles = dir + "/exiftool_files";
-            if (!QDir(dstFiles).exists() && !copyTreePreserving(srcFiles, dstFiles)) {
-                qWarning() << "[Common] exiftool_files 복사 실패:" << srcFiles << "->" << dstFiles;
-                continue;
+        const QString dstFiles = dir + "/exiftool_files";
+        const bool hasSrcFiles = QDir(srcFiles).exists();
+
+        // ★ 판 표식으로 비교한다 — exe 크기만 보면 안 된다.
+        //   exiftool.exe 는 판과 무관한 작은 런처이고, 실제 판(13.xx)은 exiftool_files 안의
+        //   exiftool.pl · lib\Image\ExifTool.pm 에 있다. 예전엔 'exe 크기가 다를 때' 와
+        //   'exiftool_files 가 없을 때' 만 다시 복사해서, 앱을 올려도 사본이 처음 복사한 옛 판으로
+        //   영영 남았다 — 받은 파일의 EXIF 를 번들과 다른 판이 써서 맥과 갈라질 수 있었고,
+        //   robocopy 가 중간에 끊겨 반쯤 생긴 폴더도 다시는 안 고쳐졌다.
+        //   → ExifTool.pm 의 크기 · 수정 시각 + exe 크기를 표식으로 적어 두고, 다르거나 표식이
+        //     없으면 통째로 다시 복사한다. 표식은 복사가 다 끝난 뒤에만 쓴다.
+        const QFileInfo srcPm(srcFiles + "/lib/Image/ExifTool.pm");
+        const QString stamp = QString("%1|%2|%3")
+                                  .arg(srcPm.exists() ? srcPm.size() : qint64(-1))
+                                  .arg(srcPm.exists() ? srcPm.lastModified().toSecsSinceEpoch() : qint64(0))
+                                  .arg(srcInfo.size());
+        const QString stampPath = dir + "/.src_stamp";
+        QString oldStamp;
+        {
+            QFile sf(stampPath);
+            if (sf.open(QIODevice::ReadOnly)) oldStamp = QString::fromUtf8(sf.readAll()).trimmed();
+        }
+        const bool upToDate = oldStamp == stamp && QFile::exists(dstExe)
+                              && (!hasSrcFiles || QDir(dstFiles).exists());
+        if (!upToDate) {
+            QFile::remove(stampPath);   // 복사 도중 끊겨도 다음에 다시 하도록 표식부터 지운다
+            if (hasSrcFiles) {
+                QDir(dstFiles).removeRecursively();
+                const QString tmpFiles = dstFiles + ".tmp";
+                QDir(tmpFiles).removeRecursively();
+                if (!copyTreePreserving(srcFiles, tmpFiles) || !QDir().rename(tmpFiles, dstFiles)) {
+                    QDir(tmpFiles).removeRecursively();
+                    qWarning() << "[Common] exiftool_files 복사 실패:" << srcFiles << "->" << dstFiles;
+                    continue;
+                }
             }
+            QFile::remove(dstExe);
+            if (!QFile::copy(exePath, dstExe)) continue;
+            QFile sf(stampPath);
+            if (sf.open(QIODevice::WriteOnly | QIODevice::Truncate)) sf.write(stamp.toUtf8());
         }
         qInfo() << "[Common] 경로에 ANSI 로 못 쓰는 글자가 있어 exiftool 을 옮겨 씁니다:" << dstExe;
         cached = dstExe;
@@ -381,11 +418,14 @@ ExiftoolWay resolveExiftoolWay()
     if (!QFile::exists(bundledExiftool)) {
         QStringList candidates = {
 #ifdef Q_OS_WIN
+            // 윈도우는 exe 옆 exiftool.exe 하나만 — 아래 유닉스 경로는 윈도우에서
+            // '현재 드라이브 루트\usr\bin\exiftool' 로 풀려 엉뚱한 판을 집을 수 있다.
             QCoreApplication::applicationDirPath() + "/exiftool.exe",
-#endif
+#else
             "/opt/homebrew/bin/exiftool",
             "/usr/local/bin/exiftool",
             "/usr/bin/exiftool",
+#endif
         };
         for (const QString &c : candidates)
             if (QFile::exists(c)) { w.program = c; break; }
@@ -693,7 +733,9 @@ QString browserUserAgent()
 
     // 탈출구 — 특정 판이 필요하면 환경변수로 갈아끼운다.
     //   (기준 영상과 같은 이유다. 박아 둔 값은 언젠가 틀린다.)
-    const QString forced = qEnvironmentVariable("PREDORMITION_USER_AGENT");
+    //   (윈도우에만 있는 탈출구다. 이름은 앱 이름을 따르고, 옛 이름도 아직 받는다.)
+    QString forced = qEnvironmentVariable("HANISHIKI_USER_AGENT");
+    if (forced.isEmpty()) forced = qEnvironmentVariable("PREDORMITION_USER_AGENT");   // 윈도우 옛 이름
     if (!forced.isEmpty()) { cached = forced; return cached; }
 
     QString major = detectChromeMajor();
@@ -2008,9 +2050,9 @@ QString longPathArg(const QString &path, int reserveChars)
 
 // ★ 맥 bundledProcessEnv 에 윈도우 것을 얹은 하나뿐인 정의다. 윈도우 옛 정의(maskSecret 뒤에 따로
 //   있던 것)는 이것으로 합치고 지웠다 — 둘이면 컴파일이 깨진다(C2084).
-//   맥에서 온 것: 번들 파이썬 경로(HANISHIKI_PYTHON) · 파이썬 경로(덧씌운 꾸러미 > 고침 꾸러미 도우미 >
+//   맥에서 온 것: 번들 파이썬 경로(HANISHIKI_PYTHON — 맥 · 리눅스만) · 파이썬 경로(덧씌운 꾸러미 > 고침 꾸러미 도우미 >
 //   자가수리 도우미 > 번들 도우미) · 프록시 환경변수(출구를 못 얻으면 닫힌 길) · HANISHIKI_APP_NAME.
-//   윈도우에서 지킨 것: PYTHONPATH 구분자 ';' · 데이터 폴더의 네이티브 구분자와 PREDORMITION_DATA_DIR ·
+//   윈도우에서 지킨 것: PYTHONPATH 구분자 ';' · 데이터 폴더(HANISHIKI_DATA_DIR)의 네이티브 구분자 ·
 //   PYTHONUTF8 / PYTHONIOENCODING.
 QProcessEnvironment bundledProcessEnv()
 {
@@ -2034,10 +2076,16 @@ QProcessEnvironment bundledProcessEnv()
     {
         // 번들 파이썬 경로 — 도구 껍데기(tools/yt-dlp 등)가 어디로 복사돼 불려도 이것을 먼저 쓴다.
         //   앱이 외장 디스크에 있으면 껍데기의 '/Applications 훑기' 가 번들을 못 찾았다.
+        //   ★ 윈도우에서는 넣지 않는다. 이 값을 읽는 쪽(유닉스 셸 껍데기)이 윈도우에는 없고,
+        //     윈도우 bundledPythonPath → activePythonEnvDir 는 부를 때마다 설치 폴더에 쓰기 시험
+        //     (만들고 지우기)을 한다. 이 함수는 받은 파일마다 EXIF 쓰기에서 불리므로, 쓸모없는
+        //     디스크 쓰기가 파일마다 생기고 읽기전용 설치에서는 첫 EXIF 가 python_env 시드를 끌어안는다.
+#ifndef Q_OS_WIN
         {
             const QString py = bundledPythonPath();
             if (!py.isEmpty() && QFileInfo(py).isExecutable()) env.insert("HANISHIKI_PYTHON", py);
         }
+#endif
         // 파이썬 경로 — 앞에 있을수록 먼저 읽는다.
         //   덧씌운 꾸러미(새 모듈) > 고침 꾸러미 도우미 > 자가수리가 고친 도우미 > 번들 도우미.
         //   ★ 도우미가 옆 파일을 부른다(twitter_daemon→x_session, bluesky_daemon→exif_tags).
@@ -2081,9 +2129,9 @@ QProcessEnvironment bundledProcessEnv()
     //   Application Support\カメラ\ 라는 가짜 트리를 사용자 홈에 만들고 있었다
     //   (실측: 이 기계에 그 폴더와 graphql_hashes.json 이 실제로 있었다).
     //   이름도 옛 코드네임이었다. 앱과 같은 자리를 쓰게 한다.
+    //   (옛 윈도우 이름 PREDORMITION_DATA_DIR 는 더 넣지 않는다 — 번들 도우미는 HANISHIKI_DATA_DIR 를 먼저 읽는다.)
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    env.insert("PREDORMITION_DATA_DIR", QDir::toNativeSeparators(dataDir));
-    env.insert("HANISHIKI_DATA_DIR", QDir::toNativeSeparators(dataDir));   // 맥 쪽과 같은 이름도 함께
+    env.insert("HANISHIKI_DATA_DIR", QDir::toNativeSeparators(dataDir));   // 맥 쪽과 같은 이름
     env.insert("HANISHIKI_APP_NAME", QStringLiteral(APP_NAME_ASCII));
     env.insert("MIYO_APP_NAME", QStringLiteral(APP_NAME_ASCII));   // 옛 이름 — 아직 읽는 스크립트가 있을 수 있다
 

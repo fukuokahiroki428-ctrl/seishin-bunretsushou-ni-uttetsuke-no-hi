@@ -33,6 +33,9 @@ add_compile_definitions(
 #   이게 없으면 시스템 ACP 로 해석돼 제목/메뉴가 깨짐.
 if(MSVC)
     add_compile_options(/utf-8)
+    # ★ /bigobj — HanishikiBackend.cpp 하나가 2만 줄 넘고 람다가 많아, 맥과 맞춘 뒤(2026-10)
+    #   개체 파일 섹션 한도(65,279)를 넘었다(C1128). 기본 COFF 대신 큰 개체 형식을 쓴다.
+    add_compile_options(/bigobj)
 endif()
 
 # ★ 헤더 의존성 추적이 죽어 있는 기계를 시끄럽게 만든다.

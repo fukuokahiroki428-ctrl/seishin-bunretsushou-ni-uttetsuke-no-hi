@@ -38,18 +38,22 @@ ENDPOINT_NAMES = [
 #   C:\Users\<사용자>\Library\Application Support\カメラ\ 라는 가짜 맥 트리를
 #   사용자 홈에 만들었다. 이름도 옛 코드네임이었다.
 #   환경변수가 없을 때만 판별해서 각 운영체제의 제자리를 쓴다.
+#   이름은 앱이 넘겨 주는 HANISHIKI_APP_NAME (맥과 같은 계약) — 옛 이름을 박지 않는다.
+_app_name = os.environ.get("HANISHIKI_APP_NAME") or os.environ.get("MIYO_APP_NAME") or "Hanishiki"
+
+
 def _default_data_dir():
     if sys.platform == "win32":
         base = os.environ.get("APPDATA") or os.path.expanduser("~")
-        return os.path.join(base, "Predormition")
+        return os.path.join(base, _app_name)
     if sys.platform == "darwin":
-        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Predormition")
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", _app_name)
     base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
-    return os.path.join(base, "Predormition")
+    return os.path.join(base, _app_name)
 
 
-_data_dir = (os.environ.get("PREDORMITION_DATA_DIR")
-             or os.environ.get("HANISHIKI_DATA_DIR")
+_data_dir = (os.environ.get("HANISHIKI_DATA_DIR")
+             or os.environ.get("PREDORMITION_DATA_DIR")
              or _default_data_dir())
 _hash_cache_path = os.path.join(_data_dir, "graphql_hashes.json")
 try:
@@ -64,7 +68,7 @@ try:
             os.path.join(os.path.expanduser("~"), "Library", "Application Support",
                          "カメラ", "graphql_hashes.json"),
             os.path.join(os.path.expanduser("~"), "Library", "Application Support",
-                         "Miyo", "Predormition", "graphql_hashes.json"),
+                         "Miyo", _app_name, "graphql_hashes.json"),
         ):
             if os.path.exists(_legacy):
                 import shutil as _sh
@@ -445,43 +449,25 @@ async def main():
     print(json.dumps({"info": "자격증명 도착: auth_token %d자, ct0 %d자"
                               % (len(auth_token or ""), len(ct0 or ""))}), flush=True)
 
-    # ── 어느 세션 계층을 쓸지 ────────────────────────────────────────────
-    #
-    # twikit 을 먼저 쓴다. 오래 써서 검증된 쪽이고, 지금 이 기계에서 실제로
-    # 수집이 되고 있는 쪽이기 때문이다.
-    #
-    # x_session(tools/x_session.py)은 우리가 직접 만든 얇은 계층이고, 여기서는
-    # '물러설 자리' 로 둔다. 다만 두 자리에서 실제로 넘어간다:
-    #   1) twikit 이 아예 없을 때
-    #   2) twikit 으로 X-Client-Transaction-Id 서명을 못 만들 때
-    #      (twikit 자기 초기화는 지금 X 에서 실패한다 — "Couldn't get KEY_BYTE
-    #       indices". 데몬이 손으로 우회해 왔지만 그 우회도 언젠가 안 맞게 된다.)
-    #      전에는 그때 무작위 서명으로 넘어갔다. 그건 되는 척하는 상태다 —
-    #      X 가 막으면 그제서야 알게 된다. 되는 것이 있으면 그것을 쓰는 게 낫다.
-    #   ※ 손으로 넘기고 싶을 때: 환경변수 PREDORMITION_X_SESSION=1
-    #     (twikit 이 멀쩡해 보이는데 수집만 이상할 때 갈아 끼워 보는 용도.
-    #      이 스위치가 있어야 '물러설 자리' 가 실제로 도는지 확인할 수 있다 —
-    #      한 번도 안 도는 대비책은 필요한 날 같이 고장 나 있다.)
+    # ── 어느 세션 계층을 쓸지 ──────────────────────────────────────────────
+    # x_session 은 이 저장소가 직접 들고 있는 얇은 계층이다(tools/x_session.py).
+    # twikit 은 최신이 2025-02 배포로 1년 넘게 멈춰 있고, 실제로 자기 TID 초기화가
+    # 지금 X 에서 실패한다("Couldn't get KEY_BYTE indices"). 데몬이 그것을 손으로
+    # 우회해 왔을 뿐이다. 그래서 우리 것을 먼저 쓰고, 안 되면 물러선다.
+    #   ★ 물러설 자리를 남겨 두는 이유: 우리 것에 아직 못 본 구멍이 있을 수 있다.
+    #     사용자의 주 수집기가 내 확신 때문에 멈추면 안 된다.
     USING_SHIM = False
-    _forced = os.environ.get("PREDORMITION_X_SESSION", "").strip() not in ("", "0")
     try:
-        if _forced:
-            raise ImportError("PREDORMITION_X_SESSION 으로 강제 전환")
-        from twikit import Client
-        from twikit.client.gql import Endpoint, FEATURES, USER_FEATURES, flatten_params
-        print(json.dumps({"info": "세션 계층: twikit"}), flush=True)
-    except ImportError as _te:
+        from x_session import Client, Endpoint, FEATURES, USER_FEATURES, flatten_params
+        USING_SHIM = True
+        print(json.dumps({"info": "세션 계층: x_session (앱 내장)"}), flush=True)
+    except Exception as _se:
         try:
-            from x_session import Client, Endpoint, FEATURES, USER_FEATURES, flatten_params
-            USING_SHIM = True
-            # 강제 전환과 '진짜로 twikit 이 없음' 을 구분해서 적는다.
-            #   섞어 적으면 로그를 읽는 사람이 없는 고장을 쫓게 된다.
-            print(json.dumps({"info": "세션 계층: x_session (환경변수로 강제 전환)"
-                              if _forced else f"세션 계층: x_session (twikit 이 없음: {_te})"}),
-                  flush=True)
-        except Exception as _se:
-            print(json.dumps({"error": f"twikit 도 x_session 도 못 불러왔습니다: {_te} / {_se}"}),
-                  flush=True)
+            from twikit import Client
+            from twikit.client.gql import Endpoint, FEATURES, USER_FEATURES, flatten_params
+            print(json.dumps({"info": f"세션 계층: twikit 으로 물러섬 ({_se})"}), flush=True)
+        except ImportError:
+            print(json.dumps({"error": "x_session 도 twikit 도 없습니다"}), flush=True)
             sys.exit(1)
 
     # ── Monkey-patch httpx.Cookies.get() BEFORE creating Client ──
@@ -505,91 +491,83 @@ async def main():
                         value = cookie.value
         return value if value is not None else default
 
-    # ★ x_session 은 쿠키를 도메인까지 지정해 넣으므로 중복이 안 생긴다 —
-    #   이 패치는 twikit 을 쓸 때만 필요하다. 필요 없을 때 남의 라이브러리를
-    #   건드려 두면 나중에 원인 찾기만 어려워진다.
-    if not USING_SHIM:
-        httpx.Cookies.get = _safe_cookies_get
-        print(json.dumps({"info": "httpx.Cookies.get() patched: duplicate cookies tolerated"}), flush=True)
+    httpx.Cookies.get = _safe_cookies_get
+    print(json.dumps({"info": "httpx.Cookies.get() patched: duplicate cookies tolerated"}), flush=True)
 
-    # ── In-process source-level fix for twikit bug: 'code' KeyError ──
-    # twikit/client/client.py line ~158 accesses response_data['errors'][0]['code']
-    # unconditionally. Twitter sometimes returns errors without 'code' (only 'message'
-    # or 'extensions.code'). We patch the bundled source file ONCE if needed.
+    # ── twikit 상류 버그 우회: 'code' KeyError ──
+    # twikit/client/client.py 는 response_data['errors'][0]['code'] 를 무조건 읽는다.
+    # 트위터는 'code' 없이 'message' 만, 또는 extensions.code 로만 주는 경우가 있다.
+    #
+    # ★ 예전엔 이 파일을 '디스크에 고쳐 썼다'. 그런데 그 파일은 서명된 앱 번들 안에 있다.
+    #   한 글자만 바꿔도 codesign 봉인이 깨지고, 다음 기동 때 앱이 스스로 1분 넘게
+    #   재서명을 돌린다. 그 사이에 앱을 끄면 번들이 무효인 채로 남는다.
+    #   빌드할 때마다 새 twikit 이 들어오므로 '첫 트위터 수집' 마다 이 일이 반복됐다.
+    #   봉인이 깨지는 진짜 원인이 여기였다.
+    #   (윈도우도 같다 — 설치본 python_env 의 twikit 을 고쳐 쓰고 __pycache__ 를 지웠다.
+    #    설치한 파일을 앱이 몰래 바꿔 두면 나중에 원인 찾기만 어려워진다.)
+    #
+    #   → 디스크를 건드리지 않는다. 고친 소스를 메모리에서 컴파일해 모듈에 덮는다.
+    #     아래 Client() 를 만들기 전이라 이미 만들어진 객체가 없어 안전하다.
+    #     (바로 위 httpx.Cookies.get 과 같은 방식 — 실행 중에만 고친다)
     try:
         if USING_SHIM:
             raise RuntimeError("x_session 을 쓰므로 twikit 소스 패치는 건너뜁니다")
         import twikit.client.client as _twc
-        import os as _os
         _twc_path = _twc.__file__
         with open(_twc_path, 'r', encoding='utf-8') as _f:
             _src = _f.read()
         _bad = "error_code = response_data['errors'][0]['code']"
         _good = ("error_code = response_data['errors'][0].get('code') "
                  "or (response_data['errors'][0].get('extensions') or {}).get('code') or 0")
-        if _bad in _src and _good not in _src:
-            _src = _src.replace(_bad, _good)
-            try:
-                with open(_twc_path, 'w', encoding='utf-8') as _f:
-                    _f.write(_src)
-                # Invalidate bytecode cache so the fix loads next import
-                _cache_dir = _os.path.join(_os.path.dirname(_twc_path), '__pycache__')
-                if _os.path.isdir(_cache_dir):
-                    for _fn in _os.listdir(_cache_dir):
-                        if _fn.startswith('client.') and _fn.endswith('.pyc'):
-                            try: _os.remove(_os.path.join(_cache_dir, _fn))
-                            except Exception: pass
-                print(json.dumps({"info": "twikit client.py patched: 'code' KeyError fixed (reload required)"}), flush=True)
-                # Reload module in current process
-                import importlib
-                importlib.reload(_twc)
-            except PermissionError:
-                print(json.dumps({"info": "twikit client.py patch skipped (read-only)"}), flush=True)
+        if _bad in _src:
+            exec(compile(_src.replace(_bad, _good), _twc_path, 'exec'), _twc.__dict__)
+            print(json.dumps({"info": "twikit 'code' KeyError 우회 적용 (메모리에서만 — 번들 서명 유지)"}), flush=True)
         else:
-            print(json.dumps({"info": "twikit client.py already patched or pattern not found"}), flush=True)
+            print(json.dumps({"info": "twikit 'code' 패턴 없음 — 상류가 이미 고쳤거나 구조가 바뀜"}), flush=True)
     except Exception as _pe:
-        # 껍데기를 쓰면 이 패치는 애초에 필요 없다 — '실패' 로 찍지 않는다.
-        if not USING_SHIM:
-            print(json.dumps({"info": f"twikit source patch failed: {_pe}"}), flush=True)
+        print(json.dumps({"info": f"twikit 우회 실패(수집은 계속 시도): {_pe}"}), flush=True)
 
-    # ★ UA 는 앱이 정한 것을 그대로 쓴다. twikit 기본값은 macOS 사파리였다 —
-    #   윈도우 크롬 쿠키를 쓰면서 맥 사파리라고 말하는 셈이라 그 자체가 신호였다.
-    _ua = init_args.get("user_agent") or None
+    # ★ (윈도우) 프록시(VPN) — 계정마다 다른 출구로 나가게 한다. 앱이 계정에 붙은
+    #   프로필을 URL 한 줄(init_args['proxy'])로 만들어 넘겨준다.
+    #   x_session.Client 는 AsyncClient(transport=...) 로 전송기를 직접 넣으므로 httpx 가
+    #   ALL_PROXY 같은 환경 변수를 보지 않는다(_mounts 가 빈다). 환경만 믿으면 프록시를
+    #   켜도 직접 나간다 — 그래서 출구를 생성자에 직접 준다.
+    _proxy = init_args.get("proxy") or ""
     if USING_SHIM:
-        client = Client(language="ja", user_agent=_ua,
-                        proxy=(init_args.get("proxy") or None))
+        client = Client(language="ja", proxy=(_proxy or None))
     else:
         client = Client(language="ja")
-        if _ua:
-            try: client._user_agent = _ua
-            except Exception: pass
     client.set_cookies({
         "auth_token": auth_token,
         "ct0": ct0,
     })
+    if _proxy:
+        # 비밀번호는 찍지 않는다 — 로그가 그대로 남는다.
+        _safe = _proxy
+        if "@" in _safe:
+            _safe = _safe.split("://")[0] + "://***@" + _safe.rsplit("@", 1)[1]
+        print(json.dumps({"info": f"프록시 사용: {_safe}"}), flush=True)
     # ★ httpx timeout 길게 — Twitter API 가 가끔 응답 늦음 (Cloudflare / rate limit etc)
     #   default 5초 → 30초. ReadTimeout 자주 발생 방지.
     try:
         import httpx as _httpx
         new_timeout = _httpx.Timeout(30.0, connect=15.0, read=30.0, write=15.0, pool=10.0)
         client.http.timeout = new_timeout
-        # ★ 프록시(VPN) — 계정마다 다른 출구로 나가게 한다.
-        #   시스템 VPN 은 기계 전체를 한 경로로 보내므로 계정별 분리가 안 된다.
-        #   앱이 계정에 붙은 프로필을 URL 한 줄로 만들어 넘겨준다.
-        #   transport 를 통째로 바꾸므로 retries 설정도 여기서 같이 준다.
-        _proxy = init_args.get("proxy") or ""
-        if _proxy:
-            if not USING_SHIM:
-                client.http._transport = _httpx.HTTPTransport(retries=3, proxy=_proxy)
-            # 비밀번호는 찍지 않는다 — 로그가 그대로 남는다.
-            _safe = _proxy
-            if "@" in _safe:
-                _safe = _safe.split("://")[0] + "://***@" + _safe.rsplit("@", 1)[1]
-            print(json.dumps({"info": f"프록시 사용: {_safe}"}), flush=True)
+        # 재시도 transport — connection error 시 자동 3회 retry
+        #   ★ x_session 을 쓸 때는 건드리지 않는다. 그쪽 생성자가 이미
+        #     AsyncHTTPTransport(retries=3) 과 30초 시간제한을 넣어 둔다.
+        #   ★ 그리고 여기서 쓰던 것은 '동기' HTTPTransport 였다. 비동기 클라이언트에
+        #     동기 전송기를 꽂으면 첫 요청에서 바로 깨진다 —
+        #       'HTTPTransport' object has no attribute 'handle_async_request'
+        #     twikit 시절에는 이 대입이 그쪽 구조 때문에 효력이 없어 드러나지 않았을
+        #     뿐이고, 애초에 틀린 줄이었다. 비동기 것으로 바로잡는다.
+        #   (윈도우) transport 를 통째로 바꾸므로 프록시 출구도 여기서 같이 준다.
+        if not USING_SHIM:
+            client.http._transport = (_httpx.AsyncHTTPTransport(retries=3, proxy=_proxy) if _proxy
+                                      else _httpx.AsyncHTTPTransport(retries=3))
+            print(json.dumps({"info": "httpx timeout=30s + retries=3 적용"}), flush=True)
         else:
-            if not USING_SHIM:
-                client.http._transport = _httpx.HTTPTransport(retries=3)
-        print(json.dumps({"info": "httpx timeout=30s + retries=3 적용"}), flush=True)
+            print(json.dumps({"info": "httpx 설정은 x_session 이 이미 함 — 건너뜀"}), flush=True)
     except Exception as _te:
         print(json.dumps({"info": f"timeout 설정 실패 (무시): {_te}"}), flush=True)
 
@@ -717,34 +695,6 @@ async def main():
             if not USING_SHIM:
                 print(json.dumps({"info": f"TID twikit init also failed: {e2}"}), flush=True)
 
-    # ★ twikit 으로 서명을 못 만들었으면 여기서 x_session 으로 갈아탄다.
-    #   무작위 서명으로 계속 가는 것보다 낫다 — 그건 되는 척하다가 X 가 막을 때
-    #   비로소 드러나는 상태다. x_session 은 유지되는 라이브러리로 서명하므로
-    #   적어도 '왜 안 되는지' 가 분명해진다.
-    if not tid_ok and not USING_SHIM:
-        try:
-            import x_session as _xs
-            print(json.dumps({"info": "twikit 으로 서명을 못 만들어 x_session 으로 갈아탑니다"}),
-                  flush=True)
-            Endpoint = _xs.Endpoint
-            FEATURES = _xs.FEATURES
-            USER_FEATURES = _xs.USER_FEATURES
-            flatten_params = _xs.flatten_params
-            client = _xs.Client(language="ja",
-                                user_agent=(init_args.get("user_agent") or None),
-                                proxy=(init_args.get("proxy") or None))
-            client.set_cookies({"auth_token": auth_token, "ct0": ct0})
-            USING_SHIM = True
-            # 갈아탄 뒤에도 앱이 긁어 둔 최신 해시를 그대로 얹는다
-            _c = _load_cached_hashes()
-            if _c:
-                apply_hashes_to_endpoint(Endpoint, _c)
-            tid_ok = await client.client_transaction.init(client.http, ct_headers)
-            print(json.dumps({"info": f"TID(x_session): {client.client_transaction.reason}"}),
-                  flush=True)
-        except Exception as _xe:
-            print(json.dumps({"info": f"x_session 으로도 못 갈아탔습니다: {_xe}"}), flush=True)
-
     # 무효 TID 는 SearchTimeline 에서 빈 본문 404 로만 돌아와 해시 만료와 구별되지 않는다(RSSHub #23408)
     if not tid_ok:
         if not USING_SHIM:
@@ -752,7 +702,7 @@ async def main():
             # ★ twikit 의 ClientTransaction 에는 ready/reason 이 없다(x_session 에만 있다).
             #   handle_command 의 404 판정 getattr(..., "ready", True) 이 twikit 에서는 늘
             #   '준비됨' 으로 읽혀, 서명 없는 404 가 no_tid 로 안 가고 해시 수리로 샌다.
-            #   윈도우는 twikit 이 주 경로라 여기서 tid_ok 를 그 이름으로 옮겨 적는다.
+            #   twikit 으로 물러섰을 때를 위해 여기서 tid_ok 를 그 이름으로 옮겨 적는다.
             client.client_transaction.ready = False
             client.client_transaction.reason = "twikit 서명기 초기화 실패 (위 'TID ... init' 줄 참고)"
         print(json.dumps({"info": "TID 초기화 실패 — 서명 없이 보냅니다. SearchTimeline 404 는 해시 문제가 아닙니다"}), flush=True)

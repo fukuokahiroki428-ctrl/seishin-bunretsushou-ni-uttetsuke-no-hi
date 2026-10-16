@@ -629,7 +629,8 @@ inline SmokeResult smokeYtDlp(const QString &exe)
     //   환경변수로 갈아끼울 수 있게 열어 둔다 (쉼표로 여러 개).
     //   1년을 방치할 앱이라면 '내가 박아 둔 상수' 도 언젠가 틀린다고 봐야 한다.
     QStringList urls;
-    const QString custom = qEnvironmentVariable("PREDORMITION_SMOKE_YT");
+    QString custom = qEnvironmentVariable("HANISHIKI_SMOKE_YT");
+    if (custom.isEmpty()) custom = qEnvironmentVariable("PREDORMITION_SMOKE_YT");   // 윈도우 옛 이름
     if (!custom.isEmpty()) urls = custom.split(',', Qt::SkipEmptyParts);
     else urls << QStringLiteral("https://www.youtube.com/watch?v=jNQXAC9IVRw")   // 2005년, 유튜브 첫 영상
               << QStringLiteral("https://www.youtube.com/watch?v=BaW_jenozKc");  // yt-dlp 가 자기 시험에 쓰는 영상
@@ -1559,7 +1560,7 @@ inline bool spawnBundledLlm(int port)
     static QAtomicInt spawned{0};
     if (!spawned.testAndSetOrdered(0, 1)) return false;
 
-    // ★ 설치 스크립트(win_install_ai.ps1)는 모델을 <APPDATA>\Predormition\llm 에 넣는다.
+    // ★ 설치 스크립트(win_install_ai.ps1)는 모델을 <APPDATA>\Hanishiki\llm 에 넣는다.
     //   앱 본체의 llmDir() 도 그 자리를 먼저 본다. 그런데 여기만 <exe>/llm 만 봐서,
     //   AI 를 설치해도 자가수리의 원인 진단용 LLM 은 영영 뜨지 않았다.
     //   앱 본체와 같은 순서로 맞춘다 — 사용자 설치본 우선, 없으면 번들.
@@ -1582,16 +1583,16 @@ inline bool spawnBundledLlm(int port)
         heads << g;
     }
     if (heads.isEmpty()) { spawned.storeRelease(0); return false; }
-    // 선택: env PREDORMITION_LLM_MODEL(부분일치, 예전 이름 CHERNOBYL_LLM_MODEL 도 받음) > 첫 헤드(알파벳순=가장 작은=빠른 기본).
+    // 선택: env CHERNOBYL_LLM_MODEL(부분일치) > 첫 헤드(알파벳순=가장 작은=빠른 기본).
     QString chosen = heads.first();
-    // ★ 새 이름을 먼저 보고, 없으면 예전 이름을 받는다 — 쓰던 사람이 깨지지 않게.
-    QString wantModel = qEnvironmentVariable("PREDORMITION_LLM_MODEL");
-    if (wantModel.isEmpty()) wantModel = qEnvironmentVariable("CHERNOBYL_LLM_MODEL");
+    // ★ 맥과 같은 이름을 먼저 보고, 없으면 윈도우 옛 이름을 받는다 — 쓰던 사람이 깨지지 않게.
+    QString wantModel = qEnvironmentVariable("CHERNOBYL_LLM_MODEL");
+    if (wantModel.isEmpty()) wantModel = qEnvironmentVariable("PREDORMITION_LLM_MODEL");   // 윈도우 옛 이름
     if (!wantModel.isEmpty())
         for (const QString &h : heads)
             if (h.contains(wantModel, Qt::CaseInsensitive)) { chosen = h; break; }
     qInfo().noquote() << "[SelfRepair] 번들 LLM" << heads.size() << "개 모델 중 선택:" << chosen
-                      << "(env PREDORMITION_LLM_MODEL 로 전환 가능)";
+                      << "(env CHERNOBYL_LLM_MODEL 로 전환 가능)";
     makeExecutable(server);
     qint64 pid = 0;
     const bool ok = QProcess::startDetached(server,
@@ -1612,12 +1613,12 @@ inline bool spawnBundledLlm(int port)
     return ok;
 }
 
-// 살아있는 OpenAI 호환 엔드포인트 탐색. env PREDORMITION_LLM_ENDPOINT 최우선(예전 이름도 받음).
+// 살아있는 OpenAI 호환 엔드포인트 탐색. env CHERNOBYL_LLM_ENDPOINT 최우선.
 inline QString findLlmEndpoint()
 {
     QStringList bases;
-    QString envEp = qEnvironmentVariable("PREDORMITION_LLM_ENDPOINT");
-    if (envEp.isEmpty()) envEp = qEnvironmentVariable("CHERNOBYL_LLM_ENDPOINT");   // 예전 이름 폴백
+    QString envEp = qEnvironmentVariable("CHERNOBYL_LLM_ENDPOINT");
+    if (envEp.isEmpty()) envEp = qEnvironmentVariable("PREDORMITION_LLM_ENDPOINT");   // 윈도우 옛 이름 폴백
     if (!envEp.isEmpty()) bases << envEp;
     bases << "http://127.0.0.1:11434"    // Ollama
           << "http://127.0.0.1:1234"     // LM Studio
@@ -1966,8 +1967,16 @@ inline QString runStartupMaintenance(bool deep = false, bool cleanLocks = true)
         report += QString("\n%1개 도구 복구 실패 — 로컬 LLM 진단 시도…\n").arg(broken);
         const QString diag = llmDiagnose(report);
         report += diag.isEmpty()
+#ifdef Q_OS_WIN
+            // 윈도우에서 실제로 보는 자리(spawnBundledLlm 의 첫 순서) — 맥 번들 경로 'Resources/llm/' 은 윈도우에 없다.
+            ? QString("(로컬 LLM 미가동 — Ollama/LM Studio/llama.cpp 실행 또는 "
+                      "%1 에 llama-server.exe+model.gguf 배치(AI_설치_더블클릭.bat) 시 자동 진단)\n")
+                  .arg(QDir::toNativeSeparators(
+                      QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/llm"))
+#else
             ? QStringLiteral("(로컬 LLM 미가동 — Ollama/LM Studio/llama.cpp 실행 또는 "
                              "Resources/llm/ 에 llama-server+model.gguf 배치 시 자동 진단)\n")
+#endif
             : "┌ LLM 진단 ┐\n" + diag + "\n└──────────┘\n";
     }
 

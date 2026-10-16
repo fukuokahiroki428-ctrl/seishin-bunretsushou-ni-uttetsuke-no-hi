@@ -21,8 +21,7 @@ Commands:
   {"action":"quit"}
 """
 
-import sys
-import os, json, os, time, asyncio, re, subprocess, shutil
+import os, sys, json, time, asyncio, re, subprocess, shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -124,10 +123,6 @@ def _load_init_args(usage):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(json.dumps({"error": "Usage: bluesky_daemon.py '{\"handle\":\"...\",\"password\":\"...\"}'"}), flush=True)
-        sys.exit(1)
-
     init_args = _load_init_args("Usage: bluesky_daemon.py --stdin-args  (init JSON on first stdin line)")
 
     # Support multiple accounts: {"accounts":[{"handle":"...","password":"..."},...]}
@@ -150,40 +145,12 @@ def main():
         print(json.dumps({"error": "openpyxl not installed"}), flush=True)
         sys.exit(1)
 
-    # ★ 프록시(VPN) — 계정마다 다른 출구로 나가게 한다.
-    #   atproto 는 내부에서 httpx 를 쓴다. 그 클라이언트의 transport 를 프록시용으로
-    #   바꿔치기한다. 내부 구조가 판마다 다를 수 있으므로 후보를 훑고, 못 찾으면
-    #   조용히 넘어간다 — 프록시 때문에 수집 자체가 죽으면 안 된다.
-    _PROXY = init_args.get("proxy") or ""
-
-    def _safe_proxy(u):
-        """로그에 자격증명을 남기지 않는다."""
-        if "@" not in u:
-            return u
-        return u.split("://")[0] + "://***@" + u.rsplit("@", 1)[1]
-
-    def _apply_proxy(client):
-        if not _PROXY:
-            return
-        try:
-            import httpx as _httpx
-            holder = getattr(client, "request", None) or getattr(client, "_request", None)
-            inner = getattr(holder, "_client", None) if holder is not None else None
-            if inner is None:
-                log("프록시: httpx 클라이언트를 찾지 못해 건너뜁니다")
-                return
-            inner._transport = _httpx.HTTPTransport(retries=3, proxy=_PROXY)
-            log(f"프록시 사용: {_safe_proxy(_PROXY)}")
-        except Exception as e:
-            log(f"프록시 적용 실패 (직접 연결로 계속): {e}")
-
     # Login with first account
     current_account_idx = 0
     clients = []
     for i, acct in enumerate(accounts):
         try:
             c = ATProtoClient()
-            _apply_proxy(c)
             c.login(acct["handle"], acct["password"])
             clients.append(c)
             log(f"Account {i+1} logged in: {acct['handle']}")
@@ -290,7 +257,6 @@ def main():
             try:
                 acct = accounts[current_account_idx]
                 clients[current_account_idx] = ATProtoClient()
-                _apply_proxy(clients[current_account_idx])
                 clients[current_account_idx].login(acct["handle"], acct["password"])
                 client = clients[current_account_idx]
                 log(f"🔄 계정 전환: {acct['handle']}")
@@ -306,7 +272,6 @@ def main():
             try:
                 acct = accounts[current_account_idx]
                 clients[current_account_idx] = ATProtoClient()
-                _apply_proxy(clients[current_account_idx])
                 clients[current_account_idx].login(acct["handle"], acct["password"])
                 client = clients[current_account_idx]
                 log("✅ 재로그인 성공! 수집 재개...")
@@ -502,32 +467,17 @@ def main():
                         # ★ ffmpeg 는 http:// 프록시(http_proxy)만 쓰고 SOCKS 는 모른다. 앱이 socks5:// 를 걸어 둔 채로
                         #   부르면 프록시를 건너뛰고 이 컴퓨터 회선으로 직접 나간다(앱의 '닫힌 길' socks5://127.0.0.1:9 도
                         #   무시된다). 그때는 받지 않는다 — 실패로 남겨 다음 판(프록시를 바꾼 뒤)에 다시 본다.
-                        # ★ (윈도우) 앱은 출구를 환경만이 아니라 init_args['proxy'](_PROXY)로도 준다. 환경만 보면
-                        #   _PROXY 에 socks5:// 가 걸려 있어도 통과해 HLS 영상만 이 컴퓨터 회선으로 샌다.
-                        #   그래서 _PROXY 가 있으면 그것으로 판정하고, http:// 이면 ffmpeg 에 환경(http_proxy)으로 건넨다.
-                        #   ('-http_proxy' 인자로 주면 프록시 비밀번호가 명령줄에 실린다. ffmpeg 의 http·tls 는 둘 다
-                        #    getenv("http_proxy") 를 읽으므로 환경으로 주는 것이 같은 효과다.)
-                        _ffenv = None
-                        if _PROXY:
-                            if not _PROXY.lower().startswith('http://'):
-                                raise RuntimeError('프록시가 HTTP 가 아니라 HLS 영상은 받지 않습니다'
-                                                   '(ffmpeg 는 SOCKS 를 몰라 직접 연결로 샙니다)')
-                            # 윈도우 환경 이름은 대소문자를 가리지 않는다 — 다른 꼴(HTTP_PROXY)을 걷어내고 하나만 둔다.
-                            _ffenv = {k: v for k, v in os.environ.items() if k.lower() != 'http_proxy'}
-                            _ffenv['http_proxy'] = _PROXY
-                        else:
-                            _pk = ('http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY')
-                            _anyp = any(os.environ.get(k) for k in _pk)
-                            if _anyp and not os.environ.get('http_proxy', '').lower().startswith('http://'):
-                                raise RuntimeError('프록시가 HTTP 가 아니라 HLS 영상은 받지 않습니다'
-                                                   '(ffmpeg 는 SOCKS 를 몰라 직접 연결로 샙니다)')
+                        _pk = ('http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY')
+                        _anyp = any(os.environ.get(k) for k in _pk)
+                        if _anyp and not os.environ.get('http_proxy', '').lower().startswith('http://'):
+                            raise RuntimeError('프록시가 HTTP 가 아니라 HLS 영상은 받지 않습니다'
+                                               '(ffmpeg 는 SOCKS 를 몰라 직접 연결로 샙니다)')
                         ff = shutil.which('ffmpeg')
                         if not ff:
                             raise RuntimeError('ffmpeg 를 찾지 못해 HLS 영상을 받을 수 없습니다')
                         r = subprocess.run([ff, '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
                                             '-i', url, '-c', 'copy', '-f', 'mp4', part],
-                                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=1800,
-                                           env=_ffenv)
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=1800)
                         if r.returncode != 0 or not os.path.exists(part) or os.path.getsize(part) == 0:
                             raise RuntimeError('ffmpeg 실패: ' + (r.stderr or b'').decode('utf-8', 'replace')[-300:])
                     else:
@@ -707,6 +657,9 @@ def main():
 
     # Finder comment (macOS)
     def add_finder_comment(filepath, post_data):
+        # Finder 메모(osascript)는 맥에만 있다 — 다른 OS 에서는 실패할 줄 아는 프로세스를 띄우지 않는다.
+        if sys.platform != 'darwin':
+            return
         try:
             import subprocess
             author = post_data[5] if len(post_data) > 5 else ''
