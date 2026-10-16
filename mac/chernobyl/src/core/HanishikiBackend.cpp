@@ -413,6 +413,11 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
         //   예전엔 기다리지 않아, 확인이 도는 사이(켠 지 20초쯤) 앱을 끄면 그 스레드가 치워지는 Qt 를 건드려 죽었다.
         QElapsedTimer quitWait;
         quitWait.start();
+        // ★ 팔로잉 가져오기는 맨 먼저 멈춘다 — 막힌 요청(도우미 응답 · 15분 속도 제한 기다림)을 끊어 두어야 아래에서 기다리는
+        //   동안 함께 끝난다. 예전엔 다른 스레드를 기다린 뒤에야 멈추라 해, 남은 시간이 0.1초뿐이었고 그 스레드가 치워진
+        //   백엔드에 기록을 남기다 죽을 수 있었다(검토).
+        m_followListRun = false;
+        if (const qint64 pid = m_followListPid.exchange(0)) Common::killProcessByPid(pid);
         if (m_hotfixThread && m_hotfixThread->isRunning() && !m_hotfixThread->wait(3000))
             qWarning() << "[hotfix] 확인 스레드가 3초 안에 끝나지 않았습니다";
         // ★ 정리하기 스레드 — 끄는 중이면 도우미를 곧바로 내리고 끝난다(organizeRun). 안 기다리면 그 스레드가
@@ -420,6 +425,9 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
         if (m_organizeThread && m_organizeThread->isRunning()
             && !m_organizeThread->wait(qMax(100, 3000 - int(quitWait.elapsed()))))
             qWarning() << "[정리] 정리 스레드가 제때 끝나지 않았습니다";
+        if (m_followListThread && m_followListThread->isRunning()
+            && !m_followListThread->wait(qMax(100, 3000 - int(quitWait.elapsed()))))
+            qWarning() << "[가져오기] 팔로잉 가져오기 스레드가 제때 끝나지 않았습니다";
         // ★ 다른 뒷일 스레드의 요청도(프록시 시험 · 감시 · 수집 …) — 모두 0.1초 안에 멈추므로 보통 곧 끝난다. 합쳐 3초까지.
         if (!HttpClient::waitIdle(qMax(0, 3000 - int(quitWait.elapsed()))))
             qWarning() << "[종료] 진행 중인 요청이 3초 안에 끝나지 않았습니다";
@@ -2588,6 +2596,9 @@ void HanishikiBackend::importConfig()
     // → 그냥 곧장 진행, GUI 로그에 명시
     log(QString("📂 불러오기 시작: %1").arg(path), "info", "settings");
 
+    // ★ r42 이전에 내보낸 파일에는 정리하기 틀(organize)이 없다 — 지금의 틀(이미 옮김 표시)이 남으면 불러온 r42 규칙이
+    //   틀로 옮겨지지 않고 같은 계정을 두 번 정리했다(검토). 비워 두면 화면이 처음 켤 때처럼 한 번 옮긴다.
+    if (root.contains("organizeRules") && !root.contains("organize")) root["organize"] = QJsonObject();
     // m_config->fromJson 호출 — Config 가 알아서 모든 필드 복원
     m_config->fromJson(root);
     m_config->save();
@@ -20939,4 +20950,97 @@ void HanishikiBackend::organizeBrowse(const QString &fieldId)
     // 경로는 JS 문자열로 안전하게 — 따옴표 · 역슬래시가 든 폴더 이름도 깨지지 않게
     runJs(QStringLiteral("window.setOrganizeField && setOrganizeField(%1, %2)")
               .arg(Common::jsStringLiteral(fieldId), Common::jsStringLiteral(folder)));
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════
+// 팔로잉에서 가져오기 — 대상이 수백 개일 때 한 사람씩 적지 않게(사용자 2026-10-15, 다른 앱들 조사 결과).
+// ═════════════════════════════════════════════════════════════════════════
+void HanishikiBackend::listFollowing(const QString &configJson)
+{
+    const QJsonObject config = QJsonDocument::fromJson(configJson.toUtf8()).object();
+    const QString platform = config["platform"].toString();
+    auto reply = [this](const QJsonObject &res) {
+        if (Common::appQuitting()) return;
+        runJsAll(QStringLiteral("window.onFollowList && onFollowList(%1)")
+                     .arg(Common::jsStringLiteral(QString::fromUtf8(QJsonDocument(res).toJson(QJsonDocument::Compact)))));
+    };
+    if (m_followListRunning.exchange(true)) {
+        reply(QJsonObject{{"platform", platform}, {"ok", false}, {"busy", true}, {"error", QStringLiteral("이미 가져오는 중입니다")}});
+        return;
+    }
+    m_followListRun = true;
+    QThread *t = QThread::create([this, config, platform, reply]() {
+        const QString handle = config["target"].toString().trimmed().remove(QRegularExpression("^@"));
+        const int maxCount = qMax(0, config["max"].toInt(2000));
+        QJsonArray users;
+        QString err;
+        if (handle.isEmpty()) {
+            err = QStringLiteral("누구의 팔로잉인지 아이디를 적으십시오");
+        } else if (platform == QLatin1String("twitter")) {
+            // 수집과 같은 출구(계정 프록시)로 — 한 계정 두 IP 가 되지 않게
+            QString missingProxy;
+            applyAccountProxyToCurrentThread(this, config, nullptr, nullptr, &missingProxy, nullptr);
+            struct ProxyScope { ~ProxyScope() { Common::clearThreadProxy(); } } _proxyScope;
+            if (!missingProxy.isEmpty()) {
+                err = QString("이 계정이 고른 프록시 '%1' 이 목록에 없습니다").arg(missingProxy);
+            } else {
+                TwitterCollector tc(this);   // 이 스레드 것 — 돌고 있는 수집의 데몬과 섞이지 않게 따로
+                users = tc.listFollowing(config, handle, maxCount, m_followListRun, &err, &m_followListPid);
+            }
+        } else if (platform == QLatin1String("bluesky")) {
+            // 공개 API — 로그인 없이 된다(app.bsky.graph.getFollows)
+            HttpClient http;
+            QString cursor;
+            QSet<QString> seen;
+            while (m_followListRun && !Common::appQuitting() && (maxCount == 0 || users.size() < maxCount)) {
+                QString url = QStringLiteral("https://public.api.bsky.app/xrpc/app.bsky.graph.getFollows?limit=100&actor=")
+                              + QString::fromUtf8(QUrl::toPercentEncoding(handle));
+                if (!cursor.isEmpty()) url += QStringLiteral("&cursor=") + QString::fromUtf8(QUrl::toPercentEncoding(cursor));
+                const HttpResponse r = http.get(url);
+                if (!r.isOk()) {
+                    err = r.statusCode ? QString("블루스카이가 %1 로 답했습니다").arg(r.statusCode) : r.error;
+                    break;
+                }
+                const QJsonObject j = r.json();
+                const QJsonArray follows = j["follows"].toArray();
+                for (const auto &v : follows) {
+                    const QJsonObject f = v.toObject();
+                    const QString h = f["handle"].toString();
+                    if (h.isEmpty() || seen.contains(h.toLower())) continue;
+                    seen.insert(h.toLower());
+                    users.append(QJsonObject{{"handle", h}, {"name", f["displayName"].toString()}, {"protected", false}});
+                    if (maxCount > 0 && users.size() >= maxCount) break;
+                }
+                const QString next = j["cursor"].toString();
+                if (Common::appQuitting()) break;
+                log(QString("팔로잉 가져오는 중: %1명").arg(users.size()), "info", "bsky");
+                if (next.isEmpty() || follows.isEmpty() || next == cursor) break;
+                cursor = next;
+                for (int i = 0; i < 4 && m_followListRun && !Common::appQuitting(); ++i) QThread::msleep(100);
+            }
+        } else {
+            err = QStringLiteral("이 플랫폼은 아직 팔로잉 가져오기를 하지 못합니다");
+        }
+        if (!m_followListRun) err.clear();   // 그만으로 끊은 요청의 오류는 알리지 않는다 — 받은 데까지가 결과
+        m_followListRunning = false;
+        QJsonObject res;
+        res["platform"] = platform;
+        res["of"] = handle;
+        res["ok"] = !users.isEmpty() || err.isEmpty();
+        res["stopped"] = !m_followListRun;
+        res["error"] = err;
+        res["users"] = users;
+        reply(res);
+    });
+    m_followListThread = t;
+    connect(t, &QThread::finished, t, &QThread::deleteLater);
+    t->start();
+}
+
+void HanishikiBackend::followListStop()
+{
+    m_followListRun = false;
+    // 도우미의 응답을 기다리는 중(한 번에 60초까지)이어도 곧 멈추게 — 수집의 중지(stopCollection)와 같은 방법
+    if (const qint64 pid = m_followListPid.exchange(0)) Common::killProcessByPid(pid);
 }

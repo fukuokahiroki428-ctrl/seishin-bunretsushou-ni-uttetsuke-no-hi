@@ -134,6 +134,10 @@ public slots:
     void organizeRun(const QString &rulesJson);
     void organizeStop();
     void organizeBrowse(const QString &fieldId);   // 폴더를 골라 화면의 그 칸에(setOrganizeField)
+    // 대상 목록 '팔로잉에서 가져오기' — 한 사람의 팔로잉(아이디 · 이름)만 모아 화면 onFollowList(json)로.
+    //   configJson = 그 탭의 수집 설정(buildBatchConfig) + target(누구의) + max. 받는 파일은 없다.
+    void listFollowing(const QString &configJson);
+    void followListStop();
 
     // Navigation
     void browsePath(const QString &platform);
@@ -663,6 +667,10 @@ public:
     std::atomic<bool> m_organizeRunning{false};   // 정리하기는 한 번에 하나
     std::atomic<bool> m_organizeStop{false};
     QPointer<QThread> m_organizeThread;            // 끌 때 기다린다(aboutToQuit)
+    std::atomic<bool> m_followListRunning{false};
+    std::atomic<bool> m_followListRun{false};
+    std::atomic<qint64> m_followListPid{0};       // 가져오기가 띄운 트위터 도우미 — 그만 · 끄기가 바로 끊는다
+    QPointer<QThread> m_followListThread;
 
     // ★ 동시 수집 작업 자체 제한 — 여러 플랫폼 동시 돌릴 때 메모리 중첩 방지
     //   2개 동시 OK. 3번째는 큐에서 대기. 끝나면 자동으로 다음 시작.

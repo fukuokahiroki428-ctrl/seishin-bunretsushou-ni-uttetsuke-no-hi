@@ -25,6 +25,11 @@ public:
 
     void collect(const QJsonObject &config, const std::atomic<bool> &isRunning);
     void checkNewPosts(const QJsonObject &config, const std::atomic<bool> &isRunning);
+    // 한 사람의 팔로잉 목록만(아무것도 받지 않는다) — 대상 목록 '팔로잉에서 가져오기' 용.
+    //   돌려주는 것: [{handle, name, protected}]. maxCount 0 = 끝까지. 문제가 있으면 err 에 까닭.
+    //   pidOut: 띄운 도우미의 PID — 그만 · 앱 끄기가 막힌 요청을 바로 끊을 수 있게(0 이면 없음)
+    QJsonArray listFollowing(const QJsonObject &config, const QString &handle, int maxCount,
+                             const std::atomic<bool> &isRunning, QString *err, std::atomic<qint64> *pidOut = nullptr);
     void stopDaemon();
     // 외부(HanishikiBackend)에서 중지 시 프로세스를 즉시 죽이기 위해 노출
     // ★ QProcess 를 건드리지 않는다 — 다른 스레드 것일 수 있다.

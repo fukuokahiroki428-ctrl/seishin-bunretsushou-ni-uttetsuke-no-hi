@@ -108,6 +108,59 @@ def safe_name(s: str, max_bytes: int = NAME_MAX) -> str:
     return _trim_bytes(s, max_bytes)
 
 
+# ── 틀(사용자 2026-10-15 '정리하기를 틀 하나로') — 다른 앱들의 경로 형식 문자열(gallery-dl directory · JDownloader 규칙)처럼
+#   정리할 곳 하나 + 틀 하나로 모든 계정을 정리한다. '/' 로 단을 나누고, 날짜 낱말이 없는 앞 단들이 계정 폴더,
+#   날짜 낱말이 든 뒤 단들이 달 폴더다. 계정 폴더에는 {name} 이나 {handle} 이 있어야 한다(계정마다 갈라야 하니).
+DEFAULT_TEMPLATE = '{name}・@{handle}-({service})/{wareki}{month}月'
+DATE_TOKENS = ('wareki', 'era', 'eyear', 'year', 'month', 'mm', 'day', 'dd')
+TOKENS = ('name', 'handle', 'service', 'label', 'domain', 'platform') + DATE_TOKENS
+TEMPLATE = DEFAULT_TEMPLATE
+
+
+def split_template(tpl: str):
+    segs = [x.strip() for x in (tpl or DEFAULT_TEMPLATE).split('/') if x.strip()]
+    acc, date = [], []
+    for x in segs:
+        if date or any('{' + t + '}' in x for t in DATE_TOKENS):
+            date.append(x)
+        else:
+            acc.append(x)
+    return acc, date
+
+
+def template_problem(tpl: str) -> str:
+    unknown = sorted(set(re.findall(r'\{([a-z]+)\}', tpl or '')) - set(TOKENS))
+    if unknown:
+        return '모르는 낱말이 있습니다 — ' + ', '.join('{%s}' % x for x in unknown)
+    acc, _date = split_template(tpl)
+    if not acc:
+        return '틀의 앞쪽(계정 폴더)에 날짜 없는 단이 하나는 있어야 합니다'
+    if not any('{name}' in x or '{handle}' in x for x in acc):
+        return '틀의 계정 폴더 쪽에 {name} 이나 {handle} 이 있어야 합니다(계정마다 갈라야 합니다)'
+    return ''
+
+
+def render(seg: str, vals: dict) -> str:
+    if not vals.get('handle'):
+        seg = seg.replace('・@{handle}', '').replace('@{handle}', '')   # 핸들이 없는 규칙(유튜브 채널 등)
+    return re.sub(r'\{([a-z]+)\}', lambda m: str(vals.get(m.group(1), m.group(0))), seg)
+
+
+def rule_vals(rule: dict, name: str) -> dict:
+    plat = rule.get('platform') or ''
+    label, domain = PLATFORMS.get(plat, (rule.get('label') or plat or '기타', rule.get('domain') or ''))
+    return {'name': name, 'handle': (rule.get('target') or '').strip().lstrip('@'), 'platform': plat,
+            'label': label, 'domain': domain, 'service': ('%s ／ %s' % (label, domain)) if domain else label}
+
+
+def date_vals(d: dt.date) -> dict:
+    w = era_folder(d)                     # '令和7年11月' — 연호 · 해만 떼어 쓴다
+    wareki = w[:w.index('年') + 1] if '年' in w else '%d年' % d.year
+    era = re.match(r'^(\D+?)(元|\d+)年', wareki)
+    return {'wareki': wareki, 'era': era.group(1) if era else '', 'eyear': era.group(2) if era else str(d.year),
+            'year': str(d.year), 'month': str(d.month), 'mm': '%02d' % d.month, 'day': str(d.day), 'dd': '%02d' % d.day}
+
+
 def era_folder(d: dt.date) -> str:
     """令和7年11月 · 令和元年5月 · 平成31年4月 · 昭和64年1月."""
     if d >= dt.date(2019, 5, 1):
@@ -322,16 +375,35 @@ def overlap(a: str, b: str) -> bool:
     return ka == kb or ka in chain(b) or kb in chain(a)
 
 
-def svc_suffix(rule: dict) -> str:
-    plat = rule.get('platform') or ''
-    label, domain = PLATFORMS.get(plat, (rule.get('label') or plat or '기타', rule.get('domain') or ''))
-    return safe_name('(%s ／ %s)' % (label, domain) if domain else '(%s)' % label)
-
-
 def account_folder(rule: dict, name: str) -> str:
-    handle = (rule.get('target') or '').strip().lstrip('@')
-    who = name + ('・@' + handle if handle else '')
-    return safe_name('%s-%s' % (who, svc_suffix(rule)))
+    """정리할 곳 아래의 계정 폴더(상대 경로) — 틀의 날짜 없는 앞 단들."""
+    acc, _date = split_template(TEMPLATE)
+    vals = rule_vals(rule, name)
+    return os.path.join(*[safe_name(render(x, vals)) for x in acc])
+
+
+def month_folder(rule: dict, name: str, d: dt.date) -> str:
+    """계정 폴더 아래의 달 폴더(상대 경로) — 틀의 날짜 단들. 날짜 단이 없으면 계정 폴더 바로 아래."""
+    _acc, date = split_template(TEMPLATE)
+    vals = dict(rule_vals(rule, name), **date_vals(d))
+    return os.path.join(*[safe_name(render(x, vals)) for x in date]) if date else ''
+
+
+def _last_seg_pattern(rule: dict):
+    """계정 폴더 마지막 단에서 이름 자리를 뺀 꼴 — 이미 있는 그 계정의 폴더를 찾고, 거기서 이름을 읽는다.
+    (이름이 마지막 단에만 있을 때 — 기본 틀이 그렇다. 위 단에 이름이 있으면 찾지 않는다.)"""
+    acc, _date = split_template(TEMPLATE)
+    if '{name}' not in acc[-1] or any('{name}' in x for x in acc[:-1]):
+        return None, None
+    mark = '\ue000'   # 사용자 영역 글자 — safe_name 이 바꾸지 않는다(제어 글자는 '_' 로 바뀐다)
+    vals = rule_vals(rule, mark)
+    whole = safe_name(render(acc[-1], vals))
+    if mark not in whole:
+        return None, None
+    pre, post = whole.split(mark, 1)
+    parent = os.path.join(*([safe_name(render(x, vals)) for x in acc[:-1]] or ['']))
+    return parent, re.compile('^' + re.escape(unicodedata.normalize('NFC', pre)) + '(.+)'
+                              + re.escape(unicodedata.normalize('NFC', post)) + '$', re.I)
 
 
 def _xlsx_field(path: str, field: str) -> str:
@@ -406,18 +478,51 @@ def current_profile_name(sources: list, handle: str) -> str:
     return (_xlsx_field(best[1], 'Name') if best[1] else '') or best[2]
 
 
-def existing_account_folder(rule: dict, dest: str) -> str:
-    """정리할 곳에 이미 있는 그 핸들 · 서비스의 계정 폴더 이름(없으면 '')."""
-    handle = (rule.get('target') or '').strip().lstrip('@')
-    tail = (('・@' + handle + '-') if handle else '-') + svc_suffix(rule)
+def owner_key(rule: dict) -> str:
+    handle = (rule.get('target') or '').strip().lstrip('@').lower()
+    return '%s:%s' % (rule.get('platform') or '', handle) if handle else ''
+
+
+def folder_owners(folder: str):
+    """계정 폴더의 장부에 적힌 주인들 — 장부가 없으면 None, r42 장부(주인 칸 없음)면 []."""
     try:
-        for n in sorted(os.listdir(dest)):
-            nn = unicodedata.normalize('NFC', n)
-            if nn.lower().endswith(tail.lower()) and len(nn) > len(tail) and os.path.isdir(os.path.join(dest, n)):
-                return n
+        with open(os.path.join(folder, INDEX_NAME), encoding='utf-8') as f:
+            d = json.load(f)
+        return [str(x) for x in (d.get('owners') or []) if x]
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def existing_account_folder(rule: dict, dest: str):
+    """정리할 곳에 이미 있는 '그 계정의' 폴더 — (계정 폴더의 상대 경로, 그 안의 이름) 또는 ('', '').
+    ★ 이름 자리를 뺀 꼴로 찾으면 다른 계정의 폴더나 사용자의 폴더도 걸린다(검토: 핸들 없는 규칙이 남의 계정 폴더를 제 이름으로
+      바꿈 · '{name}/…' 틀이 ~/Pictures/Screenshots 를 바꿈 · 'Foo_x_abc' 가 'abc' 에 걸림). 그래서 그 폴더의 장부에 이 규칙이
+      주인으로 적혀 있을 때만 그 계정의 것으로 본다. 주인 칸이 없는 폴더(r42 장부 · 장부 없음)는 기본 틀일 때만 —
+      기본 틀은 '・@핸들-(서비스)' 로 끝나 핸들이 다른 계정과 섞이지 않는다."""
+    me = owner_key(rule)
+    if not me:
+        return '', ''
+    parent, pat = _last_seg_pattern(rule)
+    if pat is None:
+        return '', ''
+    base = os.path.join(dest, parent) if parent else dest
+    legacy_ok = TEMPLATE == DEFAULT_TEMPLATE
+    owned, legacy = None, None
+    try:
+        for n in sorted(os.listdir(base)):
+            mm = pat.match(unicodedata.normalize('NFC', n))
+            full = os.path.join(base, n)
+            if not mm or not os.path.isdir(full):
+                continue
+            hit = ((os.path.join(parent, n) if parent else n), mm.group(1))
+            owners = folder_owners(full)
+            if owners and me in owners:
+                owned = owned or hit
+            elif not owners and legacy_ok:
+                legacy = legacy or hit
     except OSError:
         pass
-    return ''
+    return owned or legacy or ('', '')
 
 
 def pick_name(rule: dict, dest: str, sources: list) -> str:
@@ -431,10 +536,9 @@ def pick_name(rule: dict, dest: str, sources: list) -> str:
     cur = current_profile_name(sources, handle)
     if cur:
         return cur
-    old = existing_account_folder(rule, dest)
-    if old:
-        tail = (('・@' + handle + '-') if handle else '-') + svc_suffix(rule)
-        return unicodedata.normalize('NFC', old)[:-len(tail)]
+    old, old_name = existing_account_folder(rule, dest)
+    if old_name:
+        return old_name
     key = '%s:%s' % (rule.get('platform') or '', handle.lower())
     try:
         with open(os.path.join(dest, NAMES_NAME), encoding='utf-8') as f:
@@ -482,6 +586,7 @@ class Index:
         self.dest: dict = {}
         self.src: dict = {}
         self.hashes: dict = {}
+        self.owners: list = []
         self.last_save = time.time()
         old_dest, old_src = {}, {}
         try:
@@ -489,6 +594,7 @@ class Index:
                 d = json.load(f)
             if d.get('version') == 2:
                 old_dest, old_src = d.get('dest', {}), d.get('src', {})
+                self.owners = [str(x) for x in (d.get('owners') or []) if x]
         except (OSError, ValueError):
             pass
         self.src = old_src
@@ -556,12 +662,15 @@ class Index:
         if time.time() - self.last_save >= SAVE_EVERY:
             self.save()
 
-    def save(self, prune: bool = False) -> None:
-        if prune:   # 이번에 본 원본만 남긴다 — 장부가 끝없이 자라지 않게
-            self.src = {k: v for k, v in self.src.items() if k in self.seen}
+    def save(self, prune: bool = False, bases=()) -> None:
+        if prune:   # 이번에 훑은 받은 곳에서 안 보인 원본만 지운다 — 장부가 끝없이 자라지 않게.
+            # ★ 다른 받은 곳(같은 계정 폴더를 쓰는 다른 규칙)의 것은 남긴다 — 지우면 그 규칙이 EXIF 를 다시 쓴 원본을
+            #   '(2)' 로 또 두었다(검토: 틀에 {service} 가 없고 같은 핸들이 두 플랫폼에 있을 때)
+            mine = set(bases)
+            self.src = {k: v for k, v in self.src.items() if k in self.seen or k.split('|', 1)[0] not in mine}
         tmp = self.path + '.%d.part' % os.getpid()
         with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump({'version': 2, 'dest': self.dest, 'src': self.src}, f, ensure_ascii=False)
+            json.dump({'version': 2, 'owners': self.owners, 'dest': self.dest, 'src': self.src}, f, ensure_ascii=False)
         os.replace(tmp, self.path)
         self.last_save = time.time()
 
@@ -598,7 +707,7 @@ def place(idx: Index, path: str, st, month_dir: str, counter: list) -> tuple:
 
 
 def run_rule(i: int, rule: dict, captures: bool, dry: bool) -> dict:
-    res = {'index': i, 'id': rule.get('id') or '', 'copied': 0, 'clone': 0, 'dup': 0, 'mtime_date': 0, 'errors': 0}
+    res = {'index': i, 'id': rule.get('id') or '', 'copied': 0, 'clone': 0, 'dup': 0, 'mtime_date': 0, 'errors': 0, 'missing': 0}
     dest = os.path.expanduser((rule.get('dest') or '').strip())
     label = rule.get('target') or rule.get('name') or '?'
     if not dest:
@@ -629,6 +738,12 @@ def run_rule(i: int, rule: dict, captures: bool, dry: bool) -> dict:
     sources, ambiguous = find_sources(rule)
     if ambiguous:
         log('규칙 %d (%s): 받은 곳 후보가 여럿입니다(%s) — 정리하기 탭에서 받은 곳을 직접 고르십시오' % (i + 1, label, ', '.join(ambiguous)), 'warning')
+    roots_ok = any(os.path.isdir(os.path.expanduser(r)) for r in (rule.get('roots') or []) if r and str(r).strip())
+    if not sources and rule.get('auto') and not (rule.get('source') or '').strip() and not ambiguous and roots_ok:
+        # 틀로 만든 계정(대상 목록의 모든 대상) — 아직 한 번도 받지 않은 대상이 흔하다. 문제가 아니라 '받은 것 없음' 으로 센다.
+        # 후보가 여럿이거나 저장 경로 자체가 없으면(빠진 디스크) 문제로 센다 — '받은 것 없음' 으로 덮으면 못 보고 지나간다(검토)
+        res['missing'] = 1
+        return res
     if not sources:
         log('규칙 %d (%s): 받은 곳을 찾지 못했습니다 — 정리하기 탭에서 받은 곳을 직접 고르십시오' % (i + 1, label), 'warning')
         res['errors'] += 1
@@ -642,16 +757,23 @@ def run_rule(i: int, rule: dict, captures: bool, dry: bool) -> dict:
     name = pick_name(rule, dest, sources)
     folder = os.path.join(dest, account_folder(rule, name))
     # 그 계정이 이름을 바꿨으면 옛 계정 폴더의 이름만 바꾼다 — 새 폴더를 만들어 전부를 다시 복사하지 않는다
-    old = existing_account_folder(rule, dest)
+    old, _oldname = existing_account_folder(rule, dest)
     if old and not dry and os.path.join(dest, old) != folder:
-        if not os.path.exists(folder):
+        same = unicodedata.normalize('NFC', os.path.basename(old)).casefold() == unicodedata.normalize('NFC', os.path.basename(folder)).casefold()
+        shared = [o for o in (folder_owners(os.path.join(dest, old)) or []) if o != owner_key(rule)]
+        if shared:
+            # 다른 규칙과 함께 쓰는 폴더 — 이름을 바꾸면 그 규칙의 폴더도 바뀐다. 옛 폴더에 그대로 둔다
+            log('규칙 %d (%s): 이름이 바뀌었지만 다른 규칙(%s)과 함께 쓰는 폴더라 옛 이름 그대로 둡니다' % (i + 1, label, ', '.join(shared[:3])), 'warning')
+            folder = os.path.join(dest, old)
+        elif not os.path.exists(folder) or (same and os.path.basename(old) != os.path.basename(folder)):
+            # 대소문자만 바뀐 이름도 바꾼다 — 대소문자를 가리지 않는 디스크(APFS · SMB)에선 새 이름이 '이미 있음' 으로 보인다
             try:
                 os.rename(os.path.join(dest, old), folder)
-                log('규칙 %d (%s): 이름이 바뀌어 폴더 이름을 바꿨습니다 — %s → %s' % (i + 1, label, old, os.path.basename(folder)))
+                log('규칙 %d (%s): 이름이 바뀌어 폴더 이름을 바꿨습니다 — %s → %s' % (i + 1, label, os.path.basename(old), os.path.basename(folder)))
             except OSError as ex:
                 log('규칙 %d (%s): 폴더 이름을 바꾸지 못해 옛 이름으로 둡니다 — %s' % (i + 1, label, ex.strerror or ex), 'warning')
                 folder = os.path.join(dest, old)
-        elif unicodedata.normalize('NFC', old).lower() != unicodedata.normalize('NFC', os.path.basename(folder)).lower():
+        elif not same:
             log('규칙 %d (%s): 옛 이름의 폴더(%s)와 지금 이름의 폴더가 둘 다 있습니다 — 지금 이름 쪽에 둡니다' % (i + 1, label, old), 'warning')
     emit('resolved', index=i, id=res['id'], source=' · '.join(sources), name=name, folder=folder)
     errors: list = []
@@ -671,6 +793,10 @@ def run_rule(i: int, rule: dict, captures: bool, dry: bool) -> dict:
             return res
         idx = Index(folder)
         idx.seen = set()
+        me = owner_key(rule)
+        if me and me not in idx.owners:
+            idx.owners.append(me)
+            idx.save()
         counter = [0]
         n = 0
         for src in sources:
@@ -695,7 +821,7 @@ def run_rule(i: int, rule: dict, captures: bool, dry: bool) -> dict:
                         d, how = file_date(path, st)
                         if how == 'mtime':
                             res['mtime_date'] += 1
-                        month_dir = os.path.join(folder, era_folder(d))
+                        month_dir = os.path.join(folder, month_folder(rule, name, d))
                         os.makedirs(month_dir, exist_ok=True)
                         kind, h2, made = place(idx, path, st, month_dir, counter)
                         idx.link(key, idx.hashes.get(h2, ''))
@@ -714,7 +840,7 @@ def run_rule(i: int, rule: dict, captures: bool, dry: bool) -> dict:
                 if n % 50 == 0:
                     emit('progress', index=i, id=res['id'], seen=n, copied=res['copied'], dup=res['dup'])
                 idx.maybe_save()
-        idx.save(prune=not STOP.is_set())
+        idx.save(prune=not STOP.is_set(), bases=sources)
     finally:
         lockf.close()
     for e in errors[:5]:
@@ -745,10 +871,17 @@ def main() -> int:
         ap.error('--stdin-args 또는 --rules-file')
     signal.signal(signal.SIGTERM, lambda *_: STOP.set())
     signal.signal(signal.SIGINT, lambda *_: STOP.set())
+    global TEMPLATE
+    TEMPLATE = (cfg.get('template') or '').strip() or DEFAULT_TEMPLATE
+    bad = template_problem(TEMPLATE)
+    if bad:
+        log('틀이 맞지 않습니다 — ' + bad + ' (지금: ' + TEMPLATE + ')', 'error')
+        emit('done', stopped=False, failed=True, rules=0, copied=0, clone=0, dup=0, mtime_date=0, errors=1)
+        return 0
     rules = [r for r in (cfg.get('rules') or []) if isinstance(r, dict)]
     captures = bool(cfg.get('captures') or a.captures)
     dry = bool(cfg.get('dry_run') or a.dry_run)
-    tot = {'copied': 0, 'clone': 0, 'dup': 0, 'mtime_date': 0, 'errors': 0}
+    tot = {'copied': 0, 'clone': 0, 'dup': 0, 'mtime_date': 0, 'errors': 0, 'missing': 0}
     for i, rule in enumerate(rules):
         if STOP.is_set():
             break
@@ -756,7 +889,7 @@ def main() -> int:
             r = run_rule(i, rule, captures, dry)
         except OSError as ex:   # 한 규칙의 문제(권한 · 디스크)가 나머지 규칙을 막지 않게
             log('규칙 %d: %s' % (i + 1, ex), 'error')
-            r = {'index': i, 'id': rule.get('id') or '', 'copied': 0, 'clone': 0, 'dup': 0, 'mtime_date': 0, 'errors': 1}
+            r = {'index': i, 'id': rule.get('id') or '', 'copied': 0, 'clone': 0, 'dup': 0, 'mtime_date': 0, 'errors': 1, 'missing': 0}
         emit('rule_done', **r)
         for k in tot:
             tot[k] += r[k]

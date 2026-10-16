@@ -70,6 +70,8 @@ public:
     QJsonArray organizeRules() const { return m_organizeRules; }
     bool organizeAuto() const { return m_organizeAuto; }
     bool organizeCaptures() const { return m_organizeCaptures; }
+    // 정리하기 '틀 하나' — {root, template, platforms, overrides{플랫폼:아이디 → name/source/dest/exclude}, migrated}. 화면이 통째로 읽고 쓴다.
+    QJsonObject organize() const { return m_organize; }
     void setNaikakukaiWatches(const QJsonArray &arr) { m_naikakukaiWatches = arr; }
     int naikakukaiInterval() const { return m_naikakukaiInterval; }
     void setNaikakukaiInterval(int min) { m_naikakukaiInterval = min; }
@@ -185,6 +187,7 @@ private:
     QJsonArray m_organizeRules;
     bool m_organizeAuto = true;
     bool m_organizeCaptures = false;
+    QJsonObject m_organize;
     int m_naikakukaiInterval = 30;
     QString m_webdavUrl;
     QString m_webdavUser;

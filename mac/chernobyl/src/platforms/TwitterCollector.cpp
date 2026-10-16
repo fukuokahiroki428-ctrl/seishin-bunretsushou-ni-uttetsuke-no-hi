@@ -5760,3 +5760,103 @@ void TwitterCollector::checkNewPosts(const QJsonObject &config, const std::atomi
 
     stopDaemon();
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// 팔로잉 목록만 — 사용자(2026-10-15): 계정이 3~4개면 괜찮은데 대용량이라 정말 불편. 다른 앱들(gallery-dl 의 following,
+//   tmd 의 --foll)처럼 '누구의 팔로잉' 을 한 번에 대상 목록으로 가져온다. 'following' 수집과 같은 API 를 쓰되,
+//   사람마다 프로필 사진 · 배너를 받지 않고 아이디와 이름만 모은다(그쪽은 3천 명이면 수천 개 파일을 받는다).
+// ─────────────────────────────────────────────────────────────────────────
+QJsonArray TwitterCollector::listFollowing(const QJsonObject &config, const QString &handle, int maxCount,
+                                           const std::atomic<bool> &isRunning, QString *err, std::atomic<qint64> *pidOut)
+{
+    QJsonArray out;
+    adoptHttpToCurrentThread();
+    const QJsonArray accounts = config["accounts"].toArray();
+    if (accounts.isEmpty()) {
+        if (err) *err = QStringLiteral("트위터 계정을 먼저 추가하십시오");
+        return out;
+    }
+    const QJsonObject acc = accounts[0].toObject();
+    setupClient(acc["auth_token"].toString(), acc["ct0"].toString());
+    if (!startDaemon()) {
+        if (err) *err = QStringLiteral("트위터 도우미를 띄우지 못했습니다");
+        return out;
+    }
+    if (pidOut) pidOut->store(daemonPid());
+    // 그만 · 끄기 — 도중에 멈추면 도우미를 내리고 PID 를 지운다(지운 뒤엔 남이 그 PID 를 죽이지 않게)
+    auto finish = [&]() {
+        if (pidOut) pidOut->store(0);
+        stopDaemon();
+        return out;
+    };
+    auto alive = [&]() { return isRunning && !Common::appQuitting(); };
+    if (!alive()) return finish();
+    const QJsonObject user = getUserByScreenName(handle);
+    if (user.isEmpty()) {
+        if (err && alive()) *err = QStringLiteral("사용자를 찾을 수 없습니다: @") + handle;
+        return finish();
+    }
+    const QString userId = user["rest_id"].toString();
+    m_delay = 2.0;
+    m_consecutiveOk = 0;
+    QString cursor;
+    QSet<QString> seen;
+    auto capped = [&]() { return maxCount > 0 && out.size() >= maxCount; };
+    while (alive() && !capped()) {
+        QJsonObject cmd;
+        cmd["action"] = QStringLiteral("following");
+        cmd["user_id"] = userId;
+        cmd["count"] = 40;
+        if (!cursor.isEmpty()) cmd["cursor"] = cursor;
+        const QJsonObject resp = sendDaemonCommand(cmd);
+        if (!alive()) break;   // 그만 · 끄기로 도우미를 끊었다 — 그 오류는 알리지 않는다
+        if (resp.contains("error")) {
+            if (err) *err = resp["error"].toString();
+            break;
+        }
+        const int status = resp["status"].toInt();
+        if (status == 429) {
+            // ★ handleRateLimit 은 쓰지 않는다 — 그것은 트위터 탭의 상태 칸을 'RL待機' 로 바꾸고 되돌리지 않아, 가져오기가
+            //   끝난 뒤에도 트위터가 '돌고 있음' 으로 보였고 돌던 수집의 상태도 덮었다(검토). 여기선 기록에만 적고 기다린다.
+            m_backend->log(QStringLiteral("팔로잉 가져오기: X 의 속도 제한 — 15분 기다렸다 잇습니다(지금까지 %1명 · 그만으로 멈출 수 있음)").arg(out.size()),
+                           "warning", "twitter");
+            for (int i = 0; i < 9000 && alive(); ++i) QThread::msleep(100);
+            continue;
+        }
+        if (status != 200) {
+            if (err) *err = QString("X 가 %1 로 답했습니다").arg(status);
+            break;
+        }
+        const QJsonArray instructions = xInstructions(resp["body"].toObject(), {"user", "user_result"});
+        bool found = false;
+        QString nextCursor;
+        for (const auto &inst : instructions) {
+            const QJsonObject instruction = inst.toObject();
+            if (instruction["type"].toString() != QLatin1String("TimelineAddEntries")) continue;
+            for (const auto &entry : instruction["entries"].toArray()) {
+                const QJsonObject e = entry.toObject();
+                const QString eid = e["entryId"].toString();
+                if (eid.startsWith("user-")) {
+                    const QJsonObject ur = xUserResult(e);
+                    const QString sn = screenNameOf(ur);
+                    if (sn.isEmpty() || seen.contains(sn.toLower()) || capped()) continue;
+                    seen.insert(sn.toLower());
+                    QJsonObject u;
+                    u["handle"] = sn;
+                    u["name"] = displayNameOf(ur);
+                    u["protected"] = xUserLegacy(ur)["protected"].toBool();
+                    out.append(u);
+                    found = true;
+                } else if (eid.startsWith("cursor-bottom")) {
+                    nextCursor = e["content"].toObject()["value"].toString();
+                }
+            }
+        }
+        if (!alive()) break;
+        m_backend->log(QString("팔로잉 가져오는 중: %1명").arg(out.size()), "info", "twitter");
+        if (nextCursor.isEmpty() || !found || nextCursor == cursor) break;
+        cursor = nextCursor;
+        for (int i = 0; i < static_cast<int>(m_delay * 10) && alive(); ++i) QThread::msleep(100);   // 쪽 사이 — 그만에 곧 멈추게
+    }
+    return finish();
+}
