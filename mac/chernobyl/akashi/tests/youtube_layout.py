@@ -72,10 +72,10 @@ def main() -> int:
                   window.__akashiEnded.youtube=false; startYoutube();})()""" % (json.dumps('http://127.0.0.1:%d/%s' % (hp, clip)),
                                                                          json.dumps(str(base)), json.dumps(layout)))
                 t0 = time.time()
-                while not p.eval("!!window.__akashiEnded.youtube") and time.time() - t0 < 180:
+                while not p.eval("!!window.__akashiEnded.youtube", retry=True) and time.time() - t0 < 180:
                     time.sleep(0.5)
                 st = C.platform_stats(p, 'youtube')
-                ended = bool(p.eval("!!window.__akashiEnded.youtube"))
+                ended = bool(p.eval("!!window.__akashiEnded.youtube", retry=True))
                 check('%s 판이 끝났다(끝 신호)' % layout, ended and str(st.get('status')) in ('Done', '완료'),
                       '%s · %.0fs' % (st.get('status'), time.time() - t0))
             # ── 니코동 탭 — 같은 '저장 방식' 칸, 폴더 없이 바로
@@ -94,10 +94,10 @@ def main() -> int:
               window.__akashiEnded.niconico=false; startNiconico();})()""" % (json.dumps('http://127.0.0.1:%d/clip1.mp4' % hp),
                                                                              json.dumps(str(nbase))))
             t0 = time.time()
-            while not p.eval("!!window.__akashiEnded.niconico") and time.time() - t0 < 180:
+            while not p.eval("!!window.__akashiEnded.niconico", retry=True) and time.time() - t0 < 180:
                 time.sleep(0.5)
             nst = C.platform_stats(p, 'niconico')
-            check('니코동 폴더 없이 판이 끝났다(끝 신호)', bool(p.eval("!!window.__akashiEnded.niconico"))
+            check('니코동 폴더 없이 판이 끝났다(끝 신호)', bool(p.eval("!!window.__akashiEnded.niconico", retry=True))
                   and str(nst.get('status')) in ('Done', '완료'), '%s · %.0fs' % (nst.get('status'), time.time() - t0))
             p.eval("document.getElementById('niconico-save-layout').value='channel'")
             # 되돌리기 — 가로챈 함수와 칸 값

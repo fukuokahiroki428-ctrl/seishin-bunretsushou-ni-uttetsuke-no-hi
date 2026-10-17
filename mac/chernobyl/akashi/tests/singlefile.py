@@ -74,7 +74,7 @@ def main() -> int:
             t0 = time.time()
             txt = ''
             while time.time() - t0 < 600:
-                txt = p.eval("(document.getElementById('crawl-log')||{}).innerText||''") or ''
+                txt = p.eval("(document.getElementById('crawl-log')||{}).innerText||''", retry=True) or ''
                 if '크롤 완료' in txt or '중단' in txt:
                     break
                 time.sleep(2)

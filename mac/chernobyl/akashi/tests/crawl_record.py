@@ -207,7 +207,7 @@ def main() -> int:
             t_log = time.time()
             log_txt = ''
             while time.time() - t_log < 8:
-                log_txt = p.eval("(document.getElementById('crawl-log')||{}).innerText||''") or ''
+                log_txt = p.eval("(document.getElementById('crawl-log')||{}).innerText||''", retry=True) or ''
                 if '✅ 기록' in log_txt:
                     break
                 time.sleep(0.4)

@@ -58,10 +58,13 @@ def run(name: str, verbose: bool, env: dict, timeout: int = 1200):
     lines = [ln for ln in out.splitlines() if ln.strip()]
     passed = sum(1 for ln in lines if ln.lstrip().startswith("✔"))
     failed = [ln.strip() for ln in lines if ln.lstrip().startswith("✘")]
+    drops = [ln.strip() for ln in lines if ln.lstrip().startswith("⚠ CDP")]   # 통과했어도 — 다시 붙어 이어 간 일(_common.page)
     if verbose:
         print("\n".join("    │ " + ln for ln in lines))
     elif failed or code not in (0, 1):
-        print("\n".join("    │ " + ln for ln in (failed or lines[-6:])))
+        print("\n".join("    │ " + ln for ln in (failed or lines[-6:]) + drops))
+    elif drops:
+        print("\n".join("    │ " + ln for ln in drops))
     verdict = next((ln.strip() for ln in reversed(lines) if ln.strip() in ("통과", "실패")), "")
     last = failed[0] if failed else (verdict or (lines[-1].strip() if lines else ""))
     return code, passed, len(failed), last, time.time() - t0
@@ -93,6 +96,9 @@ def main() -> int:
         print("빌드가 없습니다 — mac/chernobyl 에서 ./build.sh 부터")
         return 2
     print("시험할 앱: %s  %s · 재료: %s" % (paths.short(app), paths.version_of(app), paths.short(C.work_dir())), flush=True)
+    warn = C.env_warning()                 # 덮개 닫힘 · DarkWake — 시험마다 다시 찍히지만 맨 위에 한 번 더(_common 의 ★ 왜 덮개를 보나)
+    if warn:
+        print(warn, flush=True)
 
     rows = []
     try:

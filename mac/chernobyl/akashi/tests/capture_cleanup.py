@@ -94,7 +94,7 @@ def main() -> int:
             t0 = time.time()
             diag = ''
             while time.time() - t0 < 15 and not diag:
-                diag = pg.eval("window.__akashiDiag") or ''
+                diag = pg.eval("window.__akashiDiag", retry=True) or ''
                 time.sleep(0.5)
             pg.eval("window.onDiagInfo=window.__akashiOnDiag; delete window.__akashiOnDiag; delete window.__akashiDiag")
             line = next((ln for ln in diag.splitlines() if '캡쳐 Chrome' in ln), '')

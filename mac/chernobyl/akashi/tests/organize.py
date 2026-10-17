@@ -87,8 +87,8 @@ def cfg_now() -> dict:
 def wait_done(p, secs=60):
     t0 = time.time()
     while time.time() - t0 < secs:
-        meta = p.eval("(document.getElementById('organize-meta')||{}).textContent||''") or ''
-        busy = p.eval("!!document.getElementById('organize-start-btn').disabled")
+        meta = p.eval("(document.getElementById('organize-meta')||{}).textContent||''", retry=True) or ''
+        busy = p.eval("!!document.getElementById('organize-start-btn').disabled", retry=True)
         if not busy and meta in ('끝', '멈춤', '실패'):
             return meta, time.time() - t0
         time.sleep(0.4)

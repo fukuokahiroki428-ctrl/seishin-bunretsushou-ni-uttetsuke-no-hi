@@ -16,6 +16,13 @@
 ★ 왜 화면 오류를 따로 켜나
   CDP 는 Runtime · Log 를 켜야 예외 · console.error 를 보내 준다. 켜지 않으면 '화면 JS 오류 없음' 은 늘 통과한다
   (옮기기 전의 시험들이 그랬다). watch_errors() 로 켜고, 그 전의 것은 비운다.
+★ 왜 덮개를 보나 — 시험 도중 CDP 가 끊기던 것(2026-10-17)
+  덮개를 닫은 맥(전원 연결 · 외부 화면 없음)은 앱이 수집을 시작할 때마다(holdAwake 의 caffeinate -u) FullWake 로 깨었다가
+  10초 뒤 'Clamshell Sleep' 으로 DarkWake 에 든다. 그때 0~3초 안에 앱의 CDP 서버가 우리 연결을 닫았다(앱은 살아 있음 —
+  crawl 의 받는 도중 멈춤 판, youtube_layout 의 니코동 판에서 ConnectionReset · WsClosed. r42 도 똑같았다).
+  그래서 page() 는 끊기면 같은 화면에 다시 붙는 Page(reconnect=True)를 넘기고, 기다리며 읽는 식은 retry=True 로 부른다
+  (lib/cdp.py 의 ★ 다시 붙기). 시작할 때 덮개가 닫혀 있거나 DarkWake 면 env_warning() 이 한 줄로 알린다 — 화면이 그려지지
+  않는 동안의 판정(지연 그림 등)은 믿기 어렵다. 다시 붙은 일은 끝에 '⚠ CDP 연결이 n번 끊겨…' 로 남긴다(run_all 이 모은다).
 """
 from __future__ import annotations
 
@@ -34,7 +41,7 @@ AKASHI = TESTS.parent
 sys.path.insert(0, str(AKASHI))
 import iso  # noqa: E402
 from lib import paths  # noqa: E402
-from lib.cdp import CdpError, Page  # noqa: E402
+from lib.cdp import DROPPED, CdpError, Dropped, Page, PageGone  # noqa: E402
 
 PORT = int(os.environ.get("AKASHI_PORT") or 9334)
 USER_CAPTURE_PORT = 9223            # 사용자 앱의 캡처 Chrome 기본 포트(Common::capturePortBase)
@@ -86,6 +93,56 @@ def user_idle_seconds() -> int:
     return 0
 
 
+def power_state() -> dict:
+    """덮개가 닫혔나 · 맥이 화면을 그릴 수 있나(FullWake) — ioreg IOPMrootDomain 을 읽기만. 모르면 None."""
+    out = subprocess.run(["/usr/sbin/ioreg", "-r", "-n", "IOPMrootDomain", "-d", "1"], capture_output=True, text=True).stdout
+    lid = caps = None
+    for line in out.splitlines():
+        key, _, val = line.strip().partition(" = ")
+        if key == '"AppleClamshellState"':
+            lid = val.strip() == "Yes"
+        elif key == '"System Capabilities"':
+            try:
+                caps = int(val.strip())
+            except ValueError:
+                pass
+    # System Capabilities: 1 CPU · 2 화면(그래픽) · 4 소리 · 8 네트워크 — FullWake 는 15, DarkWake 는 그래픽이 빠진 9
+    ps = subprocess.run(["/usr/bin/pmset", "-g", "ps"], capture_output=True, text=True).stdout
+    battery = True if "'Battery Power'" in ps else (False if "'AC Power'" in ps else None)
+    return {"lid_closed": lid, "dark_wake": None if caps is None else not (caps & 2), "caps": caps, "battery": battery}
+
+
+def power_note(st: dict | None = None) -> str:
+    st = st or power_state()
+    bits = []
+    if st.get("lid_closed"):
+        bits.append("덮개 닫힘")
+    if st.get("dark_wake"):
+        bits.append("DarkWake(화면 꺼짐)")
+    if st.get("lid_closed") and st.get("battery"):
+        bits.append("배터리")
+    idle = user_idle_seconds()
+    if idle > 300:
+        bits.append("사람 입력 없이 %d분" % (idle // 60))
+    return " · ".join(bits)
+
+
+def env_warning() -> str:
+    """시험 결과를 흐릴 수 있는 맥의 상태를 한 줄로(없으면 빈 글)."""
+    st = power_state()
+    if st.get("lid_closed") and st.get("battery"):
+        # 배터리면 앱의 PreventSystemSleep · caffeinate -s 가 덮개 닫힘을 막지 못해 맥이 정말 잠든다(2026-10-17 13:49~16:05 실측 —
+        # 'Entering Sleep state due to Clamshell Sleep … Using Batt', 이따금 몇 초씩만 깸). 시험은 멈췄다 이어지고, 벽시계로 잰
+        # 기다림(유튜브 끝 신호 180초 등)이 잠든 시간까지 세어 실패한다 — CDP 와는 무관하다.
+        return ("⚠ 환경: %s — 배터리로 덮개를 닫으면 맥이 정말 잠듭니다. 시험이 멈췄다 이어지고 시간 판정이 잠든 시간까지 세어 "
+                "실패합니다 — 전원을 꽂거나 덮개를 열고 다시 돌리십시오" % power_note(st))
+    if st.get("lid_closed") or st.get("dark_wake"):
+        return ("⚠ 환경: %s — 앱이 수집을 시작할 때마다 맥이 FullWake 로 깨었다가 10초 뒤 DarkWake 로 들고, 그때 CDP 연결이 "
+                "끊길 수 있습니다(다시 붙어 이어 갑니다). 화면이 그려지지 않으니 그림 · 지연 로딩 판정은 덮개를 열고 다시 보십시오"
+                % power_note(st))
+    return ""
+
+
 def free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -123,6 +180,7 @@ def foreign_capture_chromes() -> list:
 
 def watch_errors(page) -> None:
     """화면의 JS 예외 · console.error 를 받기 시작한다(켜기 전의 것은 버린다)."""
+    page.since_ms = time.time() * 1000      # 다시 붙어 다시 켤 때 재생되는 이 앞의 것도 버리게(lib/cdp.py)
     page.cmd("Runtime.enable")
     page.cmd("Log.enable")
     page.pump(0.4)
@@ -134,16 +192,20 @@ def page(retries: int = 3):
     """사본의 본 화면에 붙어 오류 받기를 켜고(watch_errors) 한 번 대 본 뒤 넘긴다. 끊기면 잠깐 뒤 다시 붙는다.
 
     ★ 왜 다시 붙나 — 사본이 막 뜬 뒤(자가진단 · 꾸러미 맞추기 직후) 붙는 순간 CDP 가 끊기거나(Connection reset)
-      시간 초과로 끝나는 일이 가끔 있다. 시험은 아직 아무것도 하지 않은 때라 다시 붙어도 판정이 바뀌지 않는다."""
+      시간 초과로 끝나는 일이 가끔 있다. 시험은 아직 아무것도 하지 않은 때라 다시 붙어도 판정이 바뀌지 않는다.
+    ★ 넘긴 뒤에 끊기면 — 넘기는 Page 는 reconnect=True 다. 같은 화면(target · 표식)에 다시 붙고, retry=True 로 부른
+      읽기 식만 되풀이한다(덮개 닫힌 맥의 DarkWake — 맨 위 ★ 왜 덮개를 보나). 화면을 바꾸는 식이 끊기면 Dropped 로 멈춘다."""
     last = None
     for i in range(retries):
         pg = None
         try:
-            pg = Page.attach(PORT)
+            pg = Page.attach(PORT, reconnect=True)
             watch_errors(pg)
             pg.eval("document.readyState")
+            pg.mark()                                 # 다시 붙은 뒤 '같은 화면인가' 를 볼 표식
+            pg.on_drop = _note_drop
             break
-        except (OSError, CdpError) as e:              # socket.timeout · ConnectionReset 은 OSError
+        except (OSError, CdpError) + DROPPED as e:    # socket.timeout · ConnectionReset 은 OSError, 닫힘은 WsClosed
             last = e
             print("   (화면에 붙다 끊김 %d/%d — %s: %s · 3초 뒤 다시)" % (i + 1, retries, type(e).__name__, e), flush=True)
             if pg is not None:
@@ -156,11 +218,26 @@ def page(retries: int = 3):
         raise last
     try:
         yield pg
+    except (CdpError,) + DROPPED as e:                     # 시험을 멈춘 CDP 일 — 까닭이 될 만한 맥의 상태를 곁들인다
+        note = power_note()
+        if note or isinstance(e, DROPPED + (Dropped, PageGone)):
+            print("   (CDP: %s: %s%s)" % (type(e).__name__, str(e)[:160], (" — 지금 " + note) if note else ""), flush=True)
+        raise
     finally:
+        if pg.drops:
+            print("  ⚠ CDP 연결이 %d번 끊겨 같은 화면에 다시 붙음 — %s" % (len(pg.drops), "; ".join(
+                "%s %s(%.1fs%s)" % (time.strftime("%H:%M:%S", time.localtime(d["at"])), d["why"][:48], d["took"],
+                                     (" · " + d["power"]) if d.get("power") else "") for d in pg.drops[:4])), flush=True)
         try:
             pg.close()
         except OSError:
             pass
+
+
+def _note_drop(rec: dict) -> None:
+    rec["power"] = power_note()
+    print("   (CDP 연결이 끊겨 다시 붙음 %s — %s%s)" % (time.strftime("%H:%M:%S", time.localtime(rec["at"])), rec["why"][:80],
+                                             (" · " + rec["power"]) if rec["power"] else ""), flush=True)
 
 
 def page_errors(page) -> list:
@@ -207,6 +284,9 @@ def iso_start(*extra, wipe_first: bool = True) -> bool:
         print("시험할 앱(%s)이 캡처 정리 고침(0aa09aa) 전의 판인데 사용자 앱의 캡처 Chrome 이 떠 있습니다 — "
               "그 판의 사본은 켜지는 순간 이름으로 끌 수 있어 시작하지 않습니다" % paths.short(app))
         return False
+    warn = env_warning()
+    if warn:
+        print(warn, flush=True)
     if wipe_first:
         _iso("stop", "--wipe")
     # 새로 구운 번들은 첫 실행이 느리다(복제본마다 macOS 가 새 앱으로 살핀다) — iso.py 의 45초 대신 넉넉히
@@ -235,7 +315,8 @@ def keep_log(name: str) -> None:
 
 
 def platform_stats(page, plat: str) -> dict:
-    raw = page.eval("JSON.stringify((typeof platformStats!=='undefined' && platformStats[%s]) || {})" % json.dumps(plat))
+    raw = page.eval("JSON.stringify((typeof platformStats!=='undefined' && platformStats[%s]) || {})" % json.dumps(plat),
+                    retry=True)
     return json.loads(raw or "{}")
 
 

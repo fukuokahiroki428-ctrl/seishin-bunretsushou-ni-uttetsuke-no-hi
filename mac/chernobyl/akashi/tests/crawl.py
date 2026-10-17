@@ -35,7 +35,7 @@ import fixtures  # noqa: E402
 def wait_finished(p, secs):
     t0 = time.time()
     while time.time() - t0 < secs:
-        txt = p.eval("(document.getElementById('crawl-log')||{}).innerText||''") or ''
+        txt = p.eval("(document.getElementById('crawl-log')||{}).innerText||''", retry=True) or ''
         if '크롤링 완료' in txt or '크롤링 중단됨' in txt:
             return time.time() - t0
         time.sleep(0.5)

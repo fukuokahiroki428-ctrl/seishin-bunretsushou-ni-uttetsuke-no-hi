@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import select
 import socket
 import struct
 from urllib.parse import urlparse
@@ -185,6 +186,12 @@ class WebSocket:
                 if fin:
                     msg, self._parts = b"".join(self._parts), []
                     return msg.decode("utf-8", "replace")
+
+    def readable(self) -> bool:
+        """기다리지 않고 소켓에 읽을 것이 있나 — 새 바이트든, 상대가 닫음(FIN) · 리셋(RST)이든. 닫힌 연결이면 WsClosed."""
+        if self.closed:
+            raise WsClosed("닫힌 연결")
+        return bool(select.select([self.sock], [], [], 0)[0])
 
     def close(self) -> None:
         # ★ 서버가 먼저 닫았어도(closed=True) 소켓은 여기서 닫는다 — 예전엔 곧장 돌아가 기술자가 남았다.
