@@ -649,6 +649,7 @@ void HanishikiBackend::startNaikakukai(const QString &configJson)
 
     m_naikakukaiCursor = 0;
     m_naikakukaiRunning = true;
+    if (m_window) m_window->holdAwake(false);   // 폴링 사이에 맥이 잠들면 다음 폴링이 오지 않는다(화면은 놓아 둔다)
     if (m_config && !m_config->naikakukaiResume()) { m_config->setNaikakukaiResume(true); m_config->save(); }
 
     if (!m_naikakukaiTimer) {
@@ -706,6 +707,7 @@ void HanishikiBackend::stopNaikakukai()
         }
     }
     terminalWindowDone(QStringLiteral("naikakukai"), QStringLiteral("중지됨"), true);
+    if (m_window) m_window->releaseAwake();   // 다른 수집이 돌고 있으면 releaseAwake 가 알아서 남긴다
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -6615,6 +6617,8 @@ void HanishikiBackend::checkNewPosts(const QString &platformName)
             setPlatformRunning("twitter", false);
             QMetaObject::invokeMethod(this, [this]() {
                 updateStats(0, 0, "완료", "twitter");
+                // 이 확인이 도는 사이 다른 수집이 끝났으면 releaseAwake 는 이 깃발을 보고 놓지 않았다
+                if (m_window) m_window->releaseAwake();
                 // '새 글 체크' 는 수집 가드 밖이라 onCollectionEnded 가 오지 않는다 — 받은 뒤 자동 정리를 여기서 부른다
                 runJs("window.organizeAfterCollection && organizeAfterCollection('twitter')");
             }, Qt::QueuedConnection);

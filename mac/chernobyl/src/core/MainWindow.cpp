@@ -274,9 +274,10 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_dockMenu = createDockMenu();
 
-    // ★ 앱 시작 시 sleep 방지 어설션 자동 활성 — collection 안 돌고 있어도 항상 활성
-    //   lid close 시 sleep 막는 데 최대 효과. (Apple 정책상 100% 보장은 외부 모니터 필요)
-    QTimer::singleShot(500, this, &MainWindow::holdAwake);
+    // ★ 앱을 켜자마자 잠 방지를 걸지 않는다. 예전엔 0.5초 뒤 수집이 없어도 걸었고, 첫 수집이
+    //   끝나기 전까지는 화면도 맥도 잠들지 못했다(caffeinate -d 가 화면까지 붙들었다).
+    //   이제 일이 있을 때만 붙든다 — 수집·유튜브·니코동이 돌 때와 内閣会가 켜져 있을 때.
+    //   内閣会를 이어 돌리게 해 두었으면 앱이 켜질 때 startNaikakukai 가 붙든다.
 }
 
 
@@ -507,7 +508,7 @@ void MainWindow::showBrowser(bool show)
 
 MainWindow::~MainWindow()
 {
-    releaseAwake();
+    dropAwake();   // 앱이 끝난다 — 아직 도는 일이 있어도 놓는다
     QApplication::quit();
 }
 
@@ -907,67 +908,105 @@ void MainWindow::closeEvent(QCloseEvent *event)
     event->accept();
 }
 
-void MainWindow::holdAwake()
+void MainWindow::holdAwake(bool display)
 {
 #ifdef Q_OS_MACOS
-    if (m_sleepAssertionHeld) return;
-
     // 1. IOPMAssertion — Prevent System Sleep
-    CFStringRef reason = CFSTR("Hanishiki active — preventing sleep");
-    IOReturn result = IOPMAssertionCreateWithName(
-        kIOPMAssertionTypePreventSystemSleep,
-        kIOPMAssertionLevelOn,
-        reason,
-        &m_sleepAssertion
-    );
-    if (result == kIOReturnSuccess) {
-        m_sleepAssertionHeld = true;
-    }
-
-    // 2. UserIsActive 어설션 — idle 카운터 리셋 (lid close 직전 효과)
-    static IOPMAssertionID userActiveAssertion = 0;
-    IOPMAssertionCreateWithName(
-        kIOPMAssertionTypeNoIdleSleep,  // 두 번째 layer
-        kIOPMAssertionLevelOn,
-        CFSTR("Hanishiki user activity"),
-        &userActiveAssertion
-    );
-
-    // 3. caffeinate — 가능한 모든 sleep 방지 + lid close (AC 전원 시)
-    //    -d display, -i idle, -m disk, -s system, -u user-active
-    if (!m_caffeinate) {
-        m_caffeinate = new QProcess(this);
-        QStringList args{"-dimsu", "-w", QString::number(QCoreApplication::applicationPid())};
-        m_caffeinate->start("/usr/bin/caffeinate", args);
-        if (!m_caffeinate->waitForStarted(3000)) {
-            delete m_caffeinate;
-            m_caffeinate = nullptr;
+    if (!m_sleepAssertionHeld) {
+        CFStringRef reason = CFSTR("Hanishiki active — preventing sleep");
+        IOReturn result = IOPMAssertionCreateWithName(
+            kIOPMAssertionTypePreventSystemSleep,
+            kIOPMAssertionLevelOn,
+            reason,
+            &m_sleepAssertion
+        );
+        if (result == kIOReturnSuccess) {
+            m_sleepAssertionHeld = true;
         }
     }
+
+    // ★ 예전엔 여기서 NoIdleSleep('Hanishiki user activity') 를 하나 더 만들었다. 함수 안
+    //   static 변수에 받아 두고 놓지 않아서, 수집을 시작할 때마다 하나씩 쌓였다(실측
+    //   2026-10-17 — 한 프로세스에 셋이 살아 있었다). 첫 수집이 끝난 뒤로는 앱이 켜져
+    //   있는 내내 맥이 유휴 잠에 들지 못했다. 유휴 잠은 위의 PreventSystemSleep 과
+    //   caffeinate -i 가 이미 막는다. 따로 둘 까닭이 없어 없앴다.
+
+    // 2. caffeinate — 덮개를 닫아도(AC 전원 시) 잠들지 않게. 이미 돌고 있어도 화면 몫은 올린다 —
+    //    内閣会 대기(화면 없이) 중에 수집이 시작되면 그 수집 동안은 화면까지 붙든다.
+    //    내리지는 않는다: 수집 중에 内閣会를 켜도 그 수집의 화면은 그대로 둔다.
+    if (!m_caffeinate || (display && !m_awakeDisplay)) startCaffeinate(display);
 #elif defined(Q_OS_WIN)
+    Q_UNUSED(display);
     if (m_sleepAssertionHeld) return;
     SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
     m_sleepAssertionHeld = true;
 #endif
 }
 
-void MainWindow::releaseAwake()
-{
 #ifdef Q_OS_MACOS
-    if (!m_sleepAssertionHeld) return;
-
-    IOPMAssertionRelease(m_sleepAssertion);
-    m_sleepAssertion = 0;
-    m_sleepAssertionHeld = false;
-
-    // caffeinate 종료
-    if (m_caffeinate) {
-        m_caffeinate->terminate();
-        m_caffeinate->waitForFinished(2000);
-        if (m_caffeinate->state() == QProcess::Running) m_caffeinate->kill();
+// caffeinate 를 (다시) 띄운다. -w 로 앱이 죽으면 저절로 끝난다.
+//    -d display, -i idle, -m disk, -s system
+//    ★ -u(사용자가 손댔다고 알림)는 뺐다. 수집을 시작할 때마다 맥을 깨워 화면을 켰고,
+//      덮개를 닫은 채면 10초 FullWake → 'Clamshell Sleep' → DarkWake 를 되풀이했다.
+//      그 넘어가는 순간 CDP 연결이 끊겼다(실측 2026-10-17, powerd 로그).
+//    ★ -d 는 수집 동안만 둔다. 화면이 잠들면 macOS 가 그리기를 멈춰, 캡쳐 Chrome 이 늦게
+//      뜨는 그림(지연 이미지)을 못 받는다. 덮개를 닫았을 때는 어차피 효과가 없다.
+//      内閣会가 다음 폴링을 기다리는 동안에는 맥만 깨워 둔다 — 밤새 화면을 켜 둘 까닭이 없다.
+void MainWindow::startCaffeinate(bool display)
+{
+    stopCaffeinate();
+    m_caffeinate = new QProcess(this);
+    QStringList args{display ? QStringLiteral("-dims") : QStringLiteral("-ims"),
+                     "-w", QString::number(QCoreApplication::applicationPid())};
+    m_caffeinate->start("/usr/bin/caffeinate", args);
+    if (!m_caffeinate->waitForStarted(3000)) {
         delete m_caffeinate;
         m_caffeinate = nullptr;
+        return;
     }
+    m_awakeDisplay = display;
+}
+
+void MainWindow::stopCaffeinate()
+{
+    if (!m_caffeinate) return;
+    m_caffeinate->terminate();
+    m_caffeinate->waitForFinished(2000);
+    if (m_caffeinate->state() == QProcess::Running) m_caffeinate->kill();
+    delete m_caffeinate;
+    m_caffeinate = nullptr;
+    m_awakeDisplay = false;
+}
+#endif
+
+void MainWindow::releaseAwake()
+{
+    // ★ 아직 깨어 있어야 할 일이 남았으면 놓지 않는다. 부르는 쪽은 '자기' 일이 끝났을 때
+    //   부른다 — 예전엔 크롤이 끝나면 트위터가 아직 받고 있어도 놓았다.
+    //   부르는 곳은 모두 자기 실행 깃발을 먼저 내리고 부른다. 그래서 isAnyRunning 이
+    //   자기 자신을 '아직 도는 일' 로 세지 않는다.
+    if (m_backend && m_backend->isAnyRunning()) return;
+    // ★ 内閣会는 몇 분마다 깨어나 폴링한다. 그 사이 맥이 잠들면 다음 폴링이 오지 않으므로
+    //   켜져 있는 동안은 맥을 붙든다(예전엔 위에서 새던 어설션이 우연히 이 몫을 했다).
+    //   화면은 놓는다 — 수집이 끝났다.
+    if (m_backend && m_backend->isNaikakukaiRunning()) {
+#ifdef Q_OS_MACOS
+        if (m_caffeinate && m_awakeDisplay) startCaffeinate(false);
+#endif
+        return;
+    }
+    dropAwake();
+}
+
+void MainWindow::dropAwake()
+{
+#ifdef Q_OS_MACOS
+    if (m_sleepAssertionHeld) {
+        IOPMAssertionRelease(m_sleepAssertion);
+        m_sleepAssertion = 0;
+        m_sleepAssertionHeld = false;
+    }
+    stopCaffeinate();
 #elif defined(Q_OS_WIN)
     if (!m_sleepAssertionHeld) return;
     SetThreadExecutionState(ES_CONTINUOUS);
