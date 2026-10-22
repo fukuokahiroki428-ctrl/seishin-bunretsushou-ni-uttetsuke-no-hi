@@ -1211,7 +1211,28 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
         }, Qt::QueuedConnection);
     });
     connect(t, &QThread::finished, t, &QThread::deleteLater);
+    holdAwakeForBackup(t);
     t->start();
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// holdAwakeForBackup — 손으로 시작한 백업(지금 백업 · rclone · 원격)이 끝날 때까지 맥을 붙든다.
+// ═════════════════════════════════════════════════════════════════════════
+//   ★ 이 백업들은 따로 도는 스레드라 잠 막기를 부른 적이 없다. 예전엔 새던 NoIdleSleep 어설션이
+//     우연히 지켰고(ueno ccec534 에서 없앴다), 이제는 전원이어도 마지막 입력에서 약 11분 뒤 맥이
+//     잠들어 큰 백업이 한가운데서 멈춘다. 화면은 놓는다 — 사람이 볼 일이 아니다.
+//   ★ m_backupTerminalActive 로 세지 않는다. 그것은 '멈춰라' 깃발이기도 해서 중지를 누르면 스레드가
+//     마무리하는 동안에도 내려가 있고, 지금 백업은 끝의 크기 비교(백업 위치를 다 훑는다) 앞에서 먼저
+//     내린다. 스레드가 끝나면(finished — 어느 길로 끝나든 온다) 세던 것을 내리고 releaseAwake 가
+//     다른 일이 남았는지 보고 놓는다.
+void HanishikiBackend::holdAwakeForBackup(QThread *t)
+{
+    m_manualBackupBusy.fetch_add(1);
+    if (m_window) m_window->holdAwake(false);
+    connect(t, &QThread::finished, this, [this]() {
+        m_manualBackupBusy.fetch_sub(1);
+        if (m_window && !Common::appQuitting()) m_window->releaseAwake();
+    }, Qt::QueuedConnection);
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -1380,6 +1401,7 @@ void HanishikiBackend::startRemoteBackup(const QString &configJson)
         }, Qt::QueuedConnection);
     });
     connect(t, &QThread::finished, t, &QThread::deleteLater);
+    holdAwakeForBackup(t);
     t->start();
 }
 
@@ -2243,6 +2265,7 @@ void HanishikiBackend::backupNow()
         }, Qt::QueuedConnection);
     });
     connect(coordinator, &QThread::finished, coordinator, &QThread::deleteLater);
+    holdAwakeForBackup(coordinator);
     coordinator->start();
 }
 

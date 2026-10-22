@@ -50,7 +50,8 @@ public:
     //   holdAwake()      — 수집: 맥 + 화면
     //   holdAwake(false) — 内閣会 켜짐: 맥만(폴링 사이에 화면까지 켜 둘 까닭이 없다)
     //   releaseAwake     — 수집이 다 끝났으면 화면을 놓고, 内閣会도 꺼져 있고 이어 도는 일(자동 정리 ·
-    //                      백업 대기열)도 없으면 몇 초 뒤 전부 놓는다(그 사이 시작하는 일을 위해).
+    //                      백업 대기열 · 손으로 시작한 백업)도 없으면 몇 초 뒤 전부 놓는다(그 사이 시작하는
+    //                      일을 위해).
     //   이어 도는 일은 시작할 때 holdAwake(false) 로 붙들고 끝나면 releaseAwake 를 부른다.
     void holdAwake(bool display = true);
     void releaseAwake();

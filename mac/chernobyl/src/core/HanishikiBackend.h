@@ -336,10 +336,15 @@ public:   // ↓ 슬롯도 Q_INVOKABLE 도 아니다 — QWebChannel 은 이것�
     //   public 인 까닭: TwitterCollector 가 계정을 돌릴 때(switchToAccount) 이름 → 프로필을 풀어야 한다.
     QString proxyUrl(const QJsonObject &p, bool withCredentials = true) const;
     QJsonObject proxyForAccount(const QJsonObject &account) const;
-    // 수집이 끝난 뒤에도 이어 도는 일 — 자동 정리(organizeRun) · 백업 대기열 비우기(backupWorker).
+    // 수집이 끝난 뒤에도 이어 도는 일 — 자동 정리(organizeRun) · 백업 대기열 비우기(backupWorker),
+    //   그리고 손으로 시작한 백업(지금 백업 · rclone · 원격, holdAwakeForBackup).
     //   이것이 도는 동안 MainWindow::releaseAwake 는 맥을 놓지 않는다(화면은 놓는다).
-    bool isAfterWorkRunning() const { return m_organizeRunning.load() || m_backupBusy.load() > 0; }
+    bool isAfterWorkRunning() const {
+        return m_organizeRunning.load() || m_backupBusy.load() > 0 || m_manualBackupBusy.load() > 0;
+    }
 private:
+    // 손으로 시작한 백업 스레드가 끝날 때까지 맥을 붙든다 — t->start() 바로 앞에서 메인 스레드가 부른다.
+    void holdAwakeForBackup(QThread *t);
 
     MainWindow *m_window;
     Config *m_config;
@@ -522,7 +527,9 @@ public:
     std::atomic<int> m_backupDoneCount{0};
     std::atomic<qint64> m_backupLastProgressMs{0};
     // ★ 터미널 진행률 표시 — backupNow / resync 시 외부 Terminal.app 열어서 자세히 표시
+    //   ★ '도는 중' 이 아니라 '멈춰라' 깃발이기도 하다 — 중지하면 스레드가 마무리하는 동안에도 false 다.
     std::atomic<bool> m_backupTerminalActive{false};
+    std::atomic<int>  m_manualBackupBusy{0};   // 살아 있는 손 백업 스레드 수(지금 백업 · rclone · 원격) — 잠 막기용
     std::atomic<qint64> m_backupStartMs{0};    // 시작 시각 (속도/ETA 계산)
     std::atomic<qint64> m_backupSkipCount{0};  // skip 카운트 (이미 백업된 파일)
     std::atomic<qint64> m_backupFailCount{0};  // 실패 카운트
