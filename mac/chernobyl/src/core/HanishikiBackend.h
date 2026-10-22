@@ -336,6 +336,9 @@ public:   // ↓ 슬롯도 Q_INVOKABLE 도 아니다 — QWebChannel 은 이것�
     //   public 인 까닭: TwitterCollector 가 계정을 돌릴 때(switchToAccount) 이름 → 프로필을 풀어야 한다.
     QString proxyUrl(const QJsonObject &p, bool withCredentials = true) const;
     QJsonObject proxyForAccount(const QJsonObject &account) const;
+    // 수집이 끝난 뒤에도 이어 도는 일 — 자동 정리(organizeRun) · 백업 대기열 비우기(backupWorker).
+    //   이것이 도는 동안 MainWindow::releaseAwake 는 맥을 놓지 않는다(화면은 놓는다).
+    bool isAfterWorkRunning() const { return m_organizeRunning.load() || m_backupBusy.load() > 0; }
 private:
 
     MainWindow *m_window;
@@ -510,7 +513,8 @@ public:
     qint64  m_backupQueueOffset = 0;  // 다음에 읽을 byte offset (메모리 cache, 항상 file 과 동기)
     QMutex  m_backupQueueMutex;       // 큐 파일 + offset + counts 동시 보호
     QList<QThread*> m_backupThreads;
-    std::atomic<bool> m_backupRunning{false};
+    std::atomic<bool> m_backupRunning{false};   // 워커가 살아 있나(대기열이 비어도 1초마다 돈다) — '바쁨' 이 아니다
+    std::atomic<int>  m_backupBusy{0};          // 대기열을 비우는 중인 워커 수 — 첫 항목을 집을 때 올리고, 비면 내린다
     // 진행률 추적 (file 큐와 별도로 atomic — UI emit 시 매번 file 스캔 안 함)
     std::atomic<qint64> m_backupTotalBytes{0};
     std::atomic<qint64> m_backupDoneBytes{0};

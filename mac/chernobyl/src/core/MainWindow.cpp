@@ -910,6 +910,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
 void MainWindow::holdAwake(bool display)
 {
+    // 놓으려고 기다리던 것이 있으면 거둔다 — 새 일이 붙들었다(releaseAwake 의 유예)
+    if (m_releaseTimer) m_releaseTimer->stop();
 #ifdef Q_OS_MACOS
     // 1. IOPMAssertion — Prevent System Sleep
     if (!m_sleepAssertionHeld) {
@@ -989,17 +991,44 @@ void MainWindow::releaseAwake()
     // ★ 内閣会는 몇 분마다 깨어나 폴링한다. 그 사이 맥이 잠들면 다음 폴링이 오지 않으므로
     //   켜져 있는 동안은 맥을 붙든다(예전엔 위에서 새던 어설션이 우연히 이 몫을 했다).
     //   화면은 놓는다 — 수집이 끝났다.
-    if (m_backend && m_backend->isNaikakukaiRunning()) {
+    // ★ 수집이 끝난 뒤 이어 도는 일(자동 정리 · 백업 대기열)도 끝날 때까지 맥을 붙든다. 화면은 놓는다.
+    //   예전엔 새던 NoIdleSleep 어설션이 이것들까지 우연히 지켰다. 없애고 나니 수집이 끝나고 몇 분 뒤
+    //   (전원: 마지막 입력에서 약 11분) 맥이 잠들어 정리 · 백업이 멈췄다.
+    if (m_backend && (m_backend->isNaikakukaiRunning() || m_backend->isAfterWorkRunning())) {
 #ifdef Q_OS_MACOS
         if (m_caffeinate && m_awakeDisplay) startCaffeinate(false);
 #endif
         return;
     }
-    dropAwake();
+    // ★ 바로 놓지 않고 몇 초 기다린다. 자동 정리는 수집이 끝났다는 알림을 받은 화면이 부르므로 이 함수보다
+    //   늦게 시작하고, 줄 서 있던 다음 정리도 앞 정리가 끝난 뒤에 시작한다. 그 사이에 놓으면, 사람 손이 오래
+    //   없던 맥은 바로 잠에 들 수 있다. 화면은 지금 놓는다 — 수집이 끝났다.
+    //   기다리는 사이 새 일이 붙들면(holdAwake) 거두고, 다 기다리면 그때의 상태를 다시 본다.
+#ifdef Q_OS_MACOS
+    if (!m_sleepAssertionHeld && !m_caffeinate) return;   // 붙든 것이 없다
+    if (m_caffeinate && m_awakeDisplay) startCaffeinate(false);
+#elif defined(Q_OS_WIN)
+    if (!m_sleepAssertionHeld) return;
+#endif
+    if (!m_releaseTimer) {
+        m_releaseTimer = new QTimer(this);
+        m_releaseTimer->setSingleShot(true);
+        m_releaseTimer->setInterval(kReleaseGraceMs);
+        connect(m_releaseTimer, &QTimer::timeout, this, [this]() {
+            if (m_backend && (m_backend->isAnyRunning() || m_backend->isNaikakukaiRunning()
+                              || m_backend->isAfterWorkRunning())) {
+                releaseAwake();   // 그 사이 시작한 일이 있다 — 그 일에 맞춰 화면 몫만 정한다
+                return;
+            }
+            dropAwake();
+        });
+    }
+    m_releaseTimer->start();
 }
 
 void MainWindow::dropAwake()
 {
+    if (m_releaseTimer) m_releaseTimer->stop();
 #ifdef Q_OS_MACOS
     if (m_sleepAssertionHeld) {
         IOPMAssertionRelease(m_sleepAssertion);

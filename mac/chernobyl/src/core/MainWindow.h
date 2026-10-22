@@ -49,7 +49,9 @@ public:
     // Sleep prevention for background downloads
     //   holdAwake()      — 수집: 맥 + 화면
     //   holdAwake(false) — 内閣会 켜짐: 맥만(폴링 사이에 화면까지 켜 둘 까닭이 없다)
-    //   releaseAwake     — 수집이 다 끝났으면 화면을 놓고, 内閣会도 꺼져 있으면 전부 놓는다.
+    //   releaseAwake     — 수집이 다 끝났으면 화면을 놓고, 内閣会도 꺼져 있고 이어 도는 일(자동 정리 ·
+    //                      백업 대기열)도 없으면 몇 초 뒤 전부 놓는다(그 사이 시작하는 일을 위해).
+    //   이어 도는 일은 시작할 때 holdAwake(false) 로 붙들고 끝나면 releaseAwake 를 부른다.
     void holdAwake(bool display = true);
     void releaseAwake();
 
@@ -118,6 +120,8 @@ public:
     static void installWindowDragFilter();
 private:
     void dropAwake();                      // 묻지 않고 놓는다 — releaseAwake 와 앱 종료가 쓴다
+    class QTimer *m_releaseTimer = nullptr;   // releaseAwake 의 유예 — 다 기다리면 다시 보고 놓는다
+    static constexpr int kReleaseGraceMs = 5000;
     static qint64 s_nativeDragAt;
     QPointer<QWidget> m_dragWin;           // 지금 끌고 있는 창(본 창 또는 기능 창)
     QPoint m_dragOffset;                   // 커서 - 창 왼쪽 위

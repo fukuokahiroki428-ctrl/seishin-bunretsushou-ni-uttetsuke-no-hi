@@ -2866,6 +2866,21 @@ void HanishikiBackend::emitBackupProgress()
 
 void HanishikiBackend::backupWorker()
 {
+    // ★ 대기열을 비우는 동안 맥을 붙든다(화면은 놓는다). 수집이 끝난 뒤에도 남은 파일을 NAS 로 옮기는데,
+    //   예전엔 새던 NoIdleSleep 어설션이 우연히 이 몫을 했다(ueno ccec534 에서 없앴다). 첫 항목을 집을 때
+    //   붙들고, 대기열이 비거나 워커가 멈추면 놓는다. 붙들고 놓는 것은 메인 스레드에서 한다(caffeinate 가
+    //   그 창의 QProcess 다). releaseAwake 는 그때의 상태를 다시 보고 정하므로, 수집 중에 파일 사이로
+    //   대기열이 잠깐 비어도 수집의 잠 방지는 그대로다.
+    bool busy = false;
+    auto setBusy = [this, &busy](bool on) {
+        if (busy == on) return;
+        busy = on;
+        if (on) m_backupBusy.fetch_add(1); else m_backupBusy.fetch_sub(1);
+        QMetaObject::invokeMethod(this, [this, on]() {
+            if (!m_window || Common::appQuitting()) return;
+            if (on) m_window->holdAwake(false); else m_window->releaseAwake();
+        }, Qt::QueuedConnection);
+    };
     while (m_backupRunning.load()) {
         QString item;
         bool got = false;
@@ -2878,9 +2893,11 @@ void HanishikiBackend::backupWorker()
             }
         }
         if (!got) {
+            setBusy(false);
             QThread::msleep(1000);
             continue;
         }
+        setBusy(true);
         // ★ worker 는 큐만 처리 — enabled 토글은 enqueueBackup (자동 enqueue) 에서 결정.
         //   "지금 백업" 같은 1회성은 enabled off 여도 큐에 들어와있으면 처리해줘야 함.
         QString backupRoot = m_config->backupPath();
@@ -3080,6 +3097,7 @@ void HanishikiBackend::backupWorker()
             }
         }
     }
+    setBusy(false);   // 껐거나 멈췄다(stopBackup · 백업 끔) — 남은 대기열은 버렸다
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -20863,6 +20881,10 @@ void HanishikiBackend::organizeRun(const QString &rulesJson)
         return;
     }
     const QByteArray init = QJsonDocument(doc.object()).toJson(QJsonDocument::Compact);
+    // ★ 정리가 끝날 때까지 맥을 붙든다(화면은 놓는다). 자동 정리는 수집이 끝난 '뒤' 화면이 부른다 —
+    //   그때 수집 쪽 releaseAwake 는 이미 지나갔으므로 여기서 스스로 붙든다. 스레드가 끝나면(어느 길로든
+    //   m_organizeRunning 을 내린 뒤다) releaseAwake 가 다른 일이 남았는지 보고 놓는다.
+    if (m_window) m_window->holdAwake(false);
     QThread *t = QThread::create([this, script, python, init, finish]() {
         auto forward = [this](const QByteArray &line) {
             const QByteArray l = line.trimmed();
@@ -20935,6 +20957,9 @@ void HanishikiBackend::organizeRun(const QString &rulesJson)
     });
     m_organizeThread = t;
     connect(t, &QThread::finished, t, &QThread::deleteLater);
+    connect(t, &QThread::finished, this, [this]() {
+        if (m_window && !Common::appQuitting()) m_window->releaseAwake();
+    });
     t->start();
 }
 
