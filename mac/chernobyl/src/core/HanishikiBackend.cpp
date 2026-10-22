@@ -1041,7 +1041,7 @@ void HanishikiBackend::resyncAllFoldersToBackup()
 //   bundle 된 rclone binary 사용. 사용자의 WebDAV creds (m_config) 로 임시 config 생성.
 //   --transfers=8 --multi-thread-streams=4 --progress --stats=2s.
 // ═════════════════════════════════════════════════════════════════════════
-void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString &destSubPath)
+bool HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString &destSubPath)
 {
     QString rclonePath = QCoreApplication::applicationDirPath() + "/../Resources/tools/rclone";
 #ifdef Q_OS_WIN
@@ -1056,7 +1056,7 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
     }
     if (!QFile::exists(rclonePath)) {
         log("❌ rclone binary 없음 — backup 일반 모드로 fallback", "error", "settings");
-        return;
+        return false;
     }
 
     QString url = m_config->webdavUrl();
@@ -1065,7 +1065,7 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
     if (url.isEmpty() || user.isEmpty() || pass.isEmpty()) {
         log("❌ WebDAV 자격증명 없음 — 설정 → WebDAV 자동 업로드 카드에 URL/사용자명/비번 입력 후 [저장] 누르세요", "error", "settings");
         runJs("alert('❌ rclone 백업 위해 WebDAV 자격증명 필요\\n\\n설정 → WebDAV 자동 업로드 카드\\n  • URL: https://your-nas.com/path\\n  • 사용자명\\n  • 비밀번호\\n\\n입력 후 [저장] 누르고 다시 시도');");
-        return;
+        return false;
     }
 
     QString tempBase = Common::resolveTempBase(m_config->tempDir());
@@ -1088,7 +1088,7 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
     }
     if (obscuredPass.isEmpty()) {
         log("❌ rclone obscure 실패", "error", "settings");
-        return;
+        return false;
     }
 
     // 2) 임시 rclone.conf 생성
@@ -1096,7 +1096,7 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
         QFile cf(confPath);
         if (!cf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             log(QString("❌ rclone conf 생성 실패: %1").arg(confPath), "error", "settings");
-            return;
+            return false;
         }
         // ★ 프로토콜은 URL 스킴이 정한다 (sftp:// 면 SFTP, 그 외는 WebDAV).
         //   설정 항목을 따로 두지 않는 편이, 나중에 항목끼리 어긋날 일이 없어 오래 간다.
@@ -1213,6 +1213,7 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
     connect(t, &QThread::finished, t, &QThread::deleteLater);
     holdAwakeForBackup(t);
     t->start();
+    return true;
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -1626,8 +1627,12 @@ void HanishikiBackend::backupNow()
                 log("⚠ 빈 폴더만 있음 — 백업 중단", "warning", "settings");
                 return;
             }
-            runRcloneBackup(_nonEmpty, destPath);
-            return;  // rclone thread 가 마무리
+            if (runRcloneBackup(_nonEmpty, destPath)) return;  // rclone thread 가 마무리
+            // ★ rclone 을 띄우지 못했다(바이너리 · conf 를 못 만듦 등) — 그 로그가 말하듯 일반(cp) 모드로 이어 간다.
+            //   예전엔 여기서 그냥 돌아갔다. 위에서 세운 m_backupTerminalActive 가 내려가지 않아, 다음 '지금
+            //   백업' 은 중지를 누를 때까지 '이미 백업 진행 중' 이라며 거절했고, 터미널 창도 [DONE] 없이 남았다.
+            writeTerminalLog("\033[33m⚠ rclone 을 쓰지 못해 일반 cp 모드로 이어 갑니다\033[0m", "backup");
+            writeTerminalLog("", "backup");
         }
     }
 
