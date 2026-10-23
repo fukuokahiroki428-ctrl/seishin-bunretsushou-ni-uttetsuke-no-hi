@@ -1686,3 +1686,40 @@ tmd · Hydrus · Hitomi · JDownloader · RipMe) 뒤 사용자가 넷을 다 골
 ### 시험(맥)
 `akashi/tests/organize.py` 26/26 · `tests/targets.py`(새로 — 대상 500개 · 글자로 편집 · 팔로잉 응답 흉내) 26/26 · `inspect_all --doctor --hotfix` 6/6.
 트위터 팔로잉 가져오기는 사용자 계정이 있어야 해 실제로는 돌려 보지 못했습니다(화면 · 슬롯 · 응답 처리까지만). 윈도우에서 사용자 계정으로 한 번 보아 주십시오.
+
+---
+
+# ★ 맥 → 윈도우 (2026-10-24): r44 — 10-17 전보의 둘을 받았습니다(새 폴더 공간 · 릴스 질의) + 잠 막기 · 지금 백업
+
+맥 `ueno` `aa52d60` · `mac-4.0.0-r44`.
+
+### 1. 새 폴더 공간 오판 — 받았습니다(`632123d`), 맥에서 둘을 더했습니다
+윈도우 고침(가장 가까운 있는 조상 · 디스크 맨 위에서 멈춤) 그대로에 더해:
+- **NAS 연결 폴더도 '맨 위'** — 맥의 NAS 고르기(`pickMountedVolume`)는 `/Volumes` 밖의 Mountain Duck(`~/Mountain Duck/<연결>` ·
+  `…/io.mountainduck/…/Volumes.noindex/<연결>`) · Cyberduck Drive · `~/Library/CloudStorage/<연결>` 도 내놓습니다. `/Volumes` 만 보면
+  끊긴 Mountain Duck 아래 새 폴더가 홈까지 올라가 내장 디스크 공간으로 보였습니다(검토). 윈도우에도 Mountain Duck/CloudStorage 를 저장 경로로
+  쓰는 길이 있으면 같은 것을 보아 주십시오.
+- **빈 마운트 자리** — 맥은 디스크를 뺀 뒤 `/Volumes/<이름>` 이 빈 폴더로 남을 수 있어, `/Volumes` · `Volumes.noindex` 는 `QStorageInfo::rootPath()`
+  가 그 아래일 때만 믿습니다(대소문자 무시 · `/` 를 가리키는 바로가기는 예외). 윈도우의 `X:/` 에는 해당 없습니다.
+
+### 2. 인스타 릴스 질의(`ReelsTabContentQuery`) — 로그아웃으로는 뜰 수 없습니다(`7f4db19`)
+실측: 로그아웃 상태의 `/instagram/reels/` 가 가리키는 꾸러미 **427개**(바로 6 · 나중에 받을 421 — HTML 의 JSON 안에 `https:\/\/static…` 로 적힘)를
+모두 훑어도 그 이름조차 없었습니다. 그래서 `ig_docids.py` 는 이제:
+- stdin 에 한 줄 JSON `{"headers": {...}, "username": "..."}` 이 0.5초 안에 오면(앱이 주는 그 수집의 세션 — `igEnsureTokens` 와 같은 문서 요청 머리),
+  로그아웃 판(예전 그대로) 뒤에 **그 사람의 `/reels/` 를 로그인한 채** 받아 그 꾸러미를 훑습니다. 안 오면(옛 앱) 로그아웃으로만 — 멈추지 않습니다.
+- 출구는 환경(`ALL_PROXY`/`HTTPS_PROXY`)만 — `httpx.Client(trust_env=False, proxy=…)`. 시스템 프록시로 새면 한 세션이 두 출구에서 보입니다.
+- 모든 요청을 75초 안에(요청마다 남은 시간), 세션은 출력 · 기록에 남기지 않습니다.
+- 앱(`igRecover`)은 0.5초씩 끊어 기다리며 중지 · 끄기에 도우미를 내립니다.
+진짜 세션으로 릴스 질의를 뜨는 것은 아직 못 보았습니다(사용자 계정 필요). 같은 파일이니 윈도우도 받아 가시면 됩니다 — 윈도우 갈래는 없습니다.
+
+### 3. 잠 막기 · 지금 백업(다른 맥 세션의 `ccec534` · `07aaf09` · `0fe8726` · `a95e16f` · `283e7e5`) — 같은 코드라면 보아 주십시오
+- 수집마다 쌓이던 NoIdleSleep 어설션(함수 안 static · 놓지 않음)을 없애고, 수집 중 = 맥+화면, 内閣会만 = 맥만, 자동 정리 · 백업 대기열 ·
+  손 백업 = 끝날 때까지 맥만. 윈도우는 `SetThreadExecutionState` 라 갈래가 다르지만 '언제 놓나' 는 같은 자리(`releaseAwake` 의 `isAnyRunning` ·
+  `isAfterWorkRunning`)입니다.
+- 검토가 짚어 고친 것(`7f4db19`): 内閣会 폴링이 끝날 때 `releaseAwake` 를 안 불러 화면 몫이 남음 · 크롤 주소가 구분자뿐이면 실행 깃발이 남음 ·
+  rclone 지금 백업이 실패해도 '✅ 완료' · 백업 도중 끄면 `abiwa_rclone.conf` / `abiwa_remote.conf`(되돌릴 수 있는 비밀번호)가 남고 스레드가 치워진
+  백엔드를 건드림 → 끌 때 멈추고 기다리고 두 파일을 지움, 켤 때도 지움. **이 넷은 윈도우 트리에도 같은 줄이 있을 가능성이 큽니다.**
+- 지금 백업의 Apple WebDAV 알아보기(`/sbin/mount` 의 가장 긴 마운트 지점)는 맥 전용입니다.
+
+### 4. 공구함
+CDP 가 덮개 닫힌 맥에서 시험 도중 끊기던 것(`d8e870e`) — 이제 `run_all` 10/10(SingleFile 은 화면이 켜져 있어야 — `caffeinate -du` 로 돌림).
