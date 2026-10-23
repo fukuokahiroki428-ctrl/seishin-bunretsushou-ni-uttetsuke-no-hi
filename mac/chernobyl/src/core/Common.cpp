@@ -1626,11 +1626,64 @@ QProcessEnvironment bundledProcessEnv()
     return env;
 }
 
+// 이 경로가 놓일 디스크의 맨 위 — freeSpace 는 여기보다 위로 올라가 재지 않는다(다른 디스크를 재게 된다).
+//   외장 디스크 · NAS 는 "/Volumes/<이름>", NAS 고르기(pickMountedVolume)가 내놓는 Mountain Duck · Cyberduck ·
+//   CloudStorage 의 연결 폴더는 "<그 뿌리>/<연결>", 그 밖은 "/". p 는 정리된 절대 경로.
+//   *mountCheck: 그 맨 위가 진짜 마운트 지점이어야 하는 곳(/Volumes · Mountain Duck 의 Volumes.noindex) — 디스크를 뺀
+//   뒤 빈 폴더만 남으면 내장 디스크를 재게 되므로 뿌리를 본다. CloudStorage · Cyberduck Drive · ~/Mountain Duck 은
+//   File Provider 일 수 있어(따로 마운트가 없다) 올라가는 것만 막는다.
+static QString volumeTopOf(const QString &p, bool *mountCheck)
+{
+    *mountCheck = false;
+    auto under = [&p](const QString &root) -> QString {   // <root>/<연결> — 없으면 빈 것
+        if (!p.startsWith(root + QLatin1Char('/'), Qt::CaseInsensitive)) return QString();
+        const int s = p.indexOf(QLatin1Char('/'), root.size() + 1);
+        return s < 0 ? p : p.left(s);
+    };
+    if (p.startsWith(QLatin1String("/Volumes/"), Qt::CaseInsensitive)) {
+        *mountCheck = true;
+        return under(QStringLiteral("/Volumes"));
+    }
+    const QString home = QDir::homePath();
+    const QString noindex = home + QStringLiteral("/Library/Containers/io.mountainduck/Data/Library/Application Support/Mountain Duck/Volumes.noindex");
+    QString t = under(noindex);
+    if (!t.isEmpty()) { *mountCheck = true; return t; }
+    for (const QString &root : {home + QStringLiteral("/Mountain Duck"),
+                                home + QStringLiteral("/Library/Group Containers/G69SCX94XU.duck/Library/Application Support/Cyberduck/Drive"),
+                                home + QStringLiteral("/Library/CloudStorage")}) {
+        t = under(root);
+        if (!t.isEmpty()) return t;
+    }
+    return QStringLiteral("/");
+}
+
 qint64 freeSpace(const QString &path)
 {
     if (path.isEmpty()) return 0;
-    QStorageInfo si(path);
+    // ★ 아직 없는 폴더는 가장 가까운 '있는' 조상 폴더로 잰다(윈도우 전보 2026-10-17 — 같은 코드라 맥도 같았다).
+    //   예전엔 QStorageInfo 에 그대로 넘겼다. 없는 폴더면 QStorageInfo 가 무효라 0 이 나오고, pickSavePath 가 그것을
+    //   '1번 디스크 공간 부족' 으로 읽어 새로 적은 저장 폴더 대신 보조 경로로 보냈다.
+    //   단 디스크 · NAS 연결의 맨 위(volumeTopOf)보다 위로는 가지 않는다 — 빠진 외장 디스크 · 끊긴 NAS 는 예전처럼 0
+    //   (위로 올라가면 내장 디스크의 공간을 재서 '넉넉하다' 고 잘못 보고 끊긴 NAS 자리의 내장 디스크에 받았다).
+    QString p = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    bool mountCheck = false;
+    const QString top = volumeTopOf(p, &mountCheck);
+    while (!QFileInfo::exists(p)) {
+        if (p.size() <= top.size()) return 0;            // 디스크 · 연결 자체가 없다
+        const int slash = p.lastIndexOf(QLatin1Char('/'));
+        if (slash < 0) return 0;
+        p = (slash < top.size()) ? top : (slash == 0 ? QStringLiteral("/") : p.left(slash));
+    }
+    QStorageInfo si(p);
     if (!si.isValid() || !si.isReady()) return 0;
+    // ★ 맥만의 함정 — 디스크를 뺀 뒤 /Volumes/<이름> 이 빈 폴더로 남기도 한다(내장 디스크 위). 그 자리에서 재면
+    //   내장 디스크의 공간이 나온다. 그 디스크가 정말 붙어 있을 때(뿌리가 그 아래)만 믿는다.
+    //   /Volumes/<시스템 디스크> 처럼 / 를 가리키는 바로가기는 예외. 대소문자는 가리지 않는다(APFS 처럼).
+    if (mountCheck && !QFileInfo(top).isSymLink()) {
+        const QString root = si.rootPath();
+        if (!(root.compare(top, Qt::CaseInsensitive) == 0 || root.startsWith(top + QLatin1Char('/'), Qt::CaseInsensitive)))
+            return 0;
+    }
     return si.bytesAvailable();
 }
 
