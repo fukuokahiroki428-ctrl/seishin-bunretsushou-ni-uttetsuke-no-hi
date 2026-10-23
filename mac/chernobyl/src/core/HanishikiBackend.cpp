@@ -1040,8 +1040,9 @@ void HanishikiBackend::resyncAllFoldersToBackup()
 // runRcloneBackup — rclone copy 로 WebDAV/SFTP 빠른 전송 (Mountain Duck 와 동일 효과).
 //   bundle 된 rclone binary 사용. 사용자의 WebDAV creds (m_config) 로 임시 config 생성.
 //   --transfers=8 --multi-thread-streams=4 --progress --stats=2s.
+//   url = 올릴 서버 주소. 지금 백업은 설정 URL 이 아닌 백업 폴더가 놓인 마운트의 주소를 넘긴다.
 // ═════════════════════════════════════════════════════════════════════════
-bool HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString &destSubPath)
+bool HanishikiBackend::runRcloneBackup(const QString &url, const QStringList &srcDirs, const QString &destSubPath)
 {
     QString rclonePath = QCoreApplication::applicationDirPath() + "/../Resources/tools/rclone";
 #ifdef Q_OS_WIN
@@ -1059,7 +1060,6 @@ bool HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
         return false;
     }
 
-    QString url = m_config->webdavUrl();
     QString user = m_config->webdavUser();
     QString pass = m_config->webdavPass();
     if (url.isEmpty() || user.isEmpty() || pass.isEmpty()) {
@@ -1146,9 +1146,14 @@ bool HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
         for (const QString &src : srcDirs) {
             if (!m_backupTerminalActive.load()) break;
             QString platName = QFileInfo(src).fileName();
-            QString remote = remoteBase.isEmpty()
-                    ? QString("abiwa_nas:%1/%2").arg(destSubPath, platName)
-                    : QString("abiwa_nas:%1/%2/%3").arg(remoteBase, destSubPath, platName);
+            // 빈 조각 · 앞뒤 / 는 뺀다 — destSubPath 가 비면(마운트 뿌리를 골랐을 때) 바로 <플랫폼>
+            QStringList segs;
+            for (QString s : {remoteBase, destSubPath, platName}) {
+                while (s.startsWith('/')) s = s.mid(1);
+                while (s.endsWith('/'))   s.chop(1);
+                if (!s.isEmpty()) segs << s;
+            }
+            QString remote = "abiwa_nas:" + segs.join('/');
             writeTerminalLog(QString("\033[1;34m[rclone] %1 → %2\033[0m").arg(src, remote), "backup");
 
             QProcess rc;
@@ -1423,6 +1428,37 @@ void HanishikiBackend::pickRemoteBackupSrc()
     runJs(QString("(function(){var e=document.getElementById('rbk-src'); if(e)e.value=%1;})()").arg(safe));
 }
 
+// ★ 경로가 실제로 놓인 마운트 — /sbin/mount 에서 '가장 긴' 마운트 지점을 고른다.
+//   예전 backupNow 의 두 고리는 앞에서부터 처음 맞는 줄에서 멈췄다. mount 의 첫 줄은 언제나 / 라
+//   늘 / 에서 섰고, Apple WebDAV 마운트는 rclone 길도 워커 1 도 받지 못했다(Mountain Duck 은
+//   경로 이름으로만 알아봤다). 경계도 본다 — /Volumes/nas 는 /Volumes/nas2 의 마운트가 아니다.
+namespace {
+struct BackupMount { QString from, on, opts; };   // "<from> on <on> (<opts>)"
+}
+static BackupMount mountOfPath(const QString &path)
+{
+    BackupMount best;
+#ifdef Q_OS_MACOS
+    QProcess mc;
+    mc.start("/sbin/mount", QStringList());
+    if (!mc.waitForFinished(3000)) return best;
+    const QString out = QString::fromUtf8(mc.readAllStandardOutput());
+    for (const QString &line : out.split('\n')) {
+        const int onIdx = line.indexOf(" on ");
+        const int parenIdx = line.lastIndexOf(" (");   // 마운트 지점 이름에 " (" 가 들어 있을 수 있다
+        if (onIdx < 0 || parenIdx < onIdx) continue;
+        const QString mp = line.mid(onIdx + 4, parenIdx - onIdx - 4);
+        const bool under = mp == "/" || path == mp || path.startsWith(mp + '/');
+        // 같은 자리에 겹쳐 걸린 마운트는 나중 줄(위에 덮인 것)이 이긴다
+        if (!under || mp.length() < best.on.length()) continue;
+        best = {line.left(onIdx), mp, line.mid(parenIdx + 2)};
+    }
+#else
+    Q_UNUSED(path);
+#endif
+    return best;
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 // backupNow — 1회성 즉시 백업 (toggle off 여도 강제 실행).
 //   경로 미설정 시 안내. 모든 플랫폼 폴더 → backup 경로 통째 enqueue.
@@ -1565,6 +1601,12 @@ void HanishikiBackend::backupNow()
     m_backupTerminalActive = true;
     m_backupStartMs = QDateTime::currentMSecsSinceEpoch();
 
+    // ★ 백업 폴더가 놓인 마운트 — 아래 rclone 길과 워커 수가 함께 본다. 심볼릭 링크(/tmp → /private/tmp 등)를
+    //   풀어 둔 경로로 맞춰 본다. mount 가 적는 마운트 지점은 풀린 쪽이다.
+    QString backupReal = QFileInfo(backupRoot).canonicalFilePath();
+    if (backupReal.isEmpty()) backupReal = backupRoot;
+    const BackupMount backupMount = mountOfPath(backupReal);
+
     // ★ rclone 자동 사용 — WebDAV creds 있고 backup path 가 *Apple* WebDAV mount 면
     //   Mountain Duck path 면 절대 rclone 안 씀 (Duck 가 자체 transfer 더 효율적).
     //   rclone copy 가 Apple native cp 보다 5-50배 빠름 (HTTP/2 multiplex, 8 parallel, resume).
@@ -1580,37 +1622,41 @@ void HanishikiBackend::backupNow()
                        || backupRoot.contains("/Cyberduck/", Qt::CaseInsensitive);
 #ifdef Q_OS_MACOS
         if (!_isDuckPath) {
-            QProcess _mc; _mc.start("/sbin/mount", QStringList());
-            if (_mc.waitForFinished(3000)) {
-                QString out = QString::fromUtf8(_mc.readAllStandardOutput());
-                for (const QString &line : out.split('\n')) {
-                    int onIdx = line.indexOf(" on ");
-                    int parenIdx = line.indexOf(" (", onIdx);
-                    if (onIdx < 0 || parenIdx < 0) continue;
-                    QString mp = line.mid(onIdx + 4, parenIdx - onIdx - 4);
-                    if (!backupRoot.startsWith(mp)) continue;
-                    QString opts = line.mid(parenIdx + 2);
-                    if (opts.contains("webdav") && !opts.contains("osxfuse") && !opts.contains("macfuse")
-                        && !mp.contains("io.mountainduck")) {
-                        _isAppleWebDav = true;
-                    }
-                    break;
-                }
-            }
+            const QString &opts = backupMount.opts;
+            _isAppleWebDav = opts.contains("webdav") && !opts.contains("osxfuse") && !opts.contains("macfuse")
+                          && !backupMount.on.contains("io.mountainduck");
         }
 #endif
+        // ★ 주소는 마운트 자신의 것(mount 의 왼쪽)을 쓰고, 설정에선 아이디 · 비밀번호만 빌린다.
+        //   설정 URL 은 공유 폴더까지 적혀 있어 마운트 뿌리와 다를 수 있다 — 그 URL 에 마운트 안 경로를
+        //   붙이면 엉뚱한 곳에 쌓인다. 설정 URL 이 다른 서버면 그 자격증명이 이 마운트 것이라 볼 수 없으니
+        //   rclone 을 쓰지 않고 아래 cp(워커 1)로 간다.
+        QString mountUrl;
         if (_isAppleWebDav && !url.isEmpty() && !user.isEmpty() && !pass.isEmpty()) {
-            // backupRoot 에서 webdav mount root 제외한 sub path 추출
-            QString destSub = backupRoot;
-            // mount 의 root 가 보통 /Volumes/<host>/ — 그 뒤가 backup path 안 sub
-            // 사용자 path 그대로 destSub 으로 (rclone 가 알아서 처리)
+            const QUrl mu(backupMount.from), su(url.trimmed());
+            auto portOf = [](const QUrl &u) {
+                return u.port(u.scheme().compare("https", Qt::CaseInsensitive) == 0 ? 443 : 80);
+            };
+            const bool sameServer = mu.isValid() && !mu.host().isEmpty()
+                && mu.scheme().compare(su.scheme(), Qt::CaseInsensitive) == 0
+                && mu.host().compare(su.host(), Qt::CaseInsensitive) == 0
+                && portOf(mu) == portOf(su);
+            if (sameServer) {
+                mountUrl = mu.toString(QUrl::RemoveUserInfo);
+            } else {
+                writeTerminalLog(QString("\033[33m⚠ 설정의 WebDAV 주소(%1)가 이 마운트(%2)와 다른 서버라 rclone 을 쓰지 않고 cp 로 갑니다\033[0m")
+                                     .arg(su.host(), mu.host()), "backup");
+                writeTerminalLog("", "backup");
+            }
+        }
+        if (!mountUrl.isEmpty()) {
             writeTerminalLog("\033[1;32m🚀 rclone 모드 — Apple WebDAV 보다 5-50배 빠름 (Mountain Duck 와 동일 원리)\033[0m", "backup");
             writeTerminalLog("", "backup");
-            // rclone 의 dest path = backup path 안의 sub-folder structure
-            //   여기선 webdav root 의 / 부터 시작 (사용자가 NAS 안 어디든)
-            //   너무 복잡해서 그냥 / 사용 — 사용자가 rclone config 의 url 마지막에 path 포함시킨 거 가정
-            //   ★ 향후 개선: backupRoot 와 mount root 비교해서 정확한 sub path 추출
-            QString destPath = "/";  // rclone url 자체에 path 있으면 root
+            // ★ 올릴 자리 = cp 가 쓸 자리: 마운트 안 백업 폴더 경로 + 공통 부모 + 플랫폼(플랫폼은 runRcloneBackup 이 붙인다).
+            //   예전엔 "/" 를 넘겨 WebDAV 맨 위 + 플랫폼으로 갔다 — 고른 백업 폴더와 공통 부모를 건너뛰었다
+            //   (위 감지가 늘 / 에서 서서 닿지 않았을 뿐이다).
+            QString destPath = backupReal.mid(backupMount.on.length());
+            if (!commonParentName.isEmpty()) destPath += "/" + commonParentName;
             QStringList srcDirs;
             // 공통 부모 + 빈 폴더 제외 (기존 로직 복제)
             QStringList _platformDirs = platformDirs;
@@ -1627,7 +1673,7 @@ void HanishikiBackend::backupNow()
                 log("⚠ 빈 폴더만 있음 — 백업 중단", "warning", "settings");
                 return;
             }
-            if (runRcloneBackup(_nonEmpty, destPath)) return;  // rclone thread 가 마무리
+            if (runRcloneBackup(mountUrl, _nonEmpty, destPath)) return;  // rclone thread 가 마무리
             // ★ rclone 을 띄우지 못했다(바이너리 · conf 를 못 만듦 등) — 그 로그가 말하듯 일반(cp) 모드로 이어 간다.
             //   예전엔 여기서 그냥 돌아갔다. 위에서 세운 m_backupTerminalActive 가 내려가지 않아, 다음 '지금
             //   백업' 은 중지를 누를 때까지 '이미 백업 진행 중' 이라며 거절했고, 터미널 창도 [DONE] 없이 남았다.
@@ -1655,31 +1701,20 @@ void HanishikiBackend::backupNow()
                 isMountainDuck = true; break;
             }
         }
-        // 2) mount fstype 체크 — webdav / osxfuse / macfuse / 또는 Mountain Duck NFS server
-        QProcess mountCmd;
-        mountCmd.start("/sbin/mount", QStringList());
-        if (mountCmd.waitForFinished(3000)) {
-            QString mountOut = QString::fromUtf8(mountCmd.readAllStandardOutput());
-            for (const QString &line : mountOut.split('\n')) {
-                int onIdx = line.indexOf(" on ");
-                if (onIdx < 0) continue;
-                int parenIdx = line.indexOf(" (", onIdx);
-                if (parenIdx < 0) continue;
-                QString mountPath = line.mid(onIdx + 4, parenIdx - onIdx - 4);
-                if (!backupRoot.startsWith(mountPath)) continue;
-                QString opts = line.mid(parenIdx + 2);
-                // Mountain Duck 5+ NFS 가상 서버 — mountPath 가 io.mountainduck 안이면 Duck
-                if (mountPath.contains("io.mountainduck")
-                    || mountPath.contains("Mountain Duck", Qt::CaseInsensitive)
-                    || mountPath.contains("Volumes.noindex")
-                    || opts.contains("osxfuse") || opts.contains("macfuse")
-                    || opts.contains("mountainduck", Qt::CaseInsensitive)) {
-                    isMountainDuck = true;
-                }
-                if (opts.contains("webdav") && !isMountainDuck) {
-                    isWebDav = true;
-                }
-                break;
+        // 2) 백업 폴더가 놓인 마운트의 fstype — webdav / osxfuse / macfuse / 또는 Mountain Duck NFS server
+        {
+            const QString &mountPath = backupMount.on;
+            const QString &opts = backupMount.opts;
+            // Mountain Duck 5+ NFS 가상 서버 — mountPath 가 io.mountainduck 안이면 Duck
+            if (mountPath.contains("io.mountainduck")
+                || mountPath.contains("Mountain Duck", Qt::CaseInsensitive)
+                || mountPath.contains("Volumes.noindex")
+                || opts.contains("osxfuse") || opts.contains("macfuse")
+                || opts.contains("mountainduck", Qt::CaseInsensitive)) {
+                isMountainDuck = true;
+            }
+            if (opts.contains("webdav") && !isMountainDuck) {
+                isWebDav = true;
             }
         }
         if (isMountainDuck) {
