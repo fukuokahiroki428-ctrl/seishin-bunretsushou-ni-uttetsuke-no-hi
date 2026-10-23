@@ -485,6 +485,7 @@ public:
 
     // 자동 유지보수 — 시작 시 정리, 종료 시 자식 프로세스 정리, 주기적 메모리 모니터
     void performStartupCleanup();
+    void removeBackupConfs();        // rclone 임시 설정(되돌릴 수 있는 비밀번호) — 끌 때 · 켤 때
     void killChildProcesses();
     void memoryMonitorTick();
     QTimer *m_memoryMonitorTimer = nullptr;
@@ -684,6 +685,7 @@ public:
     std::atomic<bool> m_followListRun{false};
     std::atomic<qint64> m_followListPid{0};       // 가져오기가 띄운 트위터 도우미 — 그만 · 끄기가 바로 끊는다
     QPointer<QThread> m_followListThread;
+    QList<QPointer<QThread>> m_manualBackupThreads;   // 지금 백업 · rclone · 원격 — 끌 때 멈추고 기다린다
 
     // ★ 동시 수집 작업 자체 제한 — 여러 플랫폼 동시 돌릴 때 메모리 중첩 방지
     //   2개 동시 OK. 3번째는 큐에서 대기. 끝나면 자동으로 다음 시작.

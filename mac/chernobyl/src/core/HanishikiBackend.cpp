@@ -418,6 +418,9 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
         //   백엔드에 기록을 남기다 죽을 수 있었다(검토).
         m_followListRun = false;
         if (const qint64 pid = m_followListPid.exchange(0)) Common::killProcessByPid(pid);
+        // ★ 손으로 시작한 백업(지금 백업 · rclone · 원격)도 멈추라 한다 — 스레드가 치워진 백엔드에 기록을 쓰며 남았고,
+        //   rclone 은 끝에서 지우는 임시 설정(abiwa_rclone.conf · abiwa_remote.conf — 되돌릴 수 있는 비밀번호)을 남겼다(검토)
+        m_backupTerminalActive = false;
         if (m_hotfixThread && m_hotfixThread->isRunning() && !m_hotfixThread->wait(3000))
             qWarning() << "[hotfix] 확인 스레드가 3초 안에 끝나지 않았습니다";
         // ★ 정리하기 스레드 — 끄는 중이면 도우미를 곧바로 내리고 끝난다(organizeRun). 안 기다리면 그 스레드가
@@ -428,6 +431,11 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
         if (m_followListThread && m_followListThread->isRunning()
             && !m_followListThread->wait(qMax(100, 3000 - int(quitWait.elapsed()))))
             qWarning() << "[가져오기] 팔로잉 가져오기 스레드가 제때 끝나지 않았습니다";
+        for (const QPointer<QThread> &bt : m_manualBackupThreads) {
+            if (bt && bt->isRunning() && !bt->wait(qMax(100, 3000 - int(quitWait.elapsed()))))
+                qWarning() << "[백업] 백업 스레드가 제때 끝나지 않았습니다";
+        }
+        removeBackupConfs();
         // ★ 다른 뒷일 스레드의 요청도(프록시 시험 · 감시 · 수집 …) — 모두 0.1초 안에 멈추므로 보통 곧 끝난다. 합쳐 3초까지.
         if (!HttpClient::waitIdle(qMax(0, 3000 - int(quitWait.elapsed()))))
             qWarning() << "[종료] 진행 중인 요청이 3초 안에 끝나지 않았습니다";
@@ -494,8 +502,18 @@ HanishikiBackend::~HanishikiBackend()
 // 자동 유지보수
 // ─────────────────────────────────────────────
 
+// rclone 임시 설정(되돌릴 수 있는 비밀번호가 든다) — 백업이 끝나면 그 스레드가 지우지만, 도중에 앱이 끝나면 남았다.
+//   끌 때와 켤 때 지운다. 백업이 도는 중에는 부르지 않는다.
+void HanishikiBackend::removeBackupConfs()
+{
+    const QString base = Common::resolveTempBase(m_config ? m_config->tempDir() : QString());
+    for (const char *n : {"abiwa_rclone.conf", "abiwa_remote.conf"})
+        QFile::remove(base + QLatin1Char('/') + QLatin1String(n));
+}
+
 void HanishikiBackend::performStartupCleanup()
 {
+    removeBackupConfs();
     if (!m_config) return;
     QString td = m_config->tempDir();
     if (td.isEmpty()) return;
@@ -1143,6 +1161,7 @@ bool HanishikiBackend::runRcloneBackup(const QString &url, const QStringList &sr
     QThread *t = QThread::create([this, srcDirs, destSubPath, rclonePath, confPath, remoteBase]() {
         m_backupTerminalActive = true;
         m_backupStartMs = QDateTime::currentMSecsSinceEpoch();
+        int failed = 0;   // ★ 예전엔 하나도 못 올려도 '✅ 완료' 라 했다(검토 — 283e7e5 로 이 길이 살아났다)
         for (const QString &src : srcDirs) {
             if (!m_backupTerminalActive.load()) break;
             QString platName = QFileInfo(src).fileName();
@@ -1175,12 +1194,14 @@ bool HanishikiBackend::runRcloneBackup(const QString &url, const QStringList &sr
             rc.start(rclonePath, args);
             if (!rc.waitForStarted(5000)) {
                 writeTerminalLog("\033[31m[rclone] 시작 실패\033[0m", "backup");
+                ++failed;
                 continue;
             }
             // stdout stream → terminal
             QByteArray leftover;
             while (rc.state() != QProcess::NotRunning) {
                 if (!m_backupTerminalActive.load()) {
+                    if (Common::appQuitting()) { rc.kill(); rc.waitForFinished(1000); break; }   // 끄는 중 — 기다리지 않는다
                     rc.terminate();
                     if (!rc.waitForFinished(3000)) rc.kill();
                     break;
@@ -1198,20 +1219,27 @@ bool HanishikiBackend::runRcloneBackup(const QString &url, const QStringList &sr
                     writeTerminalLog(QString("  \033[90m│\033[0m %1").arg(s), "backup");
                 }
             }
-            if (rc.exitCode() == 0) {
+            if (!m_backupTerminalActive.load()) break;   // 멈춤 — 끊긴 판은 성공도 실패도 아니다
+            if (rc.exitStatus() == QProcess::NormalExit && rc.exitCode() == 0) {
                 writeTerminalLog(QString("\033[1;32m[rclone] ✓ %1 완료\033[0m").arg(platName), "backup");
             } else {
+                ++failed;
                 writeTerminalLog(QString("\033[1;31m[rclone] ✗ %1 실패 (exit=%2)\033[0m").arg(platName).arg(rc.exitCode()), "backup");
             }
         }
+        const bool stopped = !m_backupTerminalActive.load();
         // conf 삭제 (보안 — pass obfuscated 만 있어도 노출 X)
         QFile::remove(confPath);
+        if (Common::appQuitting()) return;   // 끄는 중 — 치워지는 화면 · 기록을 건드리지 않는다
+        const QString summary = stopped ? QStringLiteral("⏹ rclone 백업 멈춤")
+                              : failed ? QString("✗ rclone 백업 — %1개 실패 (주소 · 아이디 · 비밀번호를 설정의 WebDAV 카드에서 확인)").arg(failed)
+                                       : QStringLiteral("✅ rclone 백업 완료");
         writeTerminalLog("\033[1;36m═══════════════════════════════════════════════════════════════\033[0m", "backup");
-        writeTerminalLog("\033[1;32m✅ rclone 백업 완료\033[0m", "backup");
+        writeTerminalLog(QString(stopped ? "\033[1;33m%1\033[0m" : failed ? "\033[1;31m%1\033[0m" : "\033[1;32m%1\033[0m").arg(summary), "backup");
         writeTerminalLog("[DONE]", "backup");
-        QMetaObject::invokeMethod(this, [this]() {
+        QMetaObject::invokeMethod(this, [this, summary, stopped, failed]() {
             m_backupTerminalActive = false;
-            log("✅ rclone 백업 완료", "success", "settings");
+            log(summary, stopped ? "warning" : failed ? "error" : "success", "settings");
             closeTerminalLog("backup");
         }, Qt::QueuedConnection);
     });
@@ -1233,6 +1261,8 @@ bool HanishikiBackend::runRcloneBackup(const QString &url, const QStringList &sr
 //     다른 일이 남았는지 보고 놓는다.
 void HanishikiBackend::holdAwakeForBackup(QThread *t)
 {
+    m_manualBackupThreads.removeAll(QPointer<QThread>());
+    m_manualBackupThreads.append(QPointer<QThread>(t));
     m_manualBackupBusy.fetch_add(1);
     if (m_window) m_window->holdAwake(false);
     connect(t, &QThread::finished, this, [this]() {
@@ -1380,7 +1410,10 @@ void HanishikiBackend::startRemoteBackup(const QString &configJson)
         } else {
             QByteArray leftover;
             while (rc.state() != QProcess::NotRunning) {
-                if (!m_backupTerminalActive.load()) { rc.terminate(); if (!rc.waitForFinished(3000)) rc.kill(); break; }
+                if (!m_backupTerminalActive.load()) {
+                    if (Common::appQuitting()) { rc.kill(); rc.waitForFinished(1000); break; }   // 끄는 중 — 기다리지 않는다
+                    rc.terminate(); if (!rc.waitForFinished(3000)) rc.kill(); break;
+                }
                 if (!rc.waitForReadyRead(500)) continue;
                 QByteArray chunk = rc.readAll(); chunk.replace('\r', '\n'); leftover += chunk;
                 int nl;
@@ -1395,6 +1428,7 @@ void HanishikiBackend::startRemoteBackup(const QString &configJson)
         }
         const bool ok = (exitCode == 0);
         QFile::remove(confPath);  // 보안 — obscured pass 라도 디스크에 남기지 않음
+        if (Common::appQuitting()) return;   // 끄는 중 — 치워지는 화면 · 기록을 건드리지 않는다
         writeTerminalLog("\033[1;36m═══════════════════════════════════════════════════════════════\033[0m", "backup");
         writeTerminalLog(ok ? "\033[1;32m✅ 원격 백업 완료 (이어올리기 적용)\033[0m"
                             : QString("\033[1;31m✗ 원격 백업 실패 (exit=%1) — 주소/자격증명/방화벽 확인\033[0m").arg(exitCode), "backup");
@@ -3609,6 +3643,10 @@ void HanishikiBackend::naikakukaiTick()
             QThread *self = QThread::currentThread();
             QMetaObject::invokeMethod(this, [this, p, self]() {
                 if (m_collectionThreads.value(p) == self) m_collectionThreads.remove(p);
+                // ★ 폴링이 도는 동안 끝난 다른 일은 놓지 못했다(isAnyRunning 이 이 폴링을 셌다) — 여기서 다시 본다.
+                //   안 그러면 그 사이 붙든 화면(-dims)이 内閣会가 켜져 있는 내내 남아 덮개를 연 맥의 화면이 밤새 켜졌다(검토).
+                //   releaseAwake 는 지금 상태를 다시 보고 内閣会 대기면 맥만 붙든다.
+                if (m_window && !Common::appQuitting()) m_window->releaseAwake();
             }, Qt::QueuedConnection);
         }
 
@@ -5243,6 +5281,7 @@ void HanishikiBackend::startCollection(const QString &configJson)
         if (reallyRunning) {
             dbg("EARLY RETURN: 이미 수집 중", platformName);
             log(QString("이미 수집 중입니다! (%1)").arg(trackKey), "warning", platformName);
+            if (m_window) m_window->releaseAwake();   // 위에서 붙든 화면 몫을 돌려놓는다(돌고 있는 일이 있으면 그대로 둔다)
             return;
         }
         // ★ 이전 워커가 아직 살아있으면(중지 직후 마무리: Excel 저장/HTTP 대기 등) 끝날 때까지
@@ -5452,9 +5491,10 @@ void HanishikiBackend::startCollection(const QString &configJson)
                 }
             }
             if (cc) { cc->stop(); cc->deleteLater(); }
-            // 모든 수집이 끝났으면 절전 해제 + 남은 캡쳐 Chrome(단일/잔여) 전부 닫기
+            // 절전 해제는 releaseAwake 가 지금 상태로 정한다 — 맵에 内閣会 폴링만 남아 있어도 화면 몫은 놓게(검토)
+            if (m_window) m_window->releaseAwake();
+            // 모든 수집이 끝났으면 남은 캡쳐 Chrome(단일/잔여) 전부 닫기
             if (m_collectionThreads.isEmpty()) {
-                if (m_window) m_window->releaseAwake();
                 if (m_captureChrome) {
                     m_captureChrome->stop();
                     m_captureChrome->deleteLater();
@@ -10319,11 +10359,36 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             }
         }
         if (igHarvests++ >= 1) return false;     // 한 판에 한 번만 — 인스타가 죽었을 때 떼로 두드리지 않게
-        log("인스타가 질의를 바꾼 듯합니다 — 새 질의 번호를 떠 옵니다(브라우저 없이, 몇 초).", "warning", "instagram");
+        log("인스타가 질의를 바꾼 듯합니다 — 새 질의 번호를 떠 옵니다(브라우저 없이, 몇 초 · 릴스는 1분까지).", "warning", "instagram");
         QProcess hv;
-        hv.setProcessEnvironment(Common::bundledProcessEnv());
+        hv.setProcessEnvironment(Common::bundledProcessEnv());   // 이 수집 스레드의 출구(계정 프록시)를 그대로 — 세션이 두 IP 에서 보이지 않게
         hv.start(Common::bundledPythonPath(), {Common::activeToolScriptPath(QStringLiteral("ig_docids.py"))});
-        if (!hv.waitForFinished(90000)) { hv.kill(); hv.waitForFinished(2000); }
+        // ★ 릴스 탭 질의는 로그인한 사람에게만 내려온다(실측 2026-10-24 · 윈도우 전보 10-17) — 이 수집의 세션을 준다.
+        //   명령줄이 아니라 stdin 으로(ps · 기록에 남지 않게). 도우미는 0.5초 안에 받지 못하면 로그아웃으로만 뜬다.
+        if (hv.waitForStarted(15000)) {
+            // 이 세션으로 문서를 받을 때와 같은 머리(igEnsureTokens 와 같게) — 같은 세션이 다른 브라우저처럼 보이지 않게(검토)
+            QMap<QString, QString> dh = baseHeaders;
+            dh["Accept"] = "text/html,application/xhtml+xml";
+            dh["Sec-Fetch-Dest"] = "document";
+            dh["Sec-Fetch-Mode"] = "navigate";
+            dh.remove("X-IG-App-ID"); dh.remove("X-ASBD-ID"); dh.remove("X-CSRFToken");
+            QJsonObject hj;
+            for (auto it = dh.constBegin(); it != dh.constEnd(); ++it) hj[it.key()] = it.value();
+            hv.write(QJsonDocument(QJsonObject{{"headers", hj}, {"username", username}}).toJson(QJsonDocument::Compact) + "\n");
+            hv.closeWriteChannel();
+        }
+        // 짧게 끊어 기다린다 — 중지 · 끄기에 곧 멈추게(예전엔 90초 내내 중지가 듣지 않았다)
+        {
+            QElapsedTimer hw;
+            hw.start();
+            while (hv.state() != QProcess::NotRunning) {
+                if (hv.waitForFinished(500)) break;
+                if (hw.elapsed() > 90000 || !platformRunning("instagram") || Common::appQuitting()) {
+                    hv.kill(); hv.waitForFinished(2000);
+                    break;
+                }
+            }
+        }
         const QJsonObject got = QJsonDocument::fromJson(hv.readAllStandardOutput()).object();
         if (got.isEmpty()) {
             log("새 질의 번호를 뜨지 못했습니다 — 인스타가 더 깊이 바뀌었거나 인터넷이 막혔습니다. "
@@ -10350,7 +10415,8 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                 if (!provs.isEmpty()) Common::setApiOverride("instagram.profileReelsProviders", provs.join(','));
             }
         }
-        log(QString("새 질의 번호 %1개를 받아 저장했습니다 — 이번 판부터 바로 씁니다.").arg(n),
+        log(QString("새 질의 번호 %1개를 받아 저장했습니다(%2) — 이번 판부터 바로 씁니다.").arg(n)
+                .arg(got.contains("PolarisProfileReelsTabContentQuery") ? QStringLiteral("릴스 포함") : QStringLiteral("릴스는 못 찾음")),
             n ? "success" : "warning", "instagram");
         return n > 0;
     };
@@ -20560,7 +20626,13 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
         }
         if (urlList.isEmpty()) {
             log("크롤 URL 없음", "error", "crawl");
+            // ★ 시작 쪽이 이미 실행 깃발을 세우고 맥을 붙들었다 — 되돌리지 않으면 깃발이 남아 다른 일의 releaseAwake 가
+            //   모두 헛돌았고 맥과 화면이 잠들지 않았다(검토, ccec534 뒤로)
+            setPlatformRunning("crawl", false);
             updateStats(0, 0, "Error", "crawl");
+            runJsAll("if(window.setRunning) setRunning('crawl', false)");
+            closeTerminalLog("crawl");
+            if (m_window) m_window->releaseAwake();
             return;
         }
         QString crawlDir = savePath + "/crawl_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
