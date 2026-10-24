@@ -130,6 +130,10 @@ public slots:
     void organizeRun(const QString &rulesJson);
     void organizeStop();
     void organizeBrowse(const QString &fieldId);   // 폴더를 골라 화면의 그 칸에(setOrganizeField)
+    // 대상 목록 '팔로잉에서 가져오기' — 한 사람의 팔로잉(아이디 · 이름)만 모아 화면 onFollowList(json)로.
+    //   configJson = 그 탭의 수집 설정(buildBatchConfig) + target(누구의) + max. 받는 파일은 없다.
+    void listFollowing(const QString &configJson);
+    void followListStop();
 
     // 크롤 탭(윈도우는 PEN) '끝까지 기록' — json = {url | urls[], savePath, waitLogin, loginCheckJs?, loginCookie?}.
     //   맥 화면과 같은 crawl 설정(record:true)으로 바꿔 startCollection 을 부른다. 멈추기는 stopCollection("crawl").
@@ -311,7 +315,9 @@ public slots:
     Q_INVOKABLE void importConfig();
     // ★ rclone 백업 — WebDAV / SFTP / S3 / Google Drive 등 50+ protocol 빠른 전송 (mountainduck 호환)
     //   사용자의 WebDAV creds 사용해서 rclone copy 호출 → 8 parallel transfers + HTTP/2 + checksum
-    void runRcloneBackup(const QStringList &srcDirs, const QString &destSubPath);
+    //   false = 스레드를 띄우기 전에 그만뒀다(바이너리 · 자격증명 · conf) — 마무리는 부른 쪽 몫이다.
+    //   url = 올릴 서버 주소(지금 백업은 백업 폴더가 놓인 마운트의 주소), destSubPath = 그 안의 폴더.
+    bool runRcloneBackup(const QString &url, const QStringList &srcDirs, const QString &destSubPath);
     // ★ 원격 백업 업로드 — 사용자가 종류/주소/자격증명 직접 지정해 URL 로 직접 업로드 (마운트 불필요).
     //   webdav(https)·ftp·sftp·s3 지원 + rclone copy = 이어올리기(skip-existing + 끊긴 전송 재개) 내장. 전 플랫폼.
     //   configJson: {type,srcPath,destPath,url|host,port,user,pass,bucket,provider,region,endpoint,accessKey,secret}
@@ -342,7 +348,15 @@ public:   // ↓ 슬롯도 Q_INVOKABLE 도 아니다 — QWebChannel 은 이것�
     //   public 인 까닭: TwitterCollector 가 계정을 돌릴 때(switchToAccount) 이름 → 프로필을 풀어야 한다.
     QString proxyUrl(const QJsonObject &p, bool withCredentials = true) const;
     QJsonObject proxyForAccount(const QJsonObject &account) const;
+    // 수집이 끝난 뒤에도 이어 도는 일 — 자동 정리(organizeRun) · 백업 대기열 비우기(backupWorker),
+    //   그리고 손으로 시작한 백업(지금 백업 · rclone · 원격, holdAwakeForBackup).
+    //   이것이 도는 동안 MainWindow::releaseAwake 는 맥을 놓지 않는다(화면은 놓는다).
+    bool isAfterWorkRunning() const {
+        return m_organizeRunning.load() || m_backupBusy.load() > 0 || m_manualBackupBusy.load() > 0;
+    }
 private:
+    // 손으로 시작한 백업 스레드가 끝날 때까지 맥을 붙든다 — t->start() 바로 앞에서 메인 스레드가 부른다.
+    void holdAwakeForBackup(QThread *t);
 
     MainWindow *m_window;
     Config *m_config;
@@ -497,6 +511,7 @@ public:
 
     // 자동 유지보수 — 시작 시 정리, 종료 시 자식 프로세스 정리, 주기적 메모리 모니터
     void performStartupCleanup();
+    void removeBackupConfs();        // rclone 임시 설정(되돌릴 수 있는 비밀번호) — 끌 때 · 켤 때
     void killChildProcesses();
     void memoryMonitorTick();
     QTimer *m_memoryMonitorTimer = nullptr;
@@ -534,7 +549,8 @@ public:
     qint64  m_backupQueueOffset = 0;  // 다음에 읽을 byte offset (메모리 cache, 항상 file 과 동기)
     QMutex  m_backupQueueMutex;       // 큐 파일 + offset + counts 동시 보호
     QList<QThread*> m_backupThreads;
-    std::atomic<bool> m_backupRunning{false};
+    std::atomic<bool> m_backupRunning{false};   // 워커가 살아 있나(대기열이 비어도 1초마다 돈다) — '바쁨' 이 아니다
+    std::atomic<int>  m_backupBusy{0};          // 대기열을 비우는 중인 워커 수 — 첫 항목을 집을 때 올리고, 비면 내린다
     // 진행률 추적 (file 큐와 별도로 atomic — UI emit 시 매번 file 스캔 안 함)
     std::atomic<qint64> m_backupTotalBytes{0};
     std::atomic<qint64> m_backupDoneBytes{0};
@@ -542,7 +558,9 @@ public:
     std::atomic<int> m_backupDoneCount{0};
     std::atomic<qint64> m_backupLastProgressMs{0};
     // ★ 터미널 진행률 표시 — backupNow / resync 시 외부 Terminal.app 열어서 자세히 표시
+    //   ★ '도는 중' 이 아니라 '멈춰라' 깃발이기도 하다 — 중지하면 스레드가 마무리하는 동안에도 false 다.
     std::atomic<bool> m_backupTerminalActive{false};
+    std::atomic<int>  m_manualBackupBusy{0};   // 살아 있는 손 백업 스레드 수(지금 백업 · rclone · 원격) — 잠 막기용
     std::atomic<qint64> m_backupStartMs{0};    // 시작 시각 (속도/ETA 계산)
     std::atomic<qint64> m_backupSkipCount{0};  // skip 카운트 (이미 백업된 파일)
     std::atomic<qint64> m_backupFailCount{0};  // 실패 카운트
@@ -691,6 +709,11 @@ public:
     std::atomic<bool> m_organizeRunning{false};   // 정리하기는 한 번에 하나
     std::atomic<bool> m_organizeStop{false};
     QPointer<QThread> m_organizeThread;            // 끌 때 기다린다(aboutToQuit)
+    std::atomic<bool> m_followListRunning{false};
+    std::atomic<bool> m_followListRun{false};
+    std::atomic<qint64> m_followListPid{0};       // 가져오기가 띄운 트위터 도우미 — 그만 · 끄기가 바로 끊는다
+    QPointer<QThread> m_followListThread;
+    QList<QPointer<QThread>> m_manualBackupThreads;   // 지금 백업 · rclone · 원격 — 끌 때 멈추고 기다린다
 
     // ★ 동시 수집 작업 자체 제한 — 여러 플랫폼 동시 돌릴 때 메모리 중첩 방지
     //   2개 동시 OK. 3번째는 큐에서 대기. 끝나면 자동으로 다음 시작.

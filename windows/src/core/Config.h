@@ -72,6 +72,8 @@ public:
     QJsonArray organizeRules() const { return m_organizeRules; }
     bool organizeAuto() const { return m_organizeAuto; }
     bool organizeCaptures() const { return m_organizeCaptures; }
+    // 정리하기 '틀 하나' — {root, template, platforms, overrides{플랫폼:아이디 → name/source/dest/exclude}, migrated}. 화면이 통째로 읽고 쓴다.
+    QJsonObject organize() const { return m_organize; }
     void setNaikakukaiWatches(const QJsonArray &arr) { m_naikakukaiWatches = arr; }
     int naikakukaiInterval() const { return m_naikakukaiInterval; }
     void setNaikakukaiInterval(int min) { m_naikakukaiInterval = min; }
@@ -194,6 +196,7 @@ private:
     QJsonArray m_organizeRules;
     bool m_organizeAuto = true;
     bool m_organizeCaptures = false;
+    QJsonObject m_organize;
     int m_naikakukaiInterval = 30;
     // ★ 기본값이 true 인 것은 일부러다. 이 값이 없던 판에서 올라온 설정은 키가 없는데,
     //   그때의 동작은 '감시 대상이 있으면 켤 때 자동으로 돈다' 였다. false 로 두면

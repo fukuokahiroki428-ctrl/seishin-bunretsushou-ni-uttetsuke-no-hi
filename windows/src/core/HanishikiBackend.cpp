@@ -510,6 +510,14 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
         //   예전엔 기다리지 않아, 확인이 도는 사이(켠 지 20초쯤) 앱을 끄면 그 스레드가 치워지는 Qt 를 건드려 죽었다.
         QElapsedTimer quitWait;
         quitWait.start();
+        // ★ 팔로잉 가져오기는 맨 먼저 멈춘다 — 막힌 요청(도우미 응답 · 15분 속도 제한 기다림)을 끊어 두어야 아래에서 기다리는
+        //   동안 함께 끝난다. 예전엔 다른 스레드를 기다린 뒤에야 멈추라 해, 남은 시간이 0.1초뿐이었고 그 스레드가 치워진
+        //   백엔드에 기록을 남기다 죽을 수 있었다(검토).
+        m_followListRun = false;
+        if (const qint64 pid = m_followListPid.exchange(0)) Common::killProcessByPid(pid);
+        // ★ 손으로 시작한 백업(지금 백업 · rclone · 원격)도 멈추라 한다 — 스레드가 치워진 백엔드에 기록을 쓰며 남았고,
+        //   rclone 은 끝에서 지우는 임시 설정(abiwa_rclone.conf · abiwa_remote.conf — 되돌릴 수 있는 비밀번호)을 남겼다(검토)
+        m_backupTerminalActive = false;
         if (m_hotfixThread && m_hotfixThread->isRunning() && !m_hotfixThread->wait(3000))
             qWarning() << "[hotfix] 확인 스레드가 3초 안에 끝나지 않았습니다";
         // ★ 정리하기 스레드 — 끄는 중이면 도우미를 곧바로 내리고 끝난다(organizeRun). 안 기다리면 그 스레드가
@@ -517,6 +525,14 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
         if (m_organizeThread && m_organizeThread->isRunning()
             && !m_organizeThread->wait(qMax(100, 3000 - int(quitWait.elapsed()))))
             qWarning() << "[정리] 정리 스레드가 제때 끝나지 않았습니다";
+        if (m_followListThread && m_followListThread->isRunning()
+            && !m_followListThread->wait(qMax(100, 3000 - int(quitWait.elapsed()))))
+            qWarning() << "[가져오기] 팔로잉 가져오기 스레드가 제때 끝나지 않았습니다";
+        for (const QPointer<QThread> &bt : m_manualBackupThreads) {
+            if (bt && bt->isRunning() && !bt->wait(qMax(100, 3000 - int(quitWait.elapsed()))))
+                qWarning() << "[백업] 백업 스레드가 제때 끝나지 않았습니다";
+        }
+        removeBackupConfs();
         // ★ 다른 뒷일 스레드의 요청도(프록시 시험 · 감시 · 수집 …) — 모두 0.1초 안에 멈추므로 보통 곧 끝난다. 합쳐 3초까지.
         if (!HttpClient::waitIdle(qMax(0, 3000 - int(quitWait.elapsed()))))
             qWarning() << "[종료] 진행 중인 요청이 3초 안에 끝나지 않았습니다";
@@ -584,8 +600,18 @@ HanishikiBackend::~HanishikiBackend()
 // 자동 유지보수
 // ─────────────────────────────────────────────
 
+// rclone 임시 설정(되돌릴 수 있는 비밀번호가 든다) — 백업이 끝나면 그 스레드가 지우지만, 도중에 앱이 끝나면 남았다.
+//   끌 때와 켤 때 지운다. 백업이 도는 중에는 부르지 않는다.
+void HanishikiBackend::removeBackupConfs()
+{
+    const QString base = Common::resolveTempBase(m_config ? m_config->tempDir() : QString());
+    for (const char *n : {"abiwa_rclone.conf", "abiwa_remote.conf"})
+        QFile::remove(base + QLatin1Char('/') + QLatin1String(n));
+}
+
 void HanishikiBackend::performStartupCleanup()
 {
+    removeBackupConfs();
     if (!m_config) return;
     QString td = m_config->tempDir();
     if (td.isEmpty()) return;
@@ -732,6 +758,7 @@ void HanishikiBackend::startNaikakukai(const QString &configJson)
 
     m_naikakukaiCursor = 0;
     m_naikakukaiRunning = true;
+    if (m_window) m_window->holdAwake(false);   // 폴링 사이에 맥이 잠들면 다음 폴링이 오지 않는다(화면은 놓아 둔다)
     if (m_config && !m_config->naikakukaiResume()) { m_config->setNaikakukaiResume(true); m_config->save(); }
 
     if (!m_naikakukaiTimer) {
@@ -789,6 +816,7 @@ void HanishikiBackend::stopNaikakukai()
         }
     }
     terminalWindowDone(QStringLiteral("naikakukai"), QStringLiteral("중지됨"), true);
+    if (m_window) m_window->releaseAwake();   // 다른 수집이 돌고 있으면 releaseAwake 가 알아서 남긴다
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -1166,8 +1194,9 @@ void HanishikiBackend::resyncAllFoldersToBackup()
 // runRcloneBackup — rclone copy 로 WebDAV/SFTP 빠른 전송 (Mountain Duck 와 동일 효과).
 //   bundle 된 rclone binary 사용. 사용자의 WebDAV creds (m_config) 로 임시 config 생성.
 //   --transfers=8 --multi-thread-streams=4 --progress --stats=2s.
+//   url = 올릴 서버 주소. 지금 백업은 설정 URL 이 아닌 백업 폴더가 놓인 마운트의 주소를 넘긴다.
 // ═════════════════════════════════════════════════════════════════════════
-void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString &destSubPath)
+bool HanishikiBackend::runRcloneBackup(const QString &url, const QStringList &srcDirs, const QString &destSubPath)
 {
     QString rclonePath = QCoreApplication::applicationDirPath() + "/../Resources/tools/rclone";
 #ifdef Q_OS_WIN
@@ -1183,10 +1212,9 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
     }
     if (!QFile::exists(rclonePath)) {
         log("❌ rclone binary 없음 — backup 일반 모드로 fallback", "error", "settings");
-        return;
+        return false;
     }
 
-    QString url = m_config->webdavUrl();
     QString user = m_config->webdavUser();
     QString pass = m_config->webdavPass();
     if (url.isEmpty() || user.isEmpty() || pass.isEmpty()) {
@@ -1195,7 +1223,7 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
               "  • URL: https://your-nas.com/path  (WebDAV)\\n"
               "         또는 sftp://your-nas.com:22/volume1/backup  (SFTP)\\n"
               "  • 사용자명\\n  • 비밀번호\\n\\n입력 후 [저장] 누르고 다시 시도');");
-        return;
+        return false;
     }
 
     QString tempBase = Common::resolveTempBase(m_config->tempDir());
@@ -1218,7 +1246,7 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
     }
     if (obscuredPass.isEmpty()) {
         log("❌ rclone obscure 실패", "error", "settings");
-        return;
+        return false;
     }
 
     // 2) 임시 rclone.conf 생성
@@ -1226,7 +1254,7 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
         QFile cf(confPath);
         if (!cf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             log(QString("❌ rclone conf 생성 실패: %1").arg(confPath), "error", "settings");
-            return;
+            return false;
         }
         // ★ 프로토콜은 URL 스킴이 정한다 (sftp:// 면 SFTP, 그 외는 WebDAV).
         //   설정 항목을 따로 두지 않는 편이, 나중에 항목끼리 어긋날 일이 없어 오래 간다.
@@ -1273,12 +1301,18 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
     QThread *t = QThread::create([this, srcDirs, destSubPath, rclonePath, confPath, remoteBase]() {
         m_backupTerminalActive = true;
         m_backupStartMs = QDateTime::currentMSecsSinceEpoch();
+        int failed = 0;   // ★ 예전엔 하나도 못 올려도 '✅ 완료' 라 했다(검토 — 283e7e5 로 이 길이 살아났다)
         for (const QString &src : srcDirs) {
             if (!m_backupTerminalActive.load()) break;
             QString platName = QFileInfo(src).fileName();
-            QString remote = remoteBase.isEmpty()
-                    ? QString("abiwa_nas:%1/%2").arg(destSubPath, platName)
-                    : QString("abiwa_nas:%1/%2/%3").arg(remoteBase, destSubPath, platName);
+            // 빈 조각 · 앞뒤 / 는 뺀다 — destSubPath 가 비면(마운트 뿌리를 골랐을 때) 바로 <플랫폼>
+            QStringList segs;
+            for (QString s : {remoteBase, destSubPath, platName}) {
+                while (s.startsWith('/')) s = s.mid(1);
+                while (s.endsWith('/'))   s.chop(1);
+                if (!s.isEmpty()) segs << s;
+            }
+            QString remote = "abiwa_nas:" + segs.join('/');
             writeTerminalLog(QString("\033[1;34m[rclone] %1 → %2\033[0m").arg(src, remote), "backup");
 
             QProcess rc;
@@ -1302,12 +1336,14 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
             rc.start(rclonePath, args);
             if (!rc.waitForStarted(5000)) {
                 writeTerminalLog("\033[31m[rclone] 시작 실패\033[0m", "backup");
+                ++failed;
                 continue;
             }
             // stdout stream → terminal
             QByteArray leftover;
             while (rc.state() != QProcess::NotRunning) {
                 if (!m_backupTerminalActive.load()) {
+                    if (Common::appQuitting()) { rc.kill(); rc.waitForFinished(1000); break; }   // 끄는 중 — 기다리지 않는다
                     rc.terminate();
                     if (!rc.waitForFinished(3000)) rc.kill();
                     break;
@@ -1325,25 +1361,56 @@ void HanishikiBackend::runRcloneBackup(const QStringList &srcDirs, const QString
                     writeTerminalLog(QString("  \033[90m│\033[0m %1").arg(s), "backup");
                 }
             }
-            if (rc.exitCode() == 0) {
+            if (!m_backupTerminalActive.load()) break;   // 멈춤 — 끊긴 판은 성공도 실패도 아니다
+            if (rc.exitStatus() == QProcess::NormalExit && rc.exitCode() == 0) {
                 writeTerminalLog(QString("\033[1;32m[rclone] ✓ %1 완료\033[0m").arg(platName), "backup");
             } else {
+                ++failed;
                 writeTerminalLog(QString("\033[1;31m[rclone] ✗ %1 실패 (exit=%2)\033[0m").arg(platName).arg(rc.exitCode()), "backup");
             }
         }
+        const bool stopped = !m_backupTerminalActive.load();
         // conf 삭제 (보안 — pass obfuscated 만 있어도 노출 X)
         QFile::remove(confPath);
+        if (Common::appQuitting()) return;   // 끄는 중 — 치워지는 화면 · 기록을 건드리지 않는다
+        const QString summary = stopped ? QStringLiteral("⏹ rclone 백업 멈춤")
+                              : failed ? QString("✗ rclone 백업 — %1개 실패 (주소 · 아이디 · 비밀번호를 설정의 WebDAV 카드에서 확인)").arg(failed)
+                                       : QStringLiteral("✅ rclone 백업 완료");
         writeTerminalLog("\033[1;36m═══════════════════════════════════════════════════════════════\033[0m", "backup");
-        writeTerminalLog("\033[1;32m✅ rclone 백업 완료\033[0m", "backup");
+        writeTerminalLog(QString(stopped ? "\033[1;33m%1\033[0m" : failed ? "\033[1;31m%1\033[0m" : "\033[1;32m%1\033[0m").arg(summary), "backup");
         writeTerminalLog("[DONE]", "backup");
-        QMetaObject::invokeMethod(this, [this]() {
+        QMetaObject::invokeMethod(this, [this, summary, stopped, failed]() {
             m_backupTerminalActive = false;
-            log("✅ rclone 백업 완료", "success", "settings");
+            log(summary, stopped ? "warning" : failed ? "error" : "success", "settings");
             closeTerminalLog("backup");
         }, Qt::QueuedConnection);
     });
     connect(t, &QThread::finished, t, &QThread::deleteLater);
+    holdAwakeForBackup(t);
     t->start();
+    return true;
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// holdAwakeForBackup — 손으로 시작한 백업(지금 백업 · rclone · 원격)이 끝날 때까지 맥을 붙든다.
+// ═════════════════════════════════════════════════════════════════════════
+//   ★ 이 백업들은 따로 도는 스레드라 잠 막기를 부른 적이 없다. 예전엔 새던 NoIdleSleep 어설션이
+//     우연히 지켰고(ueno ccec534 에서 없앴다), 이제는 전원이어도 마지막 입력에서 약 11분 뒤 맥이
+//     잠들어 큰 백업이 한가운데서 멈춘다. 화면은 놓는다 — 사람이 볼 일이 아니다.
+//   ★ m_backupTerminalActive 로 세지 않는다. 그것은 '멈춰라' 깃발이기도 해서 중지를 누르면 스레드가
+//     마무리하는 동안에도 내려가 있고, 지금 백업은 끝의 크기 비교(백업 위치를 다 훑는다) 앞에서 먼저
+//     내린다. 스레드가 끝나면(finished — 어느 길로 끝나든 온다) 세던 것을 내리고 releaseAwake 가
+//     다른 일이 남았는지 보고 놓는다.
+void HanishikiBackend::holdAwakeForBackup(QThread *t)
+{
+    m_manualBackupThreads.removeAll(QPointer<QThread>());
+    m_manualBackupThreads.append(QPointer<QThread>(t));
+    m_manualBackupBusy.fetch_add(1);
+    if (m_window) m_window->holdAwake(false);
+    connect(t, &QThread::finished, this, [this]() {
+        m_manualBackupBusy.fetch_sub(1);
+        if (m_window && !Common::appQuitting()) m_window->releaseAwake();
+    }, Qt::QueuedConnection);
 }
 
 // ───────── 원격 백업 업로드(rclone) — WebDAV/HTTPS · FTP · SFTP · S3, 이어올리기(resume) ─────────
@@ -1476,7 +1543,10 @@ void HanishikiBackend::startRemoteBackup(const QString &configJson)
         } else {
             QByteArray leftover;
             while (rc.state() != QProcess::NotRunning) {
-                if (!m_backupTerminalActive.load()) { rc.terminate(); if (!rc.waitForFinished(3000)) rc.kill(); break; }
+                if (!m_backupTerminalActive.load()) {
+                    if (Common::appQuitting()) { rc.kill(); rc.waitForFinished(1000); break; }   // 끄는 중 — 기다리지 않는다
+                    rc.terminate(); if (!rc.waitForFinished(3000)) rc.kill(); break;
+                }
                 if (!rc.waitForReadyRead(500)) continue;
                 QByteArray chunk = rc.readAll(); chunk.replace('\r', '\n'); leftover += chunk;
                 int nl;
@@ -1491,6 +1561,7 @@ void HanishikiBackend::startRemoteBackup(const QString &configJson)
         }
         const bool ok = (exitCode == 0);
         QFile::remove(confPath);  // 보안 — obscured pass 라도 디스크에 남기지 않음
+        if (Common::appQuitting()) return;   // 끄는 중 — 치워지는 화면 · 기록을 건드리지 않는다
         writeTerminalLog("\033[1;36m═══════════════════════════════════════════════════════════════\033[0m", "backup");
         writeTerminalLog(ok ? "\033[1;32m✅ 원격 백업 완료 (이어올리기 적용)\033[0m"
                             : QString("\033[1;31m✗ 원격 백업 실패 (exit=%1) — 주소/자격증명/방화벽 확인\033[0m").arg(exitCode), "backup");
@@ -1503,6 +1574,7 @@ void HanishikiBackend::startRemoteBackup(const QString &configJson)
         }, Qt::QueuedConnection);
     });
     connect(t, &QThread::finished, t, &QThread::deleteLater);
+    holdAwakeForBackup(t);
     t->start();
 }
 
@@ -1521,6 +1593,37 @@ void HanishikiBackend::pickRemoteBackupSrc()
     if (dir.isEmpty()) return;
     QString safe = Common::jsStringLiteral(dir);
     runJs(QString("(function(){var e=document.getElementById('rbk-src'); if(e)e.value=%1;})()").arg(safe));
+}
+
+// ★ 경로가 실제로 놓인 마운트 — /sbin/mount 에서 '가장 긴' 마운트 지점을 고른다.
+//   예전 backupNow 의 두 고리는 앞에서부터 처음 맞는 줄에서 멈췄다. mount 의 첫 줄은 언제나 / 라
+//   늘 / 에서 섰고, Apple WebDAV 마운트는 rclone 길도 워커 1 도 받지 못했다(Mountain Duck 은
+//   경로 이름으로만 알아봤다). 경계도 본다 — /Volumes/nas 는 /Volumes/nas2 의 마운트가 아니다.
+namespace {
+struct BackupMount { QString from, on, opts; };   // "<from> on <on> (<opts>)"
+}
+static BackupMount mountOfPath(const QString &path)
+{
+    BackupMount best;
+#ifdef Q_OS_MACOS
+    QProcess mc;
+    mc.start("/sbin/mount", QStringList());
+    if (!mc.waitForFinished(3000)) return best;
+    const QString out = QString::fromUtf8(mc.readAllStandardOutput());
+    for (const QString &line : out.split('\n')) {
+        const int onIdx = line.indexOf(" on ");
+        const int parenIdx = line.lastIndexOf(" (");   // 마운트 지점 이름에 " (" 가 들어 있을 수 있다
+        if (onIdx < 0 || parenIdx < onIdx) continue;
+        const QString mp = line.mid(onIdx + 4, parenIdx - onIdx - 4);
+        const bool under = mp == "/" || path == mp || path.startsWith(mp + '/');
+        // 같은 자리에 겹쳐 걸린 마운트는 나중 줄(위에 덮인 것)이 이긴다
+        if (!under || mp.length() < best.on.length()) continue;
+        best = {line.left(onIdx), mp, line.mid(parenIdx + 2)};
+    }
+#else
+    Q_UNUSED(path);
+#endif
+    return best;
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -1664,6 +1767,12 @@ void HanishikiBackend::backupNow()
     m_backupTerminalActive = true;
     m_backupStartMs = QDateTime::currentMSecsSinceEpoch();
 
+    // ★ 백업 폴더가 놓인 마운트 — 아래 rclone 길과 워커 수가 함께 본다. 심볼릭 링크(/tmp → /private/tmp 등)를
+    //   풀어 둔 경로로 맞춰 본다. mount 가 적는 마운트 지점은 풀린 쪽이다.
+    QString backupReal = QFileInfo(backupRoot).canonicalFilePath();
+    if (backupReal.isEmpty()) backupReal = backupRoot;
+    const BackupMount backupMount = mountOfPath(backupReal);
+
     // ★ rclone 자동 사용 — WebDAV creds 있고 backup path 가 *Apple* WebDAV mount 면
     //   Mountain Duck path 면 절대 rclone 안 씀 (Duck 가 자체 transfer 더 효율적).
     //   rclone copy 가 Apple native cp 보다 5-50배 빠름 (HTTP/2 multiplex, 8 parallel, resume).
@@ -1679,37 +1788,41 @@ void HanishikiBackend::backupNow()
                        || backupRoot.contains("/Cyberduck/", Qt::CaseInsensitive);
 #ifdef Q_OS_MACOS
         if (!_isDuckPath) {
-            QProcess _mc; _mc.start("/sbin/mount", QStringList());
-            if (_mc.waitForFinished(3000)) {
-                QString out = QString::fromUtf8(_mc.readAllStandardOutput());
-                for (const QString &line : out.split('\n')) {
-                    int onIdx = line.indexOf(" on ");
-                    int parenIdx = line.indexOf(" (", onIdx);
-                    if (onIdx < 0 || parenIdx < 0) continue;
-                    QString mp = line.mid(onIdx + 4, parenIdx - onIdx - 4);
-                    if (!backupRoot.startsWith(mp)) continue;
-                    QString opts = line.mid(parenIdx + 2);
-                    if (opts.contains("webdav") && !opts.contains("osxfuse") && !opts.contains("macfuse")
-                        && !mp.contains("io.mountainduck")) {
-                        _isAppleWebDav = true;
-                    }
-                    break;
-                }
-            }
+            const QString &opts = backupMount.opts;
+            _isAppleWebDav = opts.contains("webdav") && !opts.contains("osxfuse") && !opts.contains("macfuse")
+                          && !backupMount.on.contains("io.mountainduck");
         }
 #endif
+        // ★ 주소는 마운트 자신의 것(mount 의 왼쪽)을 쓰고, 설정에선 아이디 · 비밀번호만 빌린다.
+        //   설정 URL 은 공유 폴더까지 적혀 있어 마운트 뿌리와 다를 수 있다 — 그 URL 에 마운트 안 경로를
+        //   붙이면 엉뚱한 곳에 쌓인다. 설정 URL 이 다른 서버면 그 자격증명이 이 마운트 것이라 볼 수 없으니
+        //   rclone 을 쓰지 않고 아래 cp(워커 1)로 간다.
+        QString mountUrl;
         if (_isAppleWebDav && !url.isEmpty() && !user.isEmpty() && !pass.isEmpty()) {
-            // backupRoot 에서 webdav mount root 제외한 sub path 추출
-            QString destSub = backupRoot;
-            // mount 의 root 가 보통 /Volumes/<host>/ — 그 뒤가 backup path 안 sub
-            // 사용자 path 그대로 destSub 으로 (rclone 가 알아서 처리)
+            const QUrl mu(backupMount.from), su(url.trimmed());
+            auto portOf = [](const QUrl &u) {
+                return u.port(u.scheme().compare("https", Qt::CaseInsensitive) == 0 ? 443 : 80);
+            };
+            const bool sameServer = mu.isValid() && !mu.host().isEmpty()
+                && mu.scheme().compare(su.scheme(), Qt::CaseInsensitive) == 0
+                && mu.host().compare(su.host(), Qt::CaseInsensitive) == 0
+                && portOf(mu) == portOf(su);
+            if (sameServer) {
+                mountUrl = mu.toString(QUrl::RemoveUserInfo);
+            } else {
+                writeTerminalLog(QString("\033[33m⚠ 설정의 WebDAV 주소(%1)가 이 마운트(%2)와 다른 서버라 rclone 을 쓰지 않고 cp 로 갑니다\033[0m")
+                                     .arg(su.host(), mu.host()), "backup");
+                writeTerminalLog("", "backup");
+            }
+        }
+        if (!mountUrl.isEmpty()) {
             writeTerminalLog("\033[1;32m🚀 rclone 모드 — Apple WebDAV 보다 5-50배 빠름 (Mountain Duck 와 동일 원리)\033[0m", "backup");
             writeTerminalLog("", "backup");
-            // rclone 의 dest path = backup path 안의 sub-folder structure
-            //   여기선 webdav root 의 / 부터 시작 (사용자가 NAS 안 어디든)
-            //   너무 복잡해서 그냥 / 사용 — 사용자가 rclone config 의 url 마지막에 path 포함시킨 거 가정
-            //   ★ 향후 개선: backupRoot 와 mount root 비교해서 정확한 sub path 추출
-            QString destPath = "/";  // rclone url 자체에 path 있으면 root
+            // ★ 올릴 자리 = cp 가 쓸 자리: 마운트 안 백업 폴더 경로 + 공통 부모 + 플랫폼(플랫폼은 runRcloneBackup 이 붙인다).
+            //   예전엔 "/" 를 넘겨 WebDAV 맨 위 + 플랫폼으로 갔다 — 고른 백업 폴더와 공통 부모를 건너뛰었다
+            //   (위 감지가 늘 / 에서 서서 닿지 않았을 뿐이다).
+            QString destPath = backupReal.mid(backupMount.on.length());
+            if (!commonParentName.isEmpty()) destPath += "/" + commonParentName;
             QStringList srcDirs;
             // 공통 부모 + 빈 폴더 제외 (기존 로직 복제)
             QStringList _platformDirs = platformDirs;
@@ -1726,8 +1839,12 @@ void HanishikiBackend::backupNow()
                 log("⚠ 빈 폴더만 있음 — 백업 중단", "warning", "settings");
                 return;
             }
-            runRcloneBackup(_nonEmpty, destPath);
-            return;  // rclone thread 가 마무리
+            if (runRcloneBackup(mountUrl, _nonEmpty, destPath)) return;  // rclone thread 가 마무리
+            // ★ rclone 을 띄우지 못했다(바이너리 · conf 를 못 만듦 등) — 그 로그가 말하듯 일반(cp) 모드로 이어 간다.
+            //   예전엔 여기서 그냥 돌아갔다. 위에서 세운 m_backupTerminalActive 가 내려가지 않아, 다음 '지금
+            //   백업' 은 중지를 누를 때까지 '이미 백업 진행 중' 이라며 거절했고, 터미널 창도 [DONE] 없이 남았다.
+            writeTerminalLog("\033[33m⚠ rclone 을 쓰지 못해 일반 cp 모드로 이어 갑니다\033[0m", "backup");
+            writeTerminalLog("", "backup");
         }
     }
 
@@ -1750,31 +1867,20 @@ void HanishikiBackend::backupNow()
                 isMountainDuck = true; break;
             }
         }
-        // 2) mount fstype 체크 — webdav / osxfuse / macfuse / 또는 Mountain Duck NFS server
-        QProcess mountCmd;
-        mountCmd.start("/sbin/mount", QStringList());
-        if (mountCmd.waitForFinished(3000)) {
-            QString mountOut = QString::fromUtf8(mountCmd.readAllStandardOutput());
-            for (const QString &line : mountOut.split('\n')) {
-                int onIdx = line.indexOf(" on ");
-                if (onIdx < 0) continue;
-                int parenIdx = line.indexOf(" (", onIdx);
-                if (parenIdx < 0) continue;
-                QString mountPath = line.mid(onIdx + 4, parenIdx - onIdx - 4);
-                if (!backupRoot.startsWith(mountPath)) continue;
-                QString opts = line.mid(parenIdx + 2);
-                // Mountain Duck 5+ NFS 가상 서버 — mountPath 가 io.mountainduck 안이면 Duck
-                if (mountPath.contains("io.mountainduck")
-                    || mountPath.contains("Mountain Duck", Qt::CaseInsensitive)
-                    || mountPath.contains("Volumes.noindex")
-                    || opts.contains("osxfuse") || opts.contains("macfuse")
-                    || opts.contains("mountainduck", Qt::CaseInsensitive)) {
-                    isMountainDuck = true;
-                }
-                if (opts.contains("webdav") && !isMountainDuck) {
-                    isWebDav = true;
-                }
-                break;
+        // 2) 백업 폴더가 놓인 마운트의 fstype — webdav / osxfuse / macfuse / 또는 Mountain Duck NFS server
+        {
+            const QString &mountPath = backupMount.on;
+            const QString &opts = backupMount.opts;
+            // Mountain Duck 5+ NFS 가상 서버 — mountPath 가 io.mountainduck 안이면 Duck
+            if (mountPath.contains("io.mountainduck")
+                || mountPath.contains("Mountain Duck", Qt::CaseInsensitive)
+                || mountPath.contains("Volumes.noindex")
+                || opts.contains("osxfuse") || opts.contains("macfuse")
+                || opts.contains("mountainduck", Qt::CaseInsensitive)) {
+                isMountainDuck = true;
+            }
+            if (opts.contains("webdav") && !isMountainDuck) {
+                isWebDav = true;
             }
         }
         if (isMountainDuck) {
@@ -2367,6 +2473,7 @@ void HanishikiBackend::backupNow()
         }, Qt::QueuedConnection);
     });
     connect(coordinator, &QThread::finished, coordinator, &QThread::deleteLater);
+    holdAwakeForBackup(coordinator);
     coordinator->start();
 }
 
@@ -2722,6 +2829,9 @@ void HanishikiBackend::importConfig()
     // → 그냥 곧장 진행, GUI 로그에 명시
     log(QString("📂 불러오기 시작: %1").arg(path), "info", "settings");
 
+    // ★ r42 이전에 내보낸 파일에는 정리하기 틀(organize)이 없다 — 지금의 틀(이미 옮김 표시)이 남으면 불러온 r42 규칙이
+    //   틀로 옮겨지지 않고 같은 계정을 두 번 정리했다(검토). 비워 두면 화면이 처음 켤 때처럼 한 번 옮긴다.
+    if (root.contains("organizeRules") && !root.contains("organize")) root["organize"] = QJsonObject();
     // m_config->fromJson 호출 — Config 가 알아서 모든 필드 복원
     m_config->fromJson(root);
     m_config->save();
@@ -2987,6 +3097,21 @@ void HanishikiBackend::emitBackupProgress()
 
 void HanishikiBackend::backupWorker()
 {
+    // ★ 대기열을 비우는 동안 맥을 붙든다(화면은 놓는다). 수집이 끝난 뒤에도 남은 파일을 NAS 로 옮기는데,
+    //   예전엔 새던 NoIdleSleep 어설션이 우연히 이 몫을 했다(ueno ccec534 에서 없앴다). 첫 항목을 집을 때
+    //   붙들고, 대기열이 비거나 워커가 멈추면 놓는다. 붙들고 놓는 것은 메인 스레드에서 한다(caffeinate 가
+    //   그 창의 QProcess 다). releaseAwake 는 그때의 상태를 다시 보고 정하므로, 수집 중에 파일 사이로
+    //   대기열이 잠깐 비어도 수집의 잠 방지는 그대로다.
+    bool busy = false;
+    auto setBusy = [this, &busy](bool on) {
+        if (busy == on) return;
+        busy = on;
+        if (on) m_backupBusy.fetch_add(1); else m_backupBusy.fetch_sub(1);
+        QMetaObject::invokeMethod(this, [this, on]() {
+            if (!m_window || Common::appQuitting()) return;
+            if (on) m_window->holdAwake(false); else m_window->releaseAwake();
+        }, Qt::QueuedConnection);
+    };
     while (m_backupRunning.load()) {
         QString item;
         bool got = false;
@@ -2999,9 +3124,11 @@ void HanishikiBackend::backupWorker()
             }
         }
         if (!got) {
+            setBusy(false);
             QThread::msleep(1000);
             continue;
         }
+        setBusy(true);
         // ★ worker 는 큐만 처리 — enabled 토글은 enqueueBackup (자동 enqueue) 에서 결정.
         //   "지금 백업" 같은 1회성은 enabled off 여도 큐에 들어와있으면 처리해줘야 함.
         QString backupRoot = m_config->backupPath();
@@ -3201,6 +3328,7 @@ void HanishikiBackend::backupWorker()
             }
         }
     }
+    setBusy(false);   // 껐거나 멈췄다(stopBackup · 백업 끔) — 남은 대기열은 버렸다
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -3671,6 +3799,10 @@ void HanishikiBackend::naikakukaiTick()
             QThread *self = QThread::currentThread();
             QMetaObject::invokeMethod(this, [this, p, self]() {
                 if (m_collectionThreads.value(p) == self) m_collectionThreads.remove(p);
+                // ★ 폴링이 도는 동안 끝난 다른 일은 놓지 못했다(isAnyRunning 이 이 폴링을 셌다) — 여기서 다시 본다.
+                //   안 그러면 그 사이 붙든 화면(-dims)이 内閣会가 켜져 있는 내내 남아 덮개를 연 맥의 화면이 밤새 켜졌다(검토).
+                //   releaseAwake 는 지금 상태를 다시 보고 内閣会 대기면 맥만 붙든다.
+                if (m_window && !Common::appQuitting()) m_window->releaseAwake();
             }, Qt::QueuedConnection);
         }
 
@@ -5342,6 +5474,7 @@ void HanishikiBackend::startCollection(const QString &configJson)
         if (reallyRunning) {
             dbg("EARLY RETURN: 이미 수집 중", platformName);
             log(QString("이미 수집 중입니다! (%1)").arg(trackKey), "warning", platformName);
+            if (m_window) m_window->releaseAwake();   // 위에서 붙든 화면 몫을 돌려놓는다(돌고 있는 일이 있으면 그대로 둔다)
             return;
         }
         // ★ 이전 워커가 아직 살아있으면(중지 직후 마무리: Excel 저장/HTTP 대기 등) 끝날 때까지
@@ -5551,9 +5684,10 @@ void HanishikiBackend::startCollection(const QString &configJson)
                 }
             }
             if (cc) { cc->stop(); cc->deleteLater(); }
-            // 모든 수집이 끝났으면 절전 해제 + 남은 캡쳐 Chrome(단일/잔여) 전부 닫기
+            // 절전 해제는 releaseAwake 가 지금 상태로 정한다 — 맵에 内閣会 폴링만 남아 있어도 화면 몫은 놓게(검토)
+            if (m_window) m_window->releaseAwake();
+            // 모든 수집이 끝났으면 남은 캡쳐 Chrome(단일/잔여) 전부 닫기
             if (m_collectionThreads.isEmpty()) {
-                if (m_window) m_window->releaseAwake();
                 if (m_captureChrome) {
                     m_captureChrome->stop();
                     m_captureChrome->deleteLater();
@@ -6855,6 +6989,8 @@ void HanishikiBackend::checkNewPosts(const QString &platformName)
             setPlatformRunning("twitter", false);
             QMetaObject::invokeMethod(this, [this]() {
                 updateStats(0, 0, "완료", "twitter");
+                // 이 확인이 도는 사이 다른 수집이 끝났으면 releaseAwake 는 이 깃발을 보고 놓지 않았다
+                if (m_window) m_window->releaseAwake();
                 // '새 글 체크' 는 수집 가드 밖이라 onCollectionEnded 가 오지 않는다 — 받은 뒤 자동 정리를 여기서 부른다
                 runJs("window.organizeAfterCollection && organizeAfterCollection('twitter')");
             }, Qt::QueuedConnection);
@@ -10544,11 +10680,36 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             }
         }
         if (igHarvests++ >= 1) return false;     // 한 판에 한 번만 — 인스타가 죽었을 때 떼로 두드리지 않게
-        log("인스타가 질의를 바꾼 듯합니다 — 새 질의 번호를 떠 옵니다(브라우저 없이, 몇 초).", "warning", "instagram");
+        log("인스타가 질의를 바꾼 듯합니다 — 새 질의 번호를 떠 옵니다(브라우저 없이, 몇 초 · 릴스는 1분까지).", "warning", "instagram");
         QProcess hv;
-        hv.setProcessEnvironment(Common::bundledProcessEnv());
+        hv.setProcessEnvironment(Common::bundledProcessEnv());   // 이 수집 스레드의 출구(계정 프록시)를 그대로 — 세션이 두 IP 에서 보이지 않게
         hv.start(Common::bundledPythonPath(), {Common::activeToolScriptPath(QStringLiteral("ig_docids.py"))});
-        if (!hv.waitForFinished(90000)) { hv.kill(); hv.waitForFinished(2000); }
+        // ★ 릴스 탭 질의는 로그인한 사람에게만 내려온다(실측 2026-10-24 · 윈도우 전보 10-17) — 이 수집의 세션을 준다.
+        //   명령줄이 아니라 stdin 으로(ps · 기록에 남지 않게). 도우미는 0.5초 안에 받지 못하면 로그아웃으로만 뜬다.
+        if (hv.waitForStarted(15000)) {
+            // 이 세션으로 문서를 받을 때와 같은 머리(igEnsureTokens 와 같게) — 같은 세션이 다른 브라우저처럼 보이지 않게(검토)
+            QMap<QString, QString> dh = baseHeaders;
+            dh["Accept"] = "text/html,application/xhtml+xml";
+            dh["Sec-Fetch-Dest"] = "document";
+            dh["Sec-Fetch-Mode"] = "navigate";
+            dh.remove("X-IG-App-ID"); dh.remove("X-ASBD-ID"); dh.remove("X-CSRFToken");
+            QJsonObject hj;
+            for (auto it = dh.constBegin(); it != dh.constEnd(); ++it) hj[it.key()] = it.value();
+            hv.write(QJsonDocument(QJsonObject{{"headers", hj}, {"username", username}}).toJson(QJsonDocument::Compact) + "\n");
+            hv.closeWriteChannel();
+        }
+        // 짧게 끊어 기다린다 — 중지 · 끄기에 곧 멈추게(예전엔 90초 내내 중지가 듣지 않았다)
+        {
+            QElapsedTimer hw;
+            hw.start();
+            while (hv.state() != QProcess::NotRunning) {
+                if (hv.waitForFinished(500)) break;
+                if (hw.elapsed() > 90000 || !platformRunning("instagram") || Common::appQuitting()) {
+                    hv.kill(); hv.waitForFinished(2000);
+                    break;
+                }
+            }
+        }
         const QJsonObject got = QJsonDocument::fromJson(hv.readAllStandardOutput()).object();
         if (got.isEmpty()) {
             log("새 질의 번호를 뜨지 못했습니다 — 인스타가 더 깊이 바뀌었거나 인터넷이 막혔습니다. "
@@ -10575,7 +10736,8 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                 if (!provs.isEmpty()) Common::setApiOverride("instagram.profileReelsProviders", provs.join(','));
             }
         }
-        log(QString("새 질의 번호 %1개를 받아 저장했습니다 — 이번 판부터 바로 씁니다.").arg(n),
+        log(QString("새 질의 번호 %1개를 받아 저장했습니다(%2) — 이번 판부터 바로 씁니다.").arg(n)
+                .arg(got.contains("PolarisProfileReelsTabContentQuery") ? QStringLiteral("릴스 포함") : QStringLiteral("릴스는 못 찾음")),
             n ? "success" : "warning", "instagram");
         return n > 0;
     };
@@ -21117,7 +21279,13 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
         }
         if (urlList.isEmpty()) {
             log("크롤 URL 없음", "error", "crawl");
+            // ★ 시작 쪽이 이미 실행 깃발을 세우고 맥을 붙들었다 — 되돌리지 않으면 깃발이 남아 다른 일의 releaseAwake 가
+            //   모두 헛돌았고 맥과 화면이 잠들지 않았다(검토, ccec534 뒤로)
+            setPlatformRunning("crawl", false);
             updateStats(0, 0, "Error", "crawl");
+            runJsAll("if(window.setRunning) setRunning('crawl', false)");
+            closeTerminalLog("crawl");
+            if (m_window) m_window->releaseAwake();
             return;
         }
         QString crawlDir = savePath + "/crawl_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
@@ -21546,6 +21714,10 @@ void HanishikiBackend::organizeRun(const QString &rulesJson)
         return;
     }
     const QByteArray init = QJsonDocument(doc.object()).toJson(QJsonDocument::Compact);
+    // ★ 정리가 끝날 때까지 맥을 붙든다(화면은 놓는다). 자동 정리는 수집이 끝난 '뒤' 화면이 부른다 —
+    //   그때 수집 쪽 releaseAwake 는 이미 지나갔으므로 여기서 스스로 붙든다. 스레드가 끝나면(어느 길로든
+    //   m_organizeRunning 을 내린 뒤다) releaseAwake 가 다른 일이 남았는지 보고 놓는다.
+    if (m_window) m_window->holdAwake(false);
     QThread *t = QThread::create([this, script, python, init, finish]() {
         auto forward = [this](const QByteArray &line) {
             const QByteArray l = line.trimmed();
@@ -21618,6 +21790,9 @@ void HanishikiBackend::organizeRun(const QString &rulesJson)
     });
     m_organizeThread = t;
     connect(t, &QThread::finished, t, &QThread::deleteLater);
+    connect(t, &QThread::finished, this, [this]() {
+        if (m_window && !Common::appQuitting()) m_window->releaseAwake();
+    });
     t->start();
 }
 
@@ -21637,4 +21812,97 @@ void HanishikiBackend::organizeBrowse(const QString &fieldId)
     // 경로는 JS 문자열로 안전하게 — 따옴표 · 역슬래시가 든 폴더 이름도 깨지지 않게
     runJs(QStringLiteral("window.setOrganizeField && setOrganizeField(%1, %2)")
               .arg(Common::jsStringLiteral(fieldId), Common::jsStringLiteral(folder)));
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════
+// 팔로잉에서 가져오기 — 대상이 수백 개일 때 한 사람씩 적지 않게(사용자 2026-10-15, 다른 앱들 조사 결과).
+// ═════════════════════════════════════════════════════════════════════════
+void HanishikiBackend::listFollowing(const QString &configJson)
+{
+    const QJsonObject config = QJsonDocument::fromJson(configJson.toUtf8()).object();
+    const QString platform = config["platform"].toString();
+    auto reply = [this](const QJsonObject &res) {
+        if (Common::appQuitting()) return;
+        runJsAll(QStringLiteral("window.onFollowList && onFollowList(%1)")
+                     .arg(Common::jsStringLiteral(QString::fromUtf8(QJsonDocument(res).toJson(QJsonDocument::Compact)))));
+    };
+    if (m_followListRunning.exchange(true)) {
+        reply(QJsonObject{{"platform", platform}, {"ok", false}, {"busy", true}, {"error", QStringLiteral("이미 가져오는 중입니다")}});
+        return;
+    }
+    m_followListRun = true;
+    QThread *t = QThread::create([this, config, platform, reply]() {
+        const QString handle = config["target"].toString().trimmed().remove(QRegularExpression("^@"));
+        const int maxCount = qMax(0, config["max"].toInt(2000));
+        QJsonArray users;
+        QString err;
+        if (handle.isEmpty()) {
+            err = QStringLiteral("누구의 팔로잉인지 아이디를 적으십시오");
+        } else if (platform == QLatin1String("twitter")) {
+            // 수집과 같은 출구(계정 프록시)로 — 한 계정 두 IP 가 되지 않게
+            QString missingProxy;
+            applyAccountProxyToCurrentThread(this, config, nullptr, nullptr, &missingProxy, nullptr);
+            struct ProxyScope { ~ProxyScope() { Common::clearThreadProxy(); } } _proxyScope;
+            if (!missingProxy.isEmpty()) {
+                err = QString("이 계정이 고른 프록시 '%1' 이 목록에 없습니다").arg(missingProxy);
+            } else {
+                TwitterCollector tc(this);   // 이 스레드 것 — 돌고 있는 수집의 데몬과 섞이지 않게 따로
+                users = tc.listFollowing(config, handle, maxCount, m_followListRun, &err, &m_followListPid);
+            }
+        } else if (platform == QLatin1String("bluesky")) {
+            // 공개 API — 로그인 없이 된다(app.bsky.graph.getFollows)
+            HttpClient http;
+            QString cursor;
+            QSet<QString> seen;
+            while (m_followListRun && !Common::appQuitting() && (maxCount == 0 || users.size() < maxCount)) {
+                QString url = QStringLiteral("https://public.api.bsky.app/xrpc/app.bsky.graph.getFollows?limit=100&actor=")
+                              + QString::fromUtf8(QUrl::toPercentEncoding(handle));
+                if (!cursor.isEmpty()) url += QStringLiteral("&cursor=") + QString::fromUtf8(QUrl::toPercentEncoding(cursor));
+                const HttpResponse r = http.get(url);
+                if (!r.isOk()) {
+                    err = r.statusCode ? QString("블루스카이가 %1 로 답했습니다").arg(r.statusCode) : r.error;
+                    break;
+                }
+                const QJsonObject j = r.json();
+                const QJsonArray follows = j["follows"].toArray();
+                for (const auto &v : follows) {
+                    const QJsonObject f = v.toObject();
+                    const QString h = f["handle"].toString();
+                    if (h.isEmpty() || seen.contains(h.toLower())) continue;
+                    seen.insert(h.toLower());
+                    users.append(QJsonObject{{"handle", h}, {"name", f["displayName"].toString()}, {"protected", false}});
+                    if (maxCount > 0 && users.size() >= maxCount) break;
+                }
+                const QString next = j["cursor"].toString();
+                if (Common::appQuitting()) break;
+                log(QString("팔로잉 가져오는 중: %1명").arg(users.size()), "info", "bsky");
+                if (next.isEmpty() || follows.isEmpty() || next == cursor) break;
+                cursor = next;
+                for (int i = 0; i < 4 && m_followListRun && !Common::appQuitting(); ++i) QThread::msleep(100);
+            }
+        } else {
+            err = QStringLiteral("이 플랫폼은 아직 팔로잉 가져오기를 하지 못합니다");
+        }
+        if (!m_followListRun) err.clear();   // 그만으로 끊은 요청의 오류는 알리지 않는다 — 받은 데까지가 결과
+        m_followListRunning = false;
+        QJsonObject res;
+        res["platform"] = platform;
+        res["of"] = handle;
+        res["ok"] = !users.isEmpty() || err.isEmpty();
+        res["stopped"] = !m_followListRun;
+        res["error"] = err;
+        res["users"] = users;
+        reply(res);
+    });
+    m_followListThread = t;
+    connect(t, &QThread::finished, t, &QThread::deleteLater);
+    t->start();
+}
+
+void HanishikiBackend::followListStop()
+{
+    m_followListRun = false;
+    // 도우미의 응답을 기다리는 중(한 번에 60초까지)이어도 곧 멈추게 — 수집의 중지(stopCollection)와 같은 방법
+    if (const qint64 pid = m_followListPid.exchange(0)) Common::killProcessByPid(pid);
 }

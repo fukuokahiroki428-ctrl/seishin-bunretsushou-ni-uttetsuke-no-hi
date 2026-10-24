@@ -285,6 +285,7 @@ QJsonObject Config::toJson() const
     root["organizeRules"] = m_organizeRules;
     root["organizeAuto"] = m_organizeAuto;
     root["organizeCaptures"] = m_organizeCaptures;
+    if (!m_organize.isEmpty()) root["organize"] = m_organize;
     root["naikakukaiInterval"] = m_naikakukaiInterval;
     if (!m_webdavUrl.isEmpty())  root["webdavUrl"]  = m_webdavUrl;
     if (!m_webdavUser.isEmpty()) root["webdavUser"] = m_webdavUser;
@@ -339,6 +340,7 @@ void Config::fromJson(const QJsonObject &obj)
     if (obj.contains("organizeRules"))     m_organizeRules = obj["organizeRules"].toArray();
     if (obj.contains("organizeAuto"))      m_organizeAuto = obj["organizeAuto"].toBool(true);
     if (obj.contains("organizeCaptures"))  m_organizeCaptures = obj["organizeCaptures"].toBool(false);
+    if (obj.contains("organize"))          m_organize = obj["organize"].toObject();
     if (obj.contains("naikakukaiInterval")) m_naikakukaiInterval = obj["naikakukaiInterval"].toInt(30);
     if (obj.contains("webdavUrl"))      m_webdavUrl  = obj["webdavUrl"].toString();
     if (obj.contains("webdavUser"))     m_webdavUser = obj["webdavUser"].toString();
