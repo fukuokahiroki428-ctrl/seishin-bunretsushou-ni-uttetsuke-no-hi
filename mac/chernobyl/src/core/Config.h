@@ -72,6 +72,8 @@ public:
     bool organizeCaptures() const { return m_organizeCaptures; }
     // 정리하기 '틀 하나' — {root, template, platforms, overrides{플랫폼:아이디 → name/source/dest/exclude}, migrated}. 화면이 통째로 읽고 쓴다.
     QJsonObject organize() const { return m_organize; }
+    // 대상 묶음의 기본 옵션 — {플랫폼: {묶음: {options:{…}, accountIdx}}}. 묶음에 든 대상이 물려받는다(대상의 것이 앞선다).
+    QJsonObject targetGroups() const { return m_targetGroups; }
     void setNaikakukaiWatches(const QJsonArray &arr) { m_naikakukaiWatches = arr; }
     int naikakukaiInterval() const { return m_naikakukaiInterval; }
     void setNaikakukaiInterval(int min) { m_naikakukaiInterval = min; }
@@ -172,6 +174,9 @@ public:
     QString takeProxyMigrationNote() { QString n = m_proxyMigrationNote; m_proxyMigrationNote.clear(); return n; }
 
     int maxConcurrent() const { return m_maxConcurrent; }
+    // 대상 목록 다중 수집: 이미 받은 글이 이만큼 이어지면 그 대상을 끝냄(0 = 끝까지) · 뜸한 계정은 덜 자주
+    int knownStop() const { return m_knownStop; }
+    bool quietSkip() const { return m_quietSkip; }
     void setMaxConcurrent(int n) { m_maxConcurrent = n; }
 
 private:
@@ -188,6 +193,7 @@ private:
     bool m_organizeAuto = true;
     bool m_organizeCaptures = false;
     QJsonObject m_organize;
+    QJsonObject m_targetGroups;
     int m_naikakukaiInterval = 30;
     QString m_webdavUrl;
     QString m_webdavUser;
@@ -211,6 +217,8 @@ private:
     bool m_naikakukaiResume = false;
     bool m_emailWatchResume = false;
     int m_maxConcurrent = 0;         // 0 = 플랫폼별 기본값
+    int m_knownStop = 0;             // 0 = 끝까지(예전 그대로)
+    bool m_quietSkip = false;
     QString m_windowGeometry;
     bool m_proxyEnabled = false;
     QString m_proxyHost;

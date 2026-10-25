@@ -272,6 +272,7 @@ QJsonObject Config::toJson() const
     root["organizeAuto"] = m_organizeAuto;
     root["organizeCaptures"] = m_organizeCaptures;
     if (!m_organize.isEmpty()) root["organize"] = m_organize;
+    if (!m_targetGroups.isEmpty()) root["targetGroups"] = m_targetGroups;
     root["naikakukaiInterval"] = m_naikakukaiInterval;
     if (!m_webdavUrl.isEmpty())  root["webdavUrl"]  = m_webdavUrl;
     if (!m_webdavUser.isEmpty()) root["webdavUser"] = m_webdavUser;
@@ -293,6 +294,8 @@ QJsonObject Config::toJson() const
     root["emailWatchResume"] = m_emailWatchResume;
     root["unixFilenames"] = m_unixFilenames;
     root["maxConcurrent"] = m_maxConcurrent;
+    root["knownStop"] = m_knownStop;
+    root["quietSkip"] = m_quietSkip;
     root["windowGeometry"] = m_windowGeometry;
     // ★ 이름 붙은 프록시 프로필(윈도우와 같은 키). 비어 있어도 적는다 — 이 키가 있으면
     //   '새 모양으로 쓴 파일' 이라는 표시가 되어, 아래 옛 키를 다시 옮기지 않는다(fromJson).
@@ -327,6 +330,7 @@ void Config::fromJson(const QJsonObject &obj)
     if (obj.contains("organizeAuto"))      m_organizeAuto = obj["organizeAuto"].toBool(true);
     if (obj.contains("organizeCaptures"))  m_organizeCaptures = obj["organizeCaptures"].toBool(false);
     if (obj.contains("organize"))          m_organize = obj["organize"].toObject();
+    if (obj.contains("targetGroups"))      m_targetGroups = obj["targetGroups"].toObject();
     if (obj.contains("naikakukaiInterval")) m_naikakukaiInterval = obj["naikakukaiInterval"].toInt(30);
     if (obj.contains("webdavUrl"))      m_webdavUrl  = obj["webdavUrl"].toString();
     if (obj.contains("webdavUser"))     m_webdavUser = obj["webdavUser"].toString();
@@ -348,6 +352,8 @@ void Config::fromJson(const QJsonObject &obj)
     if (obj.contains("emailWatchResume")) m_emailWatchResume = obj["emailWatchResume"].toBool();
     if (obj.contains("unixFilenames")) m_unixFilenames = obj["unixFilenames"].toBool();
     if (obj.contains("maxConcurrent")) m_maxConcurrent = obj["maxConcurrent"].toInt(0);
+    if (obj.contains("knownStop"))     m_knownStop = qBound(0, obj["knownStop"].toInt(0), 100000);
+    if (obj.contains("quietSkip"))     m_quietSkip = obj["quietSkip"].toBool(false);
     if (obj.contains("windowGeometry")) m_windowGeometry = obj["windowGeometry"].toString();
     if (obj.contains("proxyEnabled")) m_proxyEnabled = obj["proxyEnabled"].toBool(false);
     if (obj.contains("proxyHost"))    m_proxyHost    = obj["proxyHost"].toString();

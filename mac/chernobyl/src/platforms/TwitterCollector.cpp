@@ -787,6 +787,34 @@ QJsonObject TwitterCollector::callTwikitApi(const QJsonObject &args)
 }
 
 // Matches twikit 2.3.3 FEATURES exactly
+// ── 좋아요 · 북마크 · 리포스트의 '다 받은 곳에서 일찍 멈추기'. 이 목록들은 누른 순서라 ID 경계로는 못 자르고,
+//   이번 판을 시작하기 전 엑셀(1열 = id)에 있던 것이 이어지는지만 센다. n = 0 이면 세기만 하고 멈추지 않는다.
+struct KnownRun {
+    QSet<QString> known;
+    int n = 0, streak = 0, stopped = 0, fresh = 0;
+    bool see(const QString &id) {   // 받은 것 하나 — true 면 여기서 멈춘다
+        if (known.contains(id)) {
+            if (n > 0 && ++streak >= n) { stopped = streak; return true; }
+        } else {
+            streak = 0;
+            ++fresh;
+        }
+        return false;
+    }
+};
+static QSet<QString> excelIdsAt(const QString &path)
+{
+    QSet<QString> ids;
+    if (!QFile::exists(path)) return ids;
+    QXlsx::Document doc(path);
+    const int lastRow = doc.dimension().lastRow();
+    for (int r = 2; r <= lastRow; ++r) {   // 1행은 머리
+        const QString id = doc.read(r, 1).toString().trimmed();
+        if (!id.isEmpty()) ids.insert(id);
+    }
+    return ids;
+}
+
 static QJsonObject defaultFeatures()
 {
     QJsonObject f;
@@ -1026,6 +1054,7 @@ QPair<QJsonArray, QString> TwitterCollector::getUserTweets(const QString &userId
     cmd["user_id"] = userId;
     cmd["count"] = 40;
     if (!cursor.isEmpty()) cmd["cursor"] = cursor;
+    m_lastPageShaped = false;
 
     QJsonObject resp = sendDaemonCommand(cmd);
     if (resp.contains("error")) {
@@ -1124,6 +1153,7 @@ QPair<QJsonArray, QString> TwitterCollector::getUserTweets(const QString &userId
             }
         }
     }
+    m_lastPageShaped = !instructions.isEmpty() && errors.isEmpty();
     return {results, nextCursor};
 }
 
@@ -1226,6 +1256,7 @@ QPair<QJsonArray, QString> TwitterCollector::getLikes(const QString &userId, con
     cmd["user_id"] = userId;
     cmd["count"] = 40;
     if (!cursor.isEmpty()) cmd["cursor"] = cursor;
+    m_lastPageShaped = false;
 
     QJsonObject resp = sendDaemonCommand(cmd);
     if (resp.contains("error")) {
@@ -1274,6 +1305,7 @@ QPair<QJsonArray, QString> TwitterCollector::getLikes(const QString &userId, con
             }
         }
     }
+    m_lastPageShaped = !instructions.isEmpty() && resp["body"].toObject()["errors"].toArray().isEmpty();
     return {results, nextCursor};
 }
 
@@ -1283,6 +1315,7 @@ QPair<QJsonArray, QString> TwitterCollector::getBookmarks(const QString &cursor)
     cmd["action"] = "bookmarks";
     cmd["count"] = 40;
     if (!cursor.isEmpty()) cmd["cursor"] = cursor;
+    m_lastPageShaped = false;
 
     QJsonObject resp = sendDaemonCommand(cmd);
     if (resp.contains("error")) {
@@ -1332,6 +1365,7 @@ QPair<QJsonArray, QString> TwitterCollector::getBookmarks(const QString &cursor)
             }
         }
     }
+    m_lastPageShaped = !instructions.isEmpty() && resp["body"].toObject()["errors"].toArray().isEmpty();
     return {results, nextCursor};
 }
 
@@ -1706,7 +1740,9 @@ QDateTime twDt = QDateTime::fromString(createdAt, "ddd MMM dd HH:mm:ss +0000 yyy
             // Skip download if media download is disabled
             if (!m_downloadMedia) continue;
 
-            if (downloadMedia(mediaUrl, filepath)) {
+            const bool dlOk = downloadMedia(mediaUrl, filepath);
+            if (!dlOk) ++m_mediaFailures;   // 받지 못했다 — 그 목록을 '끊김 없이 다 봄' 으로 적지 않는다
+            if (dlOk) {
                 count++;
 
                 // Add EXIF metadata (for photos) — configurable
@@ -1986,7 +2022,7 @@ void TwitterCollector::saveExcel(const QString &saveDir, const QString &target, 
     m_backend->log("저장: "+ filepath, "success", "twitter");
 }
 
-void TwitterCollector::saveExcelStreaming(const QString &saveDir, const QString &target, DiskJsonBuffer &buffer, const QString &suffix)
+int TwitterCollector::saveExcelStreaming(const QString &saveDir, const QString &target, DiskJsonBuffer &buffer, const QString &suffix)
 {
     // 아니포 호환 파일명: _complete.xlsx (tweets일 때)
     QString fileSuffix = suffix;
@@ -2061,7 +2097,7 @@ void TwitterCollector::saveExcelStreaming(const QString &saveDir, const QString 
 
     if (newRows.isEmpty()) {
         m_backend->log("새 데이터 없음, 저장 건너뜀", "info", "twitter");
-        return;
+        return 0;
     }
 
     // ── Step 3: 기존 Excel에 append (전체 재작성 X) ──
@@ -2171,6 +2207,7 @@ void TwitterCollector::saveExcelStreaming(const QString &saveDir, const QString 
     m_backend->log(QString("저장: %1 (새 %2개, 총 %3개)")
                        .arg(filepath).arg(newRows.size()).arg(totalCount),
                    "success", "twitter");
+    return int(newRows.size());
 }
 
 void TwitterCollector::saveProfileExcel(const QString &saveDir, const QString &target)
@@ -2735,6 +2772,11 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         // ★ multi-target 큐: 직전 target에서 누적된 RL 추적 상태가 새 target/계정에 잘못 적용되지 않도록 reset
         m_accountRateLimitTime.clear();
         m_rateLimitHits = 0;
+        // ★ '전체' 판이 중지 · 오류로 중간에 돌아가면 아래의 '이 판까지만' 정리가 돌지 않는다 — 다음 대상(다른 계정)이
+        //   그 계정의 ID · 표시를 제 것으로 쓰지 않게 최상위 판마다 비운다
+        m_allKnownSnapshotSet = false;
+        m_allKnownSnapshot.clear();
+        m_allArmedLists.clear();
     }
 
     // Adaptive delay — user no longer sets this manually
@@ -2749,6 +2791,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     //   전에는 이 값을 어디서도 읽지 않아 8 을 넣어도 406개를 끝까지 받았다(실측 2026-09-13).
     //   트윗·좋아요·북마크·리포스트·하이라이트·리스트·커뮤니티·좁히기·스레드·좋아요/RT 한 유저에 걸린다.
     const int maxCount = qMax(0, config["count"].toInt(0));
+    // ★ 다 받은 곳에서 일찍 멈추기(사용자 2026-10-24 — 대상이 수백 개일 때, gallery-dl 의 abort:N).
+    //   이번 판을 시작하기 '전' 에 받아 둔 트윗이 이만큼 이어지면 그 단계를 끝낸다(0 = 끝까지 — 예전 그대로).
+    //   전체(all)의 하위 종류는 makeSubConfig 가 config 를 그대로 넘겨 같은 값을 쓴다.
+    const int stopAfterKnown = qMax(0, config["stopAfterKnown"].toInt(0));
 
     if (accounts.isEmpty()) {
         m_backend->log("Add account first", "error", "twitter");
@@ -2931,6 +2977,14 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         };
 
         // Helper: "all"재귀 호출 시 _subCall=true → 상태 초기화 건너뜀
+        // 하위 판(트윗 → 답글 …)이 같은 _complete 엑셀을 쓴다 — 답글 판이 방금 트윗 판이 받은 것을 '이미 받은' 으로 세어
+        //   일찍 멈추지 않게, 이 '전체' 판을 시작하기 전의 ID 를 한 번 찍어 둔다(검토)
+        m_allKnownSnapshot = stopAfterKnown > 0
+            ? excelIdsAt(userDir + "/" + target + "_complete.xlsx") + excelIdsAt(userDir + "/" + target + "_tweets.xlsx")
+            : QSet<QString>();   // 일찍 멈춤을 끄면 쓰지 않는다 — 큰 엑셀을 한 번 더 읽지 않는다
+        m_allKnownSnapshotSet = true;
+        m_allArmedLists.clear();   // 그 엑셀의 표시도 여기서 한 번에 가져간다 — 하위 판은 다 본 목록만 다시 적는다
+        for (const QString &k : Common::takeCleanWalkMarks(userDir, "tw_tweets_")) m_allArmedLists.insert(k.mid(10));
         auto makeSubConfig = [&](const QString &subType) -> QJsonObject {
             QJsonObject subConfig = config;
             subConfig["type"] = subType;
@@ -3013,7 +3067,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
                 if (rpBuf.count() > 0) {
                     m_backend->log(QString("리포스트 %1개를 complete 파일에 추가...").arg(rpBuf.count()), "info", "twitter");
-                    saveExcelStreaming(userDir, target, rpBuf, "tweets");
+                    // ★ 트윗 하위 판이 타임라인 표시를 적은 뒤에 _complete 에 줄을 넣는다 — 그사이 한 리트윗이 다음 타임라인 걸음에서
+                    //   '받아 둔 것' 으로 세어져 그 아래 제 글 위에서 멈출 수 있다(검토). 새 줄이 들어갔으면 타임라인 표시를 지운다
+                    if (saveExcelStreaming(userDir, target, rpBuf, "tweets") > 0)
+                        Common::takeCleanWalkMarks(userDir, "tw_tweets_timeline");
                 }
             }
         }
@@ -3065,6 +3122,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         }
 
         m_backend->log("═══ 전체 수집 완료! ═══", "success", "twitter");
+        m_allKnownSnapshotSet = false;   // 이 '전체' 판의 찍어 둔 ID 는 여기까지만
         return;
     }
 
@@ -3371,12 +3429,25 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         int tweetCount = 0, mediaCount = 0;
         DiskJsonBuffer collectedData(likesTempDir, "tw_likes");
         QSet<QString> collectedIds;
+        KnownRun kr;   // 다 받은 곳에서 일찍 멈추기 — 이번 판 전의 엑셀 ID
+        kr.known = excelIdsAt(userDir + "/" + target + "_likes.xlsx");
+        // 지난번에 이 목록을 끊김 없이 다 본 적이 있어야 일찍 멈춘다(끊긴 판 뒤에는 한 번 끝까지 보아 사이를 메운다)
+        //   표시는 미디어를 받는 판 · 안 받는 판 따로(미디어를 끈 판의 표시로 켠 판이 일찍 멈추면 미디어를 영영 안 받았다 — 검토)
+        const QString walkKind = QString("tw_likes_m%1").arg(m_downloadMedia ? 1 : 0);
+        kr.n = Common::takeCleanWalkMarks(userDir, "tw_likes").contains(walkKind) ? stopAfterKnown : 0;
+        // 두 판 잇따라 미디어를 못 받은 글은 영영 안 되는 것으로 본다(지워짐 · 막힘) — 처음 실패한 것만 표시를 막는다
+        const QSet<QString> prevFailed = Common::takeWalkFailures(userDir, walkKind);
+        QSet<QString> failedNow;
+        // 최대 수 — 일찍 멈추기를 쓰면 새로 받은 것만 센다(받아 둔 것까지 세면 늘 최대 수에서 끊겨 표시가 영영 안 적혔다 — 검토)
+        auto capHit = [&]() { return maxCount > 0 && (stopAfterKnown > 0 ? kr.fresh : tweetCount) >= maxCount; };
+        m_mediaFailures = 0;
         int currentAccountIdx = 0;
         QString cursor;
         bool hasMore = true;
         int consecutiveEmptyLikes = 0;
+        int listPages = 0;   // 트윗을 든 쪽 수
 
-        while (isRunning && hasMore && !(maxCount > 0 && tweetCount >= maxCount)) {
+        while (isRunning && hasMore && !kr.stopped && !capHit()) {
             auto [tweets, nextCursor] = getLikes(userId, cursor);
 
             if (nextCursor == "RATE_LIMITED") {
@@ -3391,27 +3462,31 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
             if (tweets.isEmpty()) {
                 consecutiveEmptyLikes++;
-                if (consecutiveEmptyLikes >= 5) break;
+                if (consecutiveEmptyLikes >= 5) { if (listPages > 0 && m_lastPageShaped) hasMore = false; break; }   // 쪽을 받은 뒤 같은 커서가 5번 비면 목록 끝이다(X 는 끝에서 트윗 없는 쪽을 준다)
                 m_backend->log(QString("빈 응답, 재시도 %1/5").arg(consecutiveEmptyLikes), "warning", "twitter");
                 QThread::sleep(3);
                 continue;
             }
             consecutiveEmptyLikes = 0;
+            ++listPages;
 
             for (const auto &tweetVal : tweets) {
-                if (!isRunning || (maxCount > 0 && tweetCount >= maxCount)) break;
+                if (!isRunning || capHit()) break;
                 QJsonObject tweet = tweetVal.toObject();
                 QJsonObject legacy = xLegacy(tweet);
                 QString tweetId = legacy["id_str"].toString();
                 if (tweetId.isEmpty()) tweetId = tweet["rest_id"].toString();
                 if (collectedIds.contains(tweetId)) continue;
+                if (kr.see(tweetId)) break;   // 받아 둔 것이 이어졌다 — 여기서 멈춘다(멈춘 그 글은 보지 않았다 — 실패 기록에서 빼지 않는다)
                 collectedIds.insert(tweetId);
 
                 tweetCount++;
                 m_backend->log(QString("[%1] %2...").arg(tweetCount).arg(legacy["full_text"].toString().left(40)), "info", "twitter");
                 m_backend->updateStats(tweetCount, mediaCount, "수집 중...", "twitter");
 
+                const int mfBefore = m_mediaFailures;
                 int newMedia = downloadTweetMedia(tweet, likesMediaDir, tweetCount);
+                if (m_mediaFailures > mfBefore && isRunning && !Common::appQuitting()) failedNow.insert(tweetId);   // 중지로 끊긴 받기는 실패가 아니다
                 mediaCount += newMedia;
 
                 // 캡쳐 (likes 별도 폴더)
@@ -3464,9 +3539,23 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
             cursor = nextCursor;
             if (cursor.isEmpty()) hasMore = false;
-            if (hasMore) { for (int w = 10; w > 0 && isRunning; --w) QThread::sleep(1); }
+            if (hasMore && !kr.stopped) { for (int w = 10; w > 0 && isRunning; --w) QThread::sleep(1); }
         }
 
+        if (kr.stopped)
+            m_backend->log(QString("이미 받은 좋아요가 %1개 이어져 여기서 멈춥니다 — 새로 %2개").arg(kr.stopped).arg(kr.fresh), "info", "twitter");
+        // 끊김 없이 끝났으면(목록 끝 · 일찍 멈춤 — 중지 · 최대 수 · 빈 응답 · 기간으로 끊긴 것은 아님) 다음 판이 일찍 멈출 수 있게
+        const QSet<QString> newFails = failedNow - prevFailed;
+        // 일찍 멈춤을 쓸 때만 안내한다 — 끄면 판마다 끝까지 보며 다시 받으니 넘어가는 것이 없다
+        if (stopAfterKnown > 0 && !newFails.isEmpty())
+            m_backend->log(QString("미디어를 받지 못한 %1 %2개 — 다음 판은 끝까지 보며 다시 받습니다").arg(QStringLiteral("좋아요")).arg(newFails.size()), "warning", "twitter");
+        if (const int gaveUp = stopAfterKnown > 0 ? int((failedNow & prevFailed).size()) : 0)
+            m_backend->log(QString("두 판 잇따라 미디어를 받지 못한 %1 %2개는 일찍 멈춤을 더는 막지 않습니다(지워졌거나 막힌 듯 — 4~5주마다 끝까지 볼 때 다시 받아 봅니다)").arg(QStringLiteral("좋아요")).arg(gaveUp), "info", "twitter");
+        Common::putWalkFailures(userDir, walkKind, failedNow + (prevFailed - collectedIds));   // 이번 판에 보지 못한 것은 그대로 둔다
+        if (isRunning && (kr.stopped || !hasMore) && !capHit() && newFails.isEmpty())
+            Common::putCleanWalkMark(userDir, walkKind);
+        m_backend->noteTrackFresh(kr.fresh);
+        if (kr.stopped) m_backend->noteTrackEarlyStop(kr.stopped);
         if (collectedData.count() > 0) saveExcelStreaming(userDir, target, collectedData, "likes");
         m_backend->log(QString("완료! 좋아요: %1, 미디어: %2").arg(tweetCount).arg(mediaCount), "success", "twitter");
         m_backend->updateStats(tweetCount, mediaCount, "완료", "twitter");
@@ -3486,12 +3575,25 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         int tweetCount = 0, mediaCount = 0;
         DiskJsonBuffer collectedData(bkmkTempDir, "tw_bookmarks");
         QSet<QString> collectedIds;
+        KnownRun kr;   // 다 받은 곳에서 일찍 멈추기 — 이번 판 전의 엑셀 ID
+        kr.known = excelIdsAt(userDir + "/" + target + "_bookmarks.xlsx");
+        // 지난번에 이 목록을 끊김 없이 다 본 적이 있어야 일찍 멈춘다(끊긴 판 뒤에는 한 번 끝까지 보아 사이를 메운다)
+        //   표시는 미디어를 받는 판 · 안 받는 판 따로(미디어를 끈 판의 표시로 켠 판이 일찍 멈추면 미디어를 영영 안 받았다 — 검토)
+        const QString walkKind = QString("tw_bookmarks_m%1").arg(m_downloadMedia ? 1 : 0);
+        kr.n = Common::takeCleanWalkMarks(userDir, "tw_bookmarks").contains(walkKind) ? stopAfterKnown : 0;
+        // 두 판 잇따라 미디어를 못 받은 글은 영영 안 되는 것으로 본다(지워짐 · 막힘) — 처음 실패한 것만 표시를 막는다
+        const QSet<QString> prevFailed = Common::takeWalkFailures(userDir, walkKind);
+        QSet<QString> failedNow;
+        // 최대 수 — 일찍 멈추기를 쓰면 새로 받은 것만 센다(받아 둔 것까지 세면 늘 최대 수에서 끊겨 표시가 영영 안 적혔다 — 검토)
+        auto capHit = [&]() { return maxCount > 0 && (stopAfterKnown > 0 ? kr.fresh : tweetCount) >= maxCount; };
+        m_mediaFailures = 0;
         int currentAccountIdx = 0;
         QString cursor;
         bool hasMore = true;
         int consecutiveEmptyBkmk = 0;
+        int listPages = 0;   // 트윗을 든 쪽 수
 
-        while (isRunning && hasMore && !(maxCount > 0 && tweetCount >= maxCount)) {
+        while (isRunning && hasMore && !kr.stopped && !capHit()) {
             auto [tweets, nextCursor] = getBookmarks(cursor);
 
             if (nextCursor == "RATE_LIMITED") {
@@ -3506,20 +3608,22 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
             if (tweets.isEmpty()) {
                 consecutiveEmptyBkmk++;
-                if (consecutiveEmptyBkmk >= 5) break;
+                if (consecutiveEmptyBkmk >= 5) { if (listPages > 0 && m_lastPageShaped) hasMore = false; break; }   // 쪽을 받은 뒤 같은 커서가 5번 비면 목록 끝이다(X 는 끝에서 트윗 없는 쪽을 준다)
                 m_backend->log(QString("빈 응답, 재시도 %1/5").arg(consecutiveEmptyBkmk), "warning", "twitter");
                 QThread::sleep(3);
                 continue;
             }
             consecutiveEmptyBkmk = 0;
+            ++listPages;
 
             for (const auto &tweetVal : tweets) {
-                if (!isRunning || (maxCount > 0 && tweetCount >= maxCount)) break;
+                if (!isRunning || capHit()) break;
                 QJsonObject tweet = tweetVal.toObject();
                 QJsonObject legacy = xLegacy(tweet);
                 QString tweetId = legacy["id_str"].toString();
                 if (tweetId.isEmpty()) tweetId = tweet["rest_id"].toString();
                 if (collectedIds.contains(tweetId)) continue;
+                if (kr.see(tweetId)) break;   // 받아 둔 것이 이어졌다 — 여기서 멈춘다(멈춘 그 글은 보지 않았다 — 실패 기록에서 빼지 않는다)
                 collectedIds.insert(tweetId);
 
                 tweetCount++;
@@ -3527,7 +3631,9 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 m_backend->log(QString("[%1] %2...").arg(tweetCount).arg(tweetText), "info", "twitter");
                 m_backend->updateStats(tweetCount, mediaCount, "수집 중...", "twitter");
 
+                const int mfBefore = m_mediaFailures;
                 int newMedia = downloadTweetMedia(tweet, bookmarksMediaDir, tweetCount);
+                if (m_mediaFailures > mfBefore && isRunning && !Common::appQuitting()) failedNow.insert(tweetId);   // 중지로 끊긴 받기는 실패가 아니다
                 mediaCount += newMedia;
 
                 // 캡쳐 (bookmarks 별도 폴더)
@@ -3578,9 +3684,23 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
             cursor = nextCursor;
             if (cursor.isEmpty()) hasMore = false;
-            if (hasMore) { for (int w = 10; w > 0 && isRunning; --w) QThread::sleep(1); }
+            if (hasMore && !kr.stopped) { for (int w = 10; w > 0 && isRunning; --w) QThread::sleep(1); }
         }
 
+        if (kr.stopped)
+            m_backend->log(QString("이미 받은 북마크가 %1개 이어져 여기서 멈춥니다 — 새로 %2개").arg(kr.stopped).arg(kr.fresh), "info", "twitter");
+        // 끊김 없이 끝났으면(목록 끝 · 일찍 멈춤 — 중지 · 최대 수 · 빈 응답 · 기간으로 끊긴 것은 아님) 다음 판이 일찍 멈출 수 있게
+        const QSet<QString> newFails = failedNow - prevFailed;
+        // 일찍 멈춤을 쓸 때만 안내한다 — 끄면 판마다 끝까지 보며 다시 받으니 넘어가는 것이 없다
+        if (stopAfterKnown > 0 && !newFails.isEmpty())
+            m_backend->log(QString("미디어를 받지 못한 %1 %2개 — 다음 판은 끝까지 보며 다시 받습니다").arg(QStringLiteral("북마크")).arg(newFails.size()), "warning", "twitter");
+        if (const int gaveUp = stopAfterKnown > 0 ? int((failedNow & prevFailed).size()) : 0)
+            m_backend->log(QString("두 판 잇따라 미디어를 받지 못한 %1 %2개는 일찍 멈춤을 더는 막지 않습니다(지워졌거나 막힌 듯 — 4~5주마다 끝까지 볼 때 다시 받아 봅니다)").arg(QStringLiteral("북마크")).arg(gaveUp), "info", "twitter");
+        Common::putWalkFailures(userDir, walkKind, failedNow + (prevFailed - collectedIds));   // 이번 판에 보지 못한 것은 그대로 둔다
+        if (isRunning && (kr.stopped || !hasMore) && !capHit() && newFails.isEmpty())
+            Common::putCleanWalkMark(userDir, walkKind);
+        m_backend->noteTrackFresh(kr.fresh);
+        if (kr.stopped) m_backend->noteTrackEarlyStop(kr.stopped);
         if (collectedData.count() > 0) saveExcelStreaming(userDir, target, collectedData, "bookmarks");
         m_backend->log(QString("완료! 북마크: %1, 미디어: %2").arg(tweetCount).arg(mediaCount), "success", "twitter");
         m_backend->updateStats(tweetCount, mediaCount, "완료", "twitter");
@@ -3600,11 +3720,24 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         int tweetCount = 0, mediaCount = 0;
         DiskJsonBuffer collectedData(rpTempDir, "tw_reposts");
         QSet<QString> collectedIds;
+        KnownRun kr;   // 다 받은 곳에서 일찍 멈추기 — 이번 판 전의 엑셀 ID
+        kr.known = excelIdsAt(userDir + "/" + target + "_reposts.xlsx");
+        // 지난번에 이 목록을 끊김 없이 다 본 적이 있어야 일찍 멈춘다(끊긴 판 뒤에는 한 번 끝까지 보아 사이를 메운다)
+        //   표시는 미디어를 받는 판 · 안 받는 판 따로(미디어를 끈 판의 표시로 켠 판이 일찍 멈추면 미디어를 영영 안 받았다 — 검토)
+        const QString walkKind = QString("tw_reposts_m%1").arg(m_downloadMedia ? 1 : 0);
+        kr.n = Common::takeCleanWalkMarks(userDir, "tw_reposts").contains(walkKind) ? stopAfterKnown : 0;
+        // 두 판 잇따라 미디어를 못 받은 글은 영영 안 되는 것으로 본다(지워짐 · 막힘) — 처음 실패한 것만 표시를 막는다
+        const QSet<QString> prevFailed = Common::takeWalkFailures(userDir, walkKind);
+        QSet<QString> failedNow;
+        // 최대 수 — 일찍 멈추기를 쓰면 새로 받은 것만 센다(받아 둔 것까지 세면 늘 최대 수에서 끊겨 표시가 영영 안 적혔다 — 검토)
+        auto capHit = [&]() { return maxCount > 0 && (stopAfterKnown > 0 ? kr.fresh : tweetCount) >= maxCount; };
+        m_mediaFailures = 0;
         int currentAccountIdx = 0;
         QString cursor;
         bool hasMore = true;
         int consecutiveEmpty = 0;
         const int MAX_EMPTY = 5;
+        int listPages = 0;   // 트윗을 든 쪽 수
 
         // Period filter
         QDateTime sinceDate, untilDate;
@@ -3617,7 +3750,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 m_backend->log(QString("기간: %1 ~ %2").arg(since, until), "info", "twitter");
         }
 
-        while (isRunning && hasMore && !(maxCount > 0 && tweetCount >= maxCount)) {
+        while (isRunning && hasMore && !kr.stopped && !capHit()) {
             auto [tweets, nextCursor] = getUserTweets(userId, cursor);
 
             if (nextCursor == "RATE_LIMITED") {
@@ -3633,7 +3766,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             if (tweets.isEmpty()) {
                 consecutiveEmpty++;
                 if (consecutiveEmpty >= MAX_EMPTY) {
-                    m_backend->log(QString("빈 응답 %1회 연속, 종료").arg(MAX_EMPTY), "warning", "twitter");
+                    if (listPages > 0 && m_lastPageShaped) hasMore = false;   // 쪽을 받은 뒤 같은 커서가 5번 제 모양으로 비면 목록 끝이다(X 는 끝에서 트윗 없는 쪽을 준다)
+                    else m_backend->log(QString("빈 응답 %1회 연속, 종료").arg(MAX_EMPTY), "warning", "twitter");
                     break;
                 }
                 m_backend->log(QString("빈 응답, 재시도 %1/%2").arg(consecutiveEmpty).arg(MAX_EMPTY), "warning", "twitter");
@@ -3641,10 +3775,11 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 continue;
             }
             consecutiveEmpty = 0;
+            ++listPages;
 
             bool pastRange = false;
             for (const auto &tweetVal : tweets) {
-                if (!isRunning || (maxCount > 0 && tweetCount >= maxCount)) break;
+                if (!isRunning || capHit()) break;
                 QJsonObject tweet = tweetVal.toObject();
                 QJsonObject legacy = xLegacy(tweet);
 
@@ -3671,6 +3806,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 if (untilDate.isValid() && tweetDate > untilDate) continue;
                 if (sinceDate.isValid() && tweetDate < sinceDate) { pastRange = true; break; }
 
+                if (kr.see(tweetId)) break;   // 받아 둔 리포스트가 이어졌다 — 여기서 멈춘다(멈춘 그 글은 보지 않았다)
                 collectedIds.insert(tweetId);
                 tweetCount++;
 
@@ -3685,7 +3821,9 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 m_backend->updateStats(tweetCount, mediaCount, "수집 중...", "twitter");
 
                 // Download media from original tweet
+                const int mfBefore = m_mediaFailures;
                 int newMedia = downloadTweetMedia(rtResult, repostsMediaDir, tweetCount);
+                if (m_mediaFailures > mfBefore && isRunning && !Common::appQuitting()) failedNow.insert(tweetId);   // 중지로 끊긴 받기는 실패가 아니다
                 mediaCount += newMedia;
 
                 // 캡쳐 (reposts 별도 폴더, 원글 기준 캡쳐)
@@ -3779,9 +3917,24 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             if (pastRange) break;
             cursor = nextCursor;
             if (cursor.isEmpty()) hasMore = false;
-            if (hasMore) { for (int w = 10; w > 0 && isRunning; --w) QThread::sleep(1); }
+            if (hasMore && !kr.stopped) { for (int w = 10; w > 0 && isRunning; --w) QThread::sleep(1); }
         }
 
+        if (kr.stopped)
+            m_backend->log(QString("이미 받은 리포스트가 %1개 이어져 여기서 멈춥니다 — 새로 %2개").arg(kr.stopped).arg(kr.fresh), "info", "twitter");
+        // 끊김 없이 끝났으면(목록 끝 · 일찍 멈춤 — 중지 · 최대 수 · 빈 응답 · 기간으로 끊긴 것은 아님) 다음 판이 일찍 멈출 수 있게
+        const QSet<QString> newFails = failedNow - prevFailed;
+        // 일찍 멈춤을 쓸 때만 안내한다 — 끄면 판마다 끝까지 보며 다시 받으니 넘어가는 것이 없다
+        if (stopAfterKnown > 0 && !newFails.isEmpty())
+            m_backend->log(QString("미디어를 받지 못한 %1 %2개 — 다음 판은 끝까지 보며 다시 받습니다").arg(QStringLiteral("리포스트")).arg(newFails.size()), "warning", "twitter");
+        if (const int gaveUp = stopAfterKnown > 0 ? int((failedNow & prevFailed).size()) : 0)
+            m_backend->log(QString("두 판 잇따라 미디어를 받지 못한 %1 %2개는 일찍 멈춤을 더는 막지 않습니다(지워졌거나 막힌 듯 — 4~5주마다 끝까지 볼 때 다시 받아 봅니다)").arg(QStringLiteral("리포스트")).arg(gaveUp), "info", "twitter");
+        Common::putWalkFailures(userDir, walkKind, failedNow + (prevFailed - collectedIds));   // 이번 판에 보지 못한 것은 그대로 둔다
+        if (isRunning && (kr.stopped || !hasMore) && !capHit() && newFails.isEmpty()
+            && !sinceDate.isValid() && !untilDate.isValid())   // 기간으로 거른 걸음은 목록 전체를 본 것이 아니다
+            Common::putCleanWalkMark(userDir, walkKind);
+        m_backend->noteTrackFresh(kr.fresh);
+        if (kr.stopped) m_backend->noteTrackEarlyStop(kr.stopped);
         if (collectedData.count() > 0) {
             m_backend->log("Excel 저장...", "info", "twitter");
             saveExcelStreaming(userDir, target, collectedData, "reposts");
@@ -4069,9 +4222,12 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     QString excelFileSuffix = (excelSuffix == "tweets") ? "complete": excelSuffix;
     QString excelPath = userDir + "/"+ target + "_"+ excelFileSuffix + ".xlsx";
     // fallback: 기존 _tweets.xlsx도 확인
+    //   ★ 옛 엑셀에서 ID 를 읽은 판은 새 _complete 에 이번 것만 담는다 — 그 판의 표시로 다음 판이 일찍 멈추면 옛 줄이 _complete 로
+    //   영영 안 옮겨졌다(검토). 그런 판은 표시를 적지도 믿지도 않는다(끝까지 보아 _complete 를 채운다)
+    bool legacyExcel = false;
     if (!QFile::exists(excelPath) && excelSuffix == "tweets") {
         QString oldPath = userDir + "/"+ target + "_tweets.xlsx";
-        if (QFile::exists(oldPath)) excelPath = oldPath;
+        if (QFile::exists(oldPath)) { excelPath = oldPath; legacyExcel = true; }
     }
     QString progressPath = userDir + "/.progress_"+ excelSuffix + ".json";
     QString resumeOldestDate;  // progress: 가장 오래된 트윗 날짜 (과거 이어서용 since/until)
@@ -4106,6 +4262,54 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     // 최대 수집 수는 이번 판에 새로 받은 것만 센다 — 위에서 불러온 기존 개수는 뺀다.
     const int runStartCount = tweetCount;
     auto capReached = [&]() { return maxCount > 0 && tweetCount - runStartCount >= maxCount; };
+
+    // ── 다 받은 곳에서 일찍 멈추기 — '이미 받은' 은 이번 판을 시작하기 전의 엑셀 ID 뿐이다.
+    //   이번 판에 처음 받은 것은 세지 않는다: 2단계(UserTweets)는 1단계(검색)가 방금 받은 것을 다시 보고,
+    //   검색 되짚기도 날짜 경계에서 겹친다. 그것까지 세면 사이사이 끼인 리트윗에 닿기 전에 멈춘다.
+    //   대화 묶음(profile-conversation)은 옛 앞 글(대개 받아 둔 것)과 새 답글을 섞어 오므로 5개보다 작게 두지 않는다.
+    const QSet<QString> knownAtStart = (m_allKnownSnapshotSet && excelSuffix == "tweets" && stopAfterKnown > 0) ? m_allKnownSnapshot : collectedIds;
+    // ★ 단계마다(검색 · 타임라인 · 답글 검색) 따로 — 지난번에 그 목록을 끊김 없이 다 본 적이 있어야 그 단계가 일찍 멈춘다.
+    //   표시는 그 단계를 시작할 때 지우고, 그 단계가 끊김 없이 끝나면(끝까지 · 일찍 멈춤) 다시 적는다. 끊긴 판(중지 · 최대 수 ·
+    //   오류)이 새 글의 위쪽만 받아 두면 다음 판이 그 위에서 멈춰 아래쪽 새 글을 영영 놓쳤다. 한 표시로 세 목록을 함께 다루면
+    //   깨끗이 끝난 답글 검색이 끊긴 타임라인을 '다 봤다' 고 적었다(검토).
+    const int knownN = stopAfterKnown > 0 ? qMax(5, stopAfterKnown) : 0;
+    //   표시 이름 = tw_<엑셀>_<목록>_m<미디어> — 미디어를 끈 판의 표시로 켠 판이 일찍 멈추면 미디어를 영영 안 받았다(검토)
+    const QString mScope = m_downloadMedia ? "_m1" : "_m0";
+    auto walkKind = [&](const QString &list) { return "tw_" + excelSuffix + "_" + list + mScope; };
+    // ★ 그 엑셀에 줄을 넣는 판은 시작할 때 그 엑셀의 표시를 모두 가져간다(search · timeline · replies). 기간 · 새 글만 ·
+    //   양방향 1단계 · 타임라인만(tweets_api) · 단계에 닿기 전에 멈춘 판도 맨 위 조각을 넣는데, 예전엔 그 목록을 걷는
+    //   단계만 제 표시를 지워 남은 표시가 다음 판을 그 조각 위에서 멈추게 했다(검토). 이번 판이 끊김 없이 다 본 목록만
+    //   다시 적고, 걷지 않은 목록은 이번 판이 엑셀에 아무것도 넣지 않았을 때만 되살린다(아래 끝자락).
+    //   '전체' 판은 하위 판(트윗 → 답글)이 같은 엑셀 · 같은 찍어 둔 ID 를 쓰므로 '전체' 가 한 번 가져가 나눠 쓴다.
+    const bool walkTypes = (type == "tweets" || type == "media" || type == "replies" || type == "tweets_api");
+    const bool sharedWalk = walkTypes && m_allKnownSnapshotSet && excelSuffix == "tweets";
+    QSet<QString> armedLists, putLists;   // 이름은 '<목록><미디어 범위>' (search_m1 …)
+    if (walkTypes) {
+        if (sharedWalk) armedLists = m_allArmedLists;
+        else {
+            const QString pre = "tw_" + excelSuffix + "_";
+            for (const QString &k : Common::takeCleanWalkMarks(userDir, pre)) armedLists.insert(k.mid(pre.size()));
+        }
+        if (legacyExcel) armedLists.clear();
+    }
+    auto takeWalk = [&](const QString &list) -> bool {
+        const bool armed = armedLists.contains(list + mScope);
+        if (knownN > 0 && !armed && !knownAtStart.isEmpty())
+            m_backend->log(QString("%1: 지난번에 끝까지 가지 못해(또는 처음이라) 이번엔 끝까지 봅니다 — 빠진 사이를 메웁니다").arg(list), "info", "twitter");
+        return armed;
+    };
+    auto putWalk = [&](const QString &list) {
+        if (legacyExcel) return;
+        Common::putCleanWalkMark(userDir, walkKind(list));
+        putLists.insert(list + mScope);
+    };
+    bool streakOn = false;      // 이 단계가 맨 위(새 글)부터 내려오는가 — 과거 쪽 이어가기 · 기간 · 현재 이어서(since:)는 세지 않는다
+    int knownStreak = 0;
+    bool knownStop = false;     // 이 단계를 여기서 끝낸다
+    int knownStopMax = 0;       // 이번 판에 일찍 멈춘 적이 있으면 그때의 연속 수(대상 목록에 남김)
+    qint64 newestActivityMs = 0;   // 이 계정의 가장 새 활동(제 글 · 리트윗) — 트윗 ID 는 시각을 품는다
+    auto beginStreak = [&](bool on) { streakOn = on && knownN > 0; knownStreak = 0; knownStop = false; };
+    auto stopNow = [&]() { return capReached() || knownStop; };
 
     // ★ '마지막으로 본 트윗 ID' 만은 체크박스와 무관하게 읽는다.
     //   m_newestTweetId 는 이번 판에서 실제로 처리한 트윗에서만 채워진다. 그런데
@@ -4190,6 +4394,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         //   중지된 판은 지난 값을 지킨다(끝까지 돈 iteration 은 돌던 중에 이미 적었다).
         QString outOldest = isRunning ? oldestDate : prev["oldestDate"].toString();
         QString prevOldest = prev["oldestDate"].toString();
+        if (outOldest.isEmpty()) outOldest = prevOldest;   // 빈 값 = 지난 값(일찍 멈춘 판) — 빈 칸으로 덮지 않는다
         if (!prevOldest.isEmpty()) {
             QDate prevD = QDate::fromString(prevOldest, "yyyy-MM-dd");
             QDate curD  = QDate::fromString(outOldest, "yyyy-MM-dd");
@@ -4284,8 +4489,19 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 && tweetId.toLongLong() <= prevNewestBoundary.toLongLong())
                 reachedPrevNewest = true;
 
+            // 가장 새 활동 — 받아 둔 것이든 새것이든(뜸한 계정 판정). 스노플레이크 ID: (id >> 22) + 1288834974657 ms
+            if (const qint64 idNum = tweetId.toLongLong(); idNum > 0)
+                newestActivityMs = qMax(newestActivityMs, (idNum >> 22) + 1288834974657LL);
+
             // Dedup
-            if (collectedIds.contains(tweetId)) continue;
+            if (collectedIds.contains(tweetId)) {
+                if (streakOn && knownAtStart.contains(tweetId) && ++knownStreak >= knownN) {
+                    knownStop = true;
+                    knownStopMax = qMax(knownStopMax, knownStreak);
+                    break;
+                }
+                continue;
+            }
 
             // Period filter
             QString createdAt = legacy["created_at"].toString();
@@ -4335,6 +4551,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             if (filterRepliesOnly && !isReply) continue;
 
             collectedIds.insert(tweetId);
+            knownStreak = 0;   // 새 트윗 — 이어짐이 끊겼다(기간 · 미디어만 거르기로 넘긴 것은 세지도 끊지도 않는다)
             // Track newest tweet ID + date (for 새트윗확인 + future resume)
             if (m_newestTweetId.isEmpty() || tweetId.toLongLong() > m_newestTweetId.toLongLong()) {
                 m_newestTweetId = tweetId;
@@ -4636,7 +4853,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 saveExcelStreaming(userDir, target, collectedData, excelSuffix);
             }
         }
-        return pastRange || capReached();   // 최대 수집 수에 닿아도 '그만' 신호
+        return pastRange || stopNow();   // 최대 수집 수 · 일찍 멈춤에 닿아도 '그만' 신호
     };
 
     // ══════════════════════════════════════════════════════════════
@@ -5102,6 +5319,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             }
         } else {
             // 아니포 방식: from:user → cursor 끝나면 until:oldest 로 반복
+            bool phaseARan = false;       // 양방향 1단계(since:)가 맨 위를 걸었나
+            bool searchTopSeen = false;   // since: 걸음이 지난번 가장 새 트윗까지 끊김 없이 닿았나
+            bool p1GotAny = false;        // 검색이 하나라도 돌려줬나 — 전부 빈 걸음은 '다 봤다' 가 아니다
+            bool p1TopEmpty = false;      // 맨 위(until: 없는) 걸음이 비었나 — 그러면 7일을 건너뛴다. 받아 둔 것이 있는 계정이면 다 본 것이 아니다
             if (tweetCount > 0) {
                 m_backend->log(QString("기존 %1개 수집분 존재 → 중복 자동 스킵").arg(tweetCount), "info", "twitter");
             }
@@ -5110,6 +5331,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             // ★★ "both" 모드 — Phase A (future): 새 트윗 1회 검색 후 Phase B (past) 진행
             //   resumeNewestDate / Id가 있을 때만 의미 있음 (없으면 첫 다운 → 일반 backtrack)
             if (resumeMode == "both" && (!resumeNewestDate.isEmpty() || !resumeNewestId.isEmpty())) {
+                phaseARan = true;
                 QString futureQuery = !resumeNewestDate.isEmpty()
                     ? QString("from:%1 since:%2").arg(target, resumeNewestDate)
                     : QString("from:%1 since_id:%2").arg(target, resumeNewestId);
@@ -5126,14 +5348,14 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                         continue;
                     }
                     if (nextCursor == "ERROR") break;
-                    if (tweets.isEmpty()) { reachedPrevNewest = true; break; }   // since: 구간을 끝까지 봤다
+                    if (tweets.isEmpty()) { reachedPrevNewest = true; searchTopSeen = true; break; }   // since: 구간을 끝까지 봤다
                     int prev = tweetCount;
                     processTweetBatch(tweets);
                     futureNew += (tweetCount - prev);
                     futurePages++;
                     futCursor = nextCursor;
                     if (futCursor.isEmpty()) {
-                        if (isRunning && !capReached()) reachedPrevNewest = true;   // 중간에 멈춘 게 아니면 끝까지 본 것
+                        if (isRunning && !capReached()) { reachedPrevNewest = true; searchTopSeen = true; }   // 중간에 멈춘 게 아니면 끝까지 본 것
                         break;
                     }
                     for (int w = qMax(2, (int)m_delay); w > 0 && isRunning; --w) QThread::sleep(1);
@@ -5176,8 +5398,11 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             QDate lastOldestDate;   // 이전 iteration 의 oldest (무한 루프 감지)
             int consecutiveEmpty = 0;
             int iteration = 0;
+            // 맨 위에서 2006년까지 되짚는 걸음만 표시를 다룬다(과거 이어가기 · since: 는 목록의 한 조각이라 건드리지 않는다)
+            const bool p1Walk = forwardScan && resumeMode != "future";
+            beginStreak(p1Walk && takeWalk("search"));
 
-            while (isRunning && !capReached() && consecutiveEmpty < MAX_EMPTY) {
+            while (isRunning && !stopNow() && consecutiveEmpty < MAX_EMPTY) {
                 iteration++;
                 backtrackCount++;
                 m_backend->log(QString("[%1] %2").arg(iteration).arg(currentQuery), "info", "twitter");
@@ -5187,7 +5412,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 int iterBatchCount = 0;  // API 가 반환한 총 트윗 수 (중복 포함)
                 QDate iterOldestDate;
 
-                while (isRunning && !capReached()) {
+                while (isRunning && !stopNow()) {
                     auto [tweets, nextCursor] = searchTweets(currentQuery, searchCursor);
                     if (nextCursor == "RATE_LIMITED") {
                         handleRateLimit(accounts, currentAccountIdx, isRunning);
@@ -5219,12 +5444,14 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
                     searchCursor = nextCursor;
                     if (searchCursor.isEmpty()) break;
-                    for (int w = qMax(2, (int)m_delay); w > 0 && isRunning; --w) QThread::sleep(1);
+                    for (int w = qMax(2, (int)m_delay); w > 0 && isRunning && !stopNow(); --w) QThread::sleep(1);
                 }
                 if (searchErrored) break;   // 오류로 멈춘 판 — 날짜를 물리며 같은 오류를 되풀이하지 않는다
 
+                if (iteration == 1 && iterBatchCount == 0 && !knownAtStart.isEmpty()) p1TopEmpty = true;
                 if (iterBatchCount > 0) {
                     consecutiveEmpty = 0;
+                    p1GotAny = true;
                     if (iterNewCount > 0) {
                         m_backend->log(QString("+%1개 새 트윗 (누적 %2, 미디어 %3)")
                                            .arg(iterNewCount).arg(tweetCount).arg(mediaCount), "success", "twitter");
@@ -5240,8 +5467,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 // ★ "현재 이어서" 모드는 한 iteration만 — backtrack 안 함
                 if (resumeMode == "future") {
                     // 오류로 멈춘 판은 바로 위에서 이미 빠져나갔다. 중지·최대 수가 아니면 since: 구간을 끝까지 본 것이다.
-                    if (isRunning && !capReached() && (!resumeNewestDate.isEmpty() || !resumeNewestId.isEmpty()))
+                    if (isRunning && !capReached() && (!resumeNewestDate.isEmpty() || !resumeNewestId.isEmpty())) {
                         reachedPrevNewest = true;
+                        searchTopSeen = true;
+                    }
                     if (iterNewCount > 0) {
                         m_backend->log(QString("[현재 이어서] 새 트윗 %1개 수집 (과거 backtrack 생략)").arg(iterNewCount),
                                        "success", "twitter");
@@ -5256,7 +5485,13 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
                 // ★ 최대 수집 수에 닿으면 여기서 멈춘다. 이 판의 가장 오래된 날짜(iterOldestDate)는
                 //   아직 처리하지 못한 트윗까지 보고 정한 값이라 progress 에 적으면 안 된다.
-                if (capReached()) break;
+                //   일찍 멈춤도 같다 — 받아 둔 구간에서 멈췄으니 그 날짜를 '여기까지 봤다' 로 적지 않는다.
+                if (stopNow()) {
+                    if (knownStop)
+                        m_backend->log(QString("이미 받은 트윗이 %1개 이어져 여기서 멈춥니다 — 새 트윗 %2개")
+                                           .arg(knownStreak).arg(tweetCount - runStartCount), "info", "twitter");
+                    break;
+                }
 
                 // 다음 iteration 쿼리 결정
                 QDate nextUntil;
@@ -5290,6 +5525,18 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             if (consecutiveEmpty >= MAX_EMPTY) {
                 m_backend->log(QString("%1회 연속 빈 결과 → Phase 1 종료").arg(MAX_EMPTY), "info", "twitter");
             }
+            // 끊김 없이 끝났다(2006년까지 · 빈 결과로 끝 · 일찍 멈춤 — 중지 · 최대 수 · 검색 오류 없이)
+            //   전부 빈 걸음(검색이 이 계정을 못 찾는 때 · 검색 장애)은 다 본 것으로 치지 않는다 — 그 사이 타임라인 단계가 넣은
+            //   제 글에서 다음 판이 멈춰, 검색으로만 받는 답글을 놓쳤다(검토)
+            const bool p1Clean = isRunning && !capReached() && !searchErrored;
+            if (p1Walk) {
+                if (p1Clean && p1GotAny && !p1TopEmpty) putWalk("search");
+            } else if (armedLists.contains("search" + mScope) && p1Clean && (phaseARan || resumeMode == "future") && searchTopSeen) {
+                // 맨 위에서 2006년까지 되짚지 않은 걸음(새 글만 · 양방향): since: 걸음이 지난번 가장 새 트윗까지 끊김 없이 닿았으면
+                //   지난번에 다 본 목록이 그대로 이어진다 — 표시를 되살린다. 맨 위를 걷지 않은 걸음(과거 이어서)은 끝자락 규칙에
+                //   맡긴다: 같은 판의 타임라인 단계가 새 제 글을 맨 위에 넣으면 그 사이의 답글을 검색이 본 적이 없다(검토)
+                putWalk("search");
+            }
         }
 
         int phase1New = tweetCount - phase1Start;
@@ -5313,8 +5560,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         int emptyRetries = 0;
         int phase2Pages = 0;
         int phase2Err = 0;   // ★ 검색 단계와 같은 상한 — 오류가 5번 이어지면 이 단계를 멈춘다(끝없이 같은 요청을 보냈다)
+        beginStreak(takeWalk("timeline"));   // 맨 위부터 — 조용한 계정이면 여기서 몇 년 치(약 80쪽 · 쪽마다 2초 넘게)를 훑었다
+        bool p2Broken = false;   // 오류 · 빈 응답으로 멈췄나
 
-        while (isRunning && !capReached() && hasMore) {
+        while (isRunning && !stopNow() && hasMore) {
             auto [tweets, nextCursor] = getUserTweets(userId, cursor);
 
             if (nextCursor == "RATE_LIMITED") {
@@ -5324,6 +5573,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             if (nextCursor == "ERROR") {
                 if (++phase2Err >= 5) {
                     m_backend->log("API 오류가 5번 이어졌습니다 — 타임라인 단계를 멈춥니다", "error", "twitter");
+                    p2Broken = true;
                     break;
                 }
                 m_backend->log(QString("API 오류 — 5초 후 재시도 (%1/5)").arg(phase2Err), "warning", "twitter");
@@ -5334,7 +5584,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
             if (tweets.isEmpty()) {
                 emptyRetries++;
-                if (emptyRetries >= 5) break;  // 5회 빈 응답 시 종료
+                // ★ X 의 UserTweets 는 목록 끝에서 트윗 없이 커서만 든 쪽을 준다 — 그게 보통의 끝이다. 같은 커서로 5번 다시
+                //   물어도 비면 끝으로 본다(쪽을 받은 뒤라면 다 본 것). 첫 쪽부터 비면 막힌 것인지 알 수 없어 다 본 것으로 치지 않는다.
+                //   예전엔 이것도 '끊김' 으로 쳐 타임라인 표시가 한 번도 적히지 않았다(검토).
+                if (emptyRetries >= 5) { if (phase2Pages == 0 || !m_lastPageShaped) p2Broken = true; break; }   // errors 만 든 200 · 모양 없는 응답도 끝이 아니다
                 QThread::sleep(3);
                 continue;
             }
@@ -5355,9 +5608,13 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
             cursor = nextCursor;
             if (cursor.isEmpty()) hasMore = false;
-            if (hasMore && isRunning) { for (int w = qMax(2,(int)m_delay); w > 0 && isRunning; --w) QThread::sleep(1); }
+            if (hasMore && isRunning) { for (int w = qMax(2,(int)m_delay); w > 0 && isRunning && !stopNow(); --w) QThread::sleep(1); }
         }
 
+        if (knownStop)
+            m_backend->log(QString("Phase 2: 이미 받은 트윗이 %1개 이어져 여기서 멈춥니다").arg(knownStreak), "info", "twitter");
+        if (isRunning && !capReached() && !p2Broken)   // 목록 끝 · 일찍 멈춤
+            putWalk("timeline");
         m_backend->log(QString("Phase 2 완료: +%1개 보충 (총 %2개)").arg(phase2New).arg(tweetCount), "success", "twitter");
         if (phase2New > 0) saveExcelStreaming(userDir, target, collectedData, excelSuffix);
     }
@@ -5370,6 +5627,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         m_backend->log("Phase 3: 답글 검색 (filter:replies) + 주간 백트래킹...", "info", "twitter");
         int replyNew = 0;
         bool replyErr = false;   // ★ 답글 검색도 오류가 5번 이어지면 멈춘다(Phase 1 과 같은 상한 — searchErrored 는 Phase 1 판정용이라 따로 둔다)
+        const bool p3Armed = takeWalk("replies");
+        bool p3GotAny = false;   // 답글 검색이 하나라도 돌려줬나 — 전부 빈 걸음은 '다 봤다' 가 아니다
 
         // Step 1: 최신 답글부터 검색
         {
@@ -5377,8 +5636,9 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             QString replyCursor;
             bool replyHasMore = true;
             int replyEmptyRetries = 0;
+            beginStreak(p3Armed);
 
-            while (isRunning && !capReached() && replyHasMore) {
+            while (isRunning && !stopNow() && replyHasMore) {
                 auto [tweets, nextCursor] = searchTweets(replyQuery, replyCursor);
                 if (nextCursor == "RATE_LIMITED") {
                     handleRateLimit(accounts, currentAccountIdx, isRunning);
@@ -5396,6 +5656,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                     continue;
                 }
                 replyEmptyRetries = 0;
+                p3GotAny = true;
 
                 // 가장 오래된 날짜 추적
                 for (const auto &tv : tweets) {
@@ -5411,7 +5672,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
                 replyCursor = nextCursor;
                 if (replyCursor.isEmpty()) replyHasMore = false;
-                if (replyHasMore) { for (int w = qMax(2,(int)m_delay); w > 0 && isRunning; --w) QThread::sleep(1); }
+                if (replyHasMore) { for (int w = qMax(2,(int)m_delay); w > 0 && isRunning && !stopNow(); --w) QThread::sleep(1); }
             }
         }
 
@@ -5431,13 +5692,16 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 replyQuery2 = QString("from:%1 filter:replies").arg(target);
             }
 
-            while (isRunning && !capReached() && !replyErr && replyConsecutiveEmpty < REPLY_MAX_EMPTY) {
+            const bool replyStep1Stopped = knownStop;   // 1걸음이 받아 둔 곳에 닿았으면 2걸음(과거로 되짚기)은 하지 않는다
+            beginStreak(p3Armed);
+            if (replyStep1Stopped) knownStop = true;
+            while (isRunning && !stopNow() && !replyErr && replyConsecutiveEmpty < REPLY_MAX_EMPTY) {
                 QString rCursor;
                 int iterNew = 0;
                 int iterBatch = 0;
                 QDate iterOldest;
 
-                while (isRunning && !capReached()) {
+                while (isRunning && !stopNow()) {
                     auto [tweets, nextCursor] = searchTweets(replyQuery2, rCursor);
                     if (nextCursor == "RATE_LIMITED") {
                         handleRateLimit(accounts, currentAccountIdx, isRunning);
@@ -5469,11 +5733,12 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
                     rCursor = nextCursor;
                     if (rCursor.isEmpty()) break;
-                    for (int w = qMax(2, (int)m_delay); w > 0 && isRunning; --w) QThread::sleep(1);
+                    for (int w = qMax(2, (int)m_delay); w > 0 && isRunning && !stopNow(); --w) QThread::sleep(1);
                 }
 
                 if (iterBatch > 0) {
                     replyConsecutiveEmpty = 0;
+                    p3GotAny = true;
                     if (iterNew > 0) saveExcelStreaming(userDir, target, collectedData, excelSuffix);
                 } else {
                     replyConsecutiveEmpty++;
@@ -5507,6 +5772,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             m_backend->log(QString("Phase 3 완료: 답글 +%1개").arg(replyNew), "success", "twitter");
             saveExcelStreaming(userDir, target, collectedData, excelSuffix);
         }
+        if (isRunning && !capReached() && !replyErr && p3GotAny)   // 두 걸음 다 끝까지(또는 일찍 멈춤) — 전부 빈 걸음은 다 본 것이 아니다
+            putWalk("replies");
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -5623,8 +5890,21 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     //   끝까지 못 본 구간을 덮고 있어, 적으면 다음 '이어서' 가 그 사이를 영영 건너뛴다.
     //   안 적으면 같은 자리를 다시 훑고, 받아 둔 것은 엑셀 ID 로 건너뛰므로 빠짐없이 이어진다.
     if (oldestTweetDate.isValid() && !capReached() && !searchErrored) {   // ★ 검색 오류 상한으로 멈춘 판도 최대 수와 같다 — 끝까지 못 본 구간의 날짜를 적지 않는다(끝난 iteration 은 루프 안 saveProgress(nextUntil) 가 이미 적었다)
-        saveProgress(oldestTweetDate.toString("yyyy-MM-dd"));
+        // ★ 일찍 멈춘 판은 '가장 새' 만 올리고 '가장 오래된' 은 지킨다(빈 값 = 지난 값) — 받아 둔 구간에서 멈춘 날짜를
+        //   적으면 다음 '과거에서 이어서' 가 받아 둔 한가운데서 시작해 곧바로 또 멈췄다
+        saveProgress(knownStopMax > 0 ? QString() : oldestTweetDate.toString("yyyy-MM-dd"));   // 빈 값 = 지난 값(지난 값도 없으면 빈 채)
     }
+    // 이번 판이 다시 적지 않은 표시는, 이번 판이 엑셀에 아무것도 넣지 않았을 때만 되살린다 — 받아 둔 것이 그대로면
+    //   지난번의 '다 봤다' 도 그대로 맞다. 하나라도 넣었으면(맨 위 조각일 수 있다) 그 목록은 다음 판에 한 번 끝까지 본다.
+    //   '전체' 판의 하위 판은 서로 나눠 쓰므로 여기서 되살리지 않는다.
+    if (walkTypes && !sharedWalk && tweetCount == runStartCount) {
+        for (const QString &l : armedLists)   // 있던 이름 그대로(다른 미디어 범위의 표시도) 되살린다
+            if (!putLists.contains(l)) Common::putCleanWalkMark(userDir, "tw_" + excelSuffix + "_" + l);
+    }
+    // 대상 목록에 남길 이번 판 결과 — 새 트윗 수 · 이 계정의 가장 새 활동 · 일찍 멈춤
+    m_backend->noteTrackFresh(tweetCount - runStartCount);
+    if (newestActivityMs > 0) m_backend->noteTrackNewest(newestActivityMs);
+    if (knownStopMax > 0) m_backend->noteTrackEarlyStop(knownStopMax);
 
     m_backend->log(QString("완료! %1: %2, 미디어: %3").arg(logLabel).arg(tweetCount).arg(mediaCount),
                    "success", "twitter");

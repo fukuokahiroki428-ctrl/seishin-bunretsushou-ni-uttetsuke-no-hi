@@ -197,6 +197,128 @@ def main() -> int:
                   ('a.bsky.social', '에이 둘째 줄', '팔로잉'), ('b.bsky.social', '', '팔로잉')], bs)
             check("넣은 대상이 정리하기의 계정 표에도", p.eval("_orgAccounts().filter(a => a.plat === 'bluesky').length") == 4)
 
+            # 6) 묶음 기본값 · 보이는 것만 받기 · 오류 난 것만 다시 — 수집은 시작하지 않는다(startCollection 을 잠깐 바꿔 보낼 설정만 받는다)
+            p.eval("""(function(){
+                platformTargets.bluesky = [
+                    {target:'g1.bsky.social', enabled:true, accountIdx:'all', options:{}, group:'묶음G'},
+                    {target:'g2.bsky.social', enabled:true, accountIdx:'all', options:{count:9}, group:'묶음G'},
+                    {target:'x1.bsky.social', enabled:true, accountIdx:'all', options:{}},
+                    {target:'x2.bsky.social', enabled:false, accountIdx:'all', options:{}, group:'묶음G'}];
+                renderPlatformTargetList('bluesky'); openGroupSettings('bluesky'); })()""")
+            time.sleep(0.4)
+            p.eval("{ const el = document.querySelector('#tl-group-modal .gs-ctl[data-k=\"count\"]'); el.value = '7'; el.dispatchEvent(new Event('change')); }")
+            time.sleep(0.4)
+            cfg = json.loads((paths.data_dir(C.ISO / 'home') / paths.CONFIG_NAME).read_text(encoding='utf-8'))
+            tg = ((cfg.get('targetGroups') or {}).get('bluesky') or {}).get('묶음G')
+            eff = p.eval("platformTargets.bluesky.slice(0,3).map(e => _tlEffOpts('bluesky', e).count)")
+            check('묶음 기본값 — 설정에 남고, 묶음 대상은 물려받고 대상에 정한 것이 앞섬', tg == {'options': {'count': 7}} and eff == [7, 9, None], (tg, eff))
+            inh = p.eval("!!document.querySelector('#bsky-target-list .batch-target-item[data-tidx=\"0\"] .bti-opt-inh')")
+            check('대상의 옵션 판에 묶음에서 물려받은 값 표시', inh is True, inh)
+            p.eval("document.getElementById('tl-group-modal').classList.add('hidden')")
+            sent = p.eval("""(function(){
+                const orig = backend.startCollection, got = [];
+                backend.startCollection = function(j){ const c = JSON.parse(j); got.push([c.target, c.count]); };
+                try {
+                    _tlSetFilter('bluesky', 'group:묶음G');
+                    _tlRunSubset('bluesky', 'visible');
+                    const vis = got.slice(); got.length = 0;
+                    delete _multis.bluesky; setRunning('bluesky', false);
+                    platformTargets.bluesky[2].last = { at: Date.now(), status: 'error', posts: 0, media: 0 };
+                    _tlSetFilter('bluesky', 'all');
+                    const label = document.querySelector('#bsky-target-list [data-act="retry"]').textContent;
+                    _tlRunSubset('bluesky', 'errors');
+                    const err = got.slice();
+                    delete _multis.bluesky; setRunning('bluesky', false);
+                    return [vis, label, err];
+                } finally { backend.startCollection = orig; } })()""")
+            check('보이는 것만 받기 — 좁힌 묶음의 켜진 대상만, 묶음 값 · 대상 값으로', sent and sent[0] == [['g1.bsky.social', 7], ['g2.bsky.social', 9]], sent and sent[0])
+            check('오류 난 것만 다시 — 그 대상만(단추에 개수)', sent and sent[1] == '오류 난 것만 다시 (1)' and sent[2] == [['x1.bsky.social', 0]], sent and sent[1:])
+
+            # 7) 대상 하나의 판 결과(_tlTrackEnd) — 오류 줄이 있으면 '완료' 여도 오류 · 새 글 수 · 일찍 멈춤 · 가장 새 글
+            res = p.eval("""(function(){
+                const orig = backend.startCollection; backend.startCollection = function(){};
+                try {
+                    platformTargets.bluesky = [{target:'t1.bsky.social', enabled:true, accountIdx:'all', options:{}},
+                                              {target:'t2.bsky.social', enabled:true, accountIdx:'all', options:{}}];
+                    renderPlatformTargetList('bluesky');
+                    startPlatformMulti('bluesky');
+                    updateStats(5, 3, '완료', 'bluesky#0'); updateStats(7, 1, '완료', 'bluesky#1');
+                    const nw = Date.now() - 3 * 86400000;
+                    _tlTrackEnd('bluesky#0', {errors: 2, fresh: 0, newest: nw, early: 12, stopped: false});
+                    _tlTrackEnd('bluesky#1', {errors: 0, fresh: 4, newest: 0, early: 0, stopped: false});
+                    const a = platformTargets.bluesky[0], b = platformTargets.bluesky[1];
+                    const chip = (document.querySelector('#bsky-target-list .batch-target-item[data-tidx="0"] .tl-status') || {}).textContent || '';
+                    const out = [a.last.status, a.last.errors, a.last.fresh, a.last.early, a.newest === nw, b.last.status, b.last.fresh, !!b.newAt, chip];
+                    delete _multis.bluesky; setRunning('bluesky', false);
+                    return out;
+                } finally { backend.startCollection = orig; } })()""")
+            check('판 결과 — 오류 줄이 있으면 오류로 · 새 글 수 · 일찍 멈춤 · 가장 새 글', res and res[:8] == ['error', 2, 0, 12, True, 'done', 4, True]
+                  and res[8].startswith('✕') and res[8].endswith('⏭'), res)
+
+            # 8) 뜸한 계정은 덜 자주 — 켜면 전체를 돌릴 때 쉬는 계정을 뺀다(고른 것만 받을 때는 그대로)
+            q = p.eval("""(function(){
+                const orig = backend.startCollection, got = [];
+                backend.startCollection = function(j){ got.push(JSON.parse(j).target); };
+                try {
+                    document.getElementById('settings-quiet-skip').checked = true; onCollectPrefsChange();
+                    const D = 86400000, now = Date.now();
+                    platformTargets.bluesky = [
+                        {target:'quiet.bsky.social', enabled:true, accountIdx:'all', options:{}, newest: now - 60*D, last:{at: now - 1*D, status:'done', posts:0, media:0}},
+                        {target:'active.bsky.social', enabled:true, accountIdx:'all', options:{}, newest: now - 3*D, last:{at: now - 1*D, status:'done', posts:0, media:0}},
+                        {target:'unknown.bsky.social', enabled:true, accountIdx:'all', options:{}},
+                        {target:'dead.bsky.social', enabled:true, accountIdx:'all', options:{}, newest: now - 400*D, last:{at: now - 70*D, status:'done', posts:0, media:0}}];
+                    renderPlatformTargetList('bluesky');
+                    _tlSetFilter('bluesky', 'rest');
+                    const rest = Array.from(document.querySelectorAll('#bsky-target-list .batch-target-item')).map(e => +e.dataset.tidx);
+                    const chip = (document.querySelector('#bsky-target-list .batch-target-item[data-tidx="0"] .tl-status') || {}).textContent || '';
+                    _tlSetFilter('bluesky', 'all');
+                    startPlatformMulti('bluesky');
+                    const full = got.slice(); got.length = 0;
+                    delete _multis.bluesky; setRunning('bluesky', false);
+                    _tlRunSubset('bluesky', 'visible');
+                    delete _multis.bluesky; setRunning('bluesky', false);
+                    return [rest, chip, full, got.slice()];
+                } finally {
+                    backend.startCollection = orig;
+                    document.getElementById('settings-quiet-skip').checked = false; onCollectPrefsChange();
+                } })()""")
+            check("뜸한 계정 — 60일 쉰 계정만 이번엔 쉼(보기 '쉬는 것' · 상태 '뜸 ·'), 모르는 · 활발한 · 60일 지난 쉬는 계정은 받음",
+                  q and q[0] == [0] and q[1].startswith('뜸 · ') and q[2] == ['active.bsky.social', 'unknown.bsky.social', 'dead.bsky.social'], q and q[:3])
+            check('「보이는 것만 받기」 는 뜸한 계정도 받는다', q and q[3] == ['quiet.bsky.social', 'active.bsky.social', 'unknown.bsky.social', 'dead.bsky.social'], q and q[3])
+            def cfg_wait(key, want, secs=5.0):
+                t0 = time.time()
+                while time.time() - t0 < secs:
+                    v = json.loads((paths.data_dir(C.ISO / 'home') / paths.CONFIG_NAME).read_text(encoding='utf-8')).get(key)
+                    if v == want:
+                        return v
+                    time.sleep(0.25)
+                return v
+            p.eval("document.getElementById('settings-quiet-skip').checked = true; onCollectPrefsChange()")
+            got_q = cfg_wait('quietSkip', True)
+            p.eval("document.getElementById('settings-quiet-skip').checked = false; onCollectPrefsChange()")
+            check('설정 파일에 quietSkip 이 남는다(켠 값 true 가 적힘)', got_q is True, got_q)
+
+            # 9) 일찍 멈춤 — 설정 → 묶음 → 대상 순으로 앞선다
+            ks = p.eval("""(function(){
+                const sel = document.getElementById('settings-known-stop'); sel.value = '20'; onCollectPrefsChange();
+                targetGroups.bluesky = { 'G': { options: { knownStop: 5 } } };
+                const e1 = {target:'a.bsky.social', group:'G', options:{}}, e2 = {target:'b.bsky.social', group:'G', options:{knownStop:0}}, e3 = {target:'c.bsky.social', options:{}};
+                const v = [e1, e2, e3].map(e => buildBatchConfig('bluesky', e.target, 'all', _tlEffOpts('bluesky', e)).stopAfterKnown);
+                const tw = (buildBatchConfig('youtube', 'x', 'all', {}) || {}).stopAfterKnown;
+                sel.value = '0'; onCollectPrefsChange(); targetGroups.bluesky = {};
+                return [v, tw === undefined]; })()""")
+            check('일찍 멈춤 값 — 설정 20 · 묶음 5 · 대상 0(끝까지)이 앞서고, 모르는 플랫폼엔 안 보냄', ks == [[5, 0, 20], True], ks)
+            p.eval("document.getElementById('settings-known-stop').value = '50'; onCollectPrefsChange()")
+            got_k = cfg_wait('knownStop', 50)
+            p.eval("document.getElementById('settings-known-stop').value = '0'; onCollectPrefsChange()")
+            check('설정 파일에 knownStop 이 남는다(고른 값 50 이 적힘)', got_k == 50, got_k)
+            # 10) 인스타 '전체 · 스토리' 는 뜸해도 쉬지 않는다(스토리는 하루면 사라진다)
+            ig = p.eval("""(function(){
+                const D = 86400000, now = Date.now();
+                const e = {target:'ig1', options:{type:'stories'}, newest: now - 90*D, last:{at: now - D, status:'done'}};
+                const f = {target:'ig2', options:{type:'posts'}, newest: now - 90*D, last:{at: now - D, status:'done'}};
+                return [_tlQuiet(e, now, 'instagram'), !!(_tlQuiet(f, now, 'instagram') || {}).skip]; })()""")
+            check('인스타 스토리를 받는 대상은 뜸해도 쉬지 않는다(게시물만이면 쉰다)', ig == [None, True], ig)
             errs = C.page_errors(p)
             check('화면 JS 오류 없음', not errs, errs[:2])
     except Exception as e:  # noqa: BLE001 — 시험 도중의 어떤 실패도 판정 한 줄로

@@ -1,5 +1,6 @@
 #include "Common.h"
 #include <atomic>
+#include <iterator>
 #include <QReadWriteLock>
 #ifndef Q_OS_WIN
 #include <csignal>
@@ -1685,6 +1686,121 @@ qint64 freeSpace(const QString &path)
             return 0;
     }
     return si.bytesAvailable();
+}
+
+// 판을 시작할 때 읽은 표시의 '끝까지 본 때' — 일찍 멈춘 판이 다시 적을 때 물려준다(경로 → 때). 끝까지 본 판은 지금으로 적는다.
+static QHash<QString, QDateTime> s_walkFullAt;
+static QMutex s_walkFullMu;
+
+static QString walkMarkPath(const QString &dir, const QString &kind)
+{
+    return dir + QStringLiteral("/.hanishiki_walk_") + kind + QStringLiteral(".json");
+}
+
+// 끝까지 다시 볼 때까지의 날 수 — 28~35일, 대상 · 목록마다 달리(같은 날 처음 받은 수백 개가 한날에 몰리지 않게)
+static int walkFullPeriodDays(const QString &path)
+{
+    quint32 h = 2166136261u;   // FNV-1a — qHash 는 판마다 씨가 달라 쓸 수 없다
+    for (const char ch : path.toUtf8()) { h ^= static_cast<quint8>(ch); h *= 16777619u; }
+    return 28 + static_cast<int>(h % 8u);
+}
+
+// 읽고 지운다. 믿을 만하면(형식이 같고 끝까지 본 지 오래지 않으면) true — 그 때를 put 에 넘겨 둔다
+static bool takeWalkMarkFile(const QString &path)
+{
+    QFile f(path);
+    if (!f.exists()) {   // 없으면 지난 판이 남긴 기록도 버린다 — 표시 없이 시작한 판은 끝까지 본 판이다(지금으로 적는다)
+        QMutexLocker lk(&s_walkFullMu);
+        s_walkFullAt.remove(path);
+        return false;
+    }
+    QJsonObject o;
+    if (f.open(QIODevice::ReadOnly)) { o = QJsonDocument::fromJson(f.readAll()).object(); f.close(); }
+    QFile::remove(path);
+    const QDateTime full = QDateTime::fromString(o.value("full").toString(), Qt::ISODate);
+    const QDateTime now = QDateTime::currentDateTime();
+    const bool ok = o.value("v").toInt(0) == kWalkMarkFormat && full.isValid() && full <= now.addSecs(3600)
+                    && full.daysTo(now) < walkFullPeriodDays(path);
+    QMutexLocker lk(&s_walkFullMu);
+    if (ok) s_walkFullAt.insert(path, full); else s_walkFullAt.remove(path);
+    return ok;
+}
+
+bool takeCleanWalkMark(const QString &dir, const QString &kind)
+{
+    if (dir.isEmpty()) return false;
+    return takeWalkMarkFile(walkMarkPath(dir, kind));
+}
+
+void putCleanWalkMark(const QString &dir, const QString &kind)
+{
+    if (dir.isEmpty() || !QDir(dir).exists()) return;
+    const QString path = walkMarkPath(dir, kind);
+    const QDateTime now = QDateTime::currentDateTime();
+    QDateTime full;
+    {
+        QMutexLocker lk(&s_walkFullMu);
+        full = s_walkFullAt.take(path);   // 믿을 만한 표시로 시작한 판(일찍 멈췄을 수 있다) — 앞 표시의 때를 물려받는다
+    }
+    if (!full.isValid()) full = now;      // 표시 없이 시작한 판 = 끝까지 본 판
+    QSaveFile f(path);
+    if (f.open(QIODevice::WriteOnly)) {
+        f.write(QJsonDocument(QJsonObject{{"at", now.toString(Qt::ISODate)},
+                                          {"full", full.toString(Qt::ISODate)},
+                                          {"v", kWalkMarkFormat}}).toJson(QJsonDocument::Compact));
+        f.commit();
+    }
+}
+
+QStringList takeCleanWalkMarks(const QString &dir, const QString &prefix)
+{
+    QStringList kinds;
+    if (dir.isEmpty() || prefix.isEmpty()) return kinds;
+    static const QString head = QStringLiteral(".hanishiki_walk_");
+    {   // 이 접두의 지난 기록부터 비운다 — 없는 파일은 아래 고리에 닿지 않아, 멈춘 판이 남긴 옛 때를 다음 판이 물려받았다(검토)
+        const QString keyHead = dir + QLatin1Char('/') + head + prefix;
+        QMutexLocker lk(&s_walkFullMu);
+        for (auto it = s_walkFullAt.begin(); it != s_walkFullAt.end();)
+            it = it.key().startsWith(keyHead) ? s_walkFullAt.erase(it) : std::next(it);
+    }
+    const QStringList names = QDir(dir).entryList({head + prefix + QStringLiteral("*.json")}, QDir::Files | QDir::Hidden);
+    for (const QString &n : names) {
+        if (takeWalkMarkFile(dir + QLatin1Char('/') + n))   // 오래된 · 형식이 다른 표시는 지우기만 한다
+            kinds << n.mid(head.size(), n.size() - head.size() - 5);   // ".json" 앞까지
+    }
+    return kinds;
+}
+
+QSet<QString> takeWalkFailures(const QString &dir, const QString &kind)
+{
+    QSet<QString> ids;
+    if (dir.isEmpty()) return ids;
+    const QString path = dir + QStringLiteral("/.hanishiki_walkfail_") + kind + QStringLiteral(".json");
+    QFile f(path);
+    if (!f.exists()) return ids;
+    if (f.open(QIODevice::ReadOnly)) {
+        for (const QJsonValue &v : QJsonDocument::fromJson(f.readAll()).object().value("ids").toArray())
+            if (!v.toString().isEmpty()) ids.insert(v.toString());
+        f.close();
+    }
+    QFile::remove(path);
+    return ids;
+}
+
+void putWalkFailures(const QString &dir, const QString &kind, const QSet<QString> &ids)
+{
+    const QString path = dir + QStringLiteral("/.hanishiki_walkfail_") + kind + QStringLiteral(".json");
+    if (ids.isEmpty()) { QFile::remove(path); return; }
+    if (dir.isEmpty() || !QDir(dir).exists()) return;
+    QJsonArray a;
+    QStringList sorted(ids.begin(), ids.end());
+    sorted.sort();
+    for (const QString &s : sorted) a.append(s);
+    QSaveFile f(path);
+    if (f.open(QIODevice::WriteOnly)) {
+        f.write(QJsonDocument(QJsonObject{{"at", QDateTime::currentDateTime().toString(Qt::ISODate)}, {"ids", a}}).toJson(QJsonDocument::Compact));
+        f.commit();
+    }
 }
 
 QString pickSavePath(const QString &primary, const QString &secondary, double thresholdGB)
