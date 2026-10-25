@@ -74,6 +74,8 @@ public:
     bool organizeCaptures() const { return m_organizeCaptures; }
     // 정리하기 '틀 하나' — {root, template, platforms, overrides{플랫폼:아이디 → name/source/dest/exclude}, migrated}. 화면이 통째로 읽고 쓴다.
     QJsonObject organize() const { return m_organize; }
+    // 대상 묶음의 기본 옵션 — {플랫폼: {묶음: {options:{…}, accountIdx}}}. 묶음에 든 대상이 물려받는다(대상의 것이 앞선다).
+    QJsonObject targetGroups() const { return m_targetGroups; }
     void setNaikakukaiWatches(const QJsonArray &arr) { m_naikakukaiWatches = arr; }
     int naikakukaiInterval() const { return m_naikakukaiInterval; }
     void setNaikakukaiInterval(int min) { m_naikakukaiInterval = min; }
@@ -173,6 +175,9 @@ public:
     QString takeProxyMigrationNote() { QString n = m_proxyMigrationNote; m_proxyMigrationNote.clear(); return n; }
 
     int maxConcurrent() const { return m_maxConcurrent; }
+    // 대상 목록 다중 수집: 이미 받은 글이 이만큼 이어지면 그 대상을 끝냄(0 = 끝까지) · 뜸한 계정은 덜 자주
+    int knownStop() const { return m_knownStop; }
+    bool quietSkip() const { return m_quietSkip; }
     void setMaxConcurrent(int n) { m_maxConcurrent = n; }
 
     // ★ 창 크기·위치 (QWidget::saveGeometry 를 base64 로).
@@ -197,6 +202,7 @@ private:
     bool m_organizeAuto = true;
     bool m_organizeCaptures = false;
     QJsonObject m_organize;
+    QJsonObject m_targetGroups;
     int m_naikakukaiInterval = 30;
     // ★ 기본값이 true 인 것은 일부러다. 이 값이 없던 판에서 올라온 설정은 키가 없는데,
     //   그때의 동작은 '감시 대상이 있으면 켤 때 자동으로 돈다' 였다. false 로 두면
@@ -222,6 +228,8 @@ private:
     bool m_firstRunCompleted = false;
     bool m_unixFilenames = false;
     bool m_nasAutoReconnect = true;  // 기본 ON (대부분 원하는 동작)
+    int m_knownStop = 0;             // 0 = 끝까지(예전 그대로) — 맥 r45 '다 받은 곳에서 일찍 멈추기'
+    bool m_quietSkip = false;        // 뜸한 계정은 덜 자주(맥 r45)
     QString m_windowGeometry;
     int m_maxConcurrent = 0;         // 0 = 플랫폼별 기본값
     bool m_proxyEnabled = false;

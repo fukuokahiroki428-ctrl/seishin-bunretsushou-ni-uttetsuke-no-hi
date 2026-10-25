@@ -75,6 +75,11 @@ void ExcelWriter::autoFitColumns(const QStringList &headers)
 
 bool ExcelWriter::save(const QString &filePath)
 {
+    return saveDocument(*m_doc, filePath);
+}
+
+bool ExcelWriter::saveDocument(QXlsx::Document &doc, const QString &filePath)
+{
     // ★ 진짜 이름에 바로 쓰지 않는다. 쓰는 도중 앱이 죽으면 반쯤 쓴 xlsx 가 남고, 다음 판의
     //   '기존 파일 + 새 데이터 합치기'(트위터·인스타·디스코드·픽시브)가 그것을 못 읽어 기존 행 0개로
     //   본 뒤 이번 판 행만으로 덮어써 예전 기록을 통째로 잃는다. 같은 폴더의 숨은 짧은 이름에 다 쓴 뒤
@@ -86,7 +91,7 @@ bool ExcelWriter::save(const QString &filePath)
                                                        QCryptographicHash::Sha1).toHex().left(20))
         + QStringLiteral(".part");
     QFile::remove(tmp);
-    if (!m_doc->saveAs(tmp)) { QFile::remove(tmp); return false; }
+    if (!doc.saveAs(tmp)) { QFile::remove(tmp); return false; }
     if (std::rename(QFile::encodeName(tmp).constData(), QFile::encodeName(filePath).constData()) == 0)
         return true;
     // rename(2) 로 덮어쓰지 못하는 곳(일부 네트워크 볼륨)은 지우고 바꾼다. 그래도 못 바꾸면 조각은

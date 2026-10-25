@@ -8,6 +8,7 @@
 
 #include <QRegularExpression>
 #include <QHash>
+#include <QSet>
 #include <QJsonArray>
 #include <QJsonObject>
 
@@ -258,6 +259,25 @@ QString exiftoolProgram(QStringList *leadingArgs);
 // 저장 경로의 남은 공간 (바이트). 아직 없는 폴더면 같은 디스크의 가장 가까운 '있는' 조상 폴더로 잰다
 //   (새 저장 폴더를 '공간 부족' 으로 오판하지 않게). 디스크 자체가 없거나 마운트 안 됐으면 0.
 qint64 freeSpace(const QString &path);
+// 다 받은 곳에서 일찍 멈추기 — 그 목록(대상 · 종류)을 지난번에 끊김 없이 다 본 적이 있는가(<dir>/.hanishiki_walk_<kind>.json).
+//   판을 시작할 때 take 로 읽고 지운다. 끊김 없이 끝났거나(끝까지 · 일찍 멈춤) 할 때만 put 으로 다시 적는다.
+//   표시가 없으면(첫 판 · 중지 · 최대 수 · 오류로 끊긴 판 뒤) 이번 판은 일찍 멈추지 않고 끝까지 보아 사이를 메운다 —
+//   끊긴 판이 새 글의 위쪽만 받아 두면, 다음 판이 그 위에서 멈춰 아래쪽 새 글을 영영 놓쳤다(검토).
+//   ★ 표시가 있어도 그 목록을 마지막으로 끝까지 본 지 4~5주(목록마다 조금씩 달리 — 한날에 몰리지 않게)가 지났거나 형식 번호가
+//   다르면 없는 것으로 본다. 검토가 찾지 못한 길로 사이가 생겨도(요금제가 바뀌어 열린 글 · 수집기가 고쳐진 뒤 옛 글의 빠진 미디어 …)
+//   한 달 안에 한 번은 끝까지 보아 메운다. 일찍 멈춘 판이 다시 적는 표시는 앞 표시의 '끝까지 본 때' 를 물려받는다.
+constexpr int kWalkMarkFormat = 1;   // 수집기를 고쳐 옛 글에서 놓친 것을 다시 받아야 하면 올린다 — 모든 목록이 한 번 끝까지 본다
+bool takeCleanWalkMark(const QString &dir, const QString &kind);
+void putCleanWalkMark(const QString &dir, const QString &kind);
+// 같은 엑셀(받아 둔 것 목록)을 함께 쓰는 목록들의 표시를 한꺼번에 읽고 지운다(<prefix>* 모두) — 있던 kind 들을 돌려준다.
+//   한 목록 · 한 범위(미디어 끔 · 기간 · 새 글만 …)의 판이 그 엑셀에 줄을 넣으면 다른 목록의 표시도 더는 믿을 수 없다 —
+//   제 표시만 지우면, 남은 표시가 그 판이 넣은 맨 위 조각에서 다음 판을 일찍 멈추게 했다(검토).
+QStringList takeCleanWalkMarks(const QString &dir, const QString &prefix);
+// 받지 못한 것(<dir>/.hanishiki_walkfail_<kind>.json) — 지난 판에도 못 받은 것이 또 실패하면(지워진 미디어 · 막힌 주소) 영영 안 되는
+//   것으로 보아 표시를 더는 막지 않는다. 처음 실패한 것은 막는다(다음 판이 끝까지 보며 다시 받는다). 늘 실패하는 것 하나로
+//   그 대상의 일찍 멈춤이 영영 켜지지 않던 것(검토). take 는 읽고 지운다. put 은 이번 판의 것을 적는다(비면 적지 않는다).
+QSet<QString> takeWalkFailures(const QString &dir, const QString &kind);
+void putWalkFailures(const QString &dir, const QString &kind, const QSet<QString> &ids);
 
 // 저장 경로 2개 중 공간 충분한 곳 선택. primary가 thresholdGB 이상이면 그대로 primary,
 // 아니면 secondary 사용. secondary도 부족하면 그래도 primary 반환 (사용자가 알게).

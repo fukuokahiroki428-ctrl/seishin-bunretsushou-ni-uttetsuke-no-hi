@@ -104,7 +104,7 @@ private:
 
     // Excel export — streaming from DiskJsonBuffer (no readAll)
     void saveExcel(const QString &saveDir, const QString &target, const QJsonArray &data, const QString &suffix = "tweets");
-    void saveExcelStreaming(const QString &saveDir, const QString &target, DiskJsonBuffer &buffer, const QString &suffix = "tweets");
+    int saveExcelStreaming(const QString &saveDir, const QString &target, DiskJsonBuffer &buffer, const QString &suffix = "tweets");   // 새로 담은 줄 수
 
     // Rate limit handling
     void handleRateLimit(const QJsonArray &accounts, int &currentIdx, const std::atomic<bool> &isRunning);
@@ -158,6 +158,12 @@ private:
 
     // 새트윗 확인용
     QString m_newestTweetId;
+    bool m_lastPageShaped = false;       // 마지막 타임라인 쪽(UserTweets · 좋아요 · 북마크)이 제 모양이었나(instructions 있고 errors 없음) —
+                                         //   트윗 없는 쪽이 '목록 끝' 인지 '막힌 응답' 인지 가른다
+    int m_mediaFailures = 0;             // 받지 못한 미디어 수 — 좋아요 · 북마크 · 리포스트 걸음의 '끊김 없이 다 봄' 판정
+    QSet<QString> m_allKnownSnapshot;    // '전체' 판을 시작하기 전의 _complete 엑셀 ID — 하위 판(트윗 → 답글)이 서로의 것을 '이미 받은' 으로 세지 않게
+    bool m_allKnownSnapshotSet = false;
+    QSet<QString> m_allArmedLists;       // '전체' 판을 시작할 때 있던 tw_tweets_* 표시(search · timeline · replies) — 하위 판이 나눠 쓴다
     QString m_currentTarget;
     QString m_currentUserDir;
 

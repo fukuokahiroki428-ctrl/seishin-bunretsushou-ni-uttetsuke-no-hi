@@ -268,6 +268,9 @@ QJsonObject BlueskyCollector::sendCommand(const QJsonObject &cmd, const std::ato
     if (!m_daemon || !m_daemonReady) return {{"error", "Daemon not available"}};
 
     int lastCount = 0, lastMedia = 0;  // 마지막 progress 값 (중지 시 반환용)
+    // 마지막 progress 의 새 글 수 · 가장 새 제 글(중지 · 시간 초과 때도 대상 목록에 남기려고). 기본 QJsonValue 는 Null 이라
+    //   '받은 적 없음' 을 가리려면 Undefined 로 시작해야 한다(Null 이면 '새 0' 으로 적혔다 — 검토)
+    QJsonValue lastFresh(QJsonValue::Undefined), lastNewest(QJsonValue::Undefined);
 
     QByteArray cmdLine = QJsonDocument(cmd).toJson(QJsonDocument::Compact) + "\n";
     m_daemon->write(cmdLine);
@@ -319,6 +322,8 @@ QJsonObject BlueskyCollector::sendCommand(const QJsonObject &cmd, const std::ato
                 QJsonObject p = msg["progress"].toObject();
                 lastCount = p["count"].toInt();
                 lastMedia = p["media"].toInt();
+                if (p.contains("fresh")) lastFresh = p["fresh"];
+                if (p.contains("newest")) lastNewest = p["newest"];
                 m_backend->updateStats(lastCount, lastMedia,
                                        p["status"].toString("수집 중..."), "bluesky");
                 continue;
@@ -336,9 +341,14 @@ QJsonObject BlueskyCollector::sendCommand(const QJsonObject &cmd, const std::ato
         r["error"] = "Stopped by user";
         r["count"] = lastCount;
         r["media"] = lastMedia;
+        if (!lastFresh.isUndefined()) r["new_count"] = lastFresh;
+        if (!lastNewest.isUndefined()) r["newest"] = lastNewest;
         return r;
     }
-    return {{"error", "Timeout"}};
+    QJsonObject t{{"error", "Timeout"}};
+    if (!lastFresh.isUndefined()) t["new_count"] = lastFresh;
+    if (!lastNewest.isUndefined()) t["newest"] = lastNewest;
+    return t;
 }
 
 // ── Main collect ──
@@ -374,6 +384,24 @@ void BlueskyCollector::collect(const QJsonObject &config, const std::atomic<bool
     if (target.startsWith("@")) target = target.mid(1);
 
     QString type = config["type"].toString("posts");
+    // ★ 화면의 '미디어만' 은 media_only 로 오는데 데몬은 media 만 안다 — 'Unknown action' 으로 아무것도 안 받았다
+    if (type == QLatin1String("media_only")) type = QStringLiteral("media");
+    // ★ 대상 목록의 다중 수집은 replies · reposts 로 보낸다(단일은 includeReplies · includeReposts) — 둘 다 읽는다.
+    //   예전엔 다중 수집에서 대상별 '답글포함' · '리포스트' 가 먹지 않았다.
+    const bool incReplies = config.contains("includeReplies") ? config["includeReplies"].toBool(true) : config["replies"].toBool(true);
+    const bool incReposts = config.contains("includeReposts") ? config["includeReposts"].toBool(true) : config["reposts"].toBool(true);
+    // 이미 받은 글이 이만큼 이어지면 그 종류를 끝냄(0 = 끝까지) — 데몬이 엑셀로 '이미 받은 글' 을 안다
+    const int stopAfterKnown = qMax(0, config["stopAfterKnown"].toInt(0));
+    // 데몬이 돌려준 이번 판 결과를 대상 목록에 남긴다(새 글 수 · 가장 새 제 글 · 일찍 멈춤 · API 오류)
+    auto noteResult = [this](const QJsonObject &result, const QString &what) {
+        if (result.contains("new_count")) m_backend->noteTrackFresh(result["new_count"].toInt(0));
+        const qint64 newest = static_cast<qint64>(result["newest"].toDouble(0));
+        if (newest > 0) m_backend->noteTrackNewest(newest);
+        if (result["stopped_known"].toInt(0) > 0) m_backend->noteTrackEarlyStop(result["stopped_known"].toInt(0));
+        if (result.contains("api_error"))
+            m_backend->log(QString("%1: 블루스카이가 도중에 오류로 답해 거기까지만 받았습니다 — %2").arg(what, result["api_error"].toString().left(200)),
+                           "error", "bluesky");
+    };
 
     // Rate Limit 옵션
     m_rateLimitWait = config["rateLimitWait"].toBool(false);
@@ -405,8 +433,9 @@ void BlueskyCollector::collect(const QJsonObject &config, const std::atomic<bool
             cmd["save_path"] = basePath;
             cmd["download_media"] = config["media"].toBool(true);
             cmd["exif"] = config["exif"].toBool(true);
-            cmd["include_replies"] = config["includeReplies"].toBool(true);
-            cmd["include_reposts"] = config["includeReposts"].toBool(true);
+            cmd["include_replies"] = incReplies;
+            cmd["include_reposts"] = incReposts;
+            cmd["stop_after_known"] = stopAfterKnown;
             // 전체 다운로드 모드: 항상 대기+재시도 (15분)
             cmd["rl_mode"] = "wait";
             cmd["rl_wait_mins"] = 15;
@@ -421,6 +450,7 @@ void BlueskyCollector::collect(const QJsonObject &config, const std::atomic<bool
             int media = result["media"].toInt(0);
             totalCount += count;
             totalMedia += media;
+            noteResult(result, subType);
 
             if (result.contains("error")) {
                 QString err = result["error"].toString();
@@ -452,8 +482,9 @@ void BlueskyCollector::collect(const QJsonObject &config, const std::atomic<bool
     cmd["exif"] = config["exif"].toBool(true);
     // ★ 화면의 '답글 포함'·'리포스트 포함' — 예전엔 보내기만 하고 아무도 안 읽어서
     //   체크를 풀어도 그대로 다 받았다. 데몬까지 내려 준다.
-    cmd["include_replies"] = config["includeReplies"].toBool(true);
-    cmd["include_reposts"] = config["includeReposts"].toBool(true);
+    cmd["include_replies"] = incReplies;
+    cmd["include_reposts"] = incReposts;
+    cmd["stop_after_known"] = stopAfterKnown;
     // Rate Limit 모드: 사용자 선택에 따라
     cmd["rl_mode"] = m_rateLimitWait ? "wait" : "stop";
     cmd["rl_wait_mins"] = m_rateLimitWaitMins;
@@ -469,8 +500,13 @@ void BlueskyCollector::collect(const QJsonObject &config, const std::atomic<bool
     QJsonObject result = sendCommand(cmd, isRunning, 24 * 3600 * 1000);  // 24h timeout
 
     if (result.contains("error")) {
-        m_backend->log("오류: " + result["error"].toString(), "error", "bluesky");
+        noteResult(result, type);   // 중지 · 시간 초과여도 그때까지의 새 글 수 · 가장 새 글은 남긴다
+        if (result["error"].toString() == QLatin1String("Stopped by user"))
+            m_backend->log("중지했습니다 — 엑셀에 담지 못한 글은 다음 판에 다시 받습니다", "warning", "bluesky");   // 데몬은 명령 끝에서야 엑셀을 쓴다
+        else
+            m_backend->log("오류: " + result["error"].toString(), "error", "bluesky");
     } else {
+        noteResult(result, type);
         int count = result["count"].toInt(result["posts"].toInt(0));
         int media = result["media"].toInt(0);
         m_backend->log(QString("완료! %1: %2, Media: %3").arg(type).arg(count).arg(media), "success", "bluesky");
@@ -481,7 +517,7 @@ void BlueskyCollector::collect(const QJsonObject &config, const std::atomic<bool
             QString shortHandle = target;
             if (shortHandle.endsWith(".bsky.social")) shortHandle.chop(QString(".bsky.social").size());
             QString xlsxName;
-            if (type == "posts" || type == "media_only") xlsxName = shortHandle + "_posts.xlsx";
+            if (type == "posts" || type == "media") xlsxName = shortHandle + "_posts.xlsx";   // media_only 는 위에서 media 로 바꿨다
             else if (type == "replies") xlsxName = shortHandle + "_replies.xlsx";
             else if (type == "likes") xlsxName = shortHandle + "_likes.xlsx";
             else xlsxName.clear();

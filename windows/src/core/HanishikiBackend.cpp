@@ -27,6 +27,8 @@ using FileHelper::sanitizeFilename;
 #include <QClipboard>
 #include <QFileDialog>
 #include <QJsonDocument>
+#include <optional>
+#include <cstdio>
 #include <QDesktopServices>
 #include <QInputDialog>
 #include <QProcess>
@@ -3967,6 +3969,12 @@ void HanishikiBackend::log(const QString &message, const QString &type, const QS
         m_recentProblems.append({QDateTime::currentMSecsSinceEpoch(), p, type, message.left(400)});
         if (m_recentProblems.size() > 120) m_recentProblems.remove(0, m_recentProblems.size() - 120);
     }
+    // 병렬 트랙의 오류 줄을 센다 — 대상 목록의 '오류 난 것만 다시'(트위터 · 블루스카이 · 텀블러 · 팬박스 · 스핀스핀 ·
+    //   Asked 는 실패해도 '완료' 로 끝나 오류가 표에 남지 않았다)
+    if (type == QLatin1String("error")) {
+        const QString tk = currentThreadTrackKey();
+        if (!tk.isEmpty()) { QMutexLocker lk(&m_trackMetaMutex); m_trackMeta[tk].errors++; }
+    }
     // JS log box는 platform 단위 (탭 하나에 모든 병렬 로그 표시)
     emit logSignal(message, type, p);
     // 터미널 파일 — platform 명시된 경우만 write (섞임 방지)
@@ -3990,6 +3998,39 @@ QString HanishikiBackend::currentThreadTrackKey() const
 {
     QMutexLocker lock(&m_threadTrackKeyMutex);
     return m_threadTrackKey.value(QThread::currentThreadId());
+}
+void HanishikiBackend::noteTrackFresh(int newPosts)
+{
+    const QString tk = currentThreadTrackKey();
+    if (tk.isEmpty()) return;
+    QMutexLocker lk(&m_trackMetaMutex);
+    TrackMeta &m = m_trackMeta[tk];
+    m.fresh += qMax(0, newPosts);
+    m.freshKnown = true;
+}
+void HanishikiBackend::noteTrackNewest(qint64 msSinceEpoch)
+{
+    const QString tk = currentThreadTrackKey();
+    if (tk.isEmpty() || msSinceEpoch <= 0) return;
+    // 앞날(시계가 틀린 글 · 예약 글)은 믿지 않는다 — 뜸한 계정 판정이 흔들린다
+    if (msSinceEpoch > QDateTime::currentMSecsSinceEpoch() + 86400000LL) return;
+    QMutexLocker lk(&m_trackMetaMutex);
+    TrackMeta &m = m_trackMeta[tk];
+    m.newest = qMax(m.newest, msSinceEpoch);
+}
+void HanishikiBackend::noteTrackEarlyStop(int knownStreak)
+{
+    const QString tk = currentThreadTrackKey();
+    if (tk.isEmpty()) return;
+    QMutexLocker lk(&m_trackMetaMutex);
+    m_trackMeta[tk].early = qMax(1, knownStreak);
+}
+
+void HanishikiBackend::noteCollectionFatal()
+{
+    ++m_collectionErrorCount;
+    const QString tk = currentThreadTrackKey();
+    if (!tk.isEmpty()) { QMutexLocker lk(&m_trackMetaMutex); m_trackMeta[tk].fatal++; }
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -5514,7 +5555,11 @@ void HanishikiBackend::startCollection(const QString &configJson)
         // ★ 병렬 모드: 워커 스레드가 자기 trackKey 등록 → 모든 log() 호출이
         //   thread-local lookup을 통해 trackKey의 터미널 파일에만 라우팅된다.
         //   이게 없으면 모든 터미널이 platform="twitter"로 수렴된 같은 로그를 보게 됨.
-        if (isParallel) setThreadTrackKey(trackKey);
+        if (isParallel) {
+            setThreadTrackKey(trackKey);
+            QMutexLocker lk(&m_trackMetaMutex);
+            m_trackMeta.remove(trackKey);   // 이번 판 결과를 새로 모은다
+        }
 
         // ★ 계정별 프록시 — 이 수집이 쓸 계정에 프로필이 붙어 있으면 이 스레드에만 건다.
         //   전역 하나를 바꿔 끼우면 동시에 도는 다른 수집이 그 설정을 같이 타 버린다.
@@ -5632,7 +5677,8 @@ void HanishikiBackend::startCollection(const QString &configJson)
         if (isParallel) clearThreadTrackKey();
         // 완료 처리 (메인 스레드)
         QThread *workerSelf = QThread::currentThread();
-        QMetaObject::invokeMethod(this, [this, platformName, trackKey, isParallel, workerSelf]() {
+        const QString tgtLabel = config["_parallelTargetLabel"].toString();   // 판 결과가 그 대상에 붙었는지 화면이 확인한다
+        QMetaObject::invokeMethod(this, [this, platformName, trackKey, isParallel, workerSelf, tgtLabel]() {
             // ★ stale 완료 콜백 가드 — 이 trackKey 를 새 스레드가 이미 넘겨받았으면
             //   (재시작 레이스) 새 수집의 플래그/터미널/맵을 건드리지 않는다.
             if (m_collectionThreads.value(trackKey) != workerSelf) return;
@@ -5657,6 +5703,16 @@ void HanishikiBackend::startCollection(const QString &configJson)
                 log(QString("Complete. (%1)").arg(trackKey), "success", platformName);
                 // ★ 자가수리 계층 — 오류 다발 시 로컬 LLM 원인 진단 (백그라운드, 미가동 시 무시)
                 llmDiagnoseIfBroken(platformName, trackKey);
+            }
+            // 이 대상의 이번 판 결과 — 끝 신호 뒤에 보낸다(화면은 끝 신호로 entry.last 를 만들고, 여기서 채운다)
+            if (isParallel) {
+                TrackMeta tm;
+                { QMutexLocker lk(&m_trackMetaMutex); tm = m_trackMeta.take(trackKey); }
+                QJsonObject o{{"errors", tm.errors}, {"newest", double(tm.newest)}, {"early", tm.early}, {"stopped", wasStopped},
+                              {"target", tgtLabel}};
+                if (tm.freshKnown) o["fresh"] = tm.fresh;
+                runJsAll(QStringLiteral("window._tlTrackEnd && _tlTrackEnd(%1, %2)")
+                             .arg(Common::jsStringLiteral(statsKey), QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact))));
             }
             // 병렬: platform 단위 setRunning(false)는 모든 trackKey가 끝났을 때만
             bool platformIdle = !platformRunning(platformName);
@@ -10453,6 +10509,10 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     QString savePath = config["path"].toString();
     if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
     int maxCount = config["count"].toInt(0); // 0 = all
+    // ★ 다 받은 곳에서 일찍 멈추기(사용자 2026-10-24) — 이미 받은 게시물 · 릴스가 이만큼 이어지면 그 종류를 끝낸다(0 = 끝까지)
+    const int igStopAfterKnown = qMax(0, config["stopAfterKnown"].toInt(0));
+    int igFresh = 0, igKnownStop = 0;   // 대상 목록에 남길 이번 판 결과 — 새로 받은 게시물 · 릴스 수, 일찍 멈춘 연속 수
+    qint64 igNewestMs = 0;              // 이 계정의 가장 새 글(게시물 · 릴스 — 태그된 글은 남의 글이라 빼고)
     bool saveExcel = config["excel"].toBool(true);
     QString igType = config["type"].toString("posts");
 
@@ -10960,6 +11020,14 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     //   첫 쪽은 위에서 사용자 번호를 얻느라 이미 받아 두었으니 그대로 쓴다(한 번 덜 묻는다).
     bool igUsedFirstPage = false;
     QString prevCursor;
+    int igPostPage = 0, igPostStreak = 0;
+    // ★ 지난번에 게시물을 끊김 없이 다 본 적이 있어야 일찍 멈춘다(끊긴 판 뒤에는 한 번 끝까지 보아 사이를 메운다 — 검토)
+    const bool igPostsArmed = igWantPosts && Common::takeCleanWalkMark(userDir, "ig_posts");
+    const int igPostN = igPostsArmed ? igStopAfterKnown : 0;
+    bool igPostsClean = false, igPostsBroken = false;   // 끊김 없이 끝났나 · 받지 못한 게시물이 있었나
+    // 받지 못한 게시물 — 두 판 잇따라 같은 게시물이 실패하면 영영 안 되는 것으로 보아 표시를 더는 막지 않는다
+    const QSet<QString> igPrevPostFailed = igWantPosts ? Common::takeWalkFailures(userDir, "ig_posts") : QSet<QString>();
+    QSet<QString> igPostFailed, igPostSeen;
     if (!igWantPosts) hasMore = false;   // 게시물을 고르지 않았으면 한 쪽도 훑지 않는다
     while (hasMore && platformRunning("instagram")) {
         QJsonObject conn;
@@ -11006,12 +11074,16 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             items.append(e.toObject().contains("node") ? e.toObject()["node"] : e);
         if (items.isEmpty()) break;
 
+        int igItemIdx = -1;
         for (const auto &itemVal : items) {
             if (!platformRunning("instagram")) break;
             QJsonObject node = itemVal.toObject();
+            ++igItemIdx;
+            const int igMediaBefore = mediaDownloaded;   // 이 게시물이 새 파일을 하나도 안 보탰으면 '이미 받은 것'
 
             int mediaType = node["media_type"].toInt();
             QString code = node["code"].toString();
+            if (!code.isEmpty()) igPostSeen.insert(code);
             // Timestamp for file metadata
             qint64 takenAt = node["taken_at"].toVariant().toLongLong();
             if (takenAt == 0) takenAt = node["taken_at_timestamp"].toVariant().toLongLong();
@@ -11101,6 +11173,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             };
 
             bool nodeDownloaded = false; // Excel용: 실제 다운로드 성공 여부
+            bool nodeFailed = false;     // 이 게시물의 미디어 하나라도 못 받았나(카루셀 한 장 · 주소 없음) — 일찍 멈추기 표시를 막는다
 
             if (mediaType == 8) {
                 // Carousel
@@ -11123,12 +11196,20 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                         QJsonArray ic = cItem["image_versions2"].toObject()["candidates"].toArray();
                         if (!ic.isEmpty()) {
                             cUrl = ic[0].toObject()["url"].toString();
-                            if (cType != 2) cExt = "jpg";
+                            // ★ 영상 칸인데 영상 주소가 없으면 썸네일을 .jpg 로 받는다 — 예전엔 '.mp4' 이름에 JPEG 를 담아, 뒤에 영상 주소가
+                            //   와도 그 파일이 '있다' 로 보여 영상을 영영 안 받았다(검토). 영상은 아직 못 받은 것으로 친다
+                            if (cType == 2) {
+                                nodeFailed = true;
+                                log(QString("⚠️ 카루셀 영상 %1/%2 video_versions 없음, 썸네일 저장 (code=%3)")
+                                        .arg(ci).arg(carousel.size()).arg(code), "warning", "instagram");
+                            }
+                            cExt = "jpg";
                         }
                     }
                     if (cUrl.isEmpty()) {
                         log(QString("⚠️ 카루셀 아이템 %1/%2 URL 없음 (code=%3, type=%4)")
                             .arg(ci).arg(carousel.size()).arg(code).arg(cType), "warning", "instagram");
+                        nodeFailed = true;
                         continue;
                     }
                     if (cExt.isEmpty()) cExt = cUrl.contains("mp4") ? "mp4" : "jpg";
@@ -11141,6 +11222,8 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                         mediaDownloaded++;
                         nodeDownloaded = true;
                         if (cType == 2) vidCount++; else imgCount++;
+                    } else {
+                        nodeFailed = true;   // 한 장이라도 못 받은 카루셀 — 받은 장이 있어도 다음 판이 다시 보아야 한다(검토)
                     }
                 }
             } else if (mediaType == 2) {
@@ -11155,6 +11238,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                     if (!ic.isEmpty()) {
                         vUrl = ic[0].toObject()["url"].toString();
                         log(QString("⚠️ 비디오 video_versions 없음, 썸네일 저장 (code=%1)").arg(code), "warning", "instagram");
+                        nodeFailed = true;   // 영상은 아직 못 받았다 — 다음 판이 다시 본다(두 판 잇따르면 넘어간다)
                         QString fp = mediaDir + "/" + igFilename("jpg");
                         if (QFile::exists(fp)) {
                             nodeDownloaded = true;
@@ -11164,6 +11248,8 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                             mediaDownloaded++;
                             imgCount++;
                             nodeDownloaded = true;
+                        } else {
+                            nodeFailed = true;
                         }
                         vUrl.clear();
                     } else {
@@ -11180,6 +11266,8 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                         mediaDownloaded++;
                         vidCount++;
                         nodeDownloaded = true;
+                    } else {
+                        nodeFailed = true;
                     }
                 }
             } else {
@@ -11245,8 +11333,29 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             }
 
             updateStats(allMedia.count(), mediaDownloaded, "수집 中", "instagram");
+            if (postDt.isValid()) igNewestMs = qMax(igNewestMs, postDt.toMSecsSinceEpoch());
+            // 다 받은 곳에서 일찍 멈추기 — 첫 쪽 맨 위 셋은 고정 글(옛 글)일 수 있어 세지도 끊지도 않는다.
+            //   다운로드가 안 된 게시물(실패 · 미디어 끔)도 중립이다.
+            {
+                const bool igMaybePinned = (igPostPage == 0 && igItemIdx < 3);
+                if ((!nodeDownloaded || nodeFailed) && platformRunning("instagram")) {   // 중지로 끊긴 받기는 실패가 아니다
+                    if (!code.isEmpty()) igPostFailed.insert(code);   // 처음 실패한 것은 다음 판이 다시 본다
+                    else igPostsBroken = true;
+                }
+                if (mediaDownloaded > igMediaBefore) { ++igFresh; igPostStreak = 0; }
+                else if (nodeDownloaded && !igMaybePinned && igPostN > 0 && ++igPostStreak >= igPostN) {
+                    igKnownStop = qMax(igKnownStop, igPostStreak);
+                    log(QString("이미 받은 게시물이 %1개 이어져 여기서 멈춥니다 — 새 게시물 %2개").arg(igPostStreak).arg(igFresh), "info", "instagram");
+                    igPostsClean = true;
+                    hasMore = false;
+                    break;
+                }
+            }
             if (maxCount > 0 && allMedia.count() >= maxCount) { hasMore = false; break; }
         }
+        ++igPostPage;
+        // 마지막 쪽까지 끊김 없이 봤다(최대 수 · 중지로 멈춘 것은 아님)
+        if (!hasMore && !(maxCount > 0 && allMedia.count() >= maxCount) && platformRunning("instagram")) igPostsClean = true;
 
         // Detailed batch log with date — use last item's date
         QDateTime batchDt;
@@ -11320,12 +11429,43 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     }
 
     // ── Reels 수집 ──
-    if (effectiveConfig["reels"].toBool(false) && platformRunning("instagram")) {
+    // 받아 둔 릴스 — 파일 이름 'username (<code>_yyyyMMdd_HHmm_reel).mp4' 의 코드(코드에 _ 가 들 수 있어 날짜 앞에서 자른다)
+    if (igWantPosts) {
+        const QSet<QString> igNewFails = igPostFailed - igPrevPostFailed;
+        if (!igNewFails.isEmpty()) {
+            igPostsBroken = true;
+            if (igStopAfterKnown > 0)   // 일찍 멈춤을 쓸 때만 안내한다 — 끄면 판마다 끝까지 보며 다시 받는다
+                log(QString("받지 못한 게시물 %1개 — 다음 판은 끝까지 보며 다시 받습니다").arg(igNewFails.size()), "warning", "instagram");
+        }
+        if (const int gaveUp = igStopAfterKnown > 0 ? int((igPostFailed & igPrevPostFailed).size()) : 0)
+            log(QString("두 판 잇따라 받지 못한 게시물 %1개는 일찍 멈춤을 더는 막지 않습니다(지워졌거나 막힌 듯 — 4~5주마다 끝까지 볼 때 다시 받아 봅니다)").arg(gaveUp), "info", "instagram");
+        Common::putWalkFailures(userDir, "ig_posts", igPostFailed + (igPrevPostFailed - igPostSeen));
+    }
+    if (igPostsClean && !igPostsBroken) Common::putCleanWalkMark(userDir, "ig_posts");
+    QSet<QString> igKnownReels;
+    int igReelStreak = 0;
+    // 릴스 단계가 정말 돌 때만 그 표시 · 실패 기록을 건드린다 — 게시물 단계에서 중지하면 릴스는 보지 않았다(지우면 지난 기록을 잃었다 — 검토)
+    const bool igReelsRun = effectiveConfig["reels"].toBool(false) && platformRunning("instagram");
+    const bool igReelsArmed = igReelsRun && Common::takeCleanWalkMark(userDir, "ig_reels");
+    const int igReelN = igReelsArmed ? igStopAfterKnown : 0;
+    bool igReelsClean = false;
+    const QSet<QString> igPrevReelFailed = igReelsRun ? Common::takeWalkFailures(userDir, "ig_reels") : QSet<QString>();
+    QSet<QString> igReelFailed, igReelSeen;   // 영상 주소 · 영상을 못 받은 릴스 — 두 판 잇따르면 넘어간다
+    if (igReelN > 0) {
+        static const QRegularExpression reReel(R"(\((.+?)(?:_\d{8}_\d{4})?_reel\)\.mp4$)");
+        for (const QString &f : QDir(reelsDir).entryList(QDir::Files)) {
+            const auto mm = reReel.match(f);
+            if (mm.hasMatch()) igKnownReels.insert(mm.captured(1));
+        }
+    }
+    if (igReelsRun) {
         log("릴스 수집 중...", "info", "instagram");
         // ★ 옛 POST /api/v1/clips/user/ 도 302 로 죽었다(실측 2026-09-24). 게시물과 같이 GraphQL 로.
         int reelsCount = 0;
         int reelsSeen = 0;          // 고른 '개수' 는 릴스에도 걸린다(예전엔 게시물에만 걸렸다)
         int reelsNoUrl = 0;         // 영상 주소를 끝내 못 찾은 것
+        int reelsDlFail = 0;        // 영상을 받다 실패한 것(시간 초과 · CDN 오류) — 표시를 막아 다음 판이 다시 받는다(검토)
+        int reelsAnonFail = 0;      // 그중 코드가 없어 두 판을 가릴 수 없는 것 — 늘 표시를 막는다
         QString reelsMaxId, prevReelsCursor;
         int reelsPages = 0;
 
@@ -11371,10 +11511,26 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             if (items.isEmpty()) break;
 
             bool reelsEnough = false;
+            int igReelIdx = -1;
             for (const auto &item : items) {
                 if (maxCount > 0 && reelsSeen >= maxCount) { reelsEnough = true; break; }
                 reelsSeen++;
+                ++igReelIdx;
                 QJsonObject media = item.toObject()["media"].toObject();
+                if (igReelN > 0) {
+                    const QString rc = media["code"].toString();
+                    if (!rc.isEmpty() && igKnownReels.contains(rc)) {
+                        // 첫 쪽 맨 위 셋은 고정 릴스(옛 것)일 수 있어 세지 않는다
+                        if (!(reelsPages == 1 && igReelIdx < 3) && ++igReelStreak >= igReelN) {
+                            igKnownStop = qMax(igKnownStop, igReelStreak);
+                            log(QString("이미 받은 릴스가 %1개 이어져 여기서 멈춥니다").arg(igReelStreak), "info", "instagram");
+                            igReelsClean = true;
+                            reelsEnough = true;
+                            break;
+                        }
+                        continue;   // 받아 둔 릴스(파일이 있다) — 낱장 정보를 다시 묻지 않는다
+                    }
+                }
                 // ★ 릴스 탭 질의는 영상 주소도 찍은 날짜도 주지 않는다
                 //   (실측 2026-09-24: code·pk·썸네일만 온다).
                 //   그래서 예전에는 릴스가 한 장도 받아지지 않았고, 그런데도 '릴스: 0개' 라고만 적혀
@@ -11400,7 +11556,12 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                 if (!videoVersions.isEmpty()) {
                     videoUrl = videoVersions[0].toObject()["url"].toString();
                 }
-                if (videoUrl.isEmpty()) reelsNoUrl++;
+                const QString reelCode = media["code"].toString();
+                if (!reelCode.isEmpty()) igReelSeen.insert(reelCode);
+                if (videoUrl.isEmpty()) {
+                    reelsNoUrl++;
+                    if (reelCode.isEmpty()) ++reelsAnonFail; else igReelFailed.insert(reelCode);
+                }
                 if (!videoUrl.isEmpty()) {
                     QString code = media["code"].toString();
                     qint64 reelTa = media["taken_at"].toVariant().toLongLong();
@@ -11409,7 +11570,14 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                     QString reelName = sanitizeFilename(username + " (" + code + (reelDate.isEmpty() ? "" : "_" + reelDate) + "_reel).mp4", 200);
                     QString reelPostUrl = code.isEmpty() ? "" : QString("https://www.instagram.com/reel/%1/").arg(code);
                     QString filepath = reelsDir + "/" + reelName;
-                    if (!QFile::exists(filepath) && http.downloadFile(videoUrl, filepath)) {
+                    const bool reelHad = QFile::exists(filepath);
+                    if (!reelHad && !http.downloadFile(videoUrl, filepath)) {
+                        if (platformRunning("instagram")) {   // 중지로 끊긴 받기는 실패가 아니다
+                            reelsDlFail++;
+                            if (code.isEmpty()) ++reelsAnonFail; else igReelFailed.insert(code);
+                        }
+                    }
+                    else if (!reelHad) {
                         qint64 ta = media["taken_at"].toVariant().toLongLong();
                         QDateTime rDt = ta > 0 ? QDateTime::fromSecsSinceEpoch(ta, QTimeZone::utc()) : QDateTime();
                         // EXIF → Finder comment → xattr+mtime
@@ -11426,19 +11594,30 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                         }
                         mediaDownloaded++;
                         reelsCount++;
+                        ++igFresh;
+                        igReelStreak = 0;
                     }
+                    if (reelDt.isValid()) igNewestMs = qMax(igNewestMs, reelDt.toMSecsSinceEpoch());
                 }
                 allMedia.append(media);
             }
 
+            if (!reelsMore && !reelsEnough && platformRunning("instagram")) igReelsClean = true;   // 마지막 쪽까지 봤다
             if (reelsEnough || !reelsMore) break;
             updateStats(allMedia.count(), mediaDownloaded, "수집 중", "instagram");
             igConsecutiveOk++; if (igConsecutiveOk > 5) { igDelay = qMax(igDelay * 0.9, igBaseDelay); igRateLimitHits = 0; } QThread::msleep(static_cast<unsigned long>(igDelay * 1000));
         }
+        const QSet<QString> igNewReelFails = igReelFailed - igPrevReelFailed;
+        Common::putWalkFailures(userDir, "ig_reels", igReelFailed + (igPrevReelFailed - igReelSeen));
+        // 영상 주소 · 영상을 처음 못 받은 릴스가 있으면 다음 판이 끝까지 보며 다시 받는다(두 판 잇따른 것은 넘어간다).
+        //   코드가 없는 릴스의 실패는 가릴 수 없어 늘 막는다
+        if (igReelsClean && igNewReelFails.isEmpty() && reelsAnonFail == 0) Common::putCleanWalkMark(userDir, "ig_reels");
         log(QString("릴스: %1개").arg(reelsCount), "success", "instagram");
         if (reelsNoUrl > 0)
             log(QString("릴스 %1개는 영상 주소를 받지 못해 빠졌습니다 — 잠시 뒤에 다시 해 보십시오.")
                     .arg(reelsNoUrl), "warning", "instagram");
+        if (reelsDlFail > 0)
+            log(QString("릴스 %1개는 영상을 받다 실패했습니다 — 다음 판에 다시 받습니다.").arg(reelsDlFail), "warning", "instagram");
     }
 
     // ── 태그된 글 수집 ── (유형에서 '태그됨' 을 고른 때만)
@@ -11678,6 +11857,10 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
         }
     }
 
+    // 대상 목록에 남길 이번 판 결과 — 새로 받은 게시물 · 릴스, 이 계정의 가장 새 글, 일찍 멈춤
+    noteTrackFresh(igFresh);
+    if (igNewestMs > 0) noteTrackNewest(igNewestMs);
+    if (igKnownStop > 0) noteTrackEarlyStop(igKnownStop);
     updateStats(allMedia.count(), mediaDownloaded, "저장 중", "instagram");
 
     if (saveExcel && allMedia.count() > 0) {
@@ -12690,7 +12873,10 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
 
 void HanishikiBackend::runPixivCollection(const QJsonObject &config)
 {
-    CollectionGuard _cg(platformSem("pixiv"), this, "pixiv");
+    // ★ '전체' 는 자기 자신을 user · bookmarks 로 다시 부른다. 안쪽 부름까지 동시성 자리를 잡으면 바깥이 쥔 자리를
+    //   기다리며 영영 멈췄다(전체 대상 둘이 함께 돌거나 동시 1개일 때 — 검토). 안쪽은 자리를 잡지 않는다.
+    std::optional<CollectionGuard> _cg;
+    if (!config["_nested"].toBool(false)) _cg.emplace(platformSem("pixiv"), this, "pixiv");
     setIntegrityActiveForPlatform("pixiv", config["integrityCheck"].toBool(false));
     if (config["method"].toString() == "chrome") {
         runRealChromeCollection(config);
@@ -12706,6 +12892,11 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
     QString savePath = config["path"].toString();
     if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
     int maxCount = config["count"].toInt(0);
+    // ★ 다 받은 곳에서 일찍 멈추기(사용자 2026-10-24) — 이번 판 전에 받아 둔 작품이 이만큼 이어지면 끝낸다(0 = 끝까지)
+    const int pxStopAfterKnown = qMax(0, config["stopAfterKnown"].toInt(0));
+    int pxFresh = 0, pxKnownStop = 0;   // 대상 목록에 남길 이번 판 결과 — 새로 받은 작품 수 · 일찍 멈춘 연속 수
+    bool pxFreshKnown = false;          // 작품 목록을 돌았나(소설만 · 낱장은 새 글 수를 모른다)
+    qint64 pxNewestMs = 0;              // 이 작가의 가장 새 작품(파일 이름 앞의 올린 시각 — 일본 시간)
     double delay = config["delay"].toDouble(1.5);
     bool ugoiraGif = config["ugoiraGif"].toBool(true);
     bool saveExcel = config["excel"].toBool(true);
@@ -12733,17 +12924,29 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
         // ★ 디스코드와 같은 구조라 같은 고장이 있었다 — runPixivCollection() 이 void 라
         //   하위 수집이 전부 실패해도 결과를 보지 않고 "전체 수집 완료!" 를 success 로
         //   찍었다. 아카이버에서 이건 가장 나쁘다(받았다고 믿고 넘어간다).
-        m_collectionErrorCount = 0;
+        // ★ 통째로 실패한 하위 판을 이 트랙에서만 센다 — 함께 도는 다른 트랙이 공용 m_collectionErrorCount 를 올려
+        //   멀쩡한 대상이 '전체 수집 실패' 로 적혔다(검토). 쪽 하나 실패 같은 오류 줄은 세지 않는다(단일 판과 같게 — 검토).
+        //   트랙이 없는 판(단일)은 예전 공용 값을 쓴다.
+        const QString tkAll = currentThreadTrackKey();
+        auto errNow = [&]() -> int {
+            if (tkAll.isEmpty()) return m_collectionErrorCount;
+            QMutexLocker lk(&m_trackMetaMutex);
+            return m_trackMeta.value(tkAll).fatal;
+        };
+        if (tkAll.isEmpty()) m_collectionErrorCount = 0;
+        const int errStart = errNow();
         for (int i = 0; i < subTypes.size(); ++i) {
             if (!platformRunning("pixiv")) break;
             log(QString("▶ [%1/%2] %3 수집...").arg(i+1).arg(subTypes.size()).arg(subTypes[i]), "info", "pixiv");
             QJsonObject subConfig = config;
             subConfig["type"] = subTypes[i];
+            subConfig["_nested"] = true;
             runPixivCollection(subConfig);
         }
-        if (m_collectionErrorCount > 0) {
+        const int errAll = errNow() - errStart;
+        if (errAll > 0) {
             log(QString("═══ 전체 수집 실패 — %1건이 오류로 끝났습니다 ═══")
-                    .arg(m_collectionErrorCount), "error", "pixiv");
+                    .arg(errAll), "error", "pixiv");
             updateStats(0, 0, "오류", "pixiv");
         } else {
             log("═══ 전체 수집 완료! ═══", "success", "pixiv");
@@ -12811,7 +13014,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
         userId = target;
     } else {
         log("올바른 유저 ID, 일러스트/소설 URL, 또는 유저 URL을 입력하세요.", "error", "pixiv");
-        ++m_collectionErrorCount;   // 상위 all 루프가 완료를 거짓말하지 않게
+        noteCollectionFatal();   // 상위 all 루프가 완료를 거짓말하지 않게
         return;
     }
 
@@ -12921,6 +13124,12 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
     // Excel complete data (downloadIllust에서 추가)
     QJsonArray pxExcelData;
 
+    // 작품 하나를 받다 일부(쪽 · ZIP 옮기기)가 실패했나 — downloadIllust 는 그래도 true 를 돌려준다(받은 쪽은 남긴다).
+    //   다 받은 곳에서 일찍 멈추기의 '끊김 없이 다 봄' 판정이 읽는다: 빠진 쪽이 있는 판은 표시를 적지 않아, 다음 판이 끝까지 보며
+    //   그 쪽을 다시 받는다(예전엔 표시가 적혀 다음 판이 그 위에서 멈추고 그 쪽은 영영 안 받았다 — 검토)
+    bool pxIllustPartial = false;
+    QString pxLastAuthorId;   // 마지막으로 받은 작품의 작가
+
     // Download a single illustration (single, manga, ugoira)
     auto downloadIllust = [&](const QString &iid) -> bool {
         if (!platformRunning("pixiv")) return false;
@@ -13000,6 +13209,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
 
         // Save to pixiv/{userId}_{userName}/{subdir}/ subfolder
         QString pixivUserId = body["userId"].toString();
+        pxLastAuthorId = pixivUserId;
         QString pixivDir = savePath + "/pixiv";
         QString userBaseDir = pixivDir + "/" + pixivUserId + "_" + sanitizeFilename(pixivUserName.left(30).trimmed(), 30);
         // 타입별 서브폴더: bookmarks → bookmarks/illusts/, user → illusts/, illust → illusts/
@@ -13148,10 +13358,13 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                     // ★ 다른 디스크(NAS·외장)이거나 같은 이름이 있으면 rename 이 실패한다.
                     //   예전엔 결과를 확인하지 않고 아래에서 원본을 지워 파일이 통째로 사라졌다.
                     QString mvErr;
+                    pxIllustPartial = true;   // GIF 를 못 만들었다 — 다음 판이 다시 해 본다(두 판 잇따르면 넘어간다)
                     if (FileHelper::moveFileSafe(zipPath, userSaveDir + "/" + zipName, &mvErr))
                         log(QString("GIF 변환 실패, ZIP 저장: %1").arg(zipName), "warning", "pixiv");
-                    else
+                    else {
                         log(QString("❌ ZIP 저장 실패(원본은 유지됨): %1 — %2").arg(zipName, mvErr), "error", "pixiv");
+                        pxIllustPartial = true;
+                    }
                 }
 
                 // Cleanup
@@ -13163,8 +13376,10 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                 QString finalZipPath = userSaveDir + "/" + zipName;
                 // ★ 저장 위치가 NAS·외장이면 rename 이 실패한다 → 복사 폴백까지 하는 안전 이동 사용
                 QString mvErr;
-                if (!FileHelper::moveFileSafe(zipPath, finalZipPath, &mvErr))
+                if (!FileHelper::moveFileSafe(zipPath, finalZipPath, &mvErr)) {
                     log(QString("❌ ZIP 저장 실패(원본은 유지됨): %1 — %2").arg(zipName, mvErr), "error", "pixiv");
+                    pxIllustPartial = true;
+                }
                 QString pxUrl = QString("https://www.pixiv.net/artworks/%1").arg(iid);
                 FileHelper::setFinderComment(finalZipPath, pxUrl);
                 FileHelper::applyPostMetadata(finalZipPath, dt, pxUrl);
@@ -13203,6 +13418,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                 pages = JsonShape::pickArray(JsonShape::pickObject(pResp.json(), {"body", "data"}),
                                              {"pages", "items", "illust_pages"});
             int total = pages.size();
+            if (total == 0) pxIllustPartial = true;   // 쪽 목록이 비었다 — 받은 것이 없다
 
             for (int i = 0; i < total; i++) {
                 if (!platformRunning("pixiv")) return false;
@@ -13218,6 +13434,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                     log(QString("⚠️ 페이지 %1/%2 URL 없음 (illust %3) keys: %4")
                         .arg(i).arg(total).arg(iid)
                         .arg(QStringList(urls.keys()).join(",")), "warning", "pixiv");
+                    pxIllustPartial = true;
                     continue;
                 }
 
@@ -13255,6 +13472,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                                 : _dr.statusCode == 404 ? "404 없음(URL)"
                                 : QString("HTTP %1").arg(_dr.statusCode);
                     log(QString("다운로드 실패 [%1]: %2").arg(why, imgUrl), "error", "pixiv");
+                    pxIllustPartial = true;
                 }
 
                 if (i < total - 1) {
@@ -13579,6 +13797,9 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
             totalDownloaded++;
         }
         totalIllusts = 1;
+        // ★ 작품 하나 받기도 그 작가 폴더(작가 목록 걸음의 '받아 둔 것')에 넣는다 — 그 작가 목록의 표시를 지운다. 새 글 위쪽 몇 개를
+        //   하나씩 받아 두면 다음 작가 걸음이 그 위에서 멈춰 아래쪽 새 작품을 영영 놓쳤다(검토)
+        if (!pxLastAuthorId.isEmpty()) Common::takeCleanWalkMarks(savePath + "/pixiv", "px_" + pxLastAuthorId + "_user_g");   // 그 작가의 북마크 목록은 다른 엑셀이다
     } else if (type == "novel") {
         // Single novel URL 직접 다운로드
         log(QString("📖 단일 소설 다운로드: %1").arg(singleNovelId), "info", "pixiv");
@@ -13591,6 +13812,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
         log(QString("유저 %1의 %2 가져오는 중...").arg(userId, type == "bookmarks" ? "북마크" : "작품 목록"), "info", "pixiv");
 
         // ── 프로필 다운로드 (유저 단위 1회) ──
+        QString pxUserDirName;   // 작품이 놓이는 폴더 이름(<작가 ID>_<이름>) — 받아 둔 작품을 파일 이름으로 알아보는 데 쓴다
         {
             QString pixivDir = savePath + "/pixiv";
             // 먼저 프로필 API로 이름 확인
@@ -13603,11 +13825,13 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
             QString userDirName = userId;
             if (!pixivUserName.isEmpty()) userDirName += "_" + sanitizeFilename(pixivUserName.left(30).trimmed(), 30);
             QString profileSaveDir = pixivDir + "/" + userDirName + "/profiles";
+            pxUserDirName = userDirName;
             QDir().mkpath(profileSaveDir);
             downloadPixivProfile(userId, profileSaveDir);
         }
 
         QList<QString> illustIds;
+        bool pxListBroken = false;   // 작품 목록을 다 받지 못했다(쪽 받기 실패 · 중지 · 도중에 빈 쪽) — '끊김 없이 다 봄' 을 적지 않는다
 
         if (type == "bookmarks") {
             // Fetch bookmarks via API (소설 전용이면 건너뜀)
@@ -13628,6 +13852,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                     } else {
                         log(QString("북마크 가져오기 실패 (HTTP %1)").arg(bmResp.statusCode), "error", "pixiv");
                     }
+                    pxListBroken = true;
                     break;
                 }
 
@@ -13640,7 +13865,10 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                         log(QString("Pixiv 북마크 모양이 바뀐 듯합니다 — '%1' 에서 %2개를 찾았습니다.")
                                 .arg(foundAt).arg(works.size()), "warning", "pixiv");
                 }
-                if (works.isEmpty()) break;
+                if (works.isEmpty()) {
+                    if (offset > 0) pxListBroken = true;   // 앞 쪽은 '더 있다' 고 했는데 빈 쪽 — 끝인지 막힌 것인지 모른다
+                    break;
+                }
 
                 for (const auto &w : works) {
                     QString wid = w.toObject()["id"].toString();
@@ -13653,6 +13881,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                 log(QString("북마크 %1/%2 로드...").arg(offset).arg(total), "info", "pixiv");
                 QThread::msleep(static_cast<unsigned long>(delay * 1000));
             }
+            if (!platformRunning("pixiv")) pxListBroken = true;   // 목록을 받다 멈췄다
 
             // ── 북마크 소설도 수집 ──
             if (platformRunning("pixiv")) {
@@ -13709,7 +13938,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
             HttpResponse profResp = http.get(profileUrl, apiHeaders);
             if (!profResp.isOk()) {
                 log(QString("유저 프로필 실패 (HTTP %1)").arg(profResp.statusCode), "error", "pixiv");
-                ++m_collectionErrorCount;   // 상위 all 루프가 완료를 거짓말하지 않게
+                noteCollectionFatal();   // 상위 all 루프가 완료를 거짓말하지 않게
                 return;
             }
 
@@ -13732,7 +13961,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                         .arg(JsonShape::describe(profBody)), "error", "pixiv");
                 log("작품이 정말 없는 계정이 아니라면 응답 모양이 바뀌었거나 로그인이 풀린 것입니다 — "
                     "설정 → 토큰 자동 추출 → Pixiv 로 세션을 새로 받아 보십시오.", "error", "pixiv");
-                ++m_collectionErrorCount;
+                noteCollectionFatal();
             }
 
             // Sort by ID descending (newest first)
@@ -13764,29 +13993,99 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
 
         // 소설 전용 모드면 일러스트 건너뛰기
         if (!novelsOnly) {
+            // 이번 판 전에 받아 둔 작품 — 완성 엑셀(1열 ID) + 그 작가 폴더의 파일 이름 '…(작품ID[_n]).확장자'.
+            //   북마크는 작가마다 폴더가 달라 엑셀만 본다.
+            QSet<QString> pxKnown;
+            const QString pxIllustDir = savePath + "/pixiv/" + pxUserDirName + "/illusts";
+            {
+                const QString xp = savePath + "/pixiv/" + userId + (type == "bookmarks" ? "_bookmarks_complete.xlsx" : "_complete.xlsx");
+                if (QFile::exists(xp)) {
+                    QXlsx::Document xd(xp);
+                    const int lr = xd.dimension().lastRow();
+                    for (int r = 2; r <= lr; ++r) {
+                        const QString id = xd.read(r, 1).toString().trimmed();
+                        if (!id.isEmpty()) pxKnown.insert(id);
+                    }
+                }
+                if (type != "bookmarks" && !pxUserDirName.isEmpty()) {
+                    static const QRegularExpression reId(R"(\((\d+)(?:_\d+)?\)\.[A-Za-z0-9]+$)");
+                    for (const QString &f : QDir(pxIllustDir).entryList(QDir::Files)) {
+                        const auto mm = reId.match(f);
+                        if (mm.hasMatch()) pxKnown.insert(mm.captured(1));
+                    }
+                }
+            }
+            int pxStreak = 0;
+            pxFreshKnown = true;
+            // ★ 지난번에 이 작가(이 종류)의 목록을 끊김 없이 다 받은 적이 있어야 일찍 멈춘다 — 끊긴 판 뒤에는 한 번 끝까지 본다(검토)
+            //   우고이라를 GIF 로 받는 판 · ZIP 으로 두는 판은 표시를 따로 — ZIP 판의 표시로 GIF 판이 일찍 멈추면 옛 우고이라는 GIF 가 영영 안 생겼다(검토)
+            const QString pxWalkPrefix = "px_" + userId + "_" + type + "_g";
+            const QString pxWalkKind = pxWalkPrefix + (ugoiraGif ? "1" : "0");
+            const int pxN = Common::takeCleanWalkMarks(savePath + "/pixiv", pxWalkPrefix).contains(pxWalkKind) ? pxStopAfterKnown : 0;
+            // 받지 못한 작품 — 두 판 잇따라 같은 작품이 실패하면(지워진 쪽 · 늘 실패하는 변환) 영영 안 되는 것으로 보아 표시를 더는 막지 않는다
+            const QSet<QString> pxPrevFailed = Common::takeWalkFailures(savePath + "/pixiv", pxWalkKind);
+            QSet<QString> pxFailed, pxSeen;
+            bool pxWalkBroken = false;   // 중지 · 최대 수 · 받지 못한 작품이 있었나
             totalIllusts = illustIds.size();
             if (maxCount > 0 && totalIllusts > maxCount) {
                 illustIds = illustIds.mid(0, maxCount);
                 totalIllusts = maxCount;
+                pxWalkBroken = true;   // 목록을 잘랐다 — 끝까지 본 것이 아니다
                 log(QString("최대 %1개까지 다운로드합니다.").arg(maxCount), "info", "pixiv");
             }
 
             for (int i = 0; i < illustIds.size(); i++) {
                 if (!platformRunning("pixiv")) {
                     log("사용자에 의해 중지됨.", "warning", "pixiv");
+                    pxWalkBroken = true;
                     break;
                 }
 
                 const QString &iid = illustIds[i];
                 updateStats(totalDownloaded, i + 1, QString("다운로드 중 %1/%2").arg(i + 1).arg(totalIllusts), "pixiv");
 
+                // ★ 받아 둔 작품도 예전처럼 받는다(있는 쪽은 건너뛰고 빠진 쪽만 받는다) — 앞서 끊겨 쪽이 빠진 작품을
+                //   건너뛰면 영영 채우지 못했다(검토). 일찍 멈춤은 받아 둔 작품이 이어지는 것만 센다.
+                const bool wasKnown = pxKnown.contains(iid);
+                pxIllustPartial = false;
+                pxSeen.insert(iid);
                 if (downloadIllust(iid)) {
                     totalDownloaded++;
+                    if (pxIllustPartial && platformRunning("pixiv")) pxFailed.insert(iid);   // 쪽 일부를 못 받았다 — 다음 판이 끝까지 보며 다시 받는다
+                    if (!wasKnown) { ++pxFresh; pxStreak = 0; }
+                    else if (pxN > 0 && ++pxStreak >= pxN) {
+                        pxKnownStop = qMax(pxKnownStop, pxStreak);
+                        log(QString("이미 받은 작품이 %1개 이어져 여기서 멈춥니다 — 새 작품 %2개").arg(pxStreak).arg(pxFresh), "info", "pixiv");
+                        break;
+                    }
+                } else if (platformRunning("pixiv")) {
+                    pxFailed.insert(iid);   // 받지 못한 작품 — 다음 판이 끝까지 보며 다시 받는다
                 }
 
                 // Rate limit delay
                 if (i < illustIds.size() - 1) {
                     QThread::msleep(static_cast<unsigned long>(delay * 1000));
+                }
+            }
+            // 끊김 없이 끝났다(끝까지 · 일찍 멈춤 — 중지 · 최대 수 · 받지 못한 작품 · 덜 받은 목록 없이) — 다음 판이 일찍 멈출 수 있게
+            const QSet<QString> pxNewFails = pxFailed - pxPrevFailed;
+            if (pxStopAfterKnown > 0 && !pxNewFails.isEmpty())   // 일찍 멈춤을 쓸 때만 안내한다
+                log(QString("받지 못한 작품 %1개 — 다음 판은 끝까지 보며 다시 받습니다").arg(pxNewFails.size()), "warning", "pixiv");
+            if (const int gaveUp = pxStopAfterKnown > 0 ? int((pxFailed & pxPrevFailed).size()) : 0)
+                log(QString("두 판 잇따라 받지 못한 작품 %1개는 일찍 멈춤을 더는 막지 않습니다(지워졌거나 막힌 듯 — 4~5주마다 끝까지 볼 때 다시 받아 봅니다)").arg(gaveUp), "info", "pixiv");
+            Common::putWalkFailures(savePath + "/pixiv", pxWalkKind, pxFailed + (pxPrevFailed - pxSeen));
+            if (!pxWalkBroken && !pxListBroken && pxNewFails.isEmpty() && !illustIds.isEmpty() && platformRunning("pixiv"))
+                Common::putCleanWalkMark(savePath + "/pixiv", pxWalkKind);
+            // 이 작가의 가장 새 작품 — 목록은 새것부터다. 첫 작품 파일 이름 앞의 올린 시각(일본 시간)으로(북마크는 남의 작품이라 빼고)
+            if (type != "bookmarks" && !illustIds.isEmpty() && !pxUserDirName.isEmpty()) {
+                static const QRegularExpression reD(R"(^(\d{8})_(\d{4}))");
+                const QString first = illustIds.first();
+                for (const QString &f : QDir(pxIllustDir).entryList({QString("* (%1).*").arg(first), QString("* (%1_0).*").arg(first)}, QDir::Files)) {
+                    const auto dm = reD.match(f);
+                    if (!dm.hasMatch()) continue;
+                    QDateTime dt = QDateTime::fromString(dm.captured(1) + dm.captured(2), "yyyyMMddHHmm");
+                    dt.setTimeZone(QTimeZone::fromSecondsAheadOfUtc(9 * 3600));
+                    if (dt.isValid()) { pxNewestMs = qMax(pxNewestMs, dt.toMSecsSinceEpoch()); break; }
                 }
             }
         } else {
@@ -13898,6 +14197,10 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
         }
     }
 
+    // 대상 목록에 남길 이번 판 결과 — 새로 받은 작품 · 가장 새 작품 · 일찍 멈춤
+    if (pxFreshKnown) noteTrackFresh(pxFresh);
+    if (pxNewestMs > 0) noteTrackNewest(pxNewestMs);
+    if (pxKnownStop > 0) noteTrackEarlyStop(pxKnownStop);
     updateStats(totalDownloaded, totalIllusts, "완료", "pixiv");
     log(QString("Pixiv 다운로드 완료! %1개 저장").arg(totalDownloaded), "success", "pixiv");
 }
@@ -18941,6 +19244,14 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
     //   체크를 풀어도 zip/pdf 가 그대로 받아졌다(미디어를 꺼야만 같이 꺼졌다).
     bool downloadFiles = config["downloadFiles"].toBool(true);
     int maxPosts = config["count"].toInt(0);
+    // ★ 다 받은 곳에서 일찍 멈추기(사용자 2026-10-24) — 이번 판 전에 받아 둔 글(posts/<글 ID>.json)이 이만큼 이어지면 끝낸다.
+    //   받아 둔 글도 예전처럼 상세를 묻고 빠진 그림 · 첨부를 받는다(앞서 실패한 것을 영영 못 채우지 않게 — 검토).
+    //   지난번에 끊김 없이 다 본 적이 있어야 켠다(끊긴 판 뒤에는 한 번 끝까지 보아 사이를 메운다). 0 = 끝까지.
+    bool fbWalkBroken = false;   // 받지 못한 글 · 그림 · 첨부가 있었나 — 있으면 '끊김 없이 다 봄' 을 적지 않는다
+    QSet<QString> fbKnownIds;
+    for (const QString &f : QDir(postsDir).entryList({"*.json"}, QDir::Files)) fbKnownIds.insert(QFileInfo(f).completeBaseName());
+    int fbStreak = 0, fbFresh = 0, fbKnownStop = 0;
+    qint64 fbNewestMs = 0;
 
     QString bufTmp = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/abiwa_fanbox_" + target;
     QDir().mkpath(bufTmp);
@@ -18967,6 +19278,29 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
 
     log(QString("━━ Fanbox 수집 시작: @%1 ━━").arg(target), "info", "fanbox");
 
+    //   표시는 받는 범위(그림 · 첨부)마다 따로 — 그림을 끈 판도 posts/<ID>.json 을 모두 남겨, 그 판의 표시로 그림을 켠 판이
+    //   일찍 멈추면 그림을 영영 안 받았다(검토). 어느 범위의 판이든 시작할 때 모든 범위의 표시를 지운다(같은 글 목록을 쓴다).
+    //   ★ 이 작가에게 후원 중인 요금도 이름에 넣는다 — 요금제를 올리면 잠겼던 옛 글이 열리는데, 지난 표시로 일찍 멈추면 그 글들을
+    //   영영 안 받았다(검토). 요금이 바뀌면 이름이 달라져 한 번 끝까지 본다. 묻지 못하면 'x'.
+    QString fbPlan = QStringLiteral("x");
+    if (config["stopAfterKnown"].toInt(0) > 0) {   // 끄면 묻지 않는다(대상마다 한 번 더 묻는 것을 아낀다) — 켜는 첫 판은 이름이 달라 끝까지 본다
+        HttpResponse sr = http.get(QStringLiteral("https://api.fanbox.cc/plan.listSupporting"), headers);
+        if (sr.isOk() && sr.data.trimmed().startsWith('{') && sr.json()["body"].isArray()) {
+            int fbFee = 0;
+            for (const QJsonValue &pv : sr.json()["body"].toArray()) {
+                const QJsonObject p = pv.toObject();
+                const QString cid = p["creatorId"].toString(p["user"].toObject()["userId"].toString());
+                if (cid.compare(target, Qt::CaseInsensitive) == 0) fbFee = qMax(fbFee, p["fee"].toInt(0));
+            }
+            fbPlan = QString::number(fbFee);
+        }
+    }
+    const QString fbWalkKind = QString("fb_posts_m%1_f%2_p%3").arg(downloadMedia ? 1 : 0).arg(downloadMedia && downloadFiles ? 1 : 0).arg(fbPlan);
+    const int fbStopAfterKnown = Common::takeCleanWalkMarks(creatorDir, "fb_posts").contains(fbWalkKind) ? qMax(0, config["stopAfterKnown"].toInt(0)) : 0;
+    // 받지 못한 글 — 두 판 잇따라 같은 글이 실패하면(지워진 그림 · 막힌 첨부) 영영 안 되는 것으로 보아 표시를 더는 막지 않는다
+    const QSet<QString> fbPrevFailed = Common::takeWalkFailures(creatorDir, fbWalkKind);
+    QSet<QString> fbFailed, fbSeen;
+
     // ★ 2026-09-24 실측: Fanbox 가 응답 모양을 바꿨다.
     //     body.items  → body.posts
     //     body.nextUrl 사라짐 → post.paginateCreator 가 쪽 주소를 통째로 준다(body.pageUrls)
@@ -18981,8 +19315,10 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
                 if (!u.toString().isEmpty()) pageUrls << u.toString();
         }
     }
-    if (pageUrls.isEmpty())   // 쪽 나누기를 못 받으면 첫 쪽만이라도 받는다
+    if (pageUrls.isEmpty()) {   // 쪽 나누기를 못 받으면 첫 쪽만이라도 받는다
         pageUrls << QString("https://api.fanbox.cc/post.listCreator?creatorId=%1&limit=10").arg(target);
+        fbWalkBroken = true;   // 첫 쪽(새 글 10개)만 — 목록을 다 본 것이 아니다(검토)
+    }
 
     int postCount = 0;
     int mediaCount = 0;
@@ -19021,6 +19357,10 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
             ++m_collectionErrorCount;
             break;
         }
+        if (items.isEmpty()) {   // 가운데 쪽이 비어 왔다(오류 몸 · 잘린 응답) — 그 쪽의 글을 보지 못했다
+            fbWalkBroken = true;
+            log(QString("Fanbox %1쪽이 비어 왔습니다 — 다음 판은 끝까지 다시 봅니다").arg(page + 1), "warning", "fanbox");
+        }
         page++;
         log(QString("페이지 %1/%2 — 포스트 %3개").arg(page).arg(pageUrls.size()).arg(items.size()), "info", "fanbox");
 
@@ -19033,11 +19373,17 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
             bool isRestricted = post["isRestricted"].toBool(false);
             postCount++;
             updateStats(postCount, mediaCount, "수집 중...", "fanbox");
+            {   // 이 작가의 가장 새 글(받아 둔 글 · 잠긴 글도 — 올렸다는 것은 같다)
+                const QDateTime pub = QDateTime::fromString(JsonShape::pickString(post, {"publishedDatetime", "publishedAt"}), Qt::ISODate);
+                if (pub.isValid()) fbNewestMs = qMax(fbNewestMs, pub.toMSecsSinceEpoch());
+            }
 
-            if (isRestricted) {
+            if (isRestricted) {   // 잠긴 글은 일찍 멈춤에서 세지도 끊지도 않는다
                 log(QString("[%1] %2 (₩%3 구독 필요 — skip)").arg(postCount).arg(title.left(40)).arg(fee), "warning", "fanbox");
                 continue;
             }
+            const bool fbKnown = fbKnownIds.contains(postId);
+            fbSeen.insert(postId);
 
             // post 상세 가져오기
             //   ★ 끝점 이름도 언젠가 바뀐다(실측 2026-09-24: post.info 는 살아 있지만
@@ -19054,6 +19400,7 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
             if (!detResp.isOk() || !detResp.data.trimmed().startsWith('{')) {
                 log(QString("[%1] 글 내용을 받지 못했습니다 (HTTP %2) — 아는 끝점 %3개를 모두 두드려 봤습니다.")
                         .arg(postCount).arg(detResp.statusCode).arg(kFanboxDetail.size()), "warning", "fanbox");
+                if (platformRunning("fanbox")) fbFailed.insert(postId);   // 중지로 끊긴 것은 실패가 아니다
                 continue;
             }
             // ★ 2026-09-24 실측: body.<내용> → body.post.<내용> 로 껍데기가 한 겹 늘었다.
@@ -19124,6 +19471,7 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
                     } else {
                         QFile::remove(part);
                         log(QString("이미지 받기 실패(다음 판에 다시 받음): %1").arg(fname), "warning", "fanbox");
+                        fbFailed.insert(postId);
                     }
                 }
                 // 파일(zip·pdf 등) — 맵과 목록을 위에서 이미 합쳐 두었다.
@@ -19164,6 +19512,7 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
                     } else {
                         QFile::remove(part);
                         log(QString("첨부 받기 실패(다음 판에 다시 받음): %1").arg(fname), "warning", "fanbox");
+                        fbFailed.insert(postId);
                     }
                 }
             }
@@ -19180,6 +19529,7 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
             row["comment_count"] = post["commentCount"].toInt(0);
             row["cover_image"] = JsonShape::pickString(post, {"coverImageUrl", "cover"});
             allPosts.append(row);
+            if (!fbKnown) { ++fbFresh; fbStreak = 0; }
 
             // 포스트 JSON 저장 (post 자체 백업)
             QFile pj(postsDir + "/" + postId + ".json");
@@ -19188,11 +19538,30 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
                 pj.close();
             }
 
+            // 다 받은 곳에서 일찍 멈추기 — 받아 둔 글이 이어지는 것만 센다(잠긴 글은 위에서 넘어가 세지 않는다)
+            if (fbKnown && fbStopAfterKnown > 0 && ++fbStreak >= fbStopAfterKnown) {
+                fbKnownStop = fbStreak;
+                log(QString("이미 받은 글이 %1개 이어져 여기서 멈춥니다 — 새 글 %2개").arg(fbStreak).arg(fbFresh), "info", "fanbox");
+                reachedMax = true;   // 쪽 루프도 끝낸다
+                break;
+            }
+
             QThread::msleep(500);  // rate limit 회피
-            if (maxPosts > 0 && postCount >= maxPosts) { reachedMax = true; break; }
+            if (maxPosts > 0 && postCount >= maxPosts) { reachedMax = true; fbWalkBroken = true; break; }
         }
         if (reachedMax) break;
     }
+    // 받지 못한 것 — 처음 실패한 글만 표시를 막는다(다음 판이 끝까지 보며 다시 받는다). 이번 판에 보지 못한 글의 기록은 그대로 둔다
+    const QSet<QString> fbNewFails = fbFailed - fbPrevFailed;
+    const bool fbAnnounce = config["stopAfterKnown"].toInt(0) > 0;   // 일찍 멈춤을 쓸 때만 안내한다
+    if (fbAnnounce && !fbNewFails.isEmpty())
+        log(QString("받지 못한 글 %1개 — 다음 판은 끝까지 보며 다시 받습니다").arg(fbNewFails.size()), "warning", "fanbox");
+    if (const int gaveUp = fbAnnounce ? int((fbFailed & fbPrevFailed).size()) : 0)
+        log(QString("두 판 잇따라 받지 못한 글 %1개는 일찍 멈춤을 더는 막지 않습니다(지워졌거나 막힌 듯 — 4~5주마다 끝까지 볼 때 다시 받아 봅니다)").arg(gaveUp), "info", "fanbox");
+    Common::putWalkFailures(creatorDir, fbWalkKind, fbFailed + (fbPrevFailed - fbSeen));
+    // 끊김 없이 끝났다(마지막 쪽까지 · 일찍 멈춤 — 중지 · 인증 실패 · 최대 수 · 처음 받지 못한 것 없이)
+    if (platformRunning("fanbox") && !fbWalkBroken && fbNewFails.isEmpty() && (fbKnownStop > 0 || page == pageUrls.size()))
+        Common::putCleanWalkMark(creatorDir, fbWalkKind);
 
     // Excel 저장
     if (saveExcel && allPosts.count() > 0) {
@@ -19206,8 +19575,10 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
         log("⚠ 수집 버퍼 쓰기에 실패한 항목이 있습니다 — 결과가 일부 빠졌을 수 있습니다."
             " 저장 디스크의 남은 공간을 확인하십시오.", "error", "fanbox");
         QJsonArray all = allPosts.readAll();
+        QSet<QString> newIds;
         for (const auto &v : all) {
             QJsonObject o = v.toObject();
+            newIds.insert(o["id"].toString());
             int c = 1;
             for (const QString &h : headers2) {
                 QJsonValue val = o[h];
@@ -19215,12 +19586,32 @@ void HanishikiBackend::runFanboxCollection(const QJsonObject &config)
             }
             row++;
         }
-        if (doc.saveAs(xlsxPath)) {
+        // ★ 예전엔 이번 판의 글만으로 통째 덮었다 — 일찍 멈춘 판(새 글 몇 개)이면 엑셀이 그만큼으로 줄었다.
+        //   전에 있던 줄 가운데 이번에 다시 적지 않은 것을 뒤에 그대로 잇는다(1열 = id).
+        if (QFile::exists(xlsxPath)) {
+            QXlsx::Document old(xlsxPath);
+            const int lr = old.dimension().lastRow();
+            for (int r = 2; r <= lr; ++r) {
+                const QString oid = old.read(r, 1).toString().trimmed();
+                if (oid.isEmpty() || newIds.contains(oid)) continue;
+                for (int c = 1; c <= headers2.size(); ++c) doc.write(row, c, old.read(r, c));
+                row++;
+            }
+        }
+        // ★ 임시 이름에 다 쓴 뒤 바꿔 끼운다 — 이제 엑셀이 지난 줄을 이어 가는 유일한 곳이라, 쓰다 끊기면(디스크 참 · 강제 종료)
+        //   다음 판이 읽지 못해 지난 줄을 영영 잃었다(검토). 다른 엑셀과 같은 길(ExcelWriter) — 덮어 바꾸지 못하는 네트워크 볼륨도 된다
+        if (ExcelWriter::saveDocument(doc, xlsxPath)) {
             log(QString("✅ Excel 저장: %1").arg(QFileInfo(xlsxPath).fileName()), "success", "fanbox");
             enqueueWebDavUpload(xlsxPath);
+        } else {
+            log(QString("❌ Excel 저장 실패: %1 — 저장 위치를 확인하십시오").arg(QFileInfo(xlsxPath).fileName()), "error", "fanbox");
         }
     }
 
+    // 대상 목록에 남길 이번 판 결과 — 새 글 · 가장 새 글 · 일찍 멈춤
+    noteTrackFresh(fbFresh);
+    if (fbNewestMs > 0) noteTrackNewest(fbNewestMs);
+    if (fbKnownStop > 0) noteTrackEarlyStop(fbKnownStop);
     log(QString("━━ Fanbox 완료: 포스트 %1 / 미디어 %2 ━━").arg(postCount).arg(mediaCount), "success", "fanbox");
     updateStats(postCount, mediaCount, "완료", "fanbox");
 }
@@ -19694,6 +20085,41 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
     DiskJsonBuffer allPosts(bufTmpDir, "tumblr");
     int mediaDownloaded = 0;
     int offset = 0;
+    // ★ 다 받은 곳에서 일찍 멈추기(사용자 2026-10-24) — 이번 판 전에 받아 둔 글이 이만큼 이어지면 끝낸다(0 = 끝까지 — 예전 그대로).
+    //   받아 둔 글 = 완성 엑셀(1열 ID) + _complete 의 파일 이름 '…(<글 ID>_<P|V|A><n>).확장자'. 받아 둔 글은 다시 받지도 담지도 않는다.
+    //   받아 둔 글도 예전처럼 받는다(있는 파일은 건너뛰고 빠진 것만) — 앞서 실패한 것을 영영 못 채우지 않게(검토).
+    //   지난번에 끊김 없이 다 본 적이 있어야 켠다(끊긴 판 뒤에는 한 번 끝까지 보아 사이를 메운다).
+    //   표시는 미디어를 받는 판 · 안 받는 판 따로 — 미디어를 끈 판도 엑셀에 글을 모두 담아, 그 판의 표시로 미디어를 켠 판이
+    //   일찍 멈추면 미디어를 영영 안 받았다(검토). 어느 쪽 판이든 시작할 때 두 표시를 다 지운다(같은 엑셀을 쓴다).
+    const QString tbWalkKind = QString("tb_posts_m%1").arg(downloadMediaFlag ? 1 : 0);
+    const int tbStopAfterKnown = Common::takeCleanWalkMarks(blogDir, "tb_posts").contains(tbWalkKind) ? qMax(0, config["stopAfterKnown"].toInt(0)) : 0;
+    bool tbWalkBroken = false, tbClean = false;   // 받지 못한 파일이 있었나 · 끊김 없이 끝났나
+    bool tbCapped = false;                        // 최대 수에 닿아 쪽 가운데서 멈췄나 — 그 쪽의 남은 글을 보지 않았다
+    // 받지 못한 글 — 두 판 잇따라 같은 글이 실패하면(지워진 리블로그 미디어 · 404) 영영 안 되는 것으로 보아 표시를 더는 막지 않는다
+    const QSet<QString> tbPrevFailed = Common::takeWalkFailures(blogDir, tbWalkKind);
+    QSet<QString> tbFailed, tbSeen;
+    // 걷는 사이 글 수가 줄었나 — 지워진 글만큼 쪽이 위로 당겨져 그 사이 글을 건너뛰었을 수 있다(늘어난 것은 끝을 밀어 따라간다)
+    bool tbShrunk = false;
+    int tbTotalSeen = -1;
+    QSet<QString> tbKnown;
+    {
+        const QString xp = FileHelper::typeExcelPath(excelDir, blogName, "complete");
+        if (QFile::exists(xp)) {
+            QXlsx::Document xd(xp);
+            const int lr = xd.dimension().lastRow();
+            for (int r = 2; r <= lr; ++r) {
+                const QString id = xd.read(r, 1).toString().trimmed();
+                if (!id.isEmpty()) tbKnown.insert(id);
+            }
+        }
+        static const QRegularExpression reTb(R"(\((\d+)_[A-Z]\d+\)\.[A-Za-z0-9]+$)");
+        for (const QString &f : QDir(completeDir).entryList(QDir::Files)) {
+            const auto mm = reTb.match(f);
+            if (mm.hasMatch()) tbKnown.insert(mm.captured(1));
+        }
+    }
+    int tbStreak = 0, tbFresh = 0, tbKnownStop = 0;
+    qint64 tbNewestMs = 0;
     int limit = 20;
 
     while (platformRunning("tumblr")) {
@@ -19723,6 +20149,14 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
         }
 
         const QJsonObject tumblrResp = JsonShape::pickObject(postsResp.json(), {"response", "data", "body"});
+        // ★ 글 수는 쪽마다 다시 읽는다 — 처음 /info 의 수로 끝을 정하면, 오래 걷는 사이 올라온 글만큼 밀려난 가장 옛 글들을 묻지 않고도
+        //   '끝까지 봤다' 를 적어, 다음 판이 일찍 멈춰 그 글들을 영영 안 받았다(검토)
+        if (tumblrResp.contains("total_posts")) {
+            const int tNow = tumblrResp["total_posts"].toInt();
+            if (tbTotalSeen >= 0 && tNow < tbTotalSeen) tbShrunk = true;
+            tbTotalSeen = tNow;
+            if (tNow > totalPosts) totalPosts = tNow;
+        }
         QJsonArray posts = JsonShape::pickArray(tumblrResp, {"posts", "items", "entries"});
         if (posts.isEmpty()) {
             QString foundAt;
@@ -19743,6 +20177,14 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
         for (const auto &postVal : posts) {
             if (!platformRunning("tumblr")) break;
             QJsonObject post = postVal.toObject();
+            bool tbKnownPost = false;
+            {
+                const qint64 pts = post["timestamp"].toVariant().toLongLong();   // 이 블로그의 가장 새 글(리블로그도 그 블로그의 활동)
+                if (pts > 0) tbNewestMs = qMax(tbNewestMs, pts * 1000);
+                tbKnownPost = tbKnown.contains(QString::number(post["id"].toVariant().toLongLong()));
+                if (!tbKnownPost) { ++tbFresh; tbStreak = 0; }
+                tbSeen.insert(QString::number(post["id"].toVariant().toLongLong()));
+            }
             allPosts.append(post);
 
             if (downloadMediaFlag) {
@@ -19767,7 +20209,12 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
                     fname = sanitizeFilename(fname, 200);
                     QString typePath = typeDir + "/" + fname;
                     QString completePath = completeDir + "/" + fname;
-                    if (!QFile::exists(typePath) && http.downloadFile(url, typePath)) {
+                    if (QFile::exists(typePath)) return;
+                    if (!http.downloadFile(url, typePath)) {   // 처음 실패한 것은 다음 판이 끝까지 보며 다시 받는다(중지로 끊긴 것은 실패가 아니다)
+                        if (platformRunning("tumblr")) tbFailed.insert(postId);
+                        return;
+                    }
+                    {
                         Common::addExifMetadata(typePath, blogName, summary,
                             QString("Tumblr/%1").arg(blogName), postUrl, post["date"].toString());
                         FileHelper::setFinderComment(typePath, postUrl);
@@ -19861,16 +20308,38 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
             }
 
             updateStats(allPosts.count(), mediaDownloaded, "수집 중", "tumblr");
-            if (maxCount > 0 && allPosts.count() >= maxCount) break;
+            // 다 받은 곳에서 일찍 멈추기 — 받아 둔 글(받을 것은 다 받은 뒤)이 이어지는 것만 센다
+            if (tbKnownPost && tbStopAfterKnown > 0 && ++tbStreak >= tbStopAfterKnown) {
+                tbKnownStop = tbStreak;
+                log(QString("이미 받은 글이 %1개 이어져 여기서 멈춥니다 — 새 글 %2개").arg(tbStreak).arg(tbFresh), "info", "tumblr");
+                break;
+            }
+            if (maxCount > 0 && allPosts.count() >= maxCount) { tbCapped = true; break; }
         }
 
+        if (tbKnownStop > 0) { tbClean = true; break; }
         offset += posts.size();
-        if (offset >= totalPosts) break;
+        if (offset >= totalPosts) { tbClean = !tbCapped; break; }   // 마지막 쪽 가운데서 최대 수에 닿은 판은 끝까지 본 것이 아니다(검토)
         if (maxCount > 0 && allPosts.count() >= maxCount) break;
 
         log(QString("포스트 %1/%2 | 미디어 %3").arg(allPosts.count()).arg(totalPosts).arg(mediaDownloaded), "info", "tumblr");
         QThread::msleep(500);
     }
+
+    // 끊김 없이 끝났다(마지막 글까지 · 일찍 멈춤 — 중지 · 최대 수 · 받지 못한 파일 없이) — 다음 판이 일찍 멈출 수 있게
+    {
+        const QSet<QString> tbNewFails = tbFailed - tbPrevFailed;
+        const bool tbAnnounce = config["stopAfterKnown"].toInt(0) > 0;   // 일찍 멈춤을 쓸 때만 안내한다
+        if (!tbNewFails.isEmpty()) {
+            tbWalkBroken = true;
+            if (tbAnnounce)
+                log(QString("받지 못한 글 %1개 — 다음 판은 끝까지 보며 다시 받습니다").arg(tbNewFails.size()), "warning", "tumblr");
+        }
+        if (const int gaveUp = tbAnnounce ? int((tbFailed & tbPrevFailed).size()) : 0)
+            log(QString("두 판 잇따라 미디어를 받지 못한 글 %1개는 일찍 멈춤을 더는 막지 않습니다(지워졌거나 막힌 듯 — 4~5주마다 끝까지 볼 때 다시 받아 봅니다)").arg(gaveUp), "info", "tumblr");
+        Common::putWalkFailures(blogDir, tbWalkKind, tbFailed + (tbPrevFailed - tbSeen));
+    }
+    if (tbClean && !tbWalkBroken && !tbShrunk && platformRunning("tumblr")) Common::putCleanWalkMark(blogDir, tbWalkKind);
 
     // Excel — type별 + complete
     if (saveExcel && allPosts.count() > 0) {
@@ -19903,6 +20372,21 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
                     p["post_url"].toString()
                 });
             }
+            // ★ 예전엔 이번 판의 글로만 통째 덮었다 — 일찍 멈춘 판(새 글 몇 개)이면 엑셀이 그만큼으로 줄었다.
+            //   전에 있던 줄 가운데 이번에 다시 적지 않은 것을 뒤에 그대로 잇는다(1열 = ID).
+            if (QFile::exists(path)) {
+                QSet<QString> ids;
+                for (const auto &val : rows) ids.insert(QString::number(val.toObject()["id"].toVariant().toLongLong()));
+                QXlsx::Document old(path);
+                const int lr = old.dimension().lastRow();
+                for (int r = 2; r <= lr; ++r) {
+                    const QString oid = old.read(r, 1).toString().trimmed();
+                    if (oid.isEmpty() || ids.contains(oid)) continue;
+                    QStringList cols;
+                    for (int c = 1; c <= hdrs.size(); ++c) cols << old.read(r, c).toString();
+                    writer.writeRow(row++, cols);
+                }
+            }
             writer.autoFitColumns(hdrs);
             writer.save(path);
         };
@@ -19923,6 +20407,10 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
         log(QString("Excel 저장 완료 (%1 types)").arg(byType.size() + 1), "success", "tumblr");
     }
 
+    // 대상 목록에 남길 이번 판 결과 — 새 글 · 가장 새 글 · 일찍 멈춤
+    noteTrackFresh(tbFresh);
+    if (tbNewestMs > 0) noteTrackNewest(tbNewestMs);
+    if (tbKnownStop > 0) noteTrackEarlyStop(tbKnownStop);
     log(QString("━━ Tumblr 수집 완료: %1 포스트, %2 미디어 ━━").arg(allPosts.count()).arg(mediaDownloaded), "success", "tumblr");
     updateStats(allPosts.count(), mediaDownloaded, "완료", "tumblr");
 }

@@ -348,6 +348,7 @@
         .tl-status { flex: none; font-size: 10.5px; color: var(--text-tertiary); min-width: 34px; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
         .tl-status.tl-error { color: var(--red); }
         .tl-status.tl-stopped { color: var(--text-secondary); }
+        .tl-status.tl-rest { opacity: .65; }
         .batch-target-del:hover { background: rgba(255,59,48,0.08); }
         /* 대상별 옵션 확장 버튼 */
         .bti-expand {
@@ -763,6 +764,13 @@
         .modal-wide .fi-h { flex: 0 0 auto; font-weight: 500; }
         .modal-wide .fi-n { flex: 1; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .modal-wide .fi-tag { font-size: 10.5px; padding: 1px 6px; border-radius: 9px; background: var(--bg-tertiary); color: var(--text-secondary); }
+        .modal-wide .gs-names { gap: 6px; }
+        .modal-wide .gs-n { font-size: 10.5px; opacity: .7; }
+        .modal-wide .gs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px 14px; }
+        .modal-wide .gs-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; min-width: 0; }
+        .modal-wide .gs-lbl { flex: 0 0 64px; color: var(--text-secondary); }
+        .modal-wide .gs-row .input, .modal-wide .gs-row .select-wrap { flex: 1 1 auto; min-width: 0; height: 30px; font-size: 12.5px; }
+        .bti-opt.bti-opt-inh { color: var(--text-secondary); font-style: italic; }
 
         /* ── Trad ── */
         .trad-cover-box {
@@ -2950,6 +2958,32 @@
                                     </select>
                                 </div>
                             </div>
+                            <!-- ★ 사용자(2026-10-24): 대상이 수백 개일 때 — 다 받은 곳에서 일찍 멈추기 · 뜸한 계정은 덜 자주 -->
+                            <div class="section" data-group="storage">
+                                <div class="section-label">대상 목록 다중 수집</div>
+                                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                                    대상이 많을 때 다시 받는 시간을 줄입니다. 묶음 · 대상마다 따로 정할 수도 있습니다(묶음 설정 · 대상의 ▸ 의 「일찍 멈춤」).
+                                </p>
+                                <div class="field" style="max-width:320px;">
+                                    <label class="field-label">이미 받은 글이 이어지면 그 대상을 끝냄</label>
+                                    <select class="input" id="settings-known-stop" onchange="onCollectPrefsChange()">
+                                        <option value="0">끝까지 다 봄 (예전처럼)</option>
+                                        <option value="10">10개 이어지면</option>
+                                        <option value="20">20개 이어지면</option>
+                                        <option value="50">50개 이어지면</option>
+                                        <option value="100">100개 이어지면</option>
+                                    </select>
+                                </div>
+                                <div style="font-size:11.5px;color:var(--text-tertiary);margin:4px 0 10px;line-height:1.6;">
+                                    트위터 · 블루스카이 · 인스타 · pixiv · FANBOX · 텀블러. 위에서부터(새 글부터) 보다가 전에 받은 글만 이어지면 그 대상은 거기서 끝냅니다.
+                                    지난번에 끝까지 다 본 대상에서만 멈춥니다 — 처음 받는 대상, 지난번에 중지 · 최대 수 · 오류로 끊긴 대상, 미디어 받기를 바꾼 대상은 한 번 끝까지 보아 빠진 사이를 메웁니다. 그리고 대상마다 4~5주에 한 번은 끝까지 봅니다.
+                                </div>
+                                <label class="option-item"><input type="checkbox" id="settings-quiet-skip" onchange="onCollectPrefsChange()"> 뜸한 계정은 덜 자주 받기</label>
+                                <div style="font-size:11.5px;color:var(--text-tertiary);margin-top:4px;line-height:1.6;">
+                                    새 글이 2주 넘게 없던 계정은 쉰 날의 1/5 쯤 되는 간격으로만 받습니다(최대 30일). 반년 넘게 없으면 '쉬는 계정' 으로 보고 60일마다 봅니다.
+                                    「보이는 것만 받기」 · 「오류 난 것만 다시」 는 쉬는 계정도 받습니다.
+                                </div>
+                            </div>
                             <!-- ★ 사용자 정보 내보내기 / 불러오기 — 계정 + 경로 + 폼 + 토큰 통째 백업/복원 -->
                             <div class="section" data-group="storage">
                                 <div class="section-label">사용자 정보 백업 / 복원</div>
@@ -3699,7 +3733,8 @@
                 { k: 'dateTo', type: 'date', label: '종료' },
                 { k: 'downloadMedia', type: 'check', label: '미디어' },
                 { k: 'excel', type: 'check', label: 'Excel' },
-                { k: 'saveProgress', type: 'check', label: '이어서' }
+                { k: 'saveProgress', type: 'check', label: '이어서' },
+                { k: 'knownStop', type: 'number', label: '일찍 멈춤' }
             ],
             bluesky: [
                 { k: 'type', type: 'select', label: '유형', opts: [
@@ -3714,7 +3749,8 @@
                 { k: 'media', type: 'check', label: '미디어' },
                 { k: 'excel', type: 'check', label: 'Excel' },
                 { k: 'replies', type: 'check', label: '답글포함' },
-                { k: 'reposts', type: 'check', label: '리포스트' }
+                { k: 'reposts', type: 'check', label: '리포스트' },
+                { k: 'knownStop', type: 'number', label: '일찍 멈춤' }
             ],
             instagram: [
                 { k: 'type', type: 'select', label: '유형', opts: [
@@ -3727,7 +3763,8 @@
                 { k: 'dateFrom', type: 'date', label: '시작' },
                 { k: 'dateTo', type: 'date', label: '종료' },
                 { k: 'downloadMedia', type: 'check', label: '미디어' },
-                { k: 'excel', type: 'check', label: 'Excel' }
+                { k: 'excel', type: 'check', label: 'Excel' },
+                { k: 'knownStop', type: 'number', label: '일찍 멈춤' }
             ],
             pixiv: [
                 { k: 'type', type: 'select', label: '유형', opts: [
@@ -3739,7 +3776,8 @@
                 { k: 'dateFrom', type: 'date', label: '시작' },
                 { k: 'dateTo', type: 'date', label: '종료' },
                 { k: 'excel', type: 'check', label: 'Excel' },
-                { k: 'ugoiraGif', type: 'check', label: 'Ugoira GIF' }
+                { k: 'ugoiraGif', type: 'check', label: 'Ugoira GIF' },
+                { k: 'knownStop', type: 'number', label: '일찍 멈춤' }
             ],
             tumblr: [
                 { k: 'type', type: 'select', label: '유형', opts: [
@@ -3749,7 +3787,8 @@
                 { k: 'dateFrom', type: 'date', label: '시작' },
                 { k: 'dateTo', type: 'date', label: '종료' },
                 { k: 'downloadMedia', type: 'check', label: '미디어' },
-                { k: 'excel', type: 'check', label: 'Excel' }
+                { k: 'excel', type: 'check', label: 'Excel' },
+                { k: 'knownStop', type: 'number', label: '일찍 멈춤' }
             ],
             spinspin: [
                 { k: 'dateFrom', type: 'date', label: '시작' },
@@ -3772,11 +3811,16 @@
                 { k: 'media', type: 'check', label: '미디어' },
                 { k: 'excel', type: 'check', label: 'Excel' },
                 { k: 'profiles', type: 'check', label: '프로필' }
+            ],
+            fanbox: [
+                { k: 'knownStop', type: 'number', label: '일찍 멈춤' }
             ]
         };
 
         // 해당 옵션의 전역 기본값 읽기 (탭의 메인 폼 값)
         function readGlobalOptionDefault(plat, key) {
+            if (key === 'knownStop') return _collectPrefs.knownStop;   // 설정 화면의 '이미 받은 글이 이어지면 끝냄'
+
             const dk = _TARGET_DOM_KEY[plat] || plat;
             try {
                 switch (key) {
@@ -3798,6 +3842,34 @@
 
         // ── 대상 목록 도구 — 수백 개를 다루려고(사용자 2026-10-15: 3~4개면 괜찮은데 대용량이라 정말 불편).
         //   다른 앱들처럼 검색 · 보기로 좁힌 뒤 '보이는 N개' 에 한꺼번에 한다(Hitomi Downloader 의 거르기 · JDownloader 의 보기).
+        // ── 묶음마다 기본 옵션(사용자 2026-10-24 — 다른 앱들의 '묶음 기본값 물려받기').
+        //   실제로 쓰는 값: 대상에 정한 것 > 그 대상의 묶음에 정한 것 > 탭의 전역 값.
+        //   계정: 대상의 계정이 '전체' 일 때만 묶음의 계정을 쓴다(대상에서 고른 계정이 앞선다).
+        let targetGroups = {};   // {플랫폼: {묶음: {options:{…}, accountIdx}}} — 설정 파일의 targetGroups
+        const _collectPrefs = { knownStop: 0, quietSkip: false };   // 설정 파일의 knownStop · quietSkip(설정 화면 · 대상 목록 다중 수집)
+        function _tlGroupDef(plat, entry) {
+            const g = entry && entry.group;
+            return (g && targetGroups[plat] && targetGroups[plat][g]) || null;
+        }
+        function _tlInherited(plat, entry, k) {   // 대상이 정하지 않았을 때의 값(묶음 → 전역)
+            const g = _tlGroupDef(plat, entry);
+            return (g && g.options && Object.prototype.hasOwnProperty.call(g.options, k)) ? g.options[k] : readGlobalOptionDefault(plat, k);
+        }
+        function _tlEffOpts(plat, entry) {
+            const g = _tlGroupDef(plat, entry);
+            const go = Object.assign({}, (g && g.options) || {});
+            delete go.saveProgress;   // ★ '이어서' 는 묶음으로 물려주지 않는다 — 앱을 켤 때 이어서를 끄는 안전장치를 비켜 갔다(검토)
+            return Object.assign(go, (entry && entry.options) || {});
+        }
+        function _tlEffAcc(plat, entry) {
+            const a = entry && entry.accountIdx;
+            if (a !== undefined && a !== null && a !== 'all') return a;
+            const g = _tlGroupDef(plat, entry);
+            return (g && g.accountIdx !== undefined && g.accountIdx !== null && g.accountIdx !== 'all') ? g.accountIdx : 'all';
+        }
+        function _tlSaveGroups() {
+            if (backend && backend.saveConfig && _configLoaded) backend.saveConfig(JSON.stringify({ targetGroups: targetGroups }));
+        }
         const _tlState = {};   // 플랫폼 → {q, filter, sort}
         function _tlS(plat) { return _tlState[plat] || (_tlState[plat] = { q: '', filter: 'all', sort: 'added' }); }
         function _tlEsc(t) { return String(t == null ? '' : t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -3811,6 +3883,8 @@
             else if (f === 'error') v = v.filter(x => x.entry.last && x.entry.last.status === 'error');
             else if (f === 'never') v = v.filter(x => !x.entry.last);
             else if (f === 'opts') v = v.filter(x => x.entry.options && Object.keys(x.entry.options).length);
+            else if (f === 'rest') { const now = Date.now(); v = v.filter(x => { const q = _tlQuiet(x.entry, now, plat); return q && q.skip; }); }
+            else if (f === 'fresh') v = v.filter(x => x.entry.last && x.entry.last.fresh > 0);
             else if (f.startsWith('group:')) { const g = f.slice(6); v = v.filter(x => (x.entry.group || '') === g); }
             const lastAt = x => (x.entry.last && x.entry.last.at) || 0;
             if (st.sort === 'name') v.sort((a, b) => String(a.entry.nickname || a.entry.target).localeCompare(String(b.entry.nickname || b.entry.target), 'ko'));
@@ -3826,15 +3900,78 @@
             if (d < 86400 * 45) return Math.round(d / 86400) + '일 전';
             return new Date(ms).toLocaleDateString();
         }
-        function _tlFillStatus(el, entry) {
+        function _tlFillStatus(el, entry, plat) {
             const l = entry.last;
-            el.className = 'tl-status' + (l ? ' tl-' + l.status : '');
+            const qz = _collectPrefs.quietSkip ? _tlQuiet(entry, Date.now(), plat) : null;
+            el.className = 'tl-status' + (l ? ' tl-' + l.status : '') + (qz && qz.skip ? ' tl-rest' : '');
             if (!l) { el.textContent = '아직'; el.title = '이 대상은 아직 받은 적이 없습니다'; return; }
             const mark = l.status === 'error' ? '✕ ' : l.status === 'stopped' ? '⏹ ' : '';
-            el.textContent = mark + _tlAgo(l.at) + (l.status === 'done' && l.media ? ' · ' + l.media : '');
-            el.title = (l.status === 'error' ? '오류' : l.status === 'stopped' ? '중단' : '완료') + ' — ' + new Date(l.at).toLocaleString()
-                + ' · 게시물 ' + (l.posts || 0) + ' · 미디어 ' + (l.media || 0);
+            const what = typeof l.fresh === 'number' ? ' · 새 ' + l.fresh : (l.status === 'done' && l.media ? ' · ' + l.media : '');
+            el.textContent = (qz && qz.skip ? (qz.dead ? '쉼 · ' : '뜸 · ') : '') + mark + _tlAgo(l.at) + what + (l.early ? ' ⏭' : '');
+            el.title = (l.status === 'error' ? '오류' + (l.errors ? ' ' + l.errors + '건' : '') : l.status === 'stopped' ? '중단' : '완료') + ' — ' + new Date(l.at).toLocaleString()
+                + (typeof l.fresh === 'number' ? ' · 새 글 ' + l.fresh : '') + ' · 게시물 ' + (l.posts || 0) + ' · 미디어 ' + (l.media || 0)
+                + (l.early ? ' · 이미 받은 글이 이어져 일찍 멈춤' : '')
+                + (entry.newest ? '\n가장 새 글: ' + new Date(entry.newest).toLocaleDateString() : '')
+                + (qz ? '\n' + (qz.dead ? '쉬는 계정' : '뜸한 계정') + ' — 새 글 없이 ' + qz.days + '일 · ' + qz.interval + '일마다 받음'
+                       + (qz.skip ? ' · 다음: ' + new Date(qz.due).toLocaleDateString() : '') : '');
         }
+        // ── 뜸한 계정(사용자 2026-10-24 — Hydrus 처럼 쉴수록 덜 자주). 활동 = 그 계정의 가장 새 글 시각(수집기가 알려 줌) ·
+        //   새 글을 받은 마지막 판 중 늦은 것. 모르면 늘 받는다. 2주 넘게 없으면 쉰 날의 1/5 쯤(2~30일)마다, 반년 넘게 없으면 60일마다.
+        const _DAY = 86400000;
+        function _tlQuiet(entry, now, plat) {
+            // ★ 인스타 스토리(전체 · 스토리)는 하루면 사라진다 — 뜸하다고 건너뛰면 그 사이 스토리를 영영 잃는다(검토)
+            if (plat === 'instagram') {
+                const ty = _tlEffOpts(plat, entry).type || readGlobalOptionDefault(plat, 'type');
+                if (ty === 'all' || ty === 'stories') return null;
+            }
+            const act = Math.max(entry.newest || 0, entry.newAt || 0);
+            if (!act) return null;
+            const qd = (now - act) / _DAY;
+            if (qd < 14) return null;
+            const dead = qd >= 180;
+            const interval = dead ? 60 : Math.min(30, Math.max(2, Math.round(qd / 5)));
+            const lastAt = (entry.last && entry.last.status === 'done' && entry.last.at) || 0;   // 끝까지 받은 판만 친다(오류 · 중지는 아님)
+            const due = lastAt + interval * _DAY;
+            return { days: Math.floor(qd), interval, dead, due, skip: now < due };
+        }
+        // 대상 하나의 판이 끝났다 — 백엔드가 보내는 그 대상의 결과(오류 줄 수 · 새 글 수 · 가장 새 글 · 일찍 멈춤)
+        window._tlTrackEnd = function(key, meta) {
+            const k = String(key || ''), h = k.indexOf('#');
+            if (h < 0) return;
+            let plat = k.slice(0, h);
+            if (plat === 'bsky') plat = 'bluesky';
+            const mm = _multis[plat];
+            const entry = mm && mm.queue[parseInt(k.slice(h + 1), 10)];
+            if (!entry) return;
+            meta = meta || {};
+            // ★ 트랙 키는 이번 판 대기열의 자리라, 앞 판의 늦은 결과가 다른 대상에 붙을 수 있었다 — 대상 이름이 다르면 버린다(검토)
+            if (meta.target && String(meta.target) !== String(entry.target)) return;
+            // 이번 판에 아직 기록이 없으면(중지 등으로 끝 신호를 받지 못함) 새로 만든다 — 지난 판의 기록에 섞지 않는다
+            const since = (mm.startedAtByKey && mm.startedAtByKey[k]) || mm.startedAt;
+            if (!entry.last || (since && entry.last.at < since)) {
+                const st = mm.statsByKey[k] || {};
+                entry.last = { at: Date.now(), status: meta.stopped ? 'stopped' : 'done', posts: st.posts || 0, media: st.media || 0 };
+            }
+            const l = entry.last;
+            l.errors = meta.errors || 0;
+            if (typeof meta.fresh === 'number') l.fresh = meta.fresh; else delete l.fresh;
+            if (meta.early) l.early = meta.early; else delete l.early;
+            // ★ 트위터 · 블루스카이 · 텀블러 · 팬박스 · 스핀스핀 · Asked 는 실패해도 '완료' 로 끝났다 — 오류 줄이 있었으면 오류로 둔다
+            if (l.errors > 0 && l.status === 'done') {
+                l.status = 'error';
+                if (mm.states[k] === 'done') { mm.states[k] = 'error'; updateMultiProgress(plat); }
+            }
+            if (meta.newest > 0) entry.newest = Math.max(entry.newest || 0, meta.newest);
+            if (l.fresh > 0) entry.newAt = l.at;
+            const dk = _TARGET_DOM_KEY[plat] || plat;
+            const list = document.getElementById(dk + '-target-list');
+            const i = (platformTargets[plat] || []).indexOf(entry);
+            const cell = list && list.querySelector('.batch-target-item[data-tidx="' + i + '"] .tl-status');
+            if (cell) _tlFillStatus(cell, entry, plat);
+            _tlToolsSoon(plat);   // '오류 난 것만 다시' 의 개수
+            clearTimeout(window._tlSaveT);
+            window._tlSaveT = setTimeout(saveConfig, 1500);
+        };
         // 다중 수집에서 한 대상이 끝나면 부른다 — 그 줄의 상태 칸만 고친다(목록을 다시 그리면 스크롤이 튄다)
         window._tlRecordResult = function(plat, entry, status, posts, media) {
             if (!entry) return;
@@ -3843,10 +3980,23 @@
             const list = document.getElementById(dk + '-target-list');
             const i = (platformTargets[plat] || []).indexOf(entry);
             const row = list && list.querySelector('.batch-target-item[data-tidx="' + i + '"] .tl-status');
-            if (row) _tlFillStatus(row, entry);
+            if (row) _tlFillStatus(row, entry, plat);
+            _tlToolsSoon(plat);
             clearTimeout(window._tlSaveT);
             window._tlSaveT = setTimeout(saveConfig, 1500);
         };
+        // 도구 줄(개수 · '오류 난 것만 다시' 단추)만 다시 — 판이 끝날 때마다 목록 전체를 다시 그리지 않게
+        function _tlToolsSoon(plat) {
+            window._tlToolsT = window._tlToolsT || {};
+            clearTimeout(window._tlToolsT[plat]);
+            window._tlToolsT[plat] = setTimeout(function () {
+                // 줄과 도구 줄을 함께 — 도구 줄만 고치면 보이는 개수 · 단추가 화면의 줄과 어긋났다(검토). 검색 · 보기 · 스크롤은 그대로 남는다
+                const list = document.getElementById((_TARGET_DOM_KEY[plat] || plat) + '-target-list');
+                const ae = document.activeElement;
+                if (list && list.querySelector('.tl-tools') && !(ae && list.contains(ae) && /INPUT|TEXTAREA|SELECT/.test(ae.tagName)))
+                    renderPlatformTargetList(plat);   // 줄의 칸에 치는 중이면 건드리지 않는다
+            }, 400);
+        }
         function _tlSetFilter(plat, f) {
             _tlS(plat).filter = f;
             renderPlatformTargetList(plat);
@@ -3874,6 +4024,9 @@
                     + '<button class="btn btn-secondary btn-sm" data-act="account">계정…</button>'
                     + '<button class="btn btn-secondary btn-sm" data-act="del">지우기</button>'
                     + '<span class="tl-sep"></span>'
+                    + '<button class="btn btn-secondary btn-sm" data-act="runvis" title="검색 · 보기로 좁힌 대상 중 켜진 것만 받습니다">보이는 것만 받기</button>'
+                    + '<button class="btn btn-secondary btn-sm" data-act="retry" title="마지막에 오류가 난 대상만 다시 받습니다">오류 난 것만 다시</button>'
+                    + '<button class="btn btn-secondary btn-sm" data-act="groups" title="묶음마다 기본 옵션 · 계정">묶음 설정</button>'
                     + '<button class="btn btn-secondary btn-sm" data-act="text">글자로 편집</button>'
                     + (canImport ? '<button class="btn btn-secondary btn-sm" data-act="import">팔로잉에서 가져오기</button>' : '')
                     + '</div>';
@@ -3886,11 +4039,15 @@
                     const a = this.getAttribute('data-act');
                     if (a === 'text') openTargetTextEditor(plat);
                     else if (a === 'import') openFollowImport(plat);
+                    else if (a === 'runvis') _tlRunSubset(plat, 'visible');
+                    else if (a === 'retry') _tlRunSubset(plat, 'errors');
+                    else if (a === 'groups') openGroupSettings(plat);
                     else _tlBulk(plat, a);
                 }));
             }
             const fsel = tools.querySelector('.tl-filter');
-            const opts = [['all', '모두 보기'], ['on', '켜진 것'], ['off', '꺼진 것'], ['error', '오류 난 것'], ['never', '아직 안 받은 것'], ['opts', '옵션 바꾼 것']]
+            const opts = [['all', '모두 보기'], ['on', '켜진 것'], ['off', '꺼진 것'], ['error', '오류 난 것'], ['never', '아직 안 받은 것'], ['opts', '옵션 바꾼 것'],
+                ['fresh', '지난번에 새 글 있던 것'], ['rest', '뜸해서 이번엔 쉬는 것']]
                 .concat(groups.map(g => ['group:' + g, '묶음: ' + g]));
             const want = opts.some(o => o[0] === st.filter) ? st.filter : 'all';
             st.filter = want;
@@ -3905,6 +4062,122 @@
             tools.querySelector('.tl-count').textContent = vis === total ? ('전체 ' + total + '개') : ('보이는 ' + vis + '개 / ' + total);
             tools.querySelectorAll('.tl-acts [data-act="on"], .tl-acts [data-act="off"], .tl-acts [data-act="group"], .tl-acts [data-act="account"], .tl-acts [data-act="del"]')
                 .forEach(b => { b.disabled = !vis; });
+            const nErr = (platformTargets[plat] || []).filter(e => e.last && e.last.status === 'error' && e.enabled !== false).length;
+            const rb = tools.querySelector('[data-act="retry"]');
+            rb.textContent = '오류 난 것만 다시' + (nErr ? ' (' + nErr + ')' : '');
+            rb.disabled = !nErr;
+            const anyRest = _collectPrefs.quietSkip && _tlView(plat).some(x => { const q = _tlQuiet(x.entry, Date.now(), plat); return q && q.skip; });
+            tools.querySelector('[data-act="runvis"]').disabled = !vis || (vis === total && !anyRest);   // 다 보이면 그냥 '수집 시작'(쉬는 계정이 있으면 그것까지 받는 길)
+            tools.querySelector('[data-act="groups"]').disabled = !groups.length && !Object.keys(targetGroups[plat] || {}).length;
+        }
+        // 보이는 것만 받기 · 오류 난 것만 다시 — 같은 다중 수집으로, 고른 대상만(꺼 둔 대상은 뺀다)
+        function _tlRunSubset(plat, kind) {
+            if (!backend) return;
+            const logKey = plat === 'bluesky' ? 'bsky' : plat;
+            const dk = _TARGET_DOM_KEY[plat] || plat, list = document.getElementById(dk + '-target-list');
+            const arr = platformTargets[plat] || [];
+            const pick = kind === 'errors' ? arr.filter(e => e.last && e.last.status === 'error')
+                                           : ((list && list._tlShown) || []).filter(e => arr.includes(e));
+            if (!pick.some(e => e.enabled !== false)) {
+                appendLog(kind === 'errors' ? '오류가 난 (켜진) 대상이 없습니다' : '보이는 대상 가운데 켜진 것이 없습니다', 'warning', logKey);
+                return;
+            }
+            startPlatformMulti(plat, pick, kind === 'errors' ? '오류 난 것만 다시' : '보이는 것만');
+        }
+        // 묶음 설정 — 묶음마다 기본 옵션 · 계정. 비워 두면(전역 따름) 탭의 값을 쓴다
+        function openGroupSettings(plat) {
+            const ov = _modal('tl-group-modal', '묶음 설정');
+            ov.querySelector('.modal-title').textContent = '묶음 설정 — ' + (_PLAT_TITLE[plat] || plat);
+            const body = ov.querySelector('.mw-body');
+            const arr = platformTargets[plat] || [];
+            const names = Array.from(new Set(arr.map(e => e.group).filter(Boolean).concat(Object.keys(targetGroups[plat] || {})))).sort();
+            if (!names.length) {
+                body.innerHTML = '<div class="mw-help">묶음이 없습니다. 대상을 검색 · 보기로 좁힌 뒤 <b>묶음…</b> 으로 묶음을 만들거나, 「글자로 편집」 에서 <code>=== 이름</code> 아래에 두십시오.</div>';
+                ov.classList.remove('hidden');
+                return;
+            }
+            const cur = ov._grp && names.includes(ov._grp) ? ov._grp : names[0];
+            ov._grp = cur;
+            const g = (targetGroups[plat] || {})[cur] || {};
+            const o = g.options || {};
+            const has = k => Object.prototype.hasOwnProperty.call(o, k);
+            const schema = TARGET_OPTIONS_SCHEMA[plat] || [];
+            const gl = k => readGlobalOptionDefault(plat, k);
+            const show = v => (v === true ? '켬' : v === false ? '끔' : (v === undefined || v === null || v === '' ? '없음' : String(v)));
+            let rows = schema.filter(sc => sc.k !== 'saveProgress').map(sc => {   // '이어서' 는 대상마다만(앱을 켤 때 끄는 안전장치)
+                let ctl = '';
+                if (sc.type === 'check') {
+                    ctl = '<select class="input gs-ctl" data-k="' + sc.k + '" data-t="check"><option value="">전역 따름 (' + show(!!gl(sc.k)) + ')</option>'
+                        + '<option value="1"' + (has(sc.k) && o[sc.k] === true ? ' selected' : '') + '>켬</option>'
+                        + '<option value="0"' + (has(sc.k) && o[sc.k] === false ? ' selected' : '') + '>끔</option></select>';
+                } else if (sc.type === 'select') {
+                    const gv = gl(sc.k), gname = ((sc.opts || []).find(x => x[0] === gv) || [gv, gv])[1];
+                    ctl = '<select class="input gs-ctl" data-k="' + sc.k + '" data-t="select"><option value="">전역 따름 (' + _tlEsc(show(gname)) + ')</option>'
+                        + (sc.opts || []).map(x => '<option value="' + _tlEsc(x[0]) + '"' + (has(sc.k) && o[sc.k] === x[0] ? ' selected' : '') + '>' + _tlEsc(x[1]) + '</option>').join('') + '</select>';
+                } else if (sc.type === 'number') {
+                    ctl = '<input class="input gs-ctl" type="number" min="0" data-k="' + sc.k + '" data-t="number" value="' + (has(sc.k) ? _tlEsc(o[sc.k]) : '') + '" placeholder="전역 따름 (' + _tlEsc(show(gl(sc.k))) + ')">';
+                } else return '';   // 날짜(dateFrom · dateTo)는 수집이 아직 읽지 않는다 — 대상의 판에도 없다
+                return '<label class="gs-row"><span class="gs-lbl">' + _tlEsc(sc.label) + '</span>' + ctl + '</label>';
+            }).join('');
+            const accs = _platAccountList(plat);
+            if (accs.length) {
+                const a = g.accountIdx;
+                rows += '<label class="gs-row"><span class="gs-lbl">계정</span><select class="input gs-ctl" data-k="__acc" data-t="acc">'
+                    + '<option value="">전역 따름 (대상의 계정 · 전체)</option>'
+                    + accs.map((x, j) => '<option value="' + j + '"' + (a !== undefined && a !== null && a !== 'all' && String(a) === String(j) ? ' selected' : '') + '>' + (j + 1) + '. ' + _tlEsc(x.name || 'Account') + '</option>').join('')
+                    + '</select></label>';
+            }
+            const n = arr.filter(e => e.group === cur).length;
+            const own = arr.filter(e => e.group === cur && e.options && Object.keys(e.options).length).length;
+            body.innerHTML = '<div class="mw-help">묶음에 정한 값은 그 묶음의 대상이 물려받습니다. 대상에서 따로 정한 것이 앞섭니다(대상의 ▸ 에서 바꾼 것). '
+                + '계정은 대상의 계정이 「전체」 일 때만 묶음의 것을 씁니다.</div>'
+                + '<div class="mw-row gs-names">' + names.map(nm => '<button class="btn btn-sm ' + (nm === cur ? 'btn-primary' : 'btn-secondary') + ' gs-pick" data-g="' + _tlEsc(nm) + '">' + _tlEsc(nm)
+                    + ' <span class="gs-n">' + arr.filter(e => e.group === nm).length + '</span></button>').join('') + '</div>'
+                + '<div class="mw-note">「' + _tlEsc(cur) + '」 — 대상 ' + n + '개' + (own ? ' · 그 가운데 ' + own + '개는 따로 정한 옵션이 있음' : '') + '</div>'
+                + '<div class="gs-grid">' + rows + '</div>'
+                + '<div class="mw-foot"><span class="mw-note gs-state"></span><button class="btn btn-secondary btn-sm gs-rename">이름 바꾸기</button><button class="btn btn-secondary btn-sm gs-clear"' + (Object.keys(o).length || (g.accountIdx !== undefined && g.accountIdx !== 'all') ? '' : ' disabled') + '>이 묶음의 기본값 지우기</button></div>';
+            body.querySelectorAll('.gs-pick').forEach(b => b.onclick = () => { ov._grp = b.getAttribute('data-g'); openGroupSettings(plat); });
+            body.querySelectorAll('.gs-ctl').forEach(el => el.addEventListener('change', function () {
+                const k = this.getAttribute('data-k'), t = this.getAttribute('data-t'), v = this.value;
+                if (!targetGroups[plat]) targetGroups[plat] = {};
+                const gg = targetGroups[plat][cur] || (targetGroups[plat][cur] = { options: {} });
+                if (!gg.options) gg.options = {};
+                if (t === 'acc') { if (v === '') delete gg.accountIdx; else gg.accountIdx = v; }
+                else if (v === '') delete gg.options[k];
+                else gg.options[k] = t === 'check' ? v === '1' : t === 'number' ? (parseInt(v, 10) || 0) : v;
+                if (!Object.keys(gg.options).length && (gg.accountIdx === undefined || gg.accountIdx === 'all')) delete targetGroups[plat][cur];
+                _tlSaveGroups();
+                renderPlatformTargetList(plat);
+                body.querySelector('.gs-state').textContent = '저장했습니다';
+            }));
+            // 이름 바꾸기 — 대상들의 묶음과 이 묶음의 기본값을 함께 옮긴다(따로 바꾸면 기본값이 옛 이름에 남았다)
+            body.querySelector('.gs-rename').onclick = () => {
+                const nn = (prompt('「' + cur + '」 의 새 이름', cur) || '').trim();
+                if (!nn || nn === cur) return;
+                if (names.includes(nn) && !confirm('「' + nn + '」 묶음이 이미 있습니다. 합칠까요? (기본값은 「' + nn + '」 의 것이 앞섭니다)')) return;
+                arr.forEach(e => { if (e.group === cur) e.group = nn; });
+                const tg = targetGroups[plat] || {};
+                if (tg[cur]) {
+                    const merged = Object.assign({ options: {} }, tg[cur], tg[nn] || {});
+                    merged.options = Object.assign({}, (tg[cur] || {}).options || {}, ((tg[nn] || {}).options) || {});
+                    tg[nn] = merged;
+                    delete tg[cur];
+                    targetGroups[plat] = tg;
+                }
+                if (_tlS(plat).filter === 'group:' + cur) _tlS(plat).filter = 'group:' + nn;
+                ov._grp = nn;
+                saveConfig(); _tlSaveGroups();
+                renderPlatformTargetList(plat);
+                openGroupSettings(plat);
+            };
+            body.querySelector('.gs-clear').onclick = () => {
+                if (targetGroups[plat]) delete targetGroups[plat][cur];
+                _tlSaveGroups();
+                renderPlatformTargetList(plat);
+                openGroupSettings(plat);
+            };
+            if (typeof window._initCustomSelects === 'function') window._initCustomSelects();
+            ov.classList.remove('hidden');
         }
         // 보이는(검색 · 보기로 좁힌) 대상 모두에 한꺼번에
         function _tlBulk(plat, act) {
@@ -4090,7 +4363,7 @@
                         }
                         const st = document.createElement('span');
                         st.className = 'tl-status';
-                        _tlFillStatus(st, entry);
+                        _tlFillStatus(st, entry, plat);
                         main.appendChild(st);
 
                         // 옵션 확장 버튼 (스키마가 있을 때만)
@@ -4128,9 +4401,12 @@
                                 const lbl = document.createElement('span');
                                 lbl.className = 'bti-opt-label';
                                 lbl.textContent = s.label;
-                                // 현재 값: entry.options[k] 있으면 그것, 없으면 전역 기본값
+                                // 현재 값: entry.options[k] 있으면 그것, 없으면 묶음의 것, 그것도 없으면 전역 기본값
                                 const hasOverride = Object.prototype.hasOwnProperty.call(entry.options, s.k);
-                                const curVal = hasOverride ? entry.options[s.k] : readGlobalOptionDefault(plat, s.k);
+                                const grpDef = _tlGroupDef(plat, entry);
+                                const fromGroup = !hasOverride && !!(grpDef && grpDef.options && Object.prototype.hasOwnProperty.call(grpDef.options, s.k));
+                                const curVal = hasOverride ? entry.options[s.k] : _tlInherited(plat, entry, s.k);
+                                if (fromGroup) { label.classList.add('bti-opt-inh'); label.title = '묶음 「' + entry.group + '」 의 기본값'; }
 
                                 if (s.type === 'check') {
                                     const cb = document.createElement('input');
@@ -4206,7 +4482,10 @@
             }
             const stripAt = (plat === 'twitter' || plat === 'instagram' || plat === 'asked');
             const clean = stripAt ? v.replace(/^@/,'') : v;
-            platformTargets[plat][idx].target = clean;
+            const ent = platformTargets[plat][idx];
+            // ★ 다른 계정이 되면 지난 계정의 받은 기록 · 활동 시각을 지운다 — 남아 있으면 새 계정이 '뜸한 계정' 으로 몇십 일 건너뛰어졌다(검토)
+            if (_tlKey(plat, ent.target) !== _tlKey(plat, clean)) { delete ent.last; delete ent.newest; delete ent.newAt; }
+            ent.target = clean;
             saveConfig();
             appendLog('대상 수정: #'+(idx+1)+' → '+clean, 'info', plat==='bluesky'?'bsky':plat);
         }
@@ -4277,8 +4556,8 @@
         function updatePlatformTargetOption(plat, idx, key, value) {
             if (!platformTargets[plat] || !platformTargets[plat][idx]) return;
             if (!platformTargets[plat][idx].options) platformTargets[plat][idx].options = {};
-            // 전역 기본값과 동일하면 override 제거 (entry.options 에서 key 제거)
-            const globalDef = readGlobalOptionDefault(plat, key);
+            // 물려받는 값(묶음 → 전역)과 같으면 override 제거 (entry.options 에서 key 제거)
+            const globalDef = _tlInherited(plat, platformTargets[plat][idx], key);
             if (value === globalDef) {
                 delete platformTargets[plat][idx].options[key];
             } else {
@@ -4539,7 +4818,8 @@
                 const stat = (m.statsByKey && m.statsByKey[key]) || {posts:0,media:0,status:''};
                 const icon = st === 'running' ? '⏵' : (st === 'done' ? '✓' : (st === 'error' ? '✗' : (st === 'stopped' ? '⏹' : '·')));
                 const color = st === 'running' ? '#1d9bf0' : (st === 'done' ? '#28a745' : (st === 'error' ? '#dc3545' : (st === 'stopped' ? '#ff9500' : 'var(--text-tertiary)')));
-                const acct = (entry.accountIdx === 'all') ? '전체' : ('#'+(parseInt(entry.accountIdx)+1));
+                const effAcc = _tlEffAcc(plat, entry);
+                const acct = (effAcc === 'all') ? '전체' : ('#'+(parseInt(effAcc)+1));
                 // row별 시작/종료 버튼 — running이면 ⏹ 종료, 아니면 ▶ 시작
                 const canStop = (st === 'running');
                 const canStart = (st === 'pending' || st === 'done' || st === 'error' || st === 'stopped');
@@ -4588,10 +4868,26 @@
             if (el && el.parentNode) el.parentNode.removeChild(el);
         }
 
-        function startPlatformMulti(plat) {
-            const items = (platformTargets[plat] || []).filter(function(e){ return e.enabled !== false; });
-            const total = (platformTargets[plat] || []).length;
+        // only: 이 대상들만(보이는 것만 · 오류 난 것만 다시 — 사용자 2026-10-24). 없으면 켜진 대상 전부.
+        function startPlatformMulti(plat, only, why) {
+            const pool = Array.isArray(only) ? only : (platformTargets[plat] || []);
+            let items = pool.filter(function(e){ return e.enabled !== false; });
+            const total = pool.length;
             const skipped = total - items.length;
+            let restNote = '';
+            if (!Array.isArray(only) && _collectPrefs.quietSkip) {
+                const now = Date.now(), rest = [];
+                items = items.filter(function(e){ const q = _tlQuiet(e, now, plat); if (q && q.skip) { rest.push(q); return false; } return true; });
+                if (rest.length) {
+                    const next = Math.min.apply(null, rest.map(q => q.due));
+                    restNote = ' · 뜸한 계정 ' + rest.length + '개는 이번엔 쉼(다음: ' + new Date(next).toLocaleDateString() + ')';
+                    if (!items.length) {
+                        appendLog('켜진 대상이 모두 뜸한 계정이라 이번엔 쉽니다 — 다음: ' + new Date(next).toLocaleDateString()
+                            + ' · 지금 받으려면 「보이는 것만 받기」', 'info', plat === 'bluesky' ? 'bsky' : plat);
+                        return true;
+                    }
+                }
+            }
             if (!items.length) {
                 appendLog(skipped > 0
                     ? '활성화된 대상이 없습니다 (전체 '+total+'개 모두 비활성)'
@@ -4616,6 +4912,7 @@
                 queue: items,
                 states: {},
                 statsByKey: {},
+                startedAt: Date.now(),
                 stopped: false,
                 parallel: true
             };
@@ -4623,10 +4920,12 @@
             clearLog(logKey);
             setRunning(plat, true);
             const skipNote = skipped > 0 ? (' · '+skipped+'개 비활성 제외') : '';
-            appendLog('━━ 병렬 다중 수집 시작 ('+items.length+'개'+skipNote+') ━━','info', logKey);
+            const whyNote = why ? (_tlEsc(why) + ' · 전체 ' + (platformTargets[plat] || []).length + '개 중 ') : '';
+            appendLog('━━ 병렬 다중 수집 시작 ('+whyNote+items.length+'개'+skipNote+restNote+') ━━','info', logKey);
             items.forEach(function(e,i){
                 let al = '전체 계정';
-                if (e.accountIdx !== 'all') { const ai = parseInt(e.accountIdx); const a = _platAccountList(plat)[ai]; al = a ? ((ai+1)+'.'+(a.name||'Account')) : ('계정'+(ai+1)); }
+                const eAcc = _tlEffAcc(plat, e);
+                if (eAcc !== 'all') { const ai = parseInt(eAcc); const a = _platAccountList(plat)[ai]; al = a ? ((ai+1)+'.'+(a.name||'Account')) : ('계정'+(ai+1)); }
                 appendLog('  '+(i+1)+'. '+e.target+' ['+al+']','info', logKey);
             });
 
@@ -4635,21 +4934,24 @@
                 m.states[parallelKey] = 'pending';
                 let config;
                 try {
-                    config = buildBatchConfig(plat, entry.target, entry.accountIdx, entry.options || {});
+                    config = buildBatchConfig(plat, entry.target, _tlEffAcc(plat, entry), _tlEffOpts(plat, entry));
                 } catch (e) {
-                    appendLog('['+entry.target+'] buildBatchConfig 예외: '+(e && e.message ? e.message : String(e)),'error', logKey);
+                    appendLog('['+_tlEsc(entry.target)+'] buildBatchConfig 예외: '+_tlEsc(e && e.message ? e.message : String(e)),'error', logKey);
                     m.states[parallelKey] = 'error';
+                    _tlRecordResult(plat, entry, 'error', 0, 0);   // 오류 난 것만 다시에 들어가게(예전엔 표에 남지 않았다)
                     return;
                 }
                 if (!config) {
-                    appendLog(''+entry.target+' — 설정 오류 (계정 미설정 등)','error', logKey);
+                    appendLog(''+_tlEsc(entry.target)+' — 설정 오류 (계정 미설정 등)','error', logKey);
                     m.states[parallelKey] = 'error';
+                    _tlRecordResult(plat, entry, 'error', 0, 0);
                     return;
                 }
                 config._parallelKey = parallelKey;
                 config._parallelTotal = items.length;
                 config._parallelIdx = idx;
                 config._parallelTargetLabel = entry.target;
+                (m.labels || (m.labels = {}))[parallelKey] = entry.target;   // 끝 신호가 이 대상의 것인지 가릴 때
                 m.states[parallelKey] = 'running';
                 try {
                     backend.startCollection(JSON.stringify(config));
@@ -4679,6 +4981,7 @@
                 });
                 const stpNote = stp > 0 ? (' · 중지 '+stp) : '';
                 appendLog('━━ 병렬 다중 수집 종료 (완료 '+done+' · 오류 '+err+stpNote+' / '+total+') ━━','success', m.logKey);
+                _tlToolsSoon(m.plat);
                 setRunning(m.plat, false);
                 // 항목별 ▶ 재시작 가능하게 _multis는 유지 — 사용자가 다시 누르면 다시 다중 수집 시작 가능
                 // delete _multis[plat];   // 삭제하지 말고 유지
@@ -4709,7 +5012,7 @@
             if (m.states[key] === 'running') return;
             let config;
             try {
-                config = buildBatchConfig(plat, entry.target, entry.accountIdx, entry.options || {});
+                config = buildBatchConfig(plat, entry.target, _tlEffAcc(plat, entry), _tlEffOpts(plat, entry));
             } catch (e) {
                 appendLog('항목 #'+(idx+1)+' config 빌드 실패: '+(e&&e.message||e), 'error', m.logKey);
                 m.states[key] = 'error';
@@ -4726,6 +5029,8 @@
             config._parallelTotal = m.queue.length;
             config._parallelIdx = idx;
             config._parallelTargetLabel = entry.target;
+            (m.labels || (m.labels = {}))[key] = entry.target;
+            (m.startedAtByKey || (m.startedAtByKey = {}))[key] = Date.now();   // 이 줄만 다시 — 이번 판의 기록인지 가릴 때
             // stats 초기화 (재시작 시 카운트 리셋)
             if (m.statsByKey) m.statsByKey[key] = {posts:0, media:0, status:'시작...'};
             m.states[key] = 'running';
@@ -5019,6 +5324,8 @@
                 //   그 뒤 모든 설정 저장이 조용히 사라졌다. JSON 을 읽고 계정을 받은
                 //   시점이면 '덮어써도 되는 상태' 로 충분하다.
                 _configLoaded = true;
+                if (config.targetGroups && typeof config.targetGroups === 'object' && !Array.isArray(config.targetGroups))
+                    targetGroups = config.targetGroups;
                 if (config.platformTargets) {
                     // normalize legacy string entries + ensure enabled defaults to true
                     Object.keys(config.platformTargets).forEach(function(plat){
@@ -5090,6 +5397,18 @@
                 {
                     const mc = document.getElementById('settings-max-concurrent');
                     if (mc && typeof config.maxConcurrent === 'number') mc.value = String(config.maxConcurrent);
+                }
+                // 대상 목록 다중 수집 — 일찍 멈춤 · 뜸한 계정
+                {
+                    if (typeof config.knownStop === 'number') _collectPrefs.knownStop = Math.max(0, config.knownStop);
+                    if (typeof config.quietSkip === 'boolean') _collectPrefs.quietSkip = config.quietSkip;
+                    const ks = document.getElementById('settings-known-stop'), qs = document.getElementById('settings-quiet-skip');
+                    if (ks) {
+                        if (!Array.from(ks.options).some(o => o.value === String(_collectPrefs.knownStop)))
+                            ks.add(new Option(_collectPrefs.knownStop + '개 이어지면', String(_collectPrefs.knownStop)));
+                        ks.value = String(_collectPrefs.knownStop);
+                    }
+                    if (qs) qs.checked = _collectPrefs.quietSkip;
                 }
                 // 계정 드롭다운에 이름 반영 + 목록 재렌더
                 refreshTargetAccountPickers();
@@ -5484,6 +5803,13 @@
             if (backend && backend.saveConfig) {
                 backend.saveConfig(JSON.stringify({nasAutoReconnect: cb.checked}));
             }
+        }
+        function onCollectPrefsChange() {
+            const ks = document.getElementById('settings-known-stop'), qs = document.getElementById('settings-quiet-skip');
+            _collectPrefs.knownStop = Math.max(0, parseInt(ks && ks.value, 10) || 0);
+            _collectPrefs.quietSkip = !!(qs && qs.checked);
+            if (backend && backend.saveConfig) backend.saveConfig(JSON.stringify({ knownStop: _collectPrefs.knownStop, quietSkip: _collectPrefs.quietSkip }));
+            Object.keys(platformTargets || {}).forEach(pl => { if (document.getElementById((_TARGET_DOM_KEY[pl] || pl) + '-target-list')) renderPlatformTargetList(pl); });
         }
         function onMaxConcurrentChange(val) {
             const n = parseInt(val) || 0;
@@ -9362,6 +9688,9 @@
                         config.excel = _mk('excel', document.getElementById('bsky-excel') ? document.getElementById('bsky-excel').checked : true);
                         config.replies = _mk('replies', document.getElementById('bsky-replies') ? document.getElementById('bsky-replies').checked : true);
                         config.reposts = _mk('reposts', document.getElementById('bsky-reposts') ? document.getElementById('bsky-reposts').checked : true);
+                        // ★ 수집기는 includeReplies · includeReposts 를 읽는다 — 이 이름이 없어 대상별 '답글포함' · '리포스트' 가 먹지 않았다
+                        config.includeReplies = config.replies;
+                        config.includeReposts = config.reposts;
                         config.realCapture = _mk('realCapture', document.getElementById('bsky-real-capture') ? document.getElementById('bsky-real-capture').checked : false);
                         if (pickedBs.length) {
                             config.accounts = pickedBs;
@@ -9513,6 +9842,9 @@
                 batchLog('설정 읽기 오류: ' + e.message);
                 return null;
             }
+            // 이미 받은 글이 N개 이어지면 그 대상을 끝냄(설정 · 묶음 · 대상) — 아는 수집기만 읽는다
+            if (['twitter', 'bluesky', 'instagram', 'pixiv', 'fanbox', 'tumblr'].includes(plat))
+                config.stopAfterKnown = Math.max(0, parseInt(_mk('knownStop', _collectPrefs.knownStop), 10) || 0);
             return config;
         }
 
@@ -9575,7 +9907,9 @@
                         m.states[parallelKey] = isError ? 'error' : (isStopped ? 'stopped' : 'done');
                         var entry = m.queue[keyIdx];
                         var label = entry ? entry.target : ('#'+keyIdx);
-                        if (prev === 'running' && window._tlRecordResult)
+                        // ★ 그 자리의 대상이 보낸 때와 다르면(수집 중에 아이디를 고침 · 앞 판의 늦은 끝 신호) 기록하지 않는다(검토)
+                        var sameTarget = !(m.labels && m.labels[parallelKey] !== undefined && entry && m.labels[parallelKey] !== entry.target);
+                        if (prev === 'running' && window._tlRecordResult && sameTarget)
                             _tlRecordResult(lookupPlat, entry, isError ? 'error' : (isStopped ? 'stopped' : 'done'), posts, media);
                         if (prev === 'running') {
                             if (isError) appendLog(''+label+' — 오류','error', m.logKey);

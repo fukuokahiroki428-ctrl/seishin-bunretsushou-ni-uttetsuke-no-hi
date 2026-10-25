@@ -22,7 +22,7 @@ Commands:
 """
 
 import os, sys, json, time, asyncio, re, subprocess, shutil
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 # ── 윈도우 260자 경로 ───────────────────────────────────────────────────────
@@ -88,8 +88,238 @@ def pick_list(obj, names, what):
     return v if isinstance(v, list) else []
 
 
-def progress(count, media_count=0, status="수집 중..."):
-    print(json.dumps({"progress": {"count": count, "media": media_count, "status": status}}), flush=True)
+def progress(count, media_count=0, status="수집 중...", fresh=None, newest=None):
+    p = {"count": count, "media": media_count, "status": status}
+    # ★ 이번 판의 '새 글' 수와 가장 새 제 글 시각도 함께 싣는다 — 중지 · 데몬이 죽어 마지막 결과 줄이
+    #   오지 않아도 앱이 그때까지 센 값을 대상 목록에 남길 수 있게(sendCommand 가 마지막 값을 쥐고 있다).
+    if fresh is not None:
+        p["fresh"] = fresh
+    if newest:
+        p["newest"] = newest
+    print(json.dumps({"progress": p}), flush=True)
+
+
+# -- 다 받은 곳에서 일찍 멈추기 (사용자 2026-10-24 — 대상이 수백 개일 때) --------------------
+#   gallery-dl 의 abort:N 과 같다. 다시 받을 때 '이미 받은 글' 이 N개 이어 나오면 그 대상(그 종류)은
+#   거기서 멈춘다 — 매 판 몇 년 치 피드를 끝까지 훑지 않게. N = 0 이면 예전처럼 끝까지 간다.
+#   '이미 받은' 은 이번 판을 시작하기 '전' 의 엑셀에 있던 글만이다. 중간 저장(500·1000개마다, 요금 제한 때)이
+#   같은 파일에 이번 판 글을 써 넣으므로, 파일을 그때그때 읽으면 이번 판에 처음 받은 글까지 '이미 받은' 이
+#   되어 겹치는 쪽에서 너무 일찍 멈춘다. 그래서 시작할 때 한 번 찍어 둔다.
+def snapshot_known(filename):
+    """save_xlsx 가 쓴 엑셀의 uri 열을 읽는다 → (set((type, uri)), set(uri), type 열이 있나).
+    save_xlsx 가 합칠 때 쓰는 열쇠와 같다 — 포스트는 (type, uri)(제 글을 제가 리포스트하면 같은 uri 로
+    Post·Repost 두 줄), 좋아요·답글·댓글은 uri. 파일이 없거나 못 읽으면 빈 집합 — 모두 새 글로 보고 끝까지 간다."""
+    keys, uris, has_type = set(), set(), False
+    if not filename or not os.path.exists(filename):
+        return keys, uris, has_type
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(filename, read_only=True)
+        try:
+            rows = wb.active.iter_rows(values_only=True)
+            head = [str(h) if h is not None else '' for h in (next(rows, None) or ())]
+            if 'uri' not in head:
+                return keys, uris, has_type
+            ui = head.index('uri')
+            ti = head.index('type') if 'type' in head else -1
+            has_type = ti >= 0
+            for r in rows:
+                if not r or ui >= len(r) or r[ui] is None:
+                    continue
+                u = str(r[ui])
+                if not u:
+                    continue
+                uris.add(u)
+                if has_type:
+                    t = r[ti] if ti < len(r) else None
+                    keys.add(('' if t is None else str(t), u))
+        finally:
+            wb.close()
+    except Exception as e:
+        log(f"이미 받은 글 목록(엑셀)을 읽지 못해 이번 판은 끝까지 봅니다: {e}")
+        return set(), set(), False
+    return keys, uris, has_type
+
+
+WALK_MARK_FORMAT = 1   # 수집기를 고쳐 옛 글에서 놓친 것을 다시 받아야 하면 올린다 — 모든 목록이 한 번 끝까지 본다
+_walk_full_at = {}     # 이번 명령이 읽은 표시의 '끝까지 본 때' — 일찍 멈춘 판이 다시 적을 때 물려준다
+
+
+def _walk_period_days(path):
+    """끝까지 다시 볼 때까지의 날 수 — 28~35일, 대상 · 목록마다 달리(같은 날 처음 받은 것들이 한날에 몰리지 않게)."""
+    h = 2166136261
+    for ch in path.encode("utf-8"):
+        h ^= ch
+        h = (h * 16777619) & 0xFFFFFFFF
+    return 28 + h % 8
+
+
+def _take_walk_file(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            o = json.load(f)
+    except Exception:
+        o = {}
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    ok = False
+    try:
+        full = datetime.fromisoformat(str(o.get("full", "")).replace("Z", "+00:00"))
+        if full.tzinfo is None:
+            full = full.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        ok = (int(o.get("v", 0)) == WALK_MARK_FORMAT and full <= now + timedelta(hours=1)
+              and (now - full).days < _walk_period_days(path))
+    except Exception:
+        ok = False
+    if ok:
+        _walk_full_at[path] = o["full"]
+    else:
+        _walk_full_at.pop(path, None)
+    return ok
+
+
+def take_walk_marks(d, prefix):
+    """지난번에 그 목록을 끊김 없이 다 봤나(<d>/.hanishiki_walk_<kind>.json) — 같은 엑셀을 쓰는 범위(미디어 켬/끔 ·
+    답글 · 리포스트)의 표시를 모두 읽고 지운다(믿을 만한 kind 들을 돌려준다). 없으면(첫 판 · 중지 · 최대 수 · 요금 제한 ·
+    API 오류로 끊긴 판 뒤) 이번 판은 일찍 멈추지 않고 끝까지 보아 사이를 메운다 — 끊긴 판이 새 글의 위쪽만 받아 두면,
+    다음 판이 그 위에서 멈춰 아래쪽 새 글을 영영 놓쳤다(검토).
+    한 범위의 걸음이 그 엑셀에 줄을 넣으면 다른 범위의 표시는 그 줄을 보지 않은 채 남아, 다음 판을 그 범위가
+    본 적 없는 줄에서 일찍 멈추게 했다(검토 — 미디어 끔 판 뒤의 미디어 켬 판이 미디어를 영영 안 받음).
+    ★ 표시가 있어도 그 목록을 마지막으로 끝까지 본 지 4~5주가 지났거나 형식 번호가 다르면 없는 것으로 본다 — 어떤 까닭으로든
+    사이가 생겨도 한 달 안에 한 번은 끝까지 보아 메운다(앱의 Common::takeCleanWalkMark 와 같다)."""
+    out = set()
+    head = f".hanishiki_walk_{prefix}"
+    for k in [k for k in _walk_full_at if os.path.dirname(k) == d and os.path.basename(k).startswith(head)]:
+        _walk_full_at.pop(k, None)
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return out
+    for n in names:
+        if n.startswith(head) and n.endswith(".json"):
+            if _take_walk_file(os.path.join(d, n)):
+                out.add(n[len(".hanishiki_walk_"):-len(".json")])
+    return out
+
+
+def put_walk_mark(d, kind):
+    path = os.path.join(d, f".hanishiki_walk_{kind}.json")
+    now = datetime.now(timezone.utc).isoformat()
+    full = _walk_full_at.pop(path, None) or now   # 믿을 만한 표시로 시작한 판은 앞 표시의 때를, 끝까지 본 판은 지금을
+    tmp = path + ".part"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"at": now, "full": full, "v": WALK_MARK_FORMAT}, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def take_walk_failures(d, kind):
+    """지난 판에 미디어를 받지 못한 글(<d>/.hanishiki_walkfail_<kind>.json) — 읽고 지운다."""
+    path = os.path.join(d, f".hanishiki_walkfail_{kind}.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            ids = {str(x) for x in (json.load(f).get("ids") or []) if x}
+    except Exception:
+        ids = set()
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return ids
+
+
+def put_walk_failures(d, kind, ids):
+    path = os.path.join(d, f".hanishiki_walkfail_{kind}.json")
+    if not ids:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"at": datetime.now(timezone.utc).isoformat(), "ids": sorted(ids)}, f)
+    except OSError:
+        pass
+
+
+def iso_to_ms(s):
+    """'2024-05-01T12:34:56.789Z' → 1970 부터의 밀리초(UTC). 못 읽으면 0."""
+    if not s:
+        return 0
+    try:
+        dt = datetime.fromisoformat(str(s).replace('Z', '+00:00'))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)   # 시간대 없는 값은 UTC 로 본다(createdAt 은 UTC 가 규격)
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return 0
+
+
+class KnownStreak:
+    """한 종류(포스트 · 답글 · 좋아요) 한 판의 '이미 받은 글' 연속 수를 센다.
+    - 이미 받은 글 → 연속 +1 (받던 방식은 그대로 — 엑셀에 다시 담고 미디어도 예전처럼 확인한다)
+    - 정말 새 글  → 연속 0, 새 글 +1
+    - 이번 판에 이미 본 글(쪽이 겹쳐 두 번 온 것) · 거른 글(리포스트 빼기 · 답글 아닌 글)은 세지 않는다(중립)"""
+
+    def __init__(self, filename, stop_after=0):
+        self.keys, self.uris, self.has_type = snapshot_known(filename)
+        try:
+            self.stop_after = max(0, int(stop_after or 0))
+        except (TypeError, ValueError):
+            self.stop_after = 0
+        self.streak = 0
+        self.new = 0
+        self.stopped = 0      # 멈췄으면 그때의 연속 수
+        self.newest = 0       # 이번 판에 본 그 계정의 '제 글' 가운데 가장 새 것(ms, UTC)
+        self._seen = set()
+
+    def is_known(self, ptype, uri):
+        if self.has_type:
+            return (ptype or '', uri) in self.keys
+        return uri in self.uris
+
+    def see(self, ptype, uri):
+        """받은 글 하나를 센다. True 면 여기서 멈춘다."""
+        if not uri:
+            return False
+        k = (ptype or '', uri)
+        if k in self._seen:
+            return False
+        self._seen.add(k)
+        if self.is_known(ptype, uri):
+            self.streak += 1
+            if self.stop_after > 0 and self.streak >= self.stop_after:
+                self.stopped = self.streak
+                return True
+        else:
+            self.streak = 0
+            self.new += 1
+        return False
+
+    def own(self, post, target_did=''):
+        """그 계정의 제 글이면 작성 시각(record.createdAt)을 '가장 새 글' 후보로 둔다.
+        리포스트는 부르지 않는다 — 남의 옛 글이라 그 계정이 얼마나 자주 쓰는지와 상관이 없다."""
+        author = getattr(post, 'author', None)
+        if target_did and author is not None and getattr(author, 'did', '') not in ('', target_did):
+            return
+        record = getattr(post, 'record', None)
+        ms = iso_to_ms(getattr(record, 'created_at', '') if record else '')
+        # 앞날(시계가 틀린 글 · 손으로 지어낸 createdAt)은 버린다 — 하나라도 가장 큰 값이 되면 앱이 통째로 버린다
+        if ms > self.newest and ms <= (time.time() + 86400) * 1000:
+            self.newest = ms
+
+    def fields(self):
+        """결과 줄에 붙일 칸 — new_count(이번 판 새 글) · stopped_known(멈춘 연속 수, 0 = 안 멈춤) · newest(ms)."""
+        d = {"new_count": self.new, "stopped_known": self.stopped}
+        if self.newest:
+            d["newest"] = self.newest
+        return d
 
 def _read_init_line():
     """첫 줄만 원시 fd 에서 읽는다.
@@ -378,6 +608,23 @@ def main():
             return None
 
     # Helper: download media files
+    # 이번 명령에서 미디어를 받지 못한 글 — 처음 실패한 글이 있으면 그 목록을 '끊김 없이 다 봄' 으로 적지 않는다(다음 판이 끝까지 보며 다시 받는다)
+    dl_failed = set()   # 그 글의 uri — 두 판 잇따라 같은 글이 실패하면(지워진 미디어) 영영 안 되는 것으로 보아 표시를 더는 막지 않는다
+
+    def finish_failures(excel_dir, walk_kind, prev_failed, ks, sak):
+        """처음 실패한 글이 있으면 True(표시를 막는다 — 다음 판이 끝까지 보며 다시 받는다). 이번 판의 실패를 적어 둔다
+        (이번 판에 보지 못한 글의 지난 기록은 그대로 둔다). uri 를 모르는 실패는 가릴 수 없어 늘 막는다."""
+        named = {u for u in dl_failed if u}
+        new = named - prev_failed
+        gave = named & prev_failed
+        if sak > 0 and new:   # 일찍 멈춤을 안 쓰면 판마다 끝까지 보며 다시 받는다 — 안내할 것이 없다
+            log(f"미디어를 받지 못한 글 {len(new)}개 — 다음 판은 끝까지 보며 다시 받습니다")
+        if sak > 0 and gave:
+            log(f"두 판 잇따라 미디어를 받지 못한 글 {len(gave)}개는 일찍 멈춤을 더는 막지 않습니다(지워졌거나 막힌 듯 — 4~5주마다 끝까지 볼 때 다시 받아 봅니다)")
+        seen = {u for _, u in ks._seen}
+        put_walk_failures(excel_dir, walk_kind, named | (prev_failed - seen))
+        return bool(new) or ('' in dl_failed)
+
     def download_media_files(post, media_dir, post_data, action_type="posts"):
         """Download media from a post. Returns count of new files.
         action_type: posts / likes / search — per-type subfolder + _complete mirror."""
@@ -567,6 +814,7 @@ def main():
                 return filepath
             except Exception as e:
                 log(f"Download failed: {e}")
+                dl_failed.add(str(getattr(post, 'uri', '') or ''))
                 return None
 
         # Images
@@ -794,10 +1042,19 @@ def main():
 
         log(f"Target: @{short_handle}")
         log(f"Save: {user_dir}")
+        # 이미 받은 글은 이번 판을 시작하기 '전' 의 엑셀로 정한다(중간 저장이 같은 파일에 쓰므로 지금 찍어 둔다)
+        # 표시 이름에 범위를 넣는다 — 미디어를 끄고 다 본 것이 미디어를 켠 판을 '다 봤다' 로 만들지 않게(검토)
+        walk_kind = f"bs_posts_m{int(bool(do_media))}_p{int(bool(inc_replies))}_r{int(bool(inc_reposts))}"
+        ks = None
+        clean = False   # 끊김 없이 끝났나(피드 끝 · 일찍 멈춤)
+        capped = False
+        target_did = ''
+        api_error = ''
 
         # Get profile info
         try:
             profile = client.get_profile(actor=api_handle)
+            target_did = getattr(profile, 'did', '') or ''
             posts_count = getattr(profile, 'posts_count', 0) or 0
             followers_count = getattr(profile, 'followers_count', 0) or 0
             follows_count = getattr(profile, 'follows_count', 0) or 0
@@ -852,6 +1109,15 @@ def main():
             log(f"Profile error: {e}")
             return {"error": str(e)}
 
+        # 프로필을 받은 뒤에 — 받지 못하고 돌아가면 표시만 지워 다음 판이 괜히 끝까지 보았다
+        armed = walk_kind in take_walk_marks(excel_dir, "bs_posts_")   # 다른 범위의 표시도 함께 지운다
+        ks = KnownStreak(os.path.join(excel_dir, f"{short_handle}_posts.xlsx"), args.get("stop_after_known", 0) if armed else 0)
+        dl_failed.clear()
+        prev_failed = take_walk_failures(excel_dir, walk_kind)
+        sak = max(0, int(args.get("stop_after_known", 0) or 0))
+        def hit():   # 최대 수 — 일찍 멈춤을 쓰면 새로 받은 것만 센다(받아 둔 것까지 세면 늘 최대 수에서 끊겨 표시가 영영 안 적혔다 — 검토)
+            return cap_limit > 0 and ((ks.new if sak > 0 else len(all_data)) >= cap_limit)
+
         # Collect all posts
         all_data = []
         cursor = None
@@ -862,8 +1128,9 @@ def main():
             if stop_requested or check_stdin_for_quit():
                 log("⛔ 중지 요청 감지 — 포스트 수집 중단")
                 break
-            if over_cap(len(all_data)):
+            if hit():
                 log(f"최대 수집 수 {cap_limit}개에 닿아 멈춤")
+                capped = True
                 break
             try:
                 resp = client.get_author_feed(
@@ -886,14 +1153,16 @@ def main():
                         break
                     continue
                 log(f"API error: {e}")
+                api_error = str(e)
                 break
 
             feed = pick_list(resp, ['feed', 'posts', 'items'], 'feed')
             if not feed:
+                clean = True
                 break
 
             for item in feed:
-                if over_cap(len(all_data)): break
+                if hit(): break
                 post = pick(item, ['post', 'value', 'record'])
                 if not post:
                     continue
@@ -945,11 +1214,21 @@ def main():
                     new_media = download_media_files(post, media_dir, data[1:], action_type="posts")  # skip type column
                     total_media += new_media
 
+                if not is_repost:
+                    ks.own(post, target_did)   # 그 계정이 마지막으로 쓴 때 — 뜸한 계정 판정
+                if ks.see(data[0], data[1]):
+                    break
+
             page += 1
-            progress(len(all_data), total_media)
+            progress(len(all_data), total_media, fresh=ks.new, newest=ks.newest)
+            if ks.stopped:
+                log(f"이미 받은 글이 {ks.stopped}개 이어져 여기서 멈춥니다 — 새 글 {ks.new}개")
+                clean = True
+                break
 
             cursor = pick(resp, ['cursor', 'next_cursor', 'nextCursor'])
             if not cursor:
+                clean = True   # 피드 끝
                 break
 
             # 아이누 방식 진행 로그 + 중간저장
@@ -976,8 +1255,14 @@ def main():
             log(f"Excel saved: {len(all_data)} posts")
 
         log(f"Complete! Posts: {len(all_data)}, Media: {total_media}")
-        progress(len(all_data), total_media, "완료")
-        return {"status": "ok", "posts": len(all_data), "media": total_media}
+        progress(len(all_data), total_media, "완료", fresh=ks.new, newest=ks.newest)
+        dl_blocked = finish_failures(excel_dir, walk_kind, prev_failed, ks, sak)
+        if clean and not api_error and not capped and not hit() and not dl_blocked:
+            put_walk_mark(excel_dir, walk_kind)
+        res = {"status": "ok", "posts": len(all_data), "media": total_media, **ks.fields()}
+        if api_error:
+            res["api_error"] = api_error   # 앱이 오류로 적는다(오류 난 것만 다시) — 받은 데까지는 그대로 낸다
+        return res
 
     def collect_likes(args):
         apply_rl_settings(args)
@@ -993,12 +1278,32 @@ def main():
         os.makedirs(excel_dir, exist_ok=True)
 
         log(f"Collecting likes for @{short_handle}")
+        walk_kind = f"bs_likes_m{int(bool(do_media))}"
+        clean = False
+        api_error = ''
 
         try:
             profile = client.get_profile(actor=api_handle)
             user_did = profile.did
         except Exception as e:
             return {"error": str(e)}
+        # ★ 좋아요는 그 계정 자신만 볼 수 있다(getActorLikes 는 actor 가 묻는 계정이어야 한다). 남의 계정이면 묻지 않고 넘어간다 —
+        #   묻던 때는 늘 거절당해, '전체' 로 받는 대상 목록이 블루스카이 대상을 모두 ✕ 로 적었다(검토). 로그인한 계정이 여럿이면
+        #   그 대상 자신으로 로그인한 계정으로 묻는다. 계정 정보(me)를 모르는 옛 꾸러미면 예전처럼 지금 계정으로 묻는다.
+        my_dids = [getattr(getattr(c, 'me', None), 'did', '') or '' for c in clients]
+        likes_client = client
+        if any(my_dids):
+            if user_did not in my_dids:
+                log("좋아요는 로그인한 그 계정 것만 볼 수 있어 건너뜁니다")
+                return {"status": "ok", "count": 0, "media": 0}
+            likes_client = clients[my_dids.index(user_did)]
+        armed = walk_kind in take_walk_marks(excel_dir, "bs_likes_")
+        ks = KnownStreak(os.path.join(excel_dir, f"{short_handle}_likes.xlsx"), args.get("stop_after_known", 0) if armed else 0)
+        dl_failed.clear()
+        prev_failed = take_walk_failures(excel_dir, walk_kind)
+        sak = max(0, int(args.get("stop_after_known", 0) or 0))
+        def hit():   # 최대 수 — 일찍 멈춤을 쓰면 새로 받은 것만 센다(받아 둔 것까지 세면 늘 최대 수에서 끊겨 표시가 영영 안 적혔다 — 검토)
+            return cap_limit > 0 and ((ks.new if sak > 0 else len(all_data)) >= cap_limit)
 
         all_data = []
         cursor = None
@@ -1008,14 +1313,14 @@ def main():
             if stop_requested or check_stdin_for_quit():
                 log("⛔ 중지 요청 감지 — 좋아요 수집 중단")
                 break
-            if over_cap(len(all_data)):
+            if hit():
                 log(f"최대 수집 수 {cap_limit}개에 닿아 멈춤")
                 break
             try:
                 params = {'actor': user_did, 'limit': 100}
                 if cursor:
                     params['cursor'] = cursor
-                resp = client.app.bsky.feed.get_actor_likes(params)
+                resp = likes_client.app.bsky.feed.get_actor_likes(params)
             except Exception as e:
                 err = str(e).lower()
                 if 'rate' in err or '429' in err:
@@ -1023,14 +1328,16 @@ def main():
                         break
                     continue
                 log(f"API error: {e}")
+                api_error = str(e)
                 break
 
             feed = pick_list(resp, ['feed', 'posts', 'items'], 'feed')
             if not feed:
+                clean = True   # 피드 끝
                 break
 
             for item in feed:
-                if over_cap(len(all_data)): break
+                if hit(): break
                 post = pick(item, ['post', 'value', 'record'])
                 if not post:
                     continue
@@ -1050,11 +1357,18 @@ def main():
                     if do_media:
                         new_media = download_media_files(post, media_dir, data, action_type="likes")
                         total_media += new_media
+                    if ks.see(None, data[0]):   # 받을 것은 받은 뒤에 센다(멈추는 좋아요의 미디어도 확인)
+                        break
 
-            progress(len(all_data), total_media)
+            progress(len(all_data), total_media, fresh=ks.new)
+            if ks.stopped:
+                log(f"이미 받은 좋아요가 {ks.stopped}개 이어져 여기서 멈춥니다 — 새로 {ks.new}개")
+                clean = True
+                break
 
             cursor = pick(resp, ['cursor', 'next_cursor', 'nextCursor'])
             if not cursor:
+                clean = True
                 break
             time.sleep(2)  # 아이누: 2초 고정
 
@@ -1065,7 +1379,14 @@ def main():
             save_xlsx(os.path.join(excel_dir, f"{short_handle}_likes.xlsx"), all_data, headers)
             log(f"Excel saved: {len(all_data)} likes")
 
-        return {"status": "ok", "count": len(all_data), "media": total_media}
+        dl_blocked = finish_failures(excel_dir, walk_kind, prev_failed, ks, sak)
+        if clean and not api_error and not hit() and not dl_blocked:
+            put_walk_mark(excel_dir, walk_kind)
+        res = {"status": "ok", "count": len(all_data), "media": total_media, **ks.fields()}
+        res.pop("newest", None)   # 남의 글 — 그 계정이 얼마나 자주 쓰는지와 상관없다
+        if api_error:
+            res["api_error"] = api_error
+        return res
 
     def collect_followers(args):
         apply_rl_settings(args)
@@ -1569,6 +1890,16 @@ def main():
         os.makedirs(excel_dir, exist_ok=True)
 
         log(f"Collecting replies by @{short_handle}")
+        walk_kind = f"bs_replies_m{int(bool(do_media))}"
+        armed = walk_kind in take_walk_marks(excel_dir, "bs_replies_")
+        ks = KnownStreak(os.path.join(excel_dir, f"{short_handle}_replies.xlsx"), args.get("stop_after_known", 0) if armed else 0)
+        dl_failed.clear()
+        prev_failed = take_walk_failures(excel_dir, walk_kind)
+        sak = max(0, int(args.get("stop_after_known", 0) or 0))
+        def hit():   # 최대 수 — 일찍 멈춤을 쓰면 새로 받은 것만 센다(받아 둔 것까지 세면 늘 최대 수에서 끊겨 표시가 영영 안 적혔다 — 검토)
+            return cap_limit > 0 and ((ks.new if sak > 0 else len(all_data)) >= cap_limit)
+        clean = False
+        api_error = ''
 
         all_data = []
         cursor = None
@@ -1578,7 +1909,7 @@ def main():
             if stop_requested or check_stdin_for_quit():
                 log("⛔ 중지 요청 감지 — 답글 수집 중단")
                 break
-            if over_cap(len(all_data)):
+            if hit():
                 log(f"최대 수집 수 {cap_limit}개에 닿아 멈춤")
                 break
             try:
@@ -1600,14 +1931,16 @@ def main():
                         break
                     continue
                 log(f"API error: {e}")
+                api_error = str(e)
                 break
 
             feed = pick_list(resp, ['feed', 'posts', 'items'], 'feed')
             if not feed:
+                clean = True   # 피드 끝
                 break
 
             for item in feed:
-                if over_cap(len(all_data)): break
+                if hit(): break
                 post = pick(item, ['post', 'value', 'record'])
                 if not post:
                     continue
@@ -1651,10 +1984,20 @@ def main():
                     new_media = download_media_files(post, media_dir, data, action_type="replies")
                     total_media += new_media
 
-            progress(len(all_data), total_media)
+                if getattr(item, 'reason', None) is None:   # 리포스트(남의 답글)는 그 계정의 활동 시각이 아니다
+                    ks.own(post)
+                if ks.see(None, data[0]):
+                    break
+
+            progress(len(all_data), total_media, fresh=ks.new, newest=ks.newest)
+            if ks.stopped:
+                log(f"이미 받은 답글이 {ks.stopped}개 이어져 여기서 멈춥니다 — 새로 {ks.new}개")
+                clean = True
+                break
 
             cursor = pick(resp, ['cursor', 'next_cursor', 'nextCursor'])
             if not cursor:
+                clean = True
                 break
 
             n = len(all_data)
@@ -1679,8 +2022,14 @@ def main():
             log(f"Excel saved: {len(all_data)} replies")
 
         log(f"Complete! Replies: {len(all_data)}, Media: {total_media}")
-        progress(len(all_data), total_media, "완료")
-        return {"status": "ok", "count": len(all_data), "media": total_media}
+        progress(len(all_data), total_media, "완료", fresh=ks.new, newest=ks.newest)
+        dl_blocked = finish_failures(excel_dir, walk_kind, prev_failed, ks, sak)
+        if clean and not api_error and not hit() and not dl_blocked:
+            put_walk_mark(excel_dir, walk_kind)
+        res = {"status": "ok", "count": len(all_data), "media": total_media, **ks.fields()}
+        if api_error:
+            res["api_error"] = api_error
+        return res
 
     def collect_comments(args):
         """Collect all replies/comments on a user's posts using getPostThread recursion."""

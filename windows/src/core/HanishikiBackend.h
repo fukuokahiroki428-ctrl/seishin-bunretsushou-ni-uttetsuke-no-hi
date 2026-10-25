@@ -393,6 +393,17 @@ public:
     void setThreadTrackKey(const QString &trackKey);
     void clearThreadTrackKey();
     QString currentThreadTrackKey() const;
+    // ── 대상 하나의 이번 판 결과(사용자 2026-10-24 — 대상이 수백 개일 때: 오류 난 것만 다시 · 뜸한 계정은 덜 자주).
+    //   수집기가 작업 스레드에서 알리고, 그 대상(병렬 트랙)이 끝나면 화면의 대상 목록에 한 번 보낸다(_tlTrackEnd).
+    //   병렬 트랙이 아닌 판(단일 · 内閣会)은 대상 목록에 적을 곳이 없어 모으지 않는다.
+    void noteTrackFresh(int newPosts);          // 이번 판에 새로 받은 글 수 — 더한다
+    void noteTrackNewest(qint64 msSinceEpoch);  // 그 계정의 가장 새 글 시각 — 큰 것을 둔다
+    void noteTrackEarlyStop(int knownStreak);
+    void noteCollectionFatal();                 // 하위 수집이 통째로 실패했다(공용 m_collectionErrorCount + 이 트랙의 fatal)   // 이미 받은 글이 이어져 일찍 멈췄다
+private:
+    struct TrackMeta { int errors = 0; int fatal = 0; int fresh = 0; bool freshKnown = false; qint64 newest = 0; int early = 0; };
+    QHash<QString, TrackMeta> m_trackMeta;      // 트랙 키("twitter#3") → 이번 판 결과
+    QMutex m_trackMetaMutex;
 private:
     std::atomic<bool> m_tradCancelled{false};
     std::atomic<bool> m_pythonBusy{false};    // Python 환경 작업 중 (업그레이드/복구/업데이트 동시 방지)
