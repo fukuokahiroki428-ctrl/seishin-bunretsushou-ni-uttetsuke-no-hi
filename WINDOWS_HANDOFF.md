@@ -1723,3 +1723,54 @@ tmd · Hydrus · Hitomi · JDownloader · RipMe) 뒤 사용자가 넷을 다 골
 
 ### 4. 공구함
 CDP 가 덮개 닫힌 맥에서 시험 도중 끊기던 것(`d8e870e`) — 이제 `run_all` 10/10(SingleFile 은 화면이 켜져 있어야 — `caffeinate -du` 로 돌림).
+
+---
+
+# ★ 맥 → 윈도우 (2026-10-25): r45 — 대상이 수백 개일 때: 보이는 것만 · 오류 난 것만 · 다 받은 곳에서 일찍 멈추기 · 뜸한 계정 · 묶음 기본값
+
+맥 `ueno` `9014439` · `mac-4.0.0-r45`. 10-24 전보 잘 받았습니다 — 트위터 팔로잉을 사용자 계정으로 보아 주셔서 고맙습니다.
+`volumeTopOf` 의 윈도우 두 갈래(`X:/` · `//서버/공유` · `\\?\` 떼기)는 맥이 아직 받지 않았습니다 — 다음에 받겠습니다(맥 동작은 그대로라 급하지 않습니다).
+
+### 1. 무엇(사용자가 2026-10-24 고른 넷)
+- **보이는 것만 받기 · 오류 난 것만 다시 · 묶음 설정** — 대상 목록 도구 줄(`_tlRunSubset(plat, 'visible'|'errors')` → `startPlatformMulti(plat, only, why)`).
+  판이 끝나면 대상마다 결과를 남깁니다: 백엔드 `TrackMeta {errors, fatal, fresh, freshKnown, newest, early}` · `noteTrackFresh/Newest/EarlyStop` ·
+  `log()` 가 그 트랙의 error 줄을 셈 → 끝에 `window._tlTrackEnd(statsKey, {errors, newest, early, stopped, fresh?, target})`.
+  거르기 '지난번에 새 글 있던 것'(fresh) · '뜸해서 이번엔 쉬는 것'(rest).
+- **다 받은 곳에서 일찍 멈추기** — 설정 「대상 목록 다중 수집」의 `knownStop`(0 · 10 · 20 · 50 · 100, Config `m_knownStop`) · 묶음 · 대상별 `knownStop`.
+  `buildBatchConfig` 가 `config.stopAfterKnown` 으로 보냅니다(트위터 · 블루스카이 · 인스타 · 픽시브 · 팬박스 · 텀블러). **0(기본)이면 예전 그대로입니다.**
+- **뜸한 계정은 덜 자주**(`quietSkip`) — `_tlQuiet(entry, now, plat)`: 활동 = max(newest, newAt). 14일 미만 없음 · 14~180일 간격 clamp(round(쉰 날/5), 2, 30)일 ·
+  180일 넘으면 60일. 마지막 판이 `done` 일 때만 센다. 인스타 전체 · 스토리는 쉬지 않음. 전체 수집에만(보이는 것만 · 오류 난 것만은 쉬는 것도 받음).
+- **묶음마다 기본 옵션 · 계정** — Config `targetGroups {plat:{group:{options, accountIdx}}}`. 대상 > 묶음 > 전역(`_tlEffOpts` · `_tlEffAcc`, saveProgress 는 묶음에서 뺌).
+
+### 2. 일찍 멈춤의 안전장치 — 옮기실 때 꼭 함께(이것 없이 N개 세기만 넣으면 새 글을 영영 놓칩니다)
+다섯 번 검토했습니다. 핵심만:
+1. **끊김 없이 다 본 표시** `<dir>/.hanishiki_walk_<kind>.json` `{at, full, v}` — `Common::takeCleanWalkMark(s)` / `putCleanWalkMark`. 판 시작에 읽고 **지운다**.
+   표시가 있을 때만 일찍 멈춤을 켜고, 끊김 없이 끝났을 때(끝까지 · 일찍 멈춤)만 다시 적는다. 끊긴 판(중지 · 최대 수 · 오류 · 처음 실패한 파일)이
+   새 글의 위쪽만 받아 두면 다음 판이 그 위에서 멈춰 아래쪽을 영영 놓쳤습니다.
+2. **같은 엑셀을 쓰는 목록 · 범위의 표시는 한꺼번에 지운다**(`takeCleanWalkMarks(dir, prefix)` — 있던 kind 중 믿을 만한 것만 돌려줌). 이름에 범위를 넣습니다:
+   트위터 `tw_<엑셀>_<search|timeline|replies>_m<미디어>` · `tw_<likes|bookmarks|reposts>_m<미디어>`, 블루스카이 `bs_posts_m?_p?_r?` · `bs_likes_m?` · `bs_replies_m?`,
+   인스타 `ig_posts` · `ig_reels`, 픽시브 `px_<id>_<type>_g<우고이라GIF>`, 팬박스 `fb_posts_m?_f?_p<후원 요금 · 모르면 x>`, 텀블러 `tb_posts_m?`.
+3. **4~5주에 한 번은 끝까지** — `full` 이 28~35일(표시 경로의 FNV-1a 로 목록마다 달리) 지났거나 `v != kWalkMarkFormat` 이면 없는 것으로 봅니다.
+   일찍 멈춘 판이 다시 적는 표시는 앞 표시의 `full` 을 물려받습니다(앱 안 기록부 `s_walkFullAt`). 검토가 못 찾은 길로 사이가 생겨도 한 달 안에 메웁니다.
+4. **두 판 잇따른 실패는 넘어간다** — `.hanishiki_walkfail_<kind>.json`(`take/putWalkFailures`). 처음 실패한 것만 표시를 막습니다(다음 판이 끝까지 보며 다시 받음).
+   지워진 미디어 하나로 그 대상의 일찍 멈춤이 영영 안 켜지던 것. 이번 판에 보지 못한 것의 기록은 그대로 둡니다. 중지로 끊긴 받기는 실패로 세지 않습니다.
+5. 플랫폼마다 걸린 것(윈도우 트리에도 같은 줄이 있으면): 트위터 — X 는 목록 끝에서 트윗 없이 커서만 든 쪽을 줍니다. '쪽을 받은 뒤 같은 커서가 5번,
+   **제 모양으로**(instructions 있고 errors 없음 — `m_lastPageShaped`) 비면 끝'. 기간 · 새 글만 · 양방향 · 레거시 `_tweets.xlsx` 판은 따로 다룹니다(`TwitterCollector.cpp`
+   본 걸음 머리의 주석). 텀블러 — `total_posts` 를 쪽마다 다시 읽음(걷는 사이 올라온 글만큼 끝이 밀림, 줄면 끊긴 것). 팬박스 — 가운데 쪽이 비면 끊긴 것.
+   픽시브 — 작품 하나 받기(`illust`)는 그 작가의 `px_<작가>_user_g*` 를 지움.
+코드는 플랫폼과 무관합니다(Qt · Python). 블루스카이 쪽은 `resources/tools/bluesky_daemon.py` 그대로 받아 가시면 됩니다(`take_walk_marks` · `put_walk_mark` · `finish_failures`).
+
+### 3. 함께 고친 것 — 윈도우 트리에도 같은 줄이 있을 가능성이 큽니다
+- 블루스카이: 유형 '미디어만' 이 데몬에 `media_only` 로 가 'Unknown action' — `media` 로 바꿈. 다중 수집이 보내는 `replies`/`reposts` 를 읽음(단일은
+  `includeReplies`/`includeReposts`). **남의 계정의 좋아요를 묻지 않음** — `getActorLikes` 는 묻는 계정 자신만 됩니다(늘 빈손 · 오류). 로그인 계정이 여럿이면 그 대상 자신의 계정으로.
+- 팬박스 · 텀블러: 엑셀을 이번 판의 글로만 덮어써 예전 줄이 빠지던 것 → 예전 줄과 합쳐 저장. 팬박스는 `ExcelWriter::saveDocument`(새 static — `save()` 와 같은
+  숨은 임시 이름 + 바꿔 끼우기 + 덮어 바꾸지 못하는 볼륨이면 지우고 바꿈).
+- 인스타: 카루셀 속 영상 칸이 `video_versions` 없이 오면 썸네일을 `(code_i).mp4` 이름으로 받아, 뒤에 영상이 와도 '있다' 로 보여 영영 안 받던 것 → `.jpg` 로.
+- 픽시브 '전체': 하위 판 실패를 공용 `m_collectionErrorCount` 로 세어(판마다 0 으로 되돌림) 함께 도는 다른 대상의 실패가 섞이던 것 → 트랙마다 `TrackMeta.fatal`(`noteCollectionFatal()`).
+
+### 4. 시험(맥)
+`akashi/tests/targets.py` 37/37 · `inspect_all --doctor --hotfix` 6/6 · `run_all` 9/10(SingleFile 은 덮개가 닫혀 0/6 — 같은 코드의 직전 빌드는 덮개를 연 채 10/10).
+블루스카이는 가짜 atproto 로 데몬을 실제로 돌려 보았고(범위 바뀜 · 끊긴 판 · 두 판 잇따른 실패 · 40일 지난 표시 · 형식 번호 · 최대 수 · 남의 좋아요 · 끄면 r44 와 같음),
+표시 도우미는 진짜 `Common.cpp` 를 묶은 시험 26가지가 모두 맞았습니다(둘 다 맥 세션의 임시 폴더에만 있습니다).
+**진짜 계정으로는 아직 한 번도 일찍 멈춤을 돌려 보지 못했습니다.** 옮기신 뒤 사용자 계정으로 대상 하나에 `knownStop` 20 을 두고 두 번 받아 보아 주십시오 —
+첫 판은 끝까지(표시가 적힘), 둘째 판에 '이미 받은 … %1개 이어져 여기서 멈춥니다' 가 나와야 합니다.
