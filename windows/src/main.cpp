@@ -355,11 +355,10 @@ int main(int argc, char *argv[])
                       << QCoreApplication::applicationDirPath();
 #endif
 
-    // ★ Mac 전용: Dock 컨벤션 — 창 닫아도 앱 살아있고 Dock 클릭으로 재오픈.
-    //   Windows 에선 X 누르면 죽는 게 정상이라 기본값(true) 유지.
-#ifdef Q_OS_MACOS
+    // ★ 창을 닫아도 앱은 산다 — 맥은 Dock 컨벤션, 윈도우는 알림 영역(2026-10-29 사용자 결정: 감시 중 창을 닫으면
+    //   묻지도 않고 무인 감시가 멈추던 것). 윈도우에서 정말 끝내는 길은 MainWindow::closeEvent 가 끝에 quit 을 부르는 것
+    //   (알림 영역의 '끝내기' · Ctrl+Q · 알림 영역이 없는 환경). 이것을 켜 두면 숨은 동안 터미널 창 하나를 닫아도 앱이 끝났다.
     app.setQuitOnLastWindowClosed(false);
-#endif
 
     // Single instance lock — setStaleLockTime(0) ensures stale locks are auto-removed
     QString tmpDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
@@ -393,6 +392,12 @@ int main(int argc, char *argv[])
         if (!codename.isEmpty()) title += QStringLiteral(" — ") + codename;
         HWND hwnd = FindWindowW(nullptr, reinterpret_cast<const wchar_t *>(title.utf16()));
         if (hwnd) {
+            // ★ 창을 닫으면 알림 영역으로 숨으므로(MainWindow::closeEvent) 숨은 창은 SetForegroundWindow 만으로는
+            //   안 보인다 — 떠 있는 앱에 '보여 달라' 를 보내고(nativeEvent), 앞으로 나올 권한을 넘긴다.
+            DWORD pid = 0;
+            GetWindowThreadProcessId(hwnd, &pid);
+            if (pid) AllowSetForegroundWindow(pid);
+            PostMessageW(hwnd, RegisterWindowMessageW(L"Hanishiki.ShowMainWindow"), 0, 0);
             SetForegroundWindow(hwnd);
             if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
         }
