@@ -37,6 +37,10 @@
 #include <QWebEngineProfile>
 #include <QWebEnginePage>
 #include <QStandardPaths>
+#ifdef Q_OS_WIN
+#include <QSystemTrayIcon>
+#include <QFileIconProvider>
+#endif
 
 // ★ JS 콘솔 메시지를 stderr 로 redirect — SyntaxError line 번호 등 추적
 class DebugWebEnginePage : public QWebEnginePage {
@@ -284,6 +288,7 @@ MainWindow::MainWindow(QWidget *parent)
     // frameless 에선 네이티브 메뉴바가 콘텐츠 맨 위에 떠서 보기 안 좋음 → 숨김.
     //   (QAction 단축키 Ctrl+O/Ctrl+Q 는 메뉴바를 숨겨도 그대로 동작)
     menuBar()->hide();
+    setupTray();
 #endif
 
     // Apply dark titlebar after show
@@ -600,7 +605,14 @@ void MainWindow::setupMenu()
 
     auto *quitAction = new QAction("Quit", this);
     quitAction->setShortcut(QKeySequence("Ctrl+Q"));
+#ifdef Q_OS_WIN
+    // 윈도우는 창을 닫으면 알림 영역으로 숨는다 — Ctrl+Q 는 그와 달리 '끝내기'(감시 중이면 한 번 묻는다)
+    connect(quitAction, &QAction::triggered, this, &MainWindow::quitFromTray);
+    // ★ 메뉴줄을 숨기면(frameless) 그 메뉴 안 동작의 단축키도 꺼진다 — 창 자체에도 붙여야 Ctrl+Q 가 듣는다(2026-10-29 실측)
+    addAction(quitAction);
+#else
     connect(quitAction, &QAction::triggered, this, &QMainWindow::close);
+#endif
     fileMenu->addAction(quitAction);
 
     // ── 기능 메뉴 ─────────────────────────────────────────────────────────
@@ -938,6 +950,32 @@ QList<QWebEngineView *> MainWindow::allWebViews() const
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+#ifdef Q_OS_WIN
+    // ★ 윈도우: 창을 닫으면 알림 영역으로 숨는다 — 감시 · 수집은 그대로 돈다(사용자 결정 2026-10-29).
+    //   맥은 창을 닫아도 앱이 Dock 에 남아 감시가 계속된다. 윈도우는 닫는 순간 앱이 끝났고, 内閣会 는 폴링 사이
+    //   30분 동안 '수집 중' 이 아니라 아무것도 묻지 않고 1년 무인 감시가 멈췄다(2026-10-29 실제로 그렇게 꺼짐).
+    //   완전히 끄는 길은 알림 영역 아이콘의 '끝내기'(또는 Ctrl+Q) 하나 — m_reallyQuit 이 그 표시다.
+    //   알림 영역이 없는 환경(m_tray 없음)은 예전처럼 닫으면 끝난다.
+    if (!m_reallyQuit && m_tray && m_tray->isVisible()) {
+        if (m_backend && m_backend->config()) {
+            const QRect g = isMaximized() ? normalGeometry() : geometry();
+            m_backend->config()->setWindowGeometry(
+                QString("%1,%2,%3,%4,%5").arg(g.x()).arg(g.y())
+                    .arg(g.width()).arg(g.height()).arg(isMaximized() ? 1 : 0));
+            m_backend->config()->save();
+        }
+        hide();
+        if (!m_trayHintShown) {
+            m_trayHintShown = true;
+            m_tray->showMessage(QStringLiteral(APP_NAME_DISPLAY),
+                                QStringLiteral("알림 영역에서 계속 돕니다 — 감시는 그대로입니다. "
+                                               "다시 열려면 아이콘을, 끝내려면 아이콘 메뉴의 '끝내기' 를 누르십시오."),
+                                QSystemTrayIcon::Information, 8000);
+        }
+        event->ignore();
+        return;
+    }
+#endif
     if (m_backend && m_backend->isAnyRunning()) {
         auto reply = QMessageBox::question(
             this,
@@ -987,7 +1025,57 @@ void MainWindow::closeEvent(QCloseEvent *event)
     if (m_backend) m_backend->closeAllTerminalWindows();
 
     event->accept();
+#ifdef Q_OS_WIN
+    // 윈도우도 이제 '마지막 창 닫힘 = 끝' 을 끈다(main.cpp) — 숨은 동안 터미널 창 하나를 닫아도 앱이 끝나지 않게.
+    //   그래서 본 창이 정말 닫힐 때(끝내기 · 알림 영역 없음) 여기서 끝낸다.
+    QMetaObject::invokeMethod(qApp, "quit", Qt::QueuedConnection);
+#endif
 }
+
+#ifdef Q_OS_WIN
+void MainWindow::setupTray()
+{
+    if (!QSystemTrayIcon::isSystemTrayAvailable()) return;   // 알림 영역이 없으면 예전처럼 닫으면 끝난다
+    m_tray = new QSystemTrayIcon(this);
+    // exe 에 박힌 아이콘(abiwa.ico) — 창 아이콘과 같은 것
+    QIcon icon = QFileIconProvider().icon(QFileInfo(QCoreApplication::applicationFilePath()));
+    if (icon.isNull()) icon = windowIcon();
+    m_tray->setIcon(icon);
+    m_tray->setToolTip(windowTitle());
+    auto *menu = new QMenu(this);
+    menu->addAction(QStringLiteral("열기"), this, &MainWindow::showFromTray);
+    menu->addSeparator();
+    menu->addAction(QStringLiteral("끝내기"), this, &MainWindow::quitFromTray);
+    m_tray->setContextMenu(menu);
+    connect(m_tray, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason r) {
+        if (r == QSystemTrayIcon::Trigger || r == QSystemTrayIcon::DoubleClick) showFromTray();
+    });
+    m_tray->show();
+}
+
+void MainWindow::showFromTray()
+{
+    if (isMinimized()) showNormal(); else show();
+    raise();
+    activateWindow();
+    SetForegroundWindow(reinterpret_cast<HWND>(winId()));
+}
+
+void MainWindow::quitFromTray()
+{
+    // ★ 감시만 도는 중이면 한 번 묻는다 — 실수로 끄면 무인 감시가 멈춘다(다음에 켜면 이어 돈다).
+    //   수집이 도는 중이면 closeEvent 가 따로 묻는다.
+    if (m_backend && m_backend->isNaikakukaiRunning() && !m_backend->isAnyRunning()) {
+        const auto reply = QMessageBox::question(
+            isVisible() ? this : nullptr, QStringLiteral(APP_NAME_DISPLAY),
+            QStringLiteral("内閣会 감시가 돌고 있습니다. 끝내면 감시가 멈춥니다(다음에 켜면 이어 돕니다).\n끝낼까요?"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (reply != QMessageBox::Yes) return;
+    }
+    m_reallyQuit = true;
+    if (!close()) m_reallyQuit = false;   // 수집 중 확인에서 '아니오' — 다음 닫기는 다시 숨긴다
+}
+#endif
 
 void MainWindow::holdAwake(bool display)
 {
@@ -1303,6 +1391,13 @@ void MainWindow::changeEvent(QEvent *event)
 bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
 {
     MSG *msg = static_cast<MSG *>(message);
+    // 두 번째로 켠 exe 가 보내는 '창 보여 주기' — 알림 영역에 숨어 있으면 SetForegroundWindow 만으로는 안 보인다(main.cpp)
+    static const UINT kShowMainWindowMsg = RegisterWindowMessageW(L"Hanishiki.ShowMainWindow");
+    if (msg && kShowMainWindowMsg && msg->message == kShowMainWindowMsg) {
+        showFromTray();
+        if (result) *result = 0;
+        return true;
+    }
     if (msg && msg->message == WM_GETMINMAXINFO) {
         HMONITOR mon = MonitorFromWindow(msg->hwnd, MONITOR_DEFAULTTONEAREST);
         MONITORINFO mi; mi.cbSize = sizeof(mi);

@@ -70,10 +70,25 @@ protected:
     void changeEvent(QEvent *event) override;   // 최대화/복원 시 JS 버튼 아이콘 동기화
 #ifdef Q_OS_WIN
     // frameless 최대화가 작업표시줄을 덮지 않도록 WM_GETMINMAXINFO 처리
+    // + 두 번째로 켠 exe 가 보내는 '창 보여 주기' 메시지(kShowMainWindowMsg)
     bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
 #endif
 
+public:
+#ifdef Q_OS_WIN
+    // ★ 알림 영역 — 창을 닫아도 감시는 계속(맥이 창을 닫아도 Dock 에 남는 것과 같게, 사용자 결정 2026-10-29).
+    //   완전히 끄는 길은 아이콘 메뉴의 '끝내기' 하나다.
+    void showFromTray();
+    void quitFromTray();
+#endif
+
 private:
+#ifdef Q_OS_WIN
+    void setupTray();
+    class QSystemTrayIcon *m_tray = nullptr;
+    bool m_reallyQuit = false;      // '끝내기' 로 닫는 중 — closeEvent 가 숨기지 않고 끝낸다
+    bool m_trayHintShown = false;   // 처음 숨길 때 한 번만 알림 풍선
+#endif
     void flushPendingJs();      // 페이지가 뜬 뒤 담아 둔 JS 를 순서대로 흘린다
     void setupMenu();
     void applyDarkTitlebar();
