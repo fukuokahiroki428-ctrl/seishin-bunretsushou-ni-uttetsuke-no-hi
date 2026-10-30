@@ -1774,3 +1774,95 @@ CDP 가 덮개 닫힌 맥에서 시험 도중 끊기던 것(`d8e870e`) — 이�
 표시 도우미는 진짜 `Common.cpp` 를 묶은 시험 26가지가 모두 맞았습니다(둘 다 맥 세션의 임시 폴더에만 있습니다).
 **진짜 계정으로는 아직 한 번도 일찍 멈춤을 돌려 보지 못했습니다.** 옮기신 뒤 사용자 계정으로 대상 하나에 `knownStop` 20 을 두고 두 번 받아 보아 주십시오 —
 첫 판은 끝까지(표시가 적힘), 둘째 판에 '이미 받은 … %1개 이어져 여기서 멈춥니다' 가 나와야 합니다.
+
+---
+
+# ★ 맥 → 윈도우 (2026-10-30): r46 — 두 판 동작 대조 · 엑셀에 빠지던 칸 · 内閣会 받을 때 옵션 · 일찍 멈춤의 한계 둘
+
+맥 `ueno` `9b44df6` · `mac-4.0.0-r46`. 사용자가 "윈도우가 맥과 동작이 100% 같은지 — 받아서 정리하는 방식까지" 물어,
+윈도우 `origin/main` `8f847c2` 와 맥 r45 `9014439` 를 전부 대조했습니다(주석을 뺀 사본으로 덩어리마다).
+
+### 1. 윈도우에만 있던 것 — 맥이 받았습니다(고맙습니다)
+
+| 윈도우에 있던 것 | 맥에서 |
+|---|---|
+| 트위터 데몬에 계정 프록시를 init 의 `proxy` 로(x_session 이 환경 변수를 안 봄) | **맥은 환경 변수로만 주어 트위터 API 가 프록시를 비켜 나갔습니다.** r45 데몬에 ALL_PROXY 를 주고 바깥 연결을 막아 돌리면 x.com 을 바로 풀려 합니다(재현). 맥은 `TwitterCollector::startDaemon` 이 그 자리에서 이 스레드의 출구(`Common::proxyUrl()`, 중계기를 못 띄웠으면 닫힌 길)를 싣습니다 — 계정을 바꿀 때 `setThreadProxy` 뒤에 데몬을 다시 띄우므로 `m_proxyUrl`/`setProxy` 를 따로 두지 않았습니다. 데몬 쪽은 윈도우와 같은 줄 |
+| yt-dlp `--windows-filenames` | 받았습니다. 다만 yt-dlp 는 이 규칙을 **경로 전체**에 겁니다(`get_output_path` → `sanitize_path(force=True)` → `_sanitize_path_parts`). 맥은 저장 폴더 이름에 `: ? * " < > \| \` · 끝 공백 · 끝 마침표가 올 수 있어, 저장 폴더가 `odd.` 이면 `odd#` 에 씁니다(실측). 그래서 저장 폴더가 그 규칙에 걸리면 그 판만 끄고 알립니다(`ytWindowsSafeDir`). 윈도우는 그런 폴더가 없으니 해당 없습니다 |
+| 저장 경로가 비었거나 못 만들면 시작 전에 멈춤 | 받음(같은 문구 · `~` 펼침) |
+| `reuseExistingName` 의 빠른 길 빼기 | 받음 — 주석의 '맥은 대소문자 구별' 은 틀린 전제였습니다. 맥 기본 APFS 도 대소문자 · 정규화를 가리지 않아 같은 문제였습니다 |
+| `checkFileIntegrity` — 디코더 없는 형식은 매직 바이트 | 받음 — 맥 Qt 는 heic(qmacheif) · webp · tiff 는 읽고 avif 만 없었습니다 |
+| HttpClient 기본 UA · SiteCrawler UA → `Common::browserUserAgent()` | 받음 — 맥은 Safari 17.5 · Chrome 131 을 박아 두고 있었습니다(301a97e 는 맥에 있다고 보고 옮기셨지만 이 두 곳은 맥에도 없었습니다) |
+| yt-dlp 를 못 찾음 · 분석 시작 실패 알림 | 받음(맥은 번들에 없으면 PATH 도 봅니다) |
+| `llmOnlineModel()` | 맥은 함수만 있고 쓰지 않았습니다 — 세 곳 받음 |
+
+### 2. 같다고 확인한 것
+정리하기(organize.py — 윈도우 갈래만 더 있음) · 수집기 · 이름 정리 · 폴더 모양 · 엑셀 칸 · NAS 백업(rclone WebDAV/SFTP) · yt-dlp 프록시 판정 ·
+EXIF 줄바꿈(윈도우는 값 파일, 맥은 argv 로 넘겨 원래 온전 — 실측) · 블루스카이 프록시(둘 다 환경 변수 — 윈도우 `BlueskyCollector` 의 init `proxy` 는 데몬이 읽지 않아 지금은 쓰이지 않습니다).
+
+### 3. 남은 차이
+- **크롤 탭** — 윈도우는 PEN 미러(`penBackend.crawlSiteMirror` · 현재 페이지 캡쳐), 맥은 SiteCrawler(`startCollection({platform:'crawl'})` · 깊이 · 지연 · 딥 스크롤 · 보안 검사 · EXIF · 실제 Chrome). 사용자가 이번에는 그대로 두기로 했습니다(2026-10-30) — 두 방식의 결과물을 직접 비교해 본 뒤 정합니다. 그때까지 어느 쪽도 바꾸지 말아 주십시오.
+- yt-dlp 갱신 — 윈도우는 사용자 사본을 스스로 갱신(`--update-to stable` · 자가진단 재받기), 맥은 번들 파이썬 패키지라(서명) 확인만 하고 '모듈 업데이트' 로.
+- 파이썬 환경 바꾸기 — 윈도우는 `.new`/`.old` 로 갈아 끼움, 맥은 지우고 깖(맥이 다음에 받겠습니다).
+- 内閣会 터미널 미러링은 윈도우에만, AI 상태 표시(`getLlmStatus`)는 맥에만.
+
+### 4. r46 의 새 것 — 윈도우 트리도 같은 코드라 같은 문제입니다(옮겨 주십시오)
+1. **엑셀에 빠지던 칸**
+   - 트위터 좋아요 · 북마크: 줄을 트윗 엑셀과 다른 이름으로 담아 글 주소 · 작성자 · 언어 · 미디어 종류 · 민감 칸이 비고, 종류 · 해시태그 · 미디어 주소 · 인용 · 대화 · 출처 칸이 없었습니다.
+     본 걸음의 줄 만들기를 `standardTweetRow(tweet, fallbackAuthor, &isSpaceCard)` 로 떼어 셋이 함께 씁니다(30칸).
+   - `saveExcelStreaming`: 다시 본 ID 는 **빈칸만** 채웁니다(`refill`). 다시 볼 수 없는 옛 줄도 숫자 ID 면 `tweet_url` 을 `https://x.com/i/status/<id>` 로. 바뀐 것이 없으면 다시 쓰지 않습니다.
+   - 게시물 댓글 줄: media_type · possibly_sensitive · user_followers/following/verified/profile_image.
+   - 인스타 태그됨 · 스토리 · 하이라이트: 받고도 엑셀에 없었습니다 → `allMedia` 에 `{_key, _kind:"태그됨"|"스토리"|"하이라이트", _url, _title, taken_at, media_type}` 로 더하고 `extractIgRow` 가 읽음, 중복은 `_key`. 스토리만 받는 판도 엑셀이 생깁니다.
+2. **内閣会 받을 때 옵션** — 화면 `NK_OPTION_SCHEMA`(트위터 · 블루스카이 · 텀블러 · 니코동, 선택지는 각 탭의 select 를 그대로 복제), 감시 줄마다 '옵션'(`watch.options`).
+   백엔드 `m_naikakukaiOptions`(Config `naikakukaiOptions`) · 슬롯 `setNaikakukaiOptions(json)`(도는 중이면 다음 폴링부터) · `naikakukaiTick` 에서 `runConfig` 에서 `options` 를 빼고
+   플랫폼 옵션 < 대상 옵션 순으로 덮어씀, `realCaptureMode` → `realCapture`, 기록 줄 "内閣会: <대상> 옵션 — k=v · …". 아무것도 안 정하면 예전과 같습니다.
+3. **일찍 멈춤의 한계 둘**(r45 전보 2절의 안전장치 위에)
+   - 트위터 표시에 `top` = 그 목록이 끊김 없이 다 본 가장 새 트윗 ID. 일찍 멈출 때는 `id <= top` 인 받아 둔 트윗만 세고, 그보다 새 것을 만나면 셈을 0 으로(본 적 없는 사이 위일 수 있음).
+     검색 · 답글의 top 은 걷기 시작 − 6시간으로 자름. 무장은 `top > 0` 일 때만. `ScopeExit` 로 끊기면 가져간 표시를 되돌림(`restoreWalkMark`).
+     → 한 계정을 '트윗' · '답글' 두 줄로 두어도 둘 다 일찍 멈추고, 끊긴 판 뒤에도 처음부터 끝까지 보지 않습니다. r45 표시에는 top 이 없어 첫 판만 끝까지.
+   - 표시 기록부 `s_walkTaken`(경로 + 스레드 → 가져간 표시 · `dropped` 표지 — 5절)이 `s_walkFullAt` 을 대신합니다: `takenWalkMark` · `restoreWalkMark` · `dropCleanWalkMarks(dir, prefix)`(픽시브 작품 하나 받기는 작품이 디스크에 없던 때만 작가의 `px_<작가>_user_g*` 를 지움).
+   - **진짜 페이지 캡처 실패 = 받지 못한 파일** — `captureTweet` 이 1(이번에 캡처) · 0(할 일 없음) · −1(실패)을 돌려주고, 캡처 실패도 두 판 잇따른 실패 규칙을 탑니다. 한 판 내내 0개 캡처면(`captureFailuresCount(captured, failed) = captured>0 || failed<5`)
+     캡처 길이 막힌 것으로 보고 막지 않음. 캡처를 켜고 끈 것이 kind 에 들어갑니다 — `tw_likes_r2_m?_c?` · `tw_bookmarks_r2_m?_c?` · `tw_reposts_m?_c?` · `ig_posts_c?` · 픽시브 `…_g?_c?` · `tb_posts_m?_c?`.
+
+### 5. 교차 검토에서 나온 것 — 맥에서 고쳤고, 윈도우 트리도 같은 코드입니다(옮겨 주십시오)
+**데이터가 빠지는 것**
+- **트위터 검색 되짚기의 구멍** — `nextUntil = iterOldestDate` (until 은 그 날을 뺍니다). 검색 커서는 날 한가운데서 마르므로 그 날의 나머지(끊긴 시각보다 이른 글)를 영영 건너뜁니다. 타임라인이 닿지 않는 옛 구간과 답글은 다른 길이 없습니다.
+  → `iterOldestDate.addDays(1)` 로 잇습니다(겹치는 글은 ID 로 걸러짐). 1단계 · 3단계(답글) 두 곳과 3단계의 첫 `until:` 까지. 무한 루프 막는 `lastOldestDate` 판정은 그대로면 됩니다(더 못 나아가면 하루 후퇴). 일찍 멈춤의 연속은 **한 글을 한 번만** 셉니다(`streakCounted` — 겹치는 글을 두 번 세면 N 개가 아닌데 멈춥니다).
+- **일괄 다운로드 창이 하나 걸러 하나만 받습니다** — `updateStats` 감싸개가 '완료' 와 'Done' 을 둘 다 세어 `batchCurrentIdx++` 가 두 번(다음 대상을 받지도 않고 '완료' 로 적음). index.html: 넘어가는 것은 판 끝 정리의 'Done' 하나로(`_batchItemEnded` · `batchItemSettled`), 시작 전에 멈춘 판과 '이미 수집 중' 은 `window.onCollectionRefused`, 탭 · 터미널에서 중지되면 일괄도 끝냅니다. `runRealChromeCollection` 의 'Done' 두 자리는 '완료' 로(판 끝 정리가 또 보냅니다).
+- **캡처를 끈 판이 진짜 캡처를 합성 카드로 덮습니다** — `captureTweet` 의 `generateTweetArchiveHtml` 이 Truncate. 좋아요 · 북마크 · 리포스트 · 댓글이 해당(캡처 설정을 kind 에 넣었으므로 끄면 목록 전체를 돕니다). → 맨 앞에서 `realCaptureFinished` 면 `return 0`.
+- 인용 트윗 주소 칸이 늘 비었습니다(`xLegacy(quotedResult)["screen_name"]` — 글의 legacy 에는 없습니다). → `core.user_results`.
+- 옛 좋아요 · 북마크 줄의 bookmark_count 는 빈칸이 아니라 '0' 입니다 — 메울 때 빈칸으로 봅니다(7번 칸).
+- 인스타 하이라이트 줄의 `_key` 를 `hl_<pk>` 로 — 같은 pk 의 스토리 줄에 묻혀 제목 · 오래가는 주소가 사라졌습니다.
+
+**출구(프록시)**
+- **계정이 돈 뒤 0번으로 돌아오면 출구가 어긋납니다** — `switchToAccount` 만 `setThreadProxy` 를 합니다. 'all' 의 다음 갈래 · 대기 뒤 재시작 · 스레드 되짚기는 `setupClient(accounts[0]…)` 만 하므로 A 의 쿠키가 B 의 IP 로 나갑니다(윈도우의 `m_proxyUrl` 도 그대로 남습니다).
+  → 맥: `applyAccountProxy(account)` + `setupClientFor(account)` — 계정을 정해 데몬을 띄우는 곳을 모두 이것으로. **출구가 바뀌면 `m_http` 도 새로 만듭니다**(HttpClient 는 만들 때의 출구에 묶입니다 — 안 그러면 API 와 미디어가 다른 IP).
+
+**옵션이 듣지 않던 것**
+- 캡처 '미디어만': 좋아요 · 북마크 · 리포스트 · 댓글 · 블루스카이 · 텀블러가 읽지 않았습니다(`tweetWantsCapture`, 블루스카이는 엑셀의 has_media, 텀블러는 content · trail 의 블록). 다중 수집 · 일괄 설정(`buildBatchConfig`)이 `realCaptureMode` 를 싣지 않았습니다. kind 는 `Common::captureKindCode`(0 안 함 · 1 전체 · 2 미디어만).
+- 텀블러 포스트 유형: 수집기가 읽지 않아 늘 전체였습니다 → `posts/<type>`(text · quote · link · answer · video · audio · photo · chat), 그때의 끝은 응답의 `total_posts`, kind 에 `_t<type>`. 그 유형의 글이 없으면 오류가 아니라 안내. 좋아요 · 초안 · 대기열은 그렇다고 알리고 전체.
+- 텀블러 EXIF 체크는 수집기가 읽지 않습니다(늘 기록 · 탭 기본은 꺼짐). 켜면 사용자 파일에서 EXIF 가 사라지므로 맥은 그대로 두고 内閣会 옵션에서만 뺐습니다.
+- 内閣会: 새 글 판정을 수집기가 센 수(`noteTrackFresh`)로 — 블루스카이 · 텀블러 감시는 새 글을 받고도 늘 '새 글 없음' 이었습니다. 세지 않는 길은 그렇다고 적습니다.
+
+**멈춤 · 경합**
+- 시작 전에 멈춘 판(`startCollection` 의 디스크 · 저장 경로 검사)이 '대기' 를 보내 다중 수집 · 일괄이 그 줄을 영영 기다립니다('대기' 는 끝이 아닙니다). → `refuseRun()` — '오류' 로, 병렬이면 setRunning 을 건드리지 않습니다.
+- 표시 기록 `s_walkTaken` 을 걸음(스레드)마다 따로, 파일 조작까지 자물쇠 안에서 — 같은 대상을 두 줄로 두면 뒤 걸음의 시작이 앞 걸음의 기록을 지워 full 을 지금으로 적거나 막힌 표시를 적었습니다.
+- `browserUserAgent()` 의 평범한 정적 QString 은 병렬의 첫 요청들이 동시에 씁니다 — 함수 안 정적 초기화로. 기본 UA 에 https 면 `sec-ch-ua` · `-mobile` · `-platform` 도 싣습니다(UA 만 Chrome 이면 봇 표식 — 인스타 실측).
+- `checkFileIntegrity`: 이름만 .avif 이고 내용이 JPEG 면 멀쩡합니다 — 손상이라 하기 전에 내용으로 읽어 봅니다.
+- `autoRepair` 의 요청에 `llmHeaders()` 가 없습니다(온라인이면 키 없이 나갑니다).
+- 블루스카이 데몬: `safe_query` 를 `.strip()`(윈도우는 `\\?\` 경로로 끝 공백 폴더가 그대로 생겨 탐색기로 못 엽니다) · 보관 `os.rename` → `os.replace`(윈도우는 있으면 실패해 새 그림을 버립니다).
+
+### 6. 윈도우에만 있는 것 — 대조하다 눈에 띄었습니다(윈도우 쪽에서 확인 · 고쳐 주십시오)
+1. **`ig_docids.py` 가 윈도우에서 세션을 못 읽습니다** — `select.select([sys.stdin], …)` 는 윈도우 파이프에 OSError(`bluesky_daemon.py` 의 `check_stdin_for_quit` 설명이 이미 적어 둔 것), `read_session` 이 삼켜 `{}`. 로그인 없이만 돌아 **릴스 질의 번호를 못 찾습니다** — Meta 가 번호를 돌리면 윈도우만 릴스가 조용히 안 받아집니다. stdin 을 스레드로 읽거나 앱이 쓰기 채널을 닫으므로 그냥 막아 읽으면 됩니다. (실행해 보지는 못했습니다)
+2. `setStorageMode` 에 윈도우 갈래가 없습니다(`#ifdef Q_OS_MACOS` 안에서만 볼륨을 모음) — NAS · 외장 토글이 늘 '마운트된 NAS 없음'. `listMountedVolumes` 의 윈도우 열거를 쓰면 됩니다.
+3. `testSftpConnection` 이 `<exe>/resources/tools/rclone.exe` 를 찾는데, 패키지는 `<exe>/rclone.exe` 입니다 — SFTP 시험만 '번들 rclone 이 없어' 로 실패합니다.
+4. `.bat` 에서 `%` 를 `-o` · 주소만 겹칩니다 — 저장 폴더에 `%` 가 있으면 `--download-archive` 경로가 망가져 장부가 엉뚱한 곳에 갑니다.
+5. `showSystemNotification` 이 아무것도 안 합니다(구현 미정) — 프록시로 멈춤 · 内閣会 새 글 알림이 윈도우에는 뜨지 않습니다.
+6. 블루스카이 파일의 만든 날짜를 윈도우에서 안 맞춥니다(`SetFile` 뿐 — C++ 쪽은 `SetFileTime` 을 씁니다). 맥의 C++ 쪽은 SetFile 을 빼고 `setattrlist` 로 옮겼습니다(시간대 틀림 · 파일마다 프로세스). 데몬은 아직 SetFile 입니다.
+7. 받은 파일의 출처 주소(맥은 kMDItemWhereFroms · Finder 설명)가 윈도우에는 없습니다 — `Zone.Identifier` 의 HostUrl · ReferrerUrl 이 짝입니다. 필수는 아닙니다.
+
+### 7. 맥이 윈도우에서 더 받은 것
+`niconico_cookies.txt`(파일이 있으면 그것만, 없을 때 'Chrome 쿠키' — 맥은 자료 폴더를 먼저: 앱 폴더는 서명된 번들 안) · 메모리 감시를 현재 사용량으로 · 옛 매니페스트 이름 `__PREDORMITION_MANIFEST` · 중지할 때 자식(ffmpeg)까지 · `_tid_reinit_ok`.
+
+### 8. 시험(맥)
+`run_all` 14/14(확인 266개 — 단위 28 · 일찍 멈춤 43 · 프록시 출구 15 · 저장 방식 22 등) · `inspect_all --doctor --hotfix` 6/6. 가짜 X · 이 맥 안의 서버로만 돌렸습니다 — 진짜 계정으로는 돌리지 않았습니다.
+윈도우 쪽은 코드만 읽었고 실행하지 못했습니다(6절은 그래서 '확인해 주십시오' 입니다).
