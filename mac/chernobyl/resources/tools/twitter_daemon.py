@@ -502,11 +502,27 @@ async def main():
     except Exception as _pe:
         print(json.dumps({"info": f"twikit 우회 실패(수집은 계속 시도): {_pe}"}), flush=True)
 
-    client = Client(language="ja")
+    # ★ 프록시(VPN) — 계정마다 다른 출구로 나가게 한다. 앱이 계정에 붙은 프로필을
+    #   URL 한 줄(init_args['proxy'])로 만들어 넘겨준다(윈도우와 같다).
+    #   x_session.Client 는 AsyncClient(transport=...) 로 전송기를 직접 넣으므로 httpx 가
+    #   ALL_PROXY 같은 환경 변수를 보지 않는다(_mounts 가 빈다). 예전엔 환경만 믿어서,
+    #   계정에 프록시를 걸어도 트위터 API 요청은 이 컴퓨터의 회선으로 바로 나갔다
+    #   (닫힌 길 127.0.0.1:9 도 먹지 않았다). 그래서 출구를 생성자에 직접 준다.
+    _proxy = init_args.get("proxy") or ""
+    if USING_SHIM:
+        client = Client(language="ja", proxy=(_proxy or None))
+    else:
+        client = Client(language="ja")
     client.set_cookies({
         "auth_token": auth_token,
         "ct0": ct0,
     })
+    if _proxy:
+        # 비밀번호는 찍지 않는다 — 로그가 그대로 남는다.
+        _safe = _proxy
+        if "@" in _safe:
+            _safe = _safe.split("://")[0] + "://***@" + _safe.rsplit("@", 1)[1]
+        print(json.dumps({"info": f"프록시 사용: {_safe}"}), flush=True)
     # ★ httpx timeout 길게 — Twitter API 가 가끔 응답 늦음 (Cloudflare / rate limit etc)
     #   default 5초 → 30초. ReadTimeout 자주 발생 방지.
     try:
@@ -521,8 +537,10 @@ async def main():
         #       'HTTPTransport' object has no attribute 'handle_async_request'
         #     twikit 시절에는 이 대입이 그쪽 구조 때문에 효력이 없어 드러나지 않았을
         #     뿐이고, 애초에 틀린 줄이었다. 비동기 것으로 바로잡는다.
+        #   transport 를 통째로 바꾸므로 프록시 출구도 여기서 같이 준다.
         if not USING_SHIM:
-            client.http._transport = _httpx.AsyncHTTPTransport(retries=3)
+            client.http._transport = (_httpx.AsyncHTTPTransport(retries=3, proxy=_proxy) if _proxy
+                                      else _httpx.AsyncHTTPTransport(retries=3))
             print(json.dumps({"info": "httpx timeout=30s + retries=3 적용"}), flush=True)
         else:
             print(json.dumps({"info": "httpx 설정은 x_session 이 이미 함 — 건너뜀"}), flush=True)
@@ -652,6 +670,16 @@ async def main():
                       "tid_reason": str(getattr(client.client_transaction, "reason", "")),
                       "_st_url": Endpoint.SEARCH_TIMELINE[-40:]}), flush=True)
 
+    # 재초기화가 성공하면 위에서 건 '서명 없이 보내기' 를 걷는다(twikit 으로 물러섰을 때만 — 윈도우와 같다).
+    #   안 그러면 '성공' 이라 찍고도 그 뒤 요청이 계속 서명 없이 나가 SearchTimeline 404 가 이어졌다.
+    def _tid_reinit_ok():
+        if USING_SHIM:
+            return
+        _c = client.client_transaction
+        _c.__dict__.pop("generate_transaction_id", None)   # 클래스의 진짜 서명기로 돌아간다
+        _c.ready = True
+        _c.reason = "twikit 재초기화 성공"
+
     # Track 404 for auto-repair
     repair_count = 0          # How many repairs attempted
     last_repair_time = 0      # Timestamp of last repair
@@ -728,7 +756,8 @@ async def main():
                             'Referer': 'https://x.com',
                             'User-Agent': client._user_agent,
                         }
-                        await client.client_transaction.init(client.http, ct_headers)
+                        if await client.client_transaction.init(client.http, ct_headers) is not False:
+                            _tid_reinit_ok()
                         deduplicate_cookies(client)
                     except Exception:
                         pass
@@ -753,6 +782,7 @@ async def main():
                     try:
                         _ct._hn_reinit_at = time.time()
                         if await _ct.init(client.http, ct_headers) is not False:
+                            _tid_reinit_ok()
                             deduplicate_cookies(client)
                             print(json.dumps({"info": "TID 재초기화 성공 — 다시 보냅니다"}), flush=True)
                             result = await handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatten_params)
@@ -792,7 +822,8 @@ async def main():
                                 'Referer': 'https://x.com',
                                 'User-Agent': client._user_agent,
                             }
-                            await client.client_transaction.init(client.http, ct_headers)
+                            if await client.client_transaction.init(client.http, ct_headers) is not False:
+                                _tid_reinit_ok()
                             deduplicate_cookies(client)
                         except Exception:
                             pass

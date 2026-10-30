@@ -80,9 +80,9 @@ def running_apps() -> list:
 
 
 def find_installed_apps() -> list:
-    """켜져 있는 것 먼저, 그다음 /Applications · ~/Applications · 외장 디스크 맨 위(/Volumes/*/) 의 설치본."""
+    """켜져 있는 것 먼저, 그다음 /Applications · ~/Applications · ~/Documents(사용자가 쓰는 곳) 의 설치본. 외장 디스크는 보지 않는다."""
     home = real_home()
-    pats = ["/Applications/*.app", str(home / "Applications" / "*.app"), "/Volumes/*/*.app"]
+    pats = ["/Applications/*.app", str(home / "Applications" / "*.app"), str(home / "Documents" / "*.app")]
     env = os.environ.get("HANISHIKI_APP")
     out = [Path(env)] if env and is_our_app(env) else []
     build = find_build_app()
@@ -94,7 +94,8 @@ def find_installed_apps() -> list:
             p = Path(c)
             if is_our_app(p) and p not in out and (build is None or p.resolve() != build.resolve()):
                 out.append(p)
-    return out
+    # 사용자 규칙: 컴퓨터 내부에서만 작업한다 — 점검이 외장 디스크의 앱을 열어 보지도 않게
+    return [p for p in out if not str(p).startswith("/Volumes/")]
 
 
 def real_home() -> Path:

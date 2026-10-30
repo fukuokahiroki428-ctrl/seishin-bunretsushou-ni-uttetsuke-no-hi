@@ -267,6 +267,7 @@ QJsonObject Config::toJson() const
     root["debugLogs"] = m_debugLogs;
     if (!m_secondaryPath.isEmpty()) root["secondaryPath"] = m_secondaryPath;
     if (!m_naikakukaiWatches.isEmpty()) root["naikakukaiWatches"] = m_naikakukaiWatches;
+    if (!m_naikakukaiOptions.isEmpty()) root["naikakukaiOptions"] = m_naikakukaiOptions;
     // 비어 있어도 적는다 — 마지막 규칙을 지운 것이 저장되어야 한다
     root["organizeRules"] = m_organizeRules;
     root["organizeAuto"] = m_organizeAuto;
@@ -326,6 +327,7 @@ void Config::fromJson(const QJsonObject &obj)
     if (obj.contains("debugLogs")) m_debugLogs = obj["debugLogs"].toBool();
     if (obj.contains("secondaryPath")) m_secondaryPath = obj["secondaryPath"].toString();
     if (obj.contains("naikakukaiWatches")) m_naikakukaiWatches = obj["naikakukaiWatches"].toArray();
+    if (obj.contains("naikakukaiOptions")) m_naikakukaiOptions = obj["naikakukaiOptions"].toObject();
     if (obj.contains("organizeRules"))     m_organizeRules = obj["organizeRules"].toArray();
     if (obj.contains("organizeAuto"))      m_organizeAuto = obj["organizeAuto"].toBool(true);
     if (obj.contains("organizeCaptures"))  m_organizeCaptures = obj["organizeCaptures"].toBool(false);

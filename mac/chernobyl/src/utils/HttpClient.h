@@ -75,6 +75,7 @@ public:
     // ★ 평범한 bool 포인터였다. 그 bool 은 다른 스레드가 바꾸는 값이라
 //   동기화 없이 읽으면 바뀐 것을 못 볼 수 있었다(중지가 안 먹던 원인).
 void setRunFlag(const std::atomic<bool> *flag) { m_runFlag = flag; }
+    const std::atomic<bool> *runFlag() const { return m_runFlag; }
 
 private:
     QNetworkAccessManager *m_nam;

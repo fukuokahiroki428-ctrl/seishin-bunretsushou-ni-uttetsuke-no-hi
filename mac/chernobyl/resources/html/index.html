@@ -757,6 +757,14 @@
         .modal-wide .gs-names { gap: 6px; }
         .modal-wide .gs-n { font-size: 10.5px; opacity: .7; }
         .modal-wide .gs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px 14px; }
+        /* 内閣会 — 받을 때 옵션(탭 안 · 감시 대상 창 모두) */
+        .nk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 14px; }
+        .nk-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; min-width: 0; }
+        .nk-lbl { flex: 0 0 88px; color: var(--text-secondary); }
+        .nk-row .input, .nk-row .select-wrap { flex: 1 1 auto; min-width: 0; height: 30px; font-size: 12.5px; }
+        .nk-plats { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+        .nk-note { font-size: 12px; color: var(--text-secondary); margin-top: 8px; line-height: 1.6; }
+        .nk-own { font-size: 11.5px; color: var(--accent); margin-left: 6px; }
         .modal-wide .gs-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; min-width: 0; }
         .modal-wide .gs-lbl { flex: 0 0 64px; color: var(--text-secondary); }
         .modal-wide .gs-row .input, .modal-wide .gs-row .select-wrap { flex: 1 1 auto; min-width: 0; height: 30px; font-size: 12.5px; }
@@ -2842,6 +2850,15 @@
                                     <div id="naikakukai-list" style="max-height:220px; overflow-y:auto; border:1px solid var(--border); border-radius:6px; padding:8px; min-height:60px;">
                                         <div style="text-align:center; color:var(--text-secondary); padding:14px; font-size:13px;">아직 추가된 대상이 없습니다</div>
                                     </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="fx-frame" data-single="1">
+                            <div class="fx-title">받을 때 옵션</div>
+                            <div class="fx-body">
+                                <div class="section">
+                                    <div class="section-label">받을 때 옵션 — 플랫폼마다</div>
+                                    <div id="nk-opt-box"></div>
                                 </div>
                             </div>
                         </div>
@@ -5001,6 +5018,7 @@
             settings: {posts:0, media:0, status:'대기'}
         };
         let naikakukaiWatches = [];  // 内閣会 감시 목록
+        let naikakukaiOptions = {};  // 内閣会가 받을 때 쓰는 옵션 {플랫폼: {키: 값}} — 감시 대상의 options 가 앞선다
 
         new QWebChannel(qt.webChannelTransport, function(channel) {
             backend = channel.objects.backend;
@@ -5281,6 +5299,8 @@
                     naikakukaiWatches = config.naikakukaiWatches;
                     renderNaikakukaiList();
                 }
+                if (config.naikakukaiOptions && typeof config.naikakukaiOptions === 'object') naikakukaiOptions = config.naikakukaiOptions;
+                try { renderNaikakukaiOptions(); } catch (e) { try { console.warn('[内閣会] 옵션 그리기 실패', e); } catch (_) {} }
                 if (typeof config.naikakukaiInterval === 'number') {
                     const inp = document.getElementById('naikakukai-interval');
                     if (inp) inp.value = config.naikakukaiInterval;
@@ -5418,6 +5438,7 @@
                 secondaryPath: window._secondaryPath || '',
                 // ★ 내각회 영구 저장 — 감시 목록 + interval 앱 재시작해도 보존
                 naikakukaiWatches: naikakukaiWatches,
+                naikakukaiOptions: naikakukaiOptions,
                 naikakukaiInterval: parseInt(document.getElementById('naikakukai-interval')?.value) || 30
             }));
         }
@@ -7431,6 +7452,154 @@
                 ? '예: 12345678 (유저번호) · mylist/123 · series/123 · sm12345'
                 : '예: user123 또는 handle.bsky.social';
         }
+        // ── 内閣会가 받을 때 쓰는 옵션(사용자 2026-10-29 — "내각회에서 다운받을 때 옵션 선택하는 거 따로 추가 · 각각의 기능들에 있는 것들")
+        //   칸은 그 탭에 있는 것 그대로다. 유형 · 품질 · 방식 · 저장 방식의 선택지는 그 탭의 고르기 칸에서 그대로 가져와 늘 같다.
+        //   쓰는 값: 감시 대상에 정한 것 > 여기(플랫폼마다) > '지금처럼'(예전 그대로 — 유형 · 최대 수는 기본값, 나머지는 그 앱을 켠 뒤
+        //   그 탭에서 마지막으로 돌린 설정, 없으면 기본값). 키는 그 탭이 수집에 넘기는 이름 그대로라 백엔드가 그대로 얹는다.
+        const NK_OPTION_SCHEMA = {
+            twitter: [
+                { k: 'type', t: 'select', dom: 'twitter-type', label: '유형' },
+                { k: 'count', t: 'number', label: '한 번에 최대', hint: '0 = 새 글 전부' },
+                { k: 'downloadMedia', t: 'check', label: '미디어 다운로드' },
+                { k: 'mediaQuality', t: 'select', dom: 'twitter-media-quality', label: '미디어 품질' },
+                { k: 'excel', t: 'check', label: 'Excel 저장' },
+                { k: 'threadComments', t: 'check', label: '게시물 댓글' },
+                { k: 'realCaptureMode', t: 'capture', label: '페이지 캡처' },
+                { k: 'method', t: 'select', dom: 'twitter-method', label: '수집 방식' },
+                { k: 'stopAfterKnown', t: 'number', label: '일찍 멈춤', hint: '이어진 받아 둔 글 수 · 0 = 끝까지' }
+            ],
+            bluesky: [
+                { k: 'type', t: 'select', dom: 'bsky-type', label: '수집 유형' },
+                { k: 'count', t: 'number', label: '한 번에 최대', hint: '0 = 새 글 전부' },
+                { k: 'media', t: 'check', label: '미디어 다운로드' },
+                { k: 'excel', t: 'check', label: 'Excel 저장' },
+                { k: 'includeReplies', t: 'check', label: '답글 포함' },
+                { k: 'includeReposts', t: 'check', label: '리포스트 포함' },
+                { k: 'realCaptureMode', t: 'capture', label: '페이지 캡처' },
+                { k: 'stopAfterKnown', t: 'number', label: '일찍 멈춤', hint: '이어진 받아 둔 글 수 · 0 = 끝까지' }
+            ],
+            tumblr: [
+                { k: 'type', t: 'select', dom: 'tumblr-type', label: '포스트 유형' },
+                { k: 'count', t: 'number', label: '한 번에 최대', hint: '0 = 새 글 전부' },
+                { k: 'downloadMedia', t: 'check', label: '미디어 다운로드' },
+                { k: 'excel', t: 'check', label: 'Excel 저장' },
+                // EXIF 칸은 두지 않는다 — 텀블러 수집기는 그 값을 읽지 않고 늘 기록한다(탭의 체크도 예전부터 그렇다). 듣지 않는 칸을 내놓지 않는다
+                { k: 'realCaptureMode', t: 'capture', label: '페이지 캡처' },
+                { k: 'method', t: 'select', dom: 'tumblr-method', label: '수집 방식' },
+                { k: 'stopAfterKnown', t: 'number', label: '일찍 멈춤', hint: '이어진 받아 둔 글 수 · 0 = 끝까지' }
+            ],
+            niconico: [
+                { k: 'quality', t: 'select', dom: 'niconico-quality', label: '화질' },
+                { k: 'type', t: 'select', dom: 'niconico-type', label: '유형' },
+                { k: 'saveLayout', t: 'select', dom: 'niconico-save-layout', label: '저장 방식' },
+                { k: 'metadata', t: 'check', label: '메타데이터' },
+                { k: 'thumb', t: 'check', label: '썸네일' },
+                { k: 'comments', t: 'check', label: '댓글' }
+            ]
+        };
+        const _NK_PLAT = { twitter: 'Twitter', bluesky: 'Bluesky', tumblr: 'Tumblr', niconico: 'ニコニコ' };
+        const _NK_CAPTURE = [['off', '안 함'], ['media', '미디어만'], ['all', '전체']];
+        let _nkOptPlat = 'twitter';
+        function _nkChoices(sc) {
+            if (sc.t === 'capture') return _NK_CAPTURE;
+            const el = sc.dom && document.getElementById(sc.dom);   // 그 탭의 고르기 칸 — 선택지를 그대로
+            return el ? Array.from(el.options).map(o => [o.value, (o.textContent || '').trim()]) : [];
+        }
+        function _nkShow(sc, v) {
+            if (v === true) return '켬';
+            if (v === false) return '끔';
+            if (sc.t === 'select' || sc.t === 'capture') { const c = _nkChoices(sc).find(x => x[0] === v); return c ? c[1] : String(v); }
+            return String(v);
+        }
+        // 정한 것 한 줄 — 감시 목록에 보인다
+        function _nkSummary(plat, vals) {
+            return (NK_OPTION_SCHEMA[plat] || []).filter(sc => Object.prototype.hasOwnProperty.call(vals, sc.k))
+                .map(sc => sc.label + ' ' + _nkShow(sc, vals[sc.k])).join(' · ');
+        }
+        function _nkControlsHtml(plat, vals, inherit) {
+            return (NK_OPTION_SCHEMA[plat] || []).map(sc => {
+                const has = Object.prototype.hasOwnProperty.call(vals, sc.k), v = vals[sc.k];
+                let ctl;
+                if (sc.t === 'check') {
+                    ctl = '<select class="input nk-ctl" data-k="' + sc.k + '" data-t="check"><option value="">' + _tlEsc(inherit) + '</option>'
+                        + '<option value="1"' + (has && v === true ? ' selected' : '') + '>켬</option>'
+                        + '<option value="0"' + (has && v === false ? ' selected' : '') + '>끔</option></select>';
+                } else if (sc.t === 'select' || sc.t === 'capture') {
+                    ctl = '<select class="input nk-ctl" data-k="' + sc.k + '" data-t="select"><option value="">' + _tlEsc(inherit) + '</option>'
+                        + _nkChoices(sc).map(x => '<option value="' + _tlEsc(x[0]) + '"' + (has && v === x[0] ? ' selected' : '') + '>' + _tlEsc(x[1]) + '</option>').join('') + '</select>';
+                } else {
+                    ctl = '<input class="input nk-ctl" type="number" min="0" data-k="' + sc.k + '" data-t="number" value="' + (has ? _tlEsc(v) : '') + '" placeholder="' + _tlEsc(inherit) + '">';
+                }
+                return '<label class="nk-row"' + (sc.hint ? ' title="' + _tlEsc(sc.hint) + '"' : '') + '><span class="nk-lbl">' + _tlEsc(sc.label) + '</span>' + ctl + '</label>';
+            }).join('');
+        }
+        // 칸이 바뀌면 vals 에 적거나(정함) 지운다('지금처럼' · '기본 따름')
+        function _nkBind(root, vals, onChange) {
+            root.querySelectorAll('.nk-ctl').forEach(el => el.addEventListener('change', function () {
+                const k = this.getAttribute('data-k'), t = this.getAttribute('data-t'), v = this.value;
+                if (v === '') delete vals[k];
+                else vals[k] = t === 'check' ? v === '1' : t === 'number' ? Math.max(0, parseInt(v, 10) || 0) : v;
+                onChange();
+            }));
+        }
+        // 도는 内閣会에도 다음 폴링부터 쓰게 알린다(감시 목록 · 주기는 다시 시작해야 바뀐다)
+        function _nkPushLive() {
+            if (backend && backend.setNaikakukaiOptions)
+                backend.setNaikakukaiOptions(JSON.stringify({ options: naikakukaiOptions, watches: naikakukaiWatches }));
+        }
+        function renderNaikakukaiOptions() {
+            const box = document.getElementById('nk-opt-box');
+            if (!box) return;
+            const plat = _nkOptPlat;
+            const vals = naikakukaiOptions[plat] || {};
+            const n = Object.keys(vals).length;
+            box.innerHTML = '<div class="nk-plats">' + Object.keys(_NK_PLAT).map(p => {
+                    const c = Object.keys(naikakukaiOptions[p] || {}).length;
+                    return '<button class="btn btn-sm ' + (p === plat ? 'btn-primary' : 'btn-secondary') + ' nk-plat" data-p="' + p + '">' + _NK_PLAT[p] + (c ? ' · ' + c : '') + '</button>';
+                }).join('') + '</div>'
+                + '<div class="nk-grid">' + _nkControlsHtml(plat, vals, '지금처럼') + '</div>'
+                + '<div class="nk-note">内閣会가 ' + _NK_PLAT[plat] + ' 대상을 받을 때 씁니다. 칸은 ' + _NK_PLAT[plat] + ' 탭에 있는 것과 같습니다. '
+                + '「지금처럼」 은 예전대로입니다 — ' + (plat === 'niconico' ? '니코동 탭에 저장된 값' :
+                    ('유형은 기본, 한 번에 최대는 ' + (plat === 'twitter' ? '새 글 전부' : '10개') + ', 나머지는 앱을 켠 뒤 그 탭에서 마지막으로 돌린 설정(없으면 기본값)')) + '입니다. '
+                + (plat === 'twitter' ? '트위터 타임라인의 Excel 은 이어받기 장부라 끌 수 없습니다(탭과 같습니다). ' : '')
+                + '감시 목록의 「옵션」 에서 대상마다 따로 정한 것이 앞섭니다. 새 글만 받는 방식은 바뀌지 않습니다.'
+                + (n ? ' <button class="btn btn-secondary btn-sm nk-clear" style="margin-left:6px">' + _NK_PLAT[plat] + ' 옵션 지우기</button>' : '') + '</div>';
+            box.querySelectorAll('.nk-plat').forEach(b => b.onclick = () => { _nkOptPlat = b.getAttribute('data-p'); renderNaikakukaiOptions(); });
+            const own = naikakukaiOptions[plat] || {};
+            _nkBind(box, own, () => {
+                if (Object.keys(own).length) naikakukaiOptions[plat] = own; else delete naikakukaiOptions[plat];
+                saveConfig(); _nkPushLive(); renderNaikakukaiOptions();
+            });
+            const clr = box.querySelector('.nk-clear');
+            if (clr) clr.onclick = () => { delete naikakukaiOptions[plat]; saveConfig(); _nkPushLive(); renderNaikakukaiOptions(); };
+            if (typeof window._initCustomSelects === 'function') window._initCustomSelects();
+        }
+        // 감시 대상 하나만 따로 — '내각회 기본 따름' 이면 위의 플랫폼 옵션(그것도 없으면 지금처럼)
+        function openNaikakukaiWatchOptions(i) {
+            const w = naikakukaiWatches[i];
+            if (!w) return;
+            const ov = _modal('nk-watch-modal', '감시 대상 옵션');
+            ov.querySelector('.modal-title').textContent = '감시 대상 옵션 — ' + (_NK_PLAT[w.platform] || w.platform) + ' / ' + w.target;
+            const body = ov.querySelector('.mw-body');
+            const own = Object.assign({}, w.options || {});
+            const draw = () => {
+                body.innerHTML = '<div class="mw-help">이 대상만 따로 받을 옵션입니다. 「내각회 기본 따름」 은 内閣会 탭의 「받을 때 옵션」(' + (_NK_PLAT[w.platform] || w.platform)
+                    + ') 을 쓰고, 그것도 정하지 않았으면 예전대로입니다.</div>'
+                    + '<div class="nk-grid">' + _nkControlsHtml(w.platform, own, '내각회 기본 따름') + '</div>'
+                    + '<div class="mw-foot"><span class="mw-note nk-state"></span><button class="btn btn-secondary btn-sm nk-wclear"' + (Object.keys(own).length ? '' : ' disabled') + '>이 대상의 옵션 지우기</button></div>';
+                _nkBind(body, own, save);
+                body.querySelector('.nk-wclear').onclick = () => { Object.keys(own).forEach(k => delete own[k]); save(); draw(); };
+                if (typeof window._initCustomSelects === 'function') window._initCustomSelects();
+            };
+            const save = () => {
+                if (Object.keys(own).length) w.options = Object.assign({}, own); else delete w.options;
+                saveConfig(); _nkPushLive(); renderNaikakukaiList();
+                const st = body.querySelector('.nk-state'); if (st) st.textContent = '저장했습니다 — 다음 폴링부터';
+                const b = body.querySelector('.nk-wclear'); if (b) b.disabled = !Object.keys(own).length;
+            };
+            draw();
+            ov.classList.remove('hidden');
+        }
         function renderNaikakukaiList() {
             const box = document.getElementById('naikakukai-list');
             const cnt = document.getElementById('naikakukai-count');
@@ -7443,9 +7612,13 @@
             let html = '';
             naikakukaiWatches.forEach((w,i) => {
                 const plName = {twitter:'Twitter', bluesky:'Bluesky', tumblr:'Tumblr', niconico:'ニコニコ'}[w.platform] || w.platform;
-                html += `<div style="display:flex; align-items:center; justify-content:space-between; padding:6px 8px; border-bottom:1px solid var(--border); font-size:13px;">
-                    <span>${plName} / <b>${w.target}</b></span>
-                    <button class="btn btn-secondary btn-sm" onclick="removeNaikakukaiWatch(${i})">삭제</button>
+                const own = _nkSummary(w.platform, w.options || {});
+                html += `<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 8px; border-bottom:1px solid var(--border); font-size:13px;">
+                    <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${plName} / <b>${_tlEsc(w.target)}</b>${own ? '<span class="nk-own" title="이 대상만 따로 정한 옵션">' + _tlEsc(own) + '</span>' : ''}</span>
+                    <span style="display:flex; gap:6px; flex:0 0 auto;">
+                        <button class="btn btn-secondary btn-sm" onclick="openNaikakukaiWatchOptions(${i})" title="이 대상만 따로 받을 옵션">옵션</button>
+                        <button class="btn btn-secondary btn-sm" onclick="removeNaikakukaiWatch(${i})">삭제</button>
+                    </span>
                 </div>`;
             });
             box.innerHTML = html;
@@ -7489,7 +7662,7 @@
                 appendLog('감시 대상을 먼저 추가하세요', 'warning', 'naikakukai'); return;
             }
             const intervalMin = parseInt(document.getElementById('naikakukai-interval').value) || 30;
-            const config = { intervalMin, watches: naikakukaiWatches };
+            const config = { intervalMin, watches: naikakukaiWatches, options: naikakukaiOptions };
             backend.startNaikakukai(JSON.stringify(config));
         }
         function stopNaikakukai() {
@@ -9486,11 +9659,31 @@
             finishBatch();
         };
 
+        var batchItemError = false, batchItemStats = {posts: 0, media: 0}, batchItemSettled = false;
+        function _batchItemEnded() {
+            batchItemSettled = true;   // 다음 대상을 시작할 때까지 더 오는 끝 신호는 세지 않는다
+            var curItem = batchQueue[batchCurrentIdx];
+            var t = curItem ? (curItem.target || String(curItem)) : '?';
+            if (batchItemError) batchLog('' + t + ' — 오류');
+            else batchLog('' + t + ' — 완료 (게시물: ' + batchItemStats.posts + ', 미디어: ' + batchItemStats.media + ')');
+            batchItemError = false;
+            batchItemStats = {posts: 0, media: 0};
+            batchCurrentIdx++;
+            setTimeout(runNextBatchItem, 2000);
+        }
+        // 시작 전에 멈춘 판(저장 경로 · 임시 디스크가 없다) — 판 끝 정리가 오지 않으므로 여기서 넘어간다
+        window.onCollectionRefused = function(platform) {
+            if (!batchRunning || batchItemSettled || platform !== document.getElementById('batch-platform').value) return;
+            batchItemError = true;
+            _batchItemEnded();
+        };
+
         function runNextBatchItem() {
             if (batchStopped || batchCurrentIdx >= batchQueue.length) {
                 finishBatch();
                 return;
             }
+            batchItemSettled = false;
             var plat = document.getElementById('batch-platform').value;
             var item = batchQueue[batchCurrentIdx];
             var target = item.target;
@@ -9727,6 +9920,12 @@
             // 이미 받은 글이 N개 이어지면 그 대상을 끝냄(설정 · 묶음 · 대상) — 아는 수집기만 읽는다
             if (['twitter', 'bluesky', 'instagram', 'pixiv', 'fanbox', 'tumblr'].includes(plat))
                 config.stopAfterKnown = Math.max(0, parseInt(_mk('knownStop', _collectPrefs.knownStop), 10) || 0);
+            // 캡처 모드도 탭의 선택을 따른다('미디어만' 이 다중 수집 · 일괄에서 빠져 전체로 돌았다). 대상이 따로 켰으면 탭이 '안 함' 이어도 전체로
+            if (config.realCapture !== undefined) {
+                var _cm = document.getElementById((plat === 'bluesky' ? 'bsky' : plat) + '-real-capture-mode');
+                var _cmode = _cm ? _cm.value : 'all';
+                config.realCaptureMode = config.realCapture ? (_cmode === 'off' ? 'all' : _cmode) : 'off';
+            }
             return config;
         }
 
@@ -9761,15 +9960,21 @@
             var isStopped = (status === '중단됨' || status === 'Stopped');
 
             // 1) 일괄 다운로드 모달 큐
+            // ★ 수집기는 끝에 '완료'(또는 '오류')를, 판 끝 정리는 'Done' 을 보낸다. 둘 다 세면 한 대상에 두 칸씩 넘어가,
+            //   다음 대상을 받지도 않고 '완료' 로 적었다 — 일괄이 하나 걸러 하나만 받았다(검토).
+            //   → 넘어가는 것은 판 끝 정리의 'Done' 하나로. 시작 전에 멈춘 판은 스레드가 없어 Done 이 없다(onCollectionRefused).
             if (batchRunning) {
                 var batchPlat = document.getElementById('batch-platform').value;
-                if (platform === batchPlat && (isDone || isError)) {
-                    var curItem = batchQueue[batchCurrentIdx];
-                    var t = curItem ? (curItem.target || String(curItem)) : '?';
-                    if (isError) batchLog('' + t + ' — 오류');
-                    else batchLog('' + t + ' — 완료 (게시물: ' + posts + ', 미디어: ' + media + ')');
-                    batchCurrentIdx++;
-                    setTimeout(runNextBatchItem, 2000);
+                if (platform === batchPlat && !batchItemSettled) {
+                    if (isStopped) {   // 탭 · 터미널 · 内閣会 쪽에서 멈췄다 — 일괄도 끝낸다(다음 대상을 기다리며 창도 닫히지 않았다)
+                        batchStopped = true;
+                        batchLog('수집이 중지되어 일괄을 멈춥니다');
+                        finishBatch();
+                    } else {
+                        if (isError) batchItemError = true;
+                        if (status !== 'Done' && (posts || media)) batchItemStats = {posts: posts, media: media};
+                        if (status === 'Done' || status === 'Error') _batchItemEnded();   // 'Error' 는 크롤이 주소 없이 끝날 때 — 그 뒤에 Done 이 없다
+                    }
                 }
             }
             // 2) 병렬 다중대상 큐 — _parallelKey 단위로 상태 갱신, 플랫폼별 _multis로 라우팅

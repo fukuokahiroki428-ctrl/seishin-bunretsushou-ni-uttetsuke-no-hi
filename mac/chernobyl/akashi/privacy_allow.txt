@@ -4,3 +4,8 @@ mac/chernobyl/src/platforms/TwitterCollector.cpp:비밀 같은 긴 글
 # UA 글의 브라우저 판 번호(Chrome/<주판>.0.0.0)가 IP 처럼 보인다 — 주소가 아니다.
 mac/chernobyl/resources/tools/ig_docids.py:공인 IP
 mac/chernobyl/src/core/Common.cpp:공인 IP
+# 시험이 만든 가짜 계정 값(격리 사본에만 들어간다)
+mac/chernobyl/akashi/tests/early_stop.py:쿠키·토큰 값
+mac/chernobyl/akashi/tests/naikakukai.py:쿠키·토큰 값
+# 시험용 1x1 JPEG(base64) — SelfRepair.h 의 것과 같다
+mac/chernobyl/akashi/tests/unit/ut_common.cpp:비밀 같은 긴 글

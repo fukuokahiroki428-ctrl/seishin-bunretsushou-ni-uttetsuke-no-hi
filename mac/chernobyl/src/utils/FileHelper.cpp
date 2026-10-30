@@ -80,8 +80,14 @@ QString reuseExistingName(const QString &parentDir, const QString &name)
     if (name.isEmpty() || parentDir.isEmpty()) return name;
     const QString parent = QDir::cleanPath(parentDir);
 
-    // 정확히 같은 이름이 이미 있으면 그대로 — 대부분 여기서 끝난다.
-    if (QFileInfo::exists(parent + QLatin1Char('/') + name)) return name;
+    // ★ 예전엔 여기 빠른 경로가 있었다:
+    //       if (QFileInfo::exists(parent + '/' + name)) return name;
+    //   뺐다(윈도우와 같다). 맥의 기본 APFS 는 대소문자도 정규화(NFC/NFD)도 가리지 않아,
+    //   디스크에 Foopa(@abc) 가 있는데 foopa(@abc) 로 물어도 exists 가 true 다.
+    //   그러면 '디스크의 이름' 이 아니라 '방금 들어온 새 대소문자' 를 돌려주고, 그 문자열이
+    //   엑셀·manifest·로그에 그대로 실려 디스크의 폴더 이름과 어긋난다.
+    //   아래 목록 캐시는 접은 이름 → '실제 디스크 이름' 을 담으므로 옳은 답을 준다.
+    //   정확히 같은 이름이면 캐시도 같은 이름을 돌려주니, 빼도 그 경우의 답은 같다.
 
     // 대소문자·정규화를 접은 열쇠. NFC 로 모은 뒤 case fold.
     const auto fold = [](const QString &s) {

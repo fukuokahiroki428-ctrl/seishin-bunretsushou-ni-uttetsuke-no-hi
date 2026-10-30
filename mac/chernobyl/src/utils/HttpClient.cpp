@@ -527,9 +527,19 @@ void HttpClient::applyHeaders(QNetworkRequest &request, const QMap<QString, QStr
         request.setAttribute(QNetworkRequest::CookieSaveControlAttribute, QNetworkRequest::Manual);
     }
     // Fallback if no User-Agent was provided
+    //   ★ 설치된 Chrome 판을 따르는 UA(윈도우와 같다). 예전엔 Safari 17.5 를 박아 두어,
+    //     UA 를 따로 주지 않는 요청만 Safari 로, 나머지는 Chrome 으로 나갔다 — 한 세션이 두 브라우저였다.
     if (!headers.contains("User-Agent")) {
-        request.setHeader(QNetworkRequest::UserAgentHeader,
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15");
+        request.setHeader(QNetworkRequest::UserAgentHeader, Common::browserUserAgent());
+        // ★ 진짜 Chrome 은 https 요청에 UA 와 함께 이 힌트들을 보낸다. 판 번호까지 UA 와 같아야 한다 — UA 만 Chrome 이고
+        //   힌트가 없으면 그 자체가 봇 표식이다(인스타 실측, Common::browserClientHints 설명). Sec-Fetch 는 요청마다 달라 넣지 않는다.
+        if (request.url().scheme() == QLatin1String("https")) {
+            const QMap<QString, QString> hints = Common::browserClientHints();
+            for (const char *k : {"sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"}) {
+                const QString key = QString::fromLatin1(k);
+                if (!headers.contains(key)) request.setRawHeader(k, hints.value(key).toUtf8());
+            }
+        }
     }
 }
 

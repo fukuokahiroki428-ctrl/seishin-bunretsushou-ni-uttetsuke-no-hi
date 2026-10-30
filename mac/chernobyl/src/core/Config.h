@@ -66,6 +66,8 @@ public:
 
     // 内閣会 감시 목록 + interval 영구 저장
     QJsonArray naikakukaiWatches() const { return m_naikakukaiWatches; }
+    // 内閣会가 받을 때 쓰는 옵션 {플랫폼: {키: 값}} — 감시 대상의 options 가 앞선다(사용자 2026-10-29)
+    QJsonObject naikakukaiOptions() const { return m_naikakukaiOptions; }
     // 정리하기 — 대상마다 '받은 곳 → 정리할 곳' 규칙(tools/organize.py). organizeAuto 면 수집이 끝날 때마다 돈다.
     QJsonArray organizeRules() const { return m_organizeRules; }
     bool organizeAuto() const { return m_organizeAuto; }
@@ -189,6 +191,7 @@ private:
     bool m_debugLogs = false;
     QString m_secondaryPath;
     QJsonArray m_naikakukaiWatches;
+    QJsonObject m_naikakukaiOptions;
     QJsonArray m_organizeRules;
     bool m_organizeAuto = true;
     bool m_organizeCaptures = false;

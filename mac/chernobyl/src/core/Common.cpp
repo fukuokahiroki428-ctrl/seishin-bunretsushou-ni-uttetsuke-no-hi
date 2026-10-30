@@ -35,6 +35,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QImage>
+#include <QImageReader>
 #include <QSet>
 #include <QVarLengthArray>
 #include <QTemporaryFile>
@@ -48,6 +49,12 @@
 #else
 #include <sys/stat.h>
 #include <utime.h>
+#include <cstring>
+#ifdef Q_OS_MACOS
+#include <sys/attr.h>
+#include <unistd.h>
+#include <time.h>
+#endif
 #endif
 
 namespace Common {
@@ -157,9 +164,6 @@ void setFileTimes(const QString &filePath, const QDateTime &timestamp)
         return;
     }
 
-    // Use JST for file timestamps displayed in Finder/Explorer
-    QDateTime dtLocal = timestamp.toUTC().addSecs(9 * 3600);  // UTC+9 (JST)
-
     // utime uses UTC epoch
     qint64 epoch = timestamp.toSecsSinceEpoch();
 
@@ -197,12 +201,21 @@ void setFileTimes(const QString &filePath, const QDateTime &timestamp)
         qWarning() << "[setFileTimes] utime failed for:" << filePath;
     }
 
-    // macOS: SetFile for creation date
+    // macOS: 만든 날짜도 글의 시각으로(윈도우의 SetFileTime 과 같다)
+    //   ★ 예전엔 파일마다 SetFile 을 띄웠다. 개발자 도구가 있어야 하는 옛 공구이고, UTC+9 로 만든 글자를 그 맥의 현지 시각으로
+    //     읽어 일본 · 한국 밖의 맥에서는 시간대만큼 틀렸다. 시스템 호출은 초(epoch)를 그대로 받는다.
+    //     지원하지 않는 디스크(일부 NAS)면 조용히 넘어간다 — 수정 날짜는 위에서 이미 맞췄다.
 #ifdef Q_OS_MACOS
-    QString dateStr = dtLocal.toString("MM/dd/yyyy HH:mm:ss");
-    QProcess proc;
-    proc.start("SetFile", {"-d", dateStr, filePath});
-    proc.waitForFinished(5000);
+    {
+        struct attrlist al;
+        memset(&al, 0, sizeof(al));
+        al.bitmapcount = ATTR_BIT_MAP_COUNT;
+        al.commonattr = ATTR_CMN_CRTIME;
+        struct timespec crt;
+        crt.tv_sec = static_cast<time_t>(epoch);
+        crt.tv_nsec = 0;
+        setattrlist(filePath.toUtf8().constData(), &al, &crt, sizeof(crt), 0);
+    }
 #endif
 #endif  // Q_OS_WIN
 }
@@ -951,18 +964,18 @@ static QString detectChromeMajor()
 
 QString browserUserAgent()
 {
-    static QString cached;
-    if (!cached.isEmpty()) return cached;
-
-    QString major = detectChromeMajor();
-    if (major.isEmpty()) major = QStringLiteral("140");   // 아무것도 못 읽었을 때의 보수적 기본값
-
-    // Chrome 은 macOS 판을 10_15_7 로 고정해 보낸다(UA 고정 정책). 그대로 맞춘다.
-    cached = QStringLiteral(
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/%1.0.0.0 Safari/537.36").arg(major);
-    qInfo().noquote() << "[UA] 요청에 쓸 User-Agent — Chrome" << major;
-    return cached;
+    // ★ 함수 안 정적 변수의 초기화 — C++ 이 한 번만, 스레드에 안전하게 한다. 예전엔 평범한 정적 QString 을 나중에 채워,
+    //   병렬 수집의 첫 요청들이 동시에 쓰고 읽으면 깨질 수 있었다(UA 를 주지 않은 요청도 이제 이리로 온다 — 검토).
+    static const QString ua = []() {
+        QString major = detectChromeMajor();
+        if (major.isEmpty()) major = QStringLiteral("140");   // 아무것도 못 읽었을 때의 보수적 기본값
+        qInfo().noquote() << "[UA] 요청에 쓸 User-Agent — Chrome" << major;
+        // Chrome 은 macOS 판을 10_15_7 로 고정해 보낸다(UA 고정 정책). 그대로 맞춘다.
+        return QStringLiteral(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/%1.0.0.0 Safari/537.36").arg(major);
+    }();
+    return ua;
 }
 
 // ★ 진짜 Chrome 은 UA 와 함께 늘 이 힌트들을 보낸다. 우리는 UA 만 흉내 내고 이것들을 빼먹었다.
@@ -1530,6 +1543,8 @@ void killProcessByPid(qint64 pid)
     // /T 는 자식까지. 파이썬 데몬이 또 무언가를 띄웠을 수 있다.
     QProcess::execute("taskkill", {"/PID", QString::number(pid), "/F", "/T"});
 #else
+    // 맥도 자식까지 — 데몬이 띄운 ffmpeg 가 고아로 남아 중지한 뒤에도 영상을 끝까지 받았다(검토)
+    QProcess::execute("/usr/bin/pkill", {"-TERM", "-P", QString::number(pid)});
     ::kill(static_cast<pid_t>(pid), SIGKILL);
 #endif
 }
@@ -1688,9 +1703,30 @@ qint64 freeSpace(const QString &path)
     return si.bytesAvailable();
 }
 
-// 판을 시작할 때 읽은 표시의 '끝까지 본 때' — 일찍 멈춘 판이 다시 적을 때 물려준다(경로 → 때). 끝까지 본 판은 지금으로 적는다.
-static QHash<QString, QDateTime> s_walkFullAt;
+// 판을 시작할 때 읽은(믿을 만한) 표시 — 일찍 멈춘 판이 다시 적을 때 '끝까지 본 때' 를 물려주고, 끊긴 판은 그대로 되돌린다.
+//   끝까지 본 판(표시 없이 시작한 판)은 지금으로 적는다.
+//   ★ 걸음(스레드)마다 따로 든다. 한 대상을 옵션만 달리 두 줄로 두면 두 걸음이 함께 도는데, 기록을 같이 쓰면 뒤에 시작한 걸음이
+//     앞 걸음의 기록을 지웠다. 그러면 앞 걸음이 '끝까지 본 때' 를 지금으로 적어(일찍 멈췄는데도) 4~5주마다 끝까지 보기가 밀리고,
+//     막혀 있던(dropped) 걸음이 표시를 적어 다음 판이 끊어진 조각 위에서 멈출 수 있었다(검토).
+//   ★ 파일 조작까지 자물쇠 안에서 한다 — 읽고 지우기 · 적기와 dropCleanWalkMarks 가 엇갈리면 지운 표시가 되살아났다(검토).
+//     표시는 판의 처음과 끝에만 만지므로 다른 걸음을 오래 막지 않는다.
+struct WalkTaken { QJsonObject mark; bool dropped = false; qint64 atMs = 0; };
+static QHash<QString, WalkTaken> s_walkTaken;   // "경로\n스레드" → 그 걸음이 읽은 표시
 static QMutex s_walkFullMu;
+
+static QString walkOwnerTail()
+{
+    return QLatin1Char('\n') + QString::number(reinterpret_cast<quintptr>(QThread::currentThreadId()));
+}
+
+// 끊긴 판이 남긴 기록이 쌓이지 않게(1년 켜 두는 앱이다) — 일주일 넘은 것은 버린다. 자물쇠 안에서 부른다.
+static void sweepWalkTakenLocked()
+{
+    if (s_walkTaken.size() < 512) return;
+    const qint64 cut = QDateTime::currentMSecsSinceEpoch() - 7LL * 24 * 3600 * 1000;
+    for (auto it = s_walkTaken.begin(); it != s_walkTaken.end();)
+        it = it->atMs < cut ? s_walkTaken.erase(it) : std::next(it);
+}
 
 static QString walkMarkPath(const QString &dir, const QString &kind)
 {
@@ -1708,10 +1744,11 @@ static int walkFullPeriodDays(const QString &path)
 // 읽고 지운다. 믿을 만하면(형식이 같고 끝까지 본 지 오래지 않으면) true — 그 때를 put 에 넘겨 둔다
 static bool takeWalkMarkFile(const QString &path)
 {
+    QMutexLocker lk(&s_walkFullMu);
+    const QString key = path + walkOwnerTail();
     QFile f(path);
-    if (!f.exists()) {   // 없으면 지난 판이 남긴 기록도 버린다 — 표시 없이 시작한 판은 끝까지 본 판이다(지금으로 적는다)
-        QMutexLocker lk(&s_walkFullMu);
-        s_walkFullAt.remove(path);
+    if (!f.exists()) {   // 없으면 이 걸음의 지난 기록도 버린다 — 표시 없이 시작한 판은 끝까지 본 판이다(지금으로 적는다)
+        s_walkTaken.remove(key);
         return false;
     }
     QJsonObject o;
@@ -1721,8 +1758,12 @@ static bool takeWalkMarkFile(const QString &path)
     const QDateTime now = QDateTime::currentDateTime();
     const bool ok = o.value("v").toInt(0) == kWalkMarkFormat && full.isValid() && full <= now.addSecs(3600)
                     && full.daysTo(now) < walkFullPeriodDays(path);
-    QMutexLocker lk(&s_walkFullMu);
-    if (ok) s_walkFullAt.insert(path, full); else s_walkFullAt.remove(path);
+    if (ok) {
+        sweepWalkTakenLocked();
+        s_walkTaken.insert(key, WalkTaken{o, false, QDateTime::currentMSecsSinceEpoch()});
+    } else {
+        s_walkTaken.remove(key);
+    }
     return ok;
 }
 
@@ -1732,24 +1773,48 @@ bool takeCleanWalkMark(const QString &dir, const QString &kind)
     return takeWalkMarkFile(walkMarkPath(dir, kind));
 }
 
-void putCleanWalkMark(const QString &dir, const QString &kind)
+static void writeWalkMark(const QString &path, const QJsonObject &o)
+{
+    QSaveFile f(path);
+    if (f.open(QIODevice::WriteOnly)) {
+        f.write(QJsonDocument(o).toJson(QJsonDocument::Compact));
+        f.commit();
+    }
+}
+
+void putCleanWalkMark(const QString &dir, const QString &kind, const QJsonObject &extra)
 {
     if (dir.isEmpty() || !QDir(dir).exists()) return;
     const QString path = walkMarkPath(dir, kind);
     const QDateTime now = QDateTime::currentDateTime();
-    QDateTime full;
-    {
-        QMutexLocker lk(&s_walkFullMu);
-        full = s_walkFullAt.take(path);   // 믿을 만한 표시로 시작한 판(일찍 멈췄을 수 있다) — 앞 표시의 때를 물려받는다
-    }
+    QMutexLocker lk(&s_walkFullMu);
+    const WalkTaken taken = s_walkTaken.take(path + walkOwnerTail());
+    if (taken.dropped) return;   // 걷는 사이 다른 걸음이 '받아 둔 것' 을 바꿨다 — 다음 판이 끝까지 본다
+    // 믿을 만한 표시로 시작한 판(일찍 멈췄을 수 있다) — 앞 표시의 때를 물려받는다
+    QDateTime full = QDateTime::fromString(taken.mark.value("full").toString(), Qt::ISODate);
     if (!full.isValid()) full = now;      // 표시 없이 시작한 판 = 끝까지 본 판
-    QSaveFile f(path);
-    if (f.open(QIODevice::WriteOnly)) {
-        f.write(QJsonDocument(QJsonObject{{"at", now.toString(Qt::ISODate)},
-                                          {"full", full.toString(Qt::ISODate)},
-                                          {"v", kWalkMarkFormat}}).toJson(QJsonDocument::Compact));
-        f.commit();
-    }
+    QJsonObject o = extra;
+    o["at"] = now.toString(Qt::ISODate);
+    o["full"] = full.toString(Qt::ISODate);
+    o["v"] = kWalkMarkFormat;
+    writeWalkMark(path, o);
+}
+
+QJsonObject takenWalkMark(const QString &dir, const QString &kind)
+{
+    QMutexLocker lk(&s_walkFullMu);
+    return s_walkTaken.value(walkMarkPath(dir, kind) + walkOwnerTail()).mark;
+}
+
+bool restoreWalkMark(const QString &dir, const QString &kind)
+{
+    if (dir.isEmpty() || !QDir(dir).exists()) return false;
+    const QString path = walkMarkPath(dir, kind);
+    QMutexLocker lk(&s_walkFullMu);
+    const WalkTaken o = s_walkTaken.take(path + walkOwnerTail());
+    if (o.mark.isEmpty() || o.dropped) return false;
+    writeWalkMark(path, o.mark);   // 읽은 그대로 — 끝까지 본 때도 top 도 물려준다
+    return true;
 }
 
 QStringList takeCleanWalkMarks(const QString &dir, const QString &prefix)
@@ -1757,11 +1822,12 @@ QStringList takeCleanWalkMarks(const QString &dir, const QString &prefix)
     QStringList kinds;
     if (dir.isEmpty() || prefix.isEmpty()) return kinds;
     static const QString head = QStringLiteral(".hanishiki_walk_");
-    {   // 이 접두의 지난 기록부터 비운다 — 없는 파일은 아래 고리에 닿지 않아, 멈춘 판이 남긴 옛 때를 다음 판이 물려받았다(검토)
+    {   // 이 걸음의, 이 접두의 지난 기록부터 비운다 — 없는 파일은 아래 고리에 닿지 않아, 멈춘 판이 남긴 옛 때를 다음 판이 물려받았다(검토)
         const QString keyHead = dir + QLatin1Char('/') + head + prefix;
+        const QString tail = walkOwnerTail();
         QMutexLocker lk(&s_walkFullMu);
-        for (auto it = s_walkFullAt.begin(); it != s_walkFullAt.end();)
-            it = it.key().startsWith(keyHead) ? s_walkFullAt.erase(it) : std::next(it);
+        for (auto it = s_walkTaken.begin(); it != s_walkTaken.end();)
+            it = (it.key().startsWith(keyHead) && it.key().endsWith(tail)) ? s_walkTaken.erase(it) : std::next(it);
     }
     const QStringList names = QDir(dir).entryList({head + prefix + QStringLiteral("*.json")}, QDir::Files | QDir::Hidden);
     for (const QString &n : names) {
@@ -1769,6 +1835,18 @@ QStringList takeCleanWalkMarks(const QString &dir, const QString &prefix)
             kinds << n.mid(head.size(), n.size() - head.size() - 5);   // ".json" 앞까지
     }
     return kinds;
+}
+
+void dropCleanWalkMarks(const QString &dir, const QString &prefix)
+{
+    if (dir.isEmpty() || prefix.isEmpty()) return;
+    static const QString head = QStringLiteral(".hanishiki_walk_");
+    const QString keyHead = dir + QLatin1Char('/') + head + prefix;
+    QMutexLocker lk(&s_walkFullMu);
+    for (auto it = s_walkTaken.begin(); it != s_walkTaken.end(); ++it)
+        if (it.key().startsWith(keyHead)) it->dropped = true;   // 도는 걸음 모두(누구의 것이든)
+    for (const QString &n : QDir(dir).entryList({head + prefix + QStringLiteral("*.json")}, QDir::Files | QDir::Hidden))
+        QFile::remove(dir + QLatin1Char('/') + n);
 }
 
 QSet<QString> takeWalkFailures(const QString &dir, const QString &kind)
@@ -1846,6 +1924,44 @@ QString checkFileIntegrity(const QString &filePath)
     // 이미지 — QImage 로 load 시도 (빠른 검증)
     if (imgExts.contains(ext)) {
         if (size < 100) return QString("너무 작음 (%1 byte)").arg(size);
+
+        // ★ 디코더가 없는 형식을 '손상' 이라고 부르면 안 된다(윈도우와 같다).
+        //   맥 번들의 Qt 는 heic(qmacheif)·webp·tiff 는 읽지만 avif 디코더가 없다. 그래서 멀쩡한
+        //   avif 가 모두 "이미지 디코딩 실패 (손상)" 으로 찍혔다 — 아카이빙 앱에서 사용자가 멀쩡한
+        //   자료를 지우게 만드는 말이다. 읽을 수 없는 형식이면 매직 바이트만 보고 정직하게 보고한다.
+        static const QSet<QByteArray> readable = []{
+            QSet<QByteArray> s;
+            for (const QByteArray &f : QImageReader::supportedImageFormats()) s.insert(f);
+            return s;
+        }();
+        const QByteArray extBa = ext.toLatin1();
+        const bool canDecode = readable.contains(extBa)
+                            || (ext == "jpg"  && readable.contains("jpeg"))
+                            || (ext == "tiff" && readable.contains("tif"));
+        if (!canDecode) {
+            QFile f(filePath);
+            if (!f.open(QIODevice::ReadOnly)) return "파일 열기 실패";
+            const QByteArray head = f.read(16);
+            f.close();
+            if (head.size() < 12) return "헤더 읽기 실패";
+            bool magicOk = false;
+            if (ext == "webp")
+                magicOk = head.startsWith("RIFF") && head.mid(8, 4) == "WEBP";
+            else if (ext == "avif" || ext == "heic")
+                magicOk = head.mid(4, 4) == "ftyp";
+            else if (ext == "tiff" || ext == "tif")
+                magicOk = head.startsWith("II*") || head.startsWith("MM");
+            else
+                magicOk = true;   // 판단 근거가 없으면 손상이라 부르지 않는다
+            if (!magicOk) {
+                // 이름만 .avif 이고 내용은 JPEG · PNG 인 파일(서버가 Accept 에 따라 다른 형식을 준다)은 멀쩡하다 — 내용으로 읽어 본다
+                QImage byContent;
+                if (byContent.load(filePath) && !byContent.isNull()) return QString();
+                return QString("%1 헤더가 아님 (손상)").arg(ext.toUpper());
+            }
+            return QString();     // 더 볼 수단이 없다 — 정상으로 둔다
+        }
+
         QImage img;
         if (!img.load(filePath)) return "이미지 디코딩 실패 (손상)";
         if (img.width() < 1 || img.height() < 1) return "이미지 크기 0";

@@ -14,6 +14,8 @@
   resume           이어받기 — 유튜브 오디오/동영상 장부 · 받는 도중 죽어도 잘린 파일 없음
   youtube_layout   유튜브 · 니코동 '저장 방식' — 채널별 폴더 / 폴더 없이 바로(파일 이름 · _complete · 엑셀)
   crawl            크롤러 — 끝까지 · 중간에 멈춤 · 그림 받는 도중 멈춤 세 번
+  early_stop       일찍 멈춤 · 엑셀 칸 — 트위터 수집기를 가짜 X 에 대고(표시 · top · 두 줄 · 대화 묶음 · 최대 수 · 좋아요 · 북마크)
+  naikakukai       内閣会 '받을 때 옵션' — 화면에서 고른 옵션 · 대상별 옵션대로 받는가 · 설정에 남는가(가짜 X)
   singlefile       SingleFile 캡처 — 오류 화면 저장 안 함 · 지연 그림 · 다른 출처 · CSP
 
 종료 코드: 0 모두 통과 · 1 실패한 시험이 있음 · 2 돌릴 수 없음(빌드 없음 · 사본이 안 뜸 · 옛 판인데 사용자 앱이 수집 중)
@@ -40,8 +42,8 @@ sys.path.insert(0, str(HERE))
 import _common as C  # noqa: E402
 from lib import paths  # noqa: E402
 
-TESTS = ["capture_cleanup", "quit_during_hotfix", "viewer", "resume", "youtube_layout", "crawl", "crawl_record", "organize", "targets", "singlefile"]
-LABEL = {"capture_cleanup": "캡처 정리", "quit_during_hotfix": "끄기", "viewer": "옛 트위터", "resume": "이어받기", "youtube_layout": "저장 방식", "crawl": "크롤러", "crawl_record": "끝까지 기록", "organize": "정리하기", "targets": "대상 목록", "singlefile": "SingleFile"}
+TESTS = ["unit_common", "capture_cleanup", "quit_during_hotfix", "viewer", "resume", "youtube_layout", "crawl", "crawl_record", "organize", "targets", "early_stop", "naikakukai", "proxy_exit", "singlefile"]
+LABEL = {"unit_common": "공통 단위", "capture_cleanup": "캡처 정리", "quit_during_hotfix": "끄기", "viewer": "옛 트위터", "resume": "이어받기", "youtube_layout": "저장 방식", "crawl": "크롤러", "crawl_record": "끝까지 기록", "organize": "정리하기", "targets": "대상 목록", "early_stop": "일찍 멈춤", "naikakukai": "内閣会 옵션", "proxy_exit": "프록시 출구", "singlefile": "SingleFile"}
 
 
 def run(name: str, verbose: bool, env: dict, timeout: int = 1200):

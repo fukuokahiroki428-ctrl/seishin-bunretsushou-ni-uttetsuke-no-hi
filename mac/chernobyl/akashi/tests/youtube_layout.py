@@ -13,6 +13,11 @@ startYoutube 가 saveLayout 을 싣는지까지). 판마다 앱의 진짜 끝 �
     (저장 방식을 바꾼 판이 지난 영상을 한 벌 더 복사하지 않는다)
   5 엑셀이 만들어지고, 화면 JS 오류 없음
   6 니코동 탭에도 같은 칸 — '폴더 없이 바로' 로 받으면 <유형>/ 바로 아래 · _complete 도 바로 아래
+  7 윈도우와 같은 이름(--windows-filenames) — 채널 이름이 마침표로 끝나면('Studio Inc.') 윈도우처럼 'Studio Inc#' 폴더
+  8 그런데 저장 폴더 자체가 윈도우가 못 쓰는 이름이면('odd.') 그 옵션을 끄고 알린다 — 켜면 yt-dlp 가 저장 폴더까지
+    'odd#' 으로 바꿔 다른 곳에 쓴다(경로 전체에 규칙을 건다). 영상은 고른 폴더 그대로에 남는다
+  9 저장 폴더 이름에 작은따옴표(it's)가 있어도 판이 끝난다 — 예전엔 스크립트의 echo 가 깨져 끝 신호가 오지 않았다
+ 10 니코동 쿠키 파일 — 자료 폴더의 niconico_cookies.txt 를 쓴다(윈도우와 같은 규칙)
 
 ★ 왜 이름에 채널과 ID 를 남기나 — 폴더 없이 두면 다른 채널의 같은 날 · 같은 제목 영상이 같은 이름이 된다. 그러면 yt-dlp 는
   둘째를 '이미 받음' 으로 건너뛰고 장부에까지 적어 다시는 받지 않는다(2026-10-06 실측: 두 영상 → 파일 하나 · 장부 두 줄).
@@ -49,6 +54,12 @@ def main() -> int:
             subprocess.run([str(ffmpeg), '-loglevel', 'error', '-f', 'lavfi', '-i', src + '=duration=1:size=160x120:rate=10',
                             '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(www / name)], check=True)
     srv, hp = fixtures.serve(www)
+    ylog = ''
+    ld = {"@context": "https://schema.org", "@type": "VideoObject", "name": "s1",
+          "contentUrl": "http://127.0.0.1:%d/clip1.mp4" % hp, "uploadDate": "2026-01-02T00:00:00+00:00",
+          "author": {"@type": "Person", "name": "Studio Inc."}}
+    (www / 'studio.html').write_text('<!doctype html><html><head><title>s1</title><script type="application/ld+json">%s'
+                                     '</script></head><body>v</body></html>' % json.dumps(ld), encoding='utf-8')
     try:
         if not C.iso_start():
             return 2
@@ -86,6 +97,8 @@ def main() -> int:
             check("니코동에도 '저장 방식' 칸 — 기본은 채널별 폴더", bool(nopts) and nopts.get('value') == 'channel'
                   and nopts.get('options') == ['channel', 'flat'], nopts)
             nbase = C.ISO / 'tmp' / 'nico_flat'
+            nck = C.ISO / 'home' / 'Library' / 'Application Support' / 'Hanishiki' / 'niconico_cookies.txt'
+            nck.write_text('# Netscape HTTP Cookie File\n', encoding='utf-8')   # 시험용 빈 쿠키 — 격리 사본의 자료 폴더에만
             p.eval("""(function(){var g=function(i){return document.getElementById(i)};
               g('niconico-url').value=%s; g('niconico-path').value=%s; g('niconico-type').value='video';
               g('niconico-save-layout').value='flat';
@@ -97,9 +110,29 @@ def main() -> int:
             while not p.eval("!!window.__akashiEnded.niconico", retry=True) and time.time() - t0 < 180:
                 time.sleep(0.5)
             nst = C.platform_stats(p, 'niconico')
+            nlog = p.eval("(document.getElementById('niconico-log')||{}).innerText||''", retry=True) or ''
+            check('니코동 — 자료 폴더의 쿠키 파일을 썼다', 'niconico_cookies.txt 사용' in nlog, nlog[-200:])
             check('니코동 폴더 없이 판이 끝났다(끝 신호)', bool(p.eval("!!window.__akashiEnded.niconico", retry=True))
                   and str(nst.get('status')) in ('Done', '완료'), '%s · %.0fs' % (nst.get('status'), time.time() - t0))
             p.eval("document.getElementById('niconico-save-layout').value='channel'")
+            # ── 윈도우와 같은 이름 — 채널 폴더 'Studio Inc.' → 'Studio Inc#', 저장 폴더가 'odd.' 이면 옵션을 끈다
+            names_base = C.ISO / 'tmp' / 'yt_names'
+            for sub in ('', 'odd.', "it's"):
+                p.eval("""(function(){var g=function(i){return document.getElementById(i)};
+                  g('youtube-url').value=%s; g('youtube-path').value=%s; g('youtube-type').value='video';
+                  g('youtube-pace').value='fast'; g('youtube-save-layout').value='channel';
+                  ['youtube-subs','youtube-thumb','youtube-playlist','youtube-sponsor','youtube-comments','youtube-real-capture']
+                    .forEach(function(i){var e=g(i); if(e) e.checked=false});
+                  window.__akashiEnded.youtube=false; startYoutube();})()""" % (
+                    json.dumps('http://127.0.0.1:%d/studio.html' % hp), json.dumps(str(names_base / sub if sub else names_base))))
+                t0 = time.time()
+                while not p.eval("!!window.__akashiEnded.youtube", retry=True) and time.time() - t0 < 180:
+                    time.sleep(0.5)
+                st = C.platform_stats(p, 'youtube')
+                check("이름 판(%s)이 끝났다" % (sub or '보통 폴더'), bool(p.eval("!!window.__akashiEnded.youtube", retry=True))
+                      and str(st.get('status')) in ('Done', '완료'), '%s · %.0fs' % (st.get('status'), time.time() - t0))
+                if sub == 'odd.':   # 다음 판이 지우기 전에(판마다 기록을 비운다)
+                    ylog = p.eval("(document.getElementById('youtube-log')||{}).innerText||''", retry=True) or ''
             # 되돌리기 — 가로챈 함수와 칸 값
             p.eval("document.getElementById('youtube-save-layout').value='channel';"
                    "if(window.__akashiYt){window.onCollectionEnded=window.__akashiYtOrig;"
@@ -135,6 +168,18 @@ def main() -> int:
         nc = media_in(nico / '_complete')
         check('니코동 폴더 없이 — _complete 사본도 바로 아래', len(nc) == 1 and nc[0].parent == nico / '_complete',
               [str(v.relative_to(nico)) for v in nc])
+        nb = C.ISO / 'tmp' / 'yt_names'
+        nv = [v for v in media_in(nb / 'youtube' / 'video')]
+        check("윈도우와 같은 이름 — 채널 'Studio Inc.' 의 폴더가 윈도우처럼 'Studio Inc#'",
+              len(nv) == 1 and nv[0].parent.name == 'Studio Inc#', [str(v.relative_to(nb)) for v in nv])
+        ov = media_in(nb / 'odd.' / 'youtube' / 'video')
+        check("저장 폴더가 'odd.' — 영상은 고른 폴더 그대로('odd#' 이 생기지 않음), 채널 폴더는 맥 이름",
+              len(ov) == 1 and ov[0].parent.name == 'Studio Inc.' and not (nb / 'odd#').exists(),
+              ([str(v.relative_to(nb)) for v in ov], sorted(x.name for x in nb.iterdir()) if nb.exists() else []))
+        check("저장 폴더가 'odd.' — 윈도우 호환을 끈다고 기록에 알렸다", '윈도우 호환을 이번에는 끕니다' in ylog, ylog[-300:])
+        qv = media_in(nb / "it's" / 'youtube' / 'video')
+        check("저장 폴더에 작은따옴표 — 영상이 그 폴더에 받아지고 끝 처리까지(엑셀)", len(qv) == 1
+              and any((nb / "it's" / 'youtube' / 'excel').glob('*.xlsx')), [str(v.relative_to(nb)) for v in qv])
     except Exception as e:  # noqa: BLE001
         check('시험 진행 중 오류 없음', False, '%s: %s' % (type(e).__name__, e))
     finally:

@@ -1043,7 +1043,7 @@ def main():
                         date_str = datetime.now().strftime("%Y-%m-%d")
                         archive_dir = os.path.join(os.path.dirname(path), "archive", date_str)
                         os.makedirs(archive_dir, exist_ok=True)
-                        os.rename(path, os.path.join(archive_dir, os.path.basename(path)))
+                        os.replace(path, os.path.join(archive_dir, os.path.basename(path)))   # 같은 날 두 번 바뀌어도(윈도우의 rename 은 있으면 실패해 새 그림을 버렸다)
                         os.rename(tmp, path)
                         log(f"Profile changed → archived to {date_str}/")
                     else:
@@ -1616,7 +1616,8 @@ def main():
         save_path = args.get("save_path", ".")
         do_media = args.get("download_media", True)
 
-        safe_query = re.sub(r'[^\w\s-]', '', query)[:30]
+        # 끝의 공백을 뗀다 — 윈도우는 \\?\ 경로로 만들면 끝에 공백 든 폴더가 그대로 생겨 탐색기로 열지도 지우지도 못한다(두 판 이름도 같게)
+        safe_query = re.sub(r'[^\w\s-]', '', query)[:30].strip()
         user_dir = os.path.join(save_path, "bluesky", f"_search_{safe_query}")
         media_dir = os.path.join(user_dir, "media")
         excel_dir = os.path.join(user_dir, "excel")

@@ -250,7 +250,28 @@ qint64 freeSpace(const QString &path);
 //   한 달 안에 한 번은 끝까지 보아 메운다. 일찍 멈춘 판이 다시 적는 표시는 앞 표시의 '끝까지 본 때' 를 물려받는다.
 constexpr int kWalkMarkFormat = 1;   // 수집기를 고쳐 옛 글에서 놓친 것을 다시 받아야 하면 올린다 — 모든 목록이 한 번 끝까지 본다
 bool takeCleanWalkMark(const QString &dir, const QString &kind);
-void putCleanWalkMark(const QString &dir, const QString &kind);
+//   extra 는 목록마다의 값(트위터의 top — 그 목록이 끊김 없이 다 본 가장 새 트윗 ID)을 함께 적는다
+void putCleanWalkMark(const QString &dir, const QString &kind, const QJsonObject &extra = QJsonObject());
+// 이번 판을 시작할 때 읽은(믿을 만한) 표시의 내용 — 없으면 빈 것. put · restore 전까지 남아 있다
+QJsonObject takenWalkMark(const QString &dir, const QString &kind);
+// 끊긴 판 — 시작할 때 읽은 표시를 그대로(끝까지 본 때 · top) 되돌려 놓는다. 이미 put 했거나 읽은 것이 없으면 false.
+//   목록이 끝까지 본 곳(top)을 함께 적는 플랫폼(트위터)만 쓴다 — 그 위로 들어온 줄은 다음 판이 세지 않으니 끊긴 판도 표시를 지울 까닭이 없다
+bool restoreWalkMark(const QString &dir, const QString &kind);
+// 다른 걸음이 그 목록의 '받아 둔 것' 에 줄을 넣었다 — 표시를 지우고, 그 표시로 지금 도는 걸음이 있으면 그 걸음도 다시 적거나
+//   되돌리지 못하게 한다(take 와 달리 도는 걸음의 기록을 지우지 않는다 — 지우면 그 걸음이 '끝까지 본 때' 를 지금으로 적었다 — 검토)
+void dropCleanWalkMarks(const QString &dir, const QString &prefix);
+// 캡처 실패를 '받지 못한 것' 으로 셀까 — 이번 판에 캡처를 하나도 새로 받지 못하고 5개 넘게 실패했으면 캡처 길이 통째로 막힌 것
+//   (캡처 Chrome · 로그인 벽)으로 보고 세지 않는다. 그런 판마다 표시를 막으면 일찍 멈춤이 영영 켜지지 않았다(검토).
+//   그때 못 받은 캡처는 4~5주마다 끝까지 볼 때 다시 한다.
+inline bool captureFailuresCount(int captured, int failed) { return captured > 0 || failed < 5; }
+
+// 표시의 kind 에 넣을 캡처 설정 — 0 안 함 · 1 전체 · 2 미디어만. 바뀌면 한 번 끝까지 본다(그때부터 옛 글도 그 설정으로 캡처한다).
+inline int captureKindCode(const QJsonObject &config)
+{
+    const QString mode = config.value(QStringLiteral("realCaptureMode")).toString(QStringLiteral("all"));
+    if (!config.value(QStringLiteral("realCapture")).toBool(true) || mode == QLatin1String("off")) return 0;
+    return mode == QLatin1String("media") ? 2 : 1;
+}
 // 같은 엑셀(받아 둔 것 목록)을 함께 쓰는 목록들의 표시를 한꺼번에 읽고 지운다(<prefix>* 모두) — 있던 kind 들을 돌려준다.
 //   한 목록 · 한 범위(미디어 끔 · 기간 · 새 글만 …)의 판이 그 엑셀에 줄을 넣으면 다른 목록의 표시도 더는 믿을 수 없다 —
 //   제 표시만 지우면, 남은 표시가 그 판이 넣은 맨 위 조각에서 다음 판을 일찍 멈추게 했다(검토).

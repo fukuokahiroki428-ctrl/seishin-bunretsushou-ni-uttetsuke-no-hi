@@ -178,7 +178,8 @@ def main() -> int:
             (src / 'media' / '20251225_090000_444.jpg').write_bytes(b'G' * 20)
             check('수집 시작에 고리가 걸렸다(어느 계정을 받는지 적음)', p.eval("backend._orgHooked === true") is True)
             p.eval("document.getElementById('organize-auto').checked = true; document.getElementById('organize-meta').textContent = '기다림';"
-                   "backend.startCollection(JSON.stringify({platform:'twitter', target:'akashi_demo', accounts:[]}))")
+                   "backend.startCollection(JSON.stringify({platform:'twitter', target:'akashi_demo', accounts:[], path:%s}))"
+                   % json.dumps(str(C.ISO / 'tmp' / 'org_run')))   # 경로가 없으면 앱이 시작 전에 멈춘다(받은 것이 없으니 정리도 없다)
             time.sleep(1.0)
             meta, _ = wait_done(p, 90)
             ran = p.eval("_orgRunIds.slice()")

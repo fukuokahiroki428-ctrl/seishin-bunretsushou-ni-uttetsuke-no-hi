@@ -56,6 +56,8 @@ private:
 
     // Auth & client setup
     void setupClient(const QString &authToken, const QString &ct0);
+    void setupClientFor(const QJsonObject &account);    // 이 계정의 출구를 건 뒤 setupClient — 계정을 정해 데몬을 띄우는 곳은 모두 이것으로
+    void applyAccountProxy(const QJsonObject &account);
     QMap<QString, QString> getHeaders() const;
     QMap<QString, QString> getHeadersWithTid(const QString &urlPath);
 
@@ -114,7 +116,8 @@ private:
     //   capturesDir: <userDir>/captures (호출자가 mkpath)
     //   config: realCapture 플래그 + 쿠키 컨텍스트
     //   force: 명시적으로 캡쳐할지 (likes/bookmarks 같이 별도 폴더 쓸 때 capturesDir만 다르게)
-    void captureTweet(const QJsonObject &tweet, const QString &capturesDir, const QJsonObject &config);
+    QJsonObject standardTweetRow(const QJsonObject &tweet, const QString &fallbackAuthor, bool *isSpaceCard = nullptr);   // 엑셀 한 줄(30칸)
+    int captureTweet(const QJsonObject &tweet, const QString &capturesDir, const QJsonObject &config);   // 1 = 이번에 진짜 캡처 · 0 = 할 것 없음(끔 · 이미 받음) · -1 = 못 받음(카드로 대신)
 
     HanishikiBackend *m_backend;
     // ★ 이 스레드에서 쓸 HttpClient 를 새로 만든다 — TwitterCollector.cpp 의 정의 설명 참고.

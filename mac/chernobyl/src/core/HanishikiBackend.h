@@ -221,6 +221,7 @@ public slots:
     // 内閣会 — 지정 사용자 신글 자동 감지/다운로드 (Twitter/Bluesky/Tumblr 공식 API)
     void startNaikakukai(const QString &configJson);
     void stopNaikakukai();
+    void setNaikakukaiOptions(const QString &json);   // 도는 内閣会에 다음 폴링부터 — {options, watches}(감시 대상의 options 만 맞춘다)
     bool isNaikakukaiRunning() const { return m_naikakukaiRunning; }
 
     // 시스템 알림 (macOS osascript display notification — 다른 앱 쓰는 중에도 알림 옴)
@@ -508,6 +509,7 @@ public:
     void naikakukaiTick();
     QTimer *m_naikakukaiTimer = nullptr;
     QJsonArray m_naikakukaiWatches;
+    QJsonObject m_naikakukaiOptions;   // 内閣会가 받을 때 쓰는 옵션 {플랫폼: {키: 값}} — 감시 대상의 options 가 앞선다
     int m_naikakukaiIntervalMin = 30;
     int m_naikakukaiCursor = 0;
     bool m_naikakukaiDiskGoneLogged = false;   // 디스크 빠짐/돌아옴을 한 줄씩만 적으려고
@@ -630,6 +632,8 @@ public:
     //   platform: 로그인 대기 알림 그룹 (instagram, pixiv, ...)
     //   config: 있으면 cookiesForCapture(platform, config)가 자동으로 계정 쿠키 주입
     //           → 캡쳐 시작 시 모든 플랫폼이 항상 "로그인된 상태"로 시작
+    // 그 진짜 캡처가 이미 끝나 있나(합성 카드가 아닌 진짜 페이지) — 이번에 새로 받은 것과 가르려고(일찍 멈춤의 캡처 실패 셈)
+    bool realCaptureFinished(const QString &saveDir, const QString &filename) const;
     bool captureRealPageCDPLoginAware(const QString &url,
                                       const QString &saveDir,
                                       const QString &filename,
