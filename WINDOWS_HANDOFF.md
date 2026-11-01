@@ -1866,3 +1866,73 @@ EXIF 줄바꿈(윈도우는 값 파일, 맥은 argv 로 넘겨 원래 온전 —
 ### 8. 시험(맥)
 `run_all` 14/14(확인 266개 — 단위 28 · 일찍 멈춤 43 · 프록시 출구 15 · 저장 방식 22 등) · `inspect_all --doctor --hotfix` 6/6. 가짜 X · 이 맥 안의 서버로만 돌렸습니다 — 진짜 계정으로는 돌리지 않았습니다.
 윈도우 쪽은 코드만 읽었고 실행하지 못했습니다(6절은 그래서 '확인해 주십시오' 입니다).
+
+---
+
+# ★ 맥 → 윈도우 (2026-11-01): 内閣会 메뉴 되살리기 · 날짜를 모두 일본 시간으로 · 파이썬 교체
+
+맥은 `ueno` `9b44df6`(r46) 위에서 작업 중이고 **r47 은 아직 내지 않았습니다**. 그래서 이번 전보에는 맥 커밋 번호가 없습니다. 무엇을 어떻게 바꾸는지만 적습니다. 윈도우 줄 번호는 `main` `315a99c` 를 읽어 확인했습니다. 시험 상태는 맨 끝에 있습니다.
+
+## 1. 먼저: 内閣会 메뉴가 사이드바에 없습니다 (사용자 요청)
+
+사용자가 "내각회가 안 보인다, 이것부터 해결하라" 고 했습니다.
+- 2026-08-01 커밋 `44cbdfe` 가 메뉴만 주석으로 숨겼고, 탭 본문과 기능은 살아 있습니다. 윈도우도 같습니다: `windows/resources/html/index.html:1114`.
+- **그 주석만 풀면 됩니다.** `<div class="nav-item" onclick="switchTab('naikakukai')">` 블록을 되살리십시오.
+- 맥 r46 의 '받을 때 옵션' 은 이 메뉴 없이는 사람이 닿을 수 없었습니다. 맥의 시험은 코드로 `switchTab` 을 불러 이를 잡지 못했습니다. 맥은 메뉴가 보이고 눌러서 열리는지 보는 시험을 더했습니다.
+
+## 2. 일본 시간이 아니던 곳
+
+시간대를 뉴욕으로 둔 격리 사본에서 쟀습니다. 이 맥은 KST 라 현지 시각을 쓰는 코드가 드러나지 않습니다. 윈도우도 시간대를 바꿔 재 보시기를 권합니다.
+
+새 도우미(`Common`): `jstTime(dt)` · `jstNow()` · `jstToday()` · `jstText(raw, fmt)`(비었거나 못 읽으면 받은 그대로).
+
+**파일 이름**
+- `FileHelper::uploadOrderPrefix(QDateTime)` 가 받은 값의 시간대 그대로 찍어, **트위터 · 인스타 · 픽시브 캡처 이름이 UTC** 였습니다(픽시브 ajax 의 `createDate` 도 실제로 `+00:00`). `uploadOrderPrefix(qint64)` 는 현지 시각이었습니다(텀블러). 둘 다 `jstTime` 으로 바꿨습니다.
+  - 이미 옮겨 넘기던 곳(디스코드 · 인스타 미디어의 `toUTC().addSecs(9*3600)`)은 이제 `dt` 를 그대로 넘겨야 합니다. 안 그러면 두 번 옮겨집니다.
+- **옛 이름 호환** — `FileHelper::captureNameCompat(dir, dt, id)`: 새 이름이 없고 옛 이름(`dt` 그대로 · UTC)이 있으면 옛 이름을 씁니다. 트위터 · 인스타 · 픽시브 세 곳 · 텀블러에 씁니다. 안 쓰면 다음 끝까지 보기에 전부 또 캡처합니다. 텀블러 미디어도 옛 현지 시각 이름이 있으면 받지 않습니다.
+- **yt-dlp 이름** (`windows/src/core/HanishikiBackend.cpp:11995-11996` 이 옛 모양) — `upload_date` 는 시각이 있으면 UTC 날짜라, 일본 시간 아침 9시 전 영상이 하루 앞으로 적힙니다. `%(timestamp+32400>%Y%m%d,upload_date)s` 로 바꿨습니다. `.bat` 을 거치면 `%` 를 겹치는지 확인해 주십시오.
+  - **이것만 바꾸면 안 됩니다.** `--no-overwrites` 가 옛 이름의 파일을 못 알아봅니다. **썸네일만 받기는 yt-dlp 가 장부에 적지 않아, 썸네일 · info.json · 미러 · 엑셀 줄이 겹칩니다.** 맥은 다음과 같이 막았습니다.
+  - `seedYtArchive`: 판 시작 전에 `*.info.json` 을 훑어 끝난 파일이 있는 영상을 장부에 올립니다(`<extractor_key 소문자> <id>`). 끝난 파일의 확장자는 동영상 mp4 · mkv · webm · mov, 오디오 mp3, 썸네일 jpg · png · webp 만 칩니다.
+  - 썸네일은 동영상 장부에 올리면 나중에 그 영상을 못 받으므로, 동영상 장부의 사본 `.yt_archive_thumbnail.txt` 를 판마다 새로 만들어 넘깁니다.
+  - 엑셀은 ID 하나에 한 줄(파일이 있는 쪽)로 줄였습니다.
+- **뒤처리 고리는 판마다 받아 둔 영상을 모두 돕니다.** 그래서 두 가지를 지킵니다.
+  - 파일 시각이 예전 값(그 날의 UTC 자정)이면 그대로 둡니다. 안 그러면 백업이 영상을 모두 다시 올립니다. **EXIF 를 쓰면 시각이 지금으로 바뀌므로 EXIF 쓰기 전에 봐야 합니다**(맥이 처음에 이 순서를 틀려 시험에서 잡혔습니다).
+  - 유튜브 캡처는 옛 이름(`<upload_date>_000000_<id>`)이 있으면 그 이름을 씁니다.
+
+**EXIF**
+- `HanishikiBackend.cpp:12706` 의 `dt.toString("yyyy:MM:dd HH:mm:ss")` — `parseISODate` 가 이 값을 **현지 시각으로 읽습니다**(`Qt::ISODateWithMs` 가 `:` 구분도 받습니다). `dt` 를 실제 시각으로 바꾸면 그 날짜가 틀립니다. `dt.toString(Qt::ISODate)` 로 시간대까지 넘기십시오.
+
+**엑셀 · 자료 파일** (윈도우 줄 번호도 같은 코드)
+| 곳 | 윈도우 | 바꿈 |
+|---|---|---|
+| 디스코드 timestamp · edited_timestamp · date_from · date_to | `HanishikiBackend.cpp:10207, 10212, 10285, 10289, 10462, 10463` | `.left(19)` 는 UTC 에서 오프셋만 자른 값입니다 → `jstText(x, "yyyy-MM-dd HH:mm:ss")` |
+| 트위터 답글 크롤 엑셀 date | `HanishikiBackend.cpp:8629` | `jstText(x, "yyyy/MM/dd HH:mm")` |
+| 트위터 팔로워 · 팔로잉 created_at | `TwitterCollector.cpp:5138` | `formatDateJapanese(x)` |
+| 블루스카이 프로필 Created At · Indexed At | `bluesky_daemon.py:1867` 근처 | `_jst_text()` |
+| 텀블러 fetched_at | `HanishikiBackend.cpp:20055` | `jstNow()` |
+| capturedAt | `PenChromeCrawler.cpp:670` · `RealChromeCrawler.cpp:922` · `SiteCrawler.cpp:1348` | `jstNow()` · `jstTime(...)` |
+
+- 그 밖에 맥에서 바꾼 것:
+  - 인스타 · 텀블러 엑셀의 `fromSecsSinceEpoch(ts).toString`, 오늘 날짜로 만드는 이름 · 글, 자료 파일의 `toString(Qt::ISODate)`, 캡처의 `<!-- captured: -->`, 진단 시각, 터미널 구분선, 자가진단 보고서.
+  - 화면은 `toLocale…({timeZone:'Asia/Tokyo'})` · `window._jstWallClock()`.
+  - 파이썬은 `bluesky_daemon.py` 의 `_jst_now()` · `crawl_record.py` · `twitter_viewer.py`.
+  - 맥의 표시 기록부(walk mark)는 그대로 두었습니다.
+- **트위터 기간** — `since` · `until` 을 `T00:00:00+09:00` · `T23:59:59+09:00` 으로 읽습니다. X 의 since · until 은 UTC 날짜이고 until 은 그 날을 빼므로, 질의는 앞뒤로 하루씩 넓히고(`addDays(-1)` · `addDays(1)`) 글마다 거릅니다. 예전엔 끝 날의 글을 검색이 돌려주지 않았습니다. **되짚기 날짜(`until:D+1`)는 UTC 그대로 둡니다.**
+
+## 3. 파이썬 환경 바꾸기
+
+맥이 윈도우의 `.new` · `.old` 교체와 '없으면 스스로 받아 깔기' 를 받았습니다. 검토에서 나온 문제를 고쳤고, 아래 1 · 3 · 4 는 윈도우 코드에도 같은 모양이 있는지 보아 주십시오.
+1. **다음 minor 로 올리지 않습니다.** 윈도우는 `HanishikiBackend.cpp:18382` 근처에서 릴리스의 가장 높은 판을 고릅니다.
+   - 맥은 지금 환경의 major.minor 안에서만 고릅니다(`Common::pickPythonRelease`). 환경이 돌지 않으면 그 판의 파이썬(`kBundledPython*`)을 고릅니다.
+   - 까닭: `pypkgs` 덧씌움의 컴파일된 모듈은 판 전용이라, PYTHONPATH 앞에서 새 파이썬을 가려 '완료' 라고 하고도 수집이 멈춥니다(코드 추적 · 작은 실험으로 확인). 모듈 고정도 그 판으로 확인한 것입니다.
+2. **모듈을 못 깔면 옛 환경으로 되돌립니다** (맥에서 더함). 윈도우는 교체 직후 `.old` 를 지우는 것으로 알고 있습니다 — 확인해 주십시오. 옛 환경이 돌았을 때만 되돌립니다(파일이 있는지가 아니라 판 번호를 말했는지로 봅니다).
+3. **pip 는 덧씌움을 뺀 PYTHONPATH 로** — 안 그러면 'already satisfied' 로 건너뜁니다. 그 뒤 실제 환경으로 불러 보고(`diagnosePythonEnv`), 문제가 있으면 되돌립니다.
+4. **`exitCode()` 만 보면 시간 초과도 성공으로 셉니다** — `waitForFinished` · `NormalExit` · 0 을 모두 봅니다. 제한은 10분입니다.
+5. 끊긴 교체 되살리기 `Common::recoverInterruptedPythonSwap()` — 앱 시작 · 업그레이드 · 복구 앞에서 부릅니다. 끝낼 때 `.old` 를 `.dead` 로 이름을 바꾼 뒤 지웁니다.
+6. `python_env` 가 통째로 없으면 쓰기 검사는 윗 폴더를 봅니다(없는 폴더는 `isWritable` 이 늘 거짓입니다).
+
+## 4. 시험 상태 (맥) — 아직 끝나지 않았습니다
+
+- 가짜 X 와 이 맥 안의 서버로만 돌렸습니다. 진짜 계정으로는 돌리지 않았습니다.
+- 2절 앞부분 · 3절 앞부분까지의 빌드: 기능 시험 16가지 중 15가지 통과, 점검 6가지 통과. SingleFile 만 8/10 으로 실패했고, 같은 빌드로 따로 돌리니 10/10 이었습니다(원인은 가리지 못했습니다).
+- **교차 검토 뒤에 고친 것(1절 메뉴, EXIF, 장부, 엑셀 칸, 3절의 1 · 3 등)은 지금 빌드 중이라 아직 시험하지 못했습니다.** 교차 검토 중 기간 필터 · 시험과 문서 검토 두 부분도 남아 있습니다. 달라지는 것이 나오면 r47 전보에서 고쳐 알리겠습니다.
