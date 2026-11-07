@@ -38,6 +38,12 @@ FWDIR="$APPDIR/Contents/Frameworks"
 echo "=== macdeployqt ($APPDIR) ==="
 MACDEPLOYQT="$(command -v macdeployqt || echo /opt/homebrew/opt/qtbase/bin/macdeployqt)"
 "$MACDEPLOYQT" "$APPDIR" 2>&1 | grep -v "^$\|File exists" || true
+# ★ Qt 6.12 의 macdeployqt 는 qt.conf 를 더는 쓰지 않는다(6.11 은 썼다). 앱은 main.cpp 에서 번들 PlugIns 로 플러그인 경로를
+#   고정하므로 없어도 돌지만, 판마다 번들 모양이 달라지지 않게 r47 과 같은 것을 둔다.
+if [ ! -f "$APPDIR/Contents/Resources/qt.conf" ]; then
+  printf '[Paths]\nPlugins = PlugIns\nImports = Resources/qml\nQmlImports = Resources/qml\n' > "$APPDIR/Contents/Resources/qt.conf"
+  echo "  qt.conf 를 두었습니다(macdeployqt 가 쓰지 않음)"
+fi
 
 echo "=== Fixing framework paths ==="
 for fwbin in "$FWDIR"/Qt*.framework/Versions/A/Qt*; do

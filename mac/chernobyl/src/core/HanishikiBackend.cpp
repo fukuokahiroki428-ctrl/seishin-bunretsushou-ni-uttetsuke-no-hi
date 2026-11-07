@@ -463,6 +463,7 @@ HanishikiBackend::~HanishikiBackend()
     // 内閣会 타이머 정리
     m_naikakukaiRunning = false;
     if (m_naikakukaiTimer) { m_naikakukaiTimer->stop(); }
+    if (m_naikakukaiGapTimer) { m_naikakukaiGapTimer->stop(); }
 
     // 로컬 AI(llama-server) 종료 — 수 GB 모델 든 고아 프로세스 방지
     if (m_llmProc && m_llmProc->state() != QProcess::NotRunning) {
@@ -712,9 +713,18 @@ void HanishikiBackend::startNaikakukai(const QString &configJson)
         m_naikakukaiTimer = new QTimer(this);
         connect(m_naikakukaiTimer, &QTimer::timeout, this, &HanishikiBackend::naikakukaiTick);
     }
+    if (!m_naikakukaiGapTimer) {
+        // ★ 정밀 타이머 — Qt 는 2초가 넘는 타이머를 '굵은 타이머' 로 잡아 ±5% 안에서 일찍 울린다. 90초면 4.5초 일찍 울려
+        //   쉬는 시간이 덜 찼다고 보고 넘어가, 다음 15초 틱까지 늦었다(실측 104.6초 — 시험).
+        m_naikakukaiGapTimer = new QTimer(this);
+        m_naikakukaiGapTimer->setSingleShot(true);
+        m_naikakukaiGapTimer->setTimerType(Qt::PreciseTimer);
+        connect(m_naikakukaiGapTimer, &QTimer::timeout, this, &HanishikiBackend::naikakukaiTick);
+    }
     // ★ 틱은 15초마다다. 주기는 '대상마다' 다시 보는 간격이다 — 예전엔 주기마다 전체에서 하나만 봐, 대상이 300개면
     //   같은 대상을 다시 보는 데 300 × 주기(30분이면 6일)가 걸렸다(장기 지원 점검). 화면의 '주기' 는 대상마다로 읽힌다.
-    //   같은 플랫폼의 다음 폴링은 앞 폴링이 끝난 순간부터 간격(트위터 90초)을 쉰 뒤 — 끝날 때 그 시각에 틱을 하나 더 건다.
+    //   같은 플랫폼의 다음 폴링은 앞 폴링이 끝난 순간부터 간격(트위터 90초)을 쉰 뒤 — 쉬는 시간이 다음 틱 전에 풀리면 그 시각에
+    //   정밀 타이머(m_naikakukaiGapTimer)로 다시 본다.
     //   (틱이 1분이면 90초 간격이 실제로는 2분이었다 — 검토)
     m_naikakukaiTimer->setInterval(15 * 1000);
     m_naikakukaiTimer->start();
@@ -768,6 +778,7 @@ void HanishikiBackend::stopNaikakukai()
     // 다음 tick 이 또 폴링을 띄우면 끝이 없다.
     m_naikakukaiRunning = false;
     if (m_naikakukaiTimer) m_naikakukaiTimer->stop();
+    if (m_naikakukaiGapTimer) m_naikakukaiGapTimer->stop();
     // 사용자가 끈 것 — 앱을 다시 켜도 이어 돌지 않게 기억한다(앱 종료는 이 길을 안 지난다).
     if (m_config && m_config->naikakukaiResume()) { m_config->setNaikakukaiResume(false); m_config->save(); }
 
@@ -3553,6 +3564,7 @@ void HanishikiBackend::naikakukaiTick()
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     const qint64 intervalMs = qint64(m_naikakukaiIntervalMin) * 60 * 1000;
     QHash<QString, int> pick;
+    QHash<QString, qint64> dueIn;   // 아직 때가 안 된 대상이 때가 되기까지 — 플랫폼마다 가장 이른 것(ms)
     QSet<QString> plats;
     for (int i = 0; i < m_naikakukaiWatches.size(); ++i) {
         const QJsonObject w = m_naikakukaiWatches.at(i).toObject();
@@ -3563,19 +3575,38 @@ void HanishikiBackend::naikakukaiTick()
             if (platformRunning(p) || (busy && !busy->isFinished())) m_naikakukaiPlatformLast[p] = now;
         }
         const qint64 last = m_naikakukaiLastPoll.value(naikakukaiWatchKey(w), 0);
-        if (last > 0 && now - last < intervalMs) continue;
+        if (last > 0 && now - last < intervalMs) {
+            const qint64 d = last + intervalMs - now;   // 이 대상이 때가 되기까지
+            if (!dueIn.contains(p) || d < dueIn.value(p)) dueIn[p] = d;
+            continue;
+        }
         if (!pick.contains(p)
             || last < m_naikakukaiLastPoll.value(naikakukaiWatchKey(m_naikakukaiWatches.at(pick.value(p)).toObject()), 0))
             pick[p] = i;
     }
+    qint64 nextDue = -1;   // 쉬는 시간만 남은 플랫폼 가운데 가장 먼저 풀리는 것까지(ms)
     for (auto it = pick.constBegin(); it != pick.constEnd(); ++it) {
         if (platformRunning(it.key())) continue;                                   // 끝나면 다음 틱에
         // ★ 깃발만 내려가고 앞선 워커가 아직 정리 중이면(중지 직후 · 서명 수리 중) 띄우지 않는다 — 새 워커가 쓰던 수집기를
         //   지워 버린다(startCollection 과 같은 가드 · 검토)
         if (QThread *prev = m_collectionThreads.value(it.key()); prev && !prev->isFinished()) continue;
-        if (now - m_naikakukaiPlatformLast.value(it.key(), 0) < naikakukaiMinGapMs(it.key())) continue;
+        const qint64 wait = m_naikakukaiPlatformLast.value(it.key(), 0) + naikakukaiMinGapMs(it.key()) - now;
+        if (wait > 0) { nextDue = (nextDue < 0) ? wait : qMin(nextDue, wait); continue; }
         naikakukaiPoll(m_naikakukaiWatches.at(it.value()).toObject());
     }
+    // 때가 된 대상이 아직 없는 플랫폼 — 쉬는 시간과 다음 대상의 때 가운데 늦은 쪽에 다시 본다. 이것을 빼면 쉬는 시간이 끝나기
+    //   직전 틱 구간에 때가 되는 대상은 다음 15초 틱까지 늦었다(검토).
+    for (auto it = dueIn.constBegin(); it != dueIn.constEnd(); ++it) {
+        if (pick.contains(it.key()) || platformRunning(it.key())) continue;
+        if (QThread *prev = m_collectionThreads.value(it.key()); prev && !prev->isFinished()) continue;
+        const qint64 rest = m_naikakukaiPlatformLast.value(it.key(), 0) + naikakukaiMinGapMs(it.key()) - now;
+        const qint64 cand = qMax(rest, it.value());
+        if (cand > 0) nextDue = (nextDue < 0) ? cand : qMin(nextDue, cand);
+    }
+    // 그 시각이 다음 틱 전이면 정밀 타이머로 그때 다시 본다 — 간격 · 주기가 틱(15초)에 걸려 늘지 않게.
+    //   타이머는 하나라 겹쳐 쌓이지 않는다(다시 걸면 가장 이른 시각으로 바뀐다).
+    if (nextDue > 0 && nextDue <= 16000 && m_naikakukaiGapTimer)
+        m_naikakukaiGapTimer->start(int(nextDue + 30));
 }
 
 void HanishikiBackend::naikakukaiPoll(const QJsonObject &watch)
@@ -3785,11 +3816,9 @@ void HanishikiBackend::naikakukaiPoll(const QJsonObject &watch)
             QThread *self = QThread::currentThread();
             QMetaObject::invokeMethod(this, [this, p, self]() {
                 if (m_collectionThreads.value(p) == self) m_collectionThreads.remove(p);
-                // 같은 플랫폼의 다음 차례는 지금(끝난 순간)부터 간격을 쉰 뒤 — 그 시각에 틱을 하나 더 건다(15초 틱을 기다리지 않게)
-                if (m_naikakukaiRunning && !Common::appQuitting()) {
+                // 같은 플랫폼의 다음 차례는 지금(끝난 순간)부터 간격을 쉰 뒤 — 쉬는 시간이 다음 틱 전에 풀리면 틱이 정밀 타이머를 건다
+                if (m_naikakukaiRunning && !Common::appQuitting())
                     m_naikakukaiPlatformLast[p] = QDateTime::currentMSecsSinceEpoch();
-                    QTimer::singleShot(int(naikakukaiMinGapMs(p) + 250), this, &HanishikiBackend::naikakukaiTick);
-                }
                 // ★ 폴링이 도는 동안 끝난 다른 일은 놓지 못했다(isAnyRunning 이 이 폴링을 셌다) — 여기서 다시 본다.
                 //   안 그러면 그 사이 붙든 화면(-dims)이 内閣会가 켜져 있는 내내 남아 덮개를 연 맥의 화면이 밤새 켜졌다(검토).
                 //   releaseAwake 는 지금 상태를 다시 보고 内閣会 대기면 맥만 붙든다.
@@ -5807,11 +5836,9 @@ void HanishikiBackend::startCollection(const QString &configJson)
             closeTerminalLog(trackKey);
             m_collectionThreads.remove(trackKey);
             // 内閣会가 켜져 있으면 같은 플랫폼의 쉬는 시간을 지금(끝난 순간)부터 센다 — 손으로 돌린 수집 뒤에도 곧바로 몰아치지
-            //   않게(15초 틱이 '돌고 있다' 고 본 마지막 순간이 아니라 끝난 순간부터 · 검토). 그 시각에 틱을 하나 더 건다.
-            if (m_naikakukaiRunning && platformIdle && !Common::appQuitting()) {
+            //   않게(15초 틱이 '돌고 있다' 고 본 마지막 순간이 아니라 끝난 순간부터 · 검토). 풀릴 때가 되면 틱이 정밀 타이머를 건다.
+            if (m_naikakukaiRunning && platformIdle && !Common::appQuitting())
                 m_naikakukaiPlatformLast[platformName] = QDateTime::currentMSecsSinceEpoch();
-                QTimer::singleShot(int(naikakukaiMinGapMs(platformName) + 250), this, &HanishikiBackend::naikakukaiTick);
-            }
             // ★ 이 트랙의 캡쳐용 Chrome 창 자동 닫기 — 수집/다운로드 끝났으니 더 안 씀.
             //   ★ take() 하면 안 된다 — 노드를 지우는 것이라 notifyCollectionEnded 에서
             //     erase 를 없앤 것과 같은 이유로 위험하다. getChromePtr() 이 이 맵 노드의

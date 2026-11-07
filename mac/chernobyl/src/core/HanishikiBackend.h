@@ -510,6 +510,7 @@ public:
     void naikakukaiTick();
     void naikakukaiPoll(const QJsonObject &watch);   // 감시 하나를 지금 돌린다(차례는 naikakukaiTick 이 고른다)
     QTimer *m_naikakukaiTimer = nullptr;
+    QTimer *m_naikakukaiGapTimer = nullptr;   // 쉬는 시간만 남은 플랫폼이 풀리는 그 시각에 한 번(정밀 · 하나만)
     QJsonArray m_naikakukaiWatches;
     QJsonObject m_naikakukaiOptions;   // 内閣会가 받을 때 쓰는 옵션 {플랫폼: {키: 값}} — 감시 대상의 options 가 앞선다
     int m_naikakukaiIntervalMin = 30;

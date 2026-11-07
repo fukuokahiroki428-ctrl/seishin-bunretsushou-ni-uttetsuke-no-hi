@@ -1805,7 +1805,7 @@ int TwitterCollector::downloadTweetMedia(const QJsonObject &tweet, const QString
                 // Twitter format: "Mon Mar 25 14:58:00 +0000 2024"
 QDateTime twDt = QDateTime::fromString(createdAt, "ddd MMM dd HH:mm:ss +0000 yyyy");
                 if (twDt.isValid()) {
-                    twDt.setTimeSpec(Qt::UTC);
+                    twDt.setTimeZone(QTimeZone::utc());   // 받은 칸은 UTC 다(+0000) — Qt 6.12 에서 setTimeSpec 은 낡은 것
                     orderPrefix = twDt.toUTC().addSecs(9 * 3600).toString("yyyyMMdd_HHmm_");
                 }
             }

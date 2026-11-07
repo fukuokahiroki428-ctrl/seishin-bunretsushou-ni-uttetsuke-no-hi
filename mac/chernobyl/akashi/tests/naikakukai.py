@@ -128,7 +128,8 @@ def main() -> int:
         started = [k for k in ("tgt", "tgt2") if k in seen_at]
         rest = (seen_at["tgt2"] - seen_at["tgt_end"]) if ("tgt2" in seen_at and "tgt_end" in seen_at) else None
         check("3판: 대상 둘 다 한 번 시작에 돈다(대상마다의 주기)", len(started) == 2, seen_at)
-        # 앞 폴링이 끝난 뒤 90초 — 끝난 그 시각에 틱을 하나 더 건다(로그를 1초마다 보므로 ±2초)
+        # 앞 폴링이 끝난 뒤 90초 — 쉬는 시간이 다음 틱 전에 풀리면 그 시각에 정밀 타이머로 다시 본다(로그를 1초마다 보므로 ±2초).
+        #   굵은 타이머였을 때는 4.5초까지 일찍 울려 다음 15초 틱까지 늦었다(실측 104.6초).
         check("3판: 같은 플랫폼은 앞 폴링이 끝난 뒤 90초를 쉬고 하나씩(1분 틱에 걸려 2분이 되지 않는다)",
               rest is not None and 86 <= rest <= 100, seen_at)
         txt = p.eval("(document.getElementById('naikakukai-log')||{}).innerText||''", retry=True) or ""
