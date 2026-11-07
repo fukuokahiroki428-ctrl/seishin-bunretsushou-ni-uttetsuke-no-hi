@@ -5,6 +5,7 @@
     python3 akashi/install.py --dry-run     # 무엇을 할지만
     python3 akashi/install.py               # 한 단계씩 묻고
     python3 akashi/install.py --to /경로/앱.app --open
+    python3 akashi/install.py --to ~/Applications/ハンイシキ.app   # 아직 없는 자리면 새로 놓는다(ditto)
 
 ★ 순서와 까닭
   1. 빌드본 서명 확인(codesign --verify --deep --strict) — 깨진 번들을 올리면 macOS 가 소리 없이 죽인다.
@@ -101,22 +102,30 @@ def main() -> int:
                   "".join("\n  " + paths.short(f) for f in found)))
             return 2
         dst = found[0].resolve()
-    if dst.suffix != ".app" or not paths.is_our_app(dst):
-        print("대상이 한이시키 번들이 아닙니다 — 덮지 않습니다: " + paths.short(dst))
+    # 새 자리에 처음 놓기 — 대상이 아예 없고(파일 · 폴더 · 깨진 링크 모두 없음) 부모 폴더가 있을 때만.
+    #   이미 무엇이 있으면 지금처럼 '우리 번들' 일 때만 덮는다(엉뚱한 폴더를 --delete 로 비우지 않게).
+    fresh = dst.suffix == ".app" and not dst.exists() and not dst.is_symlink() and dst.parent.is_dir()
+    if not fresh and (dst.suffix != ".app" or not paths.is_our_app(dst)):
+        print("대상이 한이시키 번들이 아닙니다 — 덮지 않습니다: " + paths.short(dst)
+              + ("" if dst.parent.is_dir() else " (부모 폴더가 없습니다)"))
         return 2
     if dst == src.resolve():
         print("빌드본과 설치본이 같은 자리입니다")
         return 2
 
     ok, why = codesign_ok(src)
-    pids = running_pids(dst)
+    pids = [] if fresh else running_pids(dst)
     print("빌드본  %s  %s  서명 %s" % (paths.short(src), paths.version_of(src), "맞음" if ok else "틀림 " + " ".join(why)))
-    print("설치본  %s  %s  %s" % (paths.short(dst), paths.version_of(dst), "켜져 있음(PID %s)" % pids if pids else "꺼져 있음"))
+    if fresh:
+        print("설치본  %s  (새로 놓음 — 아직 없음)" % paths.short(dst))
+    else:
+        print("설치본  %s  %s  %s" % (paths.short(dst), paths.version_of(dst), "켜져 있음(PID %s)" % pids if pids else "꺼져 있음"))
     if not ok:
         print("빌드본 서명이 틀려 올리지 않습니다 — ./build.sh 를 다시(또는 verify_or_resign.sh)")
         return 1
     plan = (["켜 둔 설치본을 묻고 곱게 닫기(osascript)"] if pids else []) + \
-           ["rsync -a --delete 빌드본/ 설치본/", "설치본 서명 확인"] + (["열기"] if a.open else [])
+           ["ditto 빌드본 설치본(새로 놓기)" if fresh else "rsync -a --delete 빌드본/ 설치본/", "설치본 서명 확인"] + \
+           (["열기"] if a.open else [])
     print("할 일: " + " → ".join(plan))
     if a.dry_run:
         print("--dry-run — 아무것도 하지 않았습니다")
@@ -130,18 +139,25 @@ def main() -> int:
             print("30초 안에 닫히지 않았습니다 — 강제로 끄지 않습니다. 앱에서 직접 닫은 뒤 다시")
             return 1
         print("닫았습니다")
-    elif not ask("설치본을 빌드본으로 덮을까요?", a.yes):
+    elif not ask("%s 빌드본으로 %s?" % (paths.short(dst), "새로 놓을까요" if fresh else "덮을까요"), a.yes):
         return 1
 
-    r = subprocess.run(["rsync", "-a", "--delete", str(src) + "/", str(dst) + "/"], capture_output=True, text=True)
-    if r.returncode != 0:
-        print("rsync 실패(%d): %s" % (r.returncode, (r.stderr or "").strip()[-300:]))
-        return 1
+    if fresh:
+        # ditto — 확장 속성 · 리소스 포크 · 링크를 그대로 옮겨 서명 봉인이 그대로 간다(Finder 복사와 같다)
+        r = subprocess.run(["ditto", str(src), str(dst)], capture_output=True, text=True)
+        if r.returncode != 0:
+            print("ditto 실패(%d): %s" % (r.returncode, (r.stderr or "").strip()[-300:]))
+            return 1
+    else:
+        r = subprocess.run(["rsync", "-a", "--delete", str(src) + "/", str(dst) + "/"], capture_output=True, text=True)
+        if r.returncode != 0:
+            print("rsync 실패(%d): %s" % (r.returncode, (r.stderr or "").strip()[-300:]))
+            return 1
     # ★ rsync 는 내용이 같은 파일과 폴더를 건너뛰어 예전 설치본의 'Finder 정보' 표시가 남는다
     #   (Finder 로 복사한 앱이면 프레임워크 폴더마다 붙어 있다). 그것만으로 엄격 검사가 실패한다.
     #   지울 수 있는 것은 지우고, iCloud 폴더라 지울 수 없는 앱 폴더의 표시만 남으면 '맞음' 으로 본다(lib/seal.py).
     state, why = seal_state(dst, strip=True)
-    print("덮음 — 설치본 %s · 서명 %s%s" % (paths.version_of(dst), describe(state),
+    print("%s — 설치본 %s · 서명 %s%s" % ("새로 놓음" if fresh else "덮음", paths.version_of(dst), describe(state),
                                        (" " + why) if state == "broken" else ""))
     if state == "broken":
         return 1
