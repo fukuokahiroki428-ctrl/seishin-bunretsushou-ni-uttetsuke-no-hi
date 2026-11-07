@@ -1,4 +1,5 @@
 #include "TerminalWindow.h"
+#include "core/Common.h"
 
 #include <QPlainTextEdit>
 #include <QVBoxLayout>
@@ -324,7 +325,7 @@ void TerminalWindow::begin(const QString &savePath)
     if (!m_view->document()->isEmpty()) {
         m_liveActive = false;
         m_view->appendPlainText(QString("──────── %1 새로 시작 ────────")
-                                    .arg(QDateTime::currentDateTime().toString("HH:mm:ss")));
+                                    .arg(Common::jstNow().toString("HH:mm:ss")));
     }
 }
 

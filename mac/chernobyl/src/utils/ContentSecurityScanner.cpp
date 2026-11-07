@@ -1,5 +1,6 @@
 #include "ContentSecurityScanner.h"
 #include "FileHelper.h"
+#include "core/Common.h"
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
@@ -193,7 +194,7 @@ bool ContentSecurityScanner::quarantineFile(const QString &filePath, const QStri
     QFile report(destPath + ".report.txt");
     if (report.open(QIODevice::WriteOnly)) {
         report.write(QString("Quarantined: %1\nOriginal: %2\nDate: %3\n")
-            .arg(filename, filePath, QDateTime::currentDateTime().toString(Qt::ISODate)).toUtf8());
+            .arg(filename, filePath, Common::jstNow().toString(Qt::ISODate)).toUtf8());
         report.close();
     }
 

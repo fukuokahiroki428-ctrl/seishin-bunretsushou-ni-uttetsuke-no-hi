@@ -29,6 +29,20 @@
 #include <functional>
 
 #include "utils/JsonShape.h"
+#include "utils/SelfRepair.h"
+
+// 화면의 '기간 지정' — 일본 시간의 하루 단위. 0 = 기간 안(또는 기간 판이 아님 · 시각을 모름), 1 = 더 새것, -1 = 더 옛것.
+//   좋아요 · 북마크처럼 날짜 순이 아닌 목록에서 쓴다(본 걸음은 processTweetBatch 가 거른다).
+static int tweetPeriodSide(const QJsonObject &config, const QString &createdAt)
+{
+    if (config["mode"].toString() != QLatin1String("period")) return 0;
+    const QDateTime t = Common::parseISODate(createdAt);
+    if (!t.isValid()) return 0;
+    const QString since = config["since"].toString(), until = config["until"].toString();
+    if (!until.isEmpty() && t > QDateTime::fromString(until + "T23:59:59+09:00", Qt::ISODate)) return 1;
+    if (!since.isEmpty() && t < QDateTime::fromString(since + "T00:00:00+09:00", Qt::ISODate)) return -1;
+    return 0;
+}
 
 // ── X 응답을 '이름 하나' 로 읽지 않는다 ─────────────────────────────────────
 //
@@ -386,6 +400,16 @@ bool TwitterCollector::startDaemon()
         if (proxy.isEmpty()) proxy = QStringLiteral("socks5://127.0.0.1:9");   // 닫힌 길
         initArgs["proxy"] = proxy;
     }
+    // ★ 브라우저 흉내는 앱의 다른 요청 · 캡처 Chrome 과 같은 것으로(설치된 Chrome 의 판). 데몬의 고정값은
+    //   '윈도우 Chrome 153' 이라, 같은 계정의 쿠키가 두 브라우저에서 오는 것처럼 보였다.
+    initArgs["user_agent"] = Common::browserUserAgent();
+    {
+        QJsonObject hints;
+        const auto ch = Common::browserClientHints();
+        for (const char *k : {"sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"})
+            if (ch.contains(QLatin1String(k))) hints[QLatin1String(k)] = ch.value(QLatin1String(k));
+        initArgs["client_hints"] = hints;
+    }
     // ★ 자격증명을 명령줄로 넘기지 않는다.
     //   macOS 에서 프로세스 명령줄은 ps 로 같은 기계의 아무 프로세스나 읽을 수 있다.
     //   예전에는 여기 JSON 에 auth_token·ct0 세션 자격증명 이 그대로 들어가 ps 출력에 찍혔다(실제로 확인했다).
@@ -441,6 +465,18 @@ bool TwitterCollector::startDaemon()
             m_daemonReady = true;
             bool tidOk = msg["tid"].toBool(false);
             m_backend->log(QString("Daemon: ready (%1)").arg(tidOk ? "TID active": "cached hashes only"), "success", "twitter");
+            // ★ X 서명을 만들지 못했으면 서명 부품부터 최신으로 맞춰 보고 데몬을 다시 띄운다(12시간에 한 번 —
+            //   다시 띄운 데몬이 또 실패해도 되풀이하지 않는다). X 가 계산법을 바꾸면 이것 없이는 수집이 401/404 로 멈춘다.
+            if (!tidOk && SelfRepair::xSigningRepairDue() && (!m_runFlag || m_runFlag->load())) {   // 중지된 판이면 하지 않는다
+                m_backend->log("X 서명을 만들지 못했습니다 — 서명 부품(xclienttransaction)을 최신으로 맞춰 봅니다...", "warning", "twitter");
+                QString why;
+                const bool healed = SelfRepair::repairXSigningIfDue(Common::bundledPythonPath(), &why);
+                if (!why.isEmpty()) m_backend->log("  " + why, healed ? "success" : "info", "twitter");
+                if (healed && (!m_runFlag || m_runFlag->load())) {   // 고치는 사이 중지됐으면 다시 띄우지 않는다(다음 판이 새 부품을 쓴다)
+                    stopDaemon();
+                    return startDaemon();
+                }
+            }
 
             // 시작 시 해시 자동 갱신 — 404 방지
             QJsonObject updateCmd;
@@ -1039,7 +1075,21 @@ QPair<QJsonArray, QString> TwitterCollector::searchTweets(const QString &query, 
         m_backend->log("SearchTimeline 404 — X 서명(x-client-transaction-id)을 만들지 못했습니다: "
                        + resp.value(QStringLiteral("_tid_reason")).toString().left(200)
                        + " (해시·토큰 문제 아님)", "error", "twitter");
-        return {QJsonArray(), QStringLiteral("ERROR")};
+        // 서명 부품을 최신으로 맞출 수 있으면 맞추고 데몬을 다시 띄워 한 번 더 묻는다(12시간에 한 번)
+        QString why;
+        const auto stillRunning = [this]() { return !m_runFlag || m_runFlag->load(); };
+        if (stillRunning() && SelfRepair::xSigningRepairDue()
+            && SelfRepair::repairXSigningIfDue(Common::bundledPythonPath(), &why) && stillRunning()) {
+            m_backend->log("  " + why + " — 데몬을 다시 띄우고 한 번 더 묻습니다", "success", "twitter");
+            stopDaemon();
+            if (startDaemon()) {
+                resp = sendDaemonCommand(cmd);
+                status = resp.contains("error") ? 0 : resp["status"].toInt();
+            }
+        } else if (!why.isEmpty()) {
+            m_backend->log("  " + why, "info", "twitter");
+        }
+        if (status != 200) return {QJsonArray(), QStringLiteral("ERROR")};
     }
     // 401/403/404: 토큰/해시 만료 → 데몬 재시작으로 자동 갱신 (최대 3회)
     if (status == 401 || status == 403 || status == 404) {
@@ -1960,7 +2010,7 @@ void TwitterCollector::downloadUserProfileMedia(const QJsonObject &tweet, const 
         QDir().mkpath(userProfileDir);
 
         // 날짜 접미사 (덮어쓰기 방지 — 프로필/배너 변경 이력 보존)
-        QString dateTag = QDateTime::currentDateTime().toString("yyyyMMdd");
+        QString dateTag = Common::jstNow().toString("yyyyMMdd");
 
         // Profile image (400x400) — profileImageUrl은 이미 위에서 추출됨
         QString profileImgUrl = profileImageUrl;
@@ -2083,7 +2133,7 @@ void TwitterCollector::saveExcel(const QString &saveDir, const QString &target, 
     writer.setColumnWidth(15, 8);
 
     QString filepath = saveDir + "/"+ target + "_"+ suffix + ".xlsx";
-    writer.save(filepath);
+    if (!writer.save(filepath)) return;      // 실패는 저장 쪽이 기록에 적었다 — '저장' 이라 적지 않는다
     FileHelper::setDownloadMeta(filepath, QStringLiteral(APP_NAME_DISPLAY) + QStringLiteral(" Twitter"));
     m_backend->log("저장: "+ filepath, "success", "twitter");
 }
@@ -2290,7 +2340,10 @@ int TwitterCollector::saveExcelStreaming(const QString &saveDir, const QString &
     writer.setColumnWidth(29, 8);   // user_verified
     writer.setColumnWidth(30, 40);  // user_profile_image
 
-    writer.save(filepath);
+    if (!writer.save(filepath)) {            // 실패는 저장 쪽이 기록에 적었다 — 새 줄 수 · '저장' 을 적지 않는다
+        m_excelSaveFailed = true;
+        return 0;
+    }
 
     FileHelper::setDownloadMeta(filepath, "(\"https://x.com\", \"Hanishiki\")");
 
@@ -2309,7 +2362,7 @@ void TwitterCollector::saveProfileExcel(const QString &saveDir, const QString &t
 {
     if (!m_profileBuffer || m_profileBuffer->count() == 0) return;
 
-    QString dateStr = QDateTime::currentDateTime().toString("yyyyMMdd");
+    QString dateStr = Common::jstNow().toString("yyyyMMdd");
 
     // ── 날짜별 프로필 Excel: _profile_20260323.xlsx (덮어쓰기 방지) ──
     ExcelWriter writer;
@@ -2357,7 +2410,7 @@ void TwitterCollector::saveProfileExcel(const QString &saveDir, const QString &t
 
     // 날짜 폴더 안에 Excel 저장
     QString filepath = profileDateDir + "/"+ target + "_profile.xlsx";
-    writer.save(filepath);
+    if (!writer.save(filepath)) return;
 
     FileHelper::setDownloadMeta(filepath, "(\"https://x.com\", \"Hanishiki\")");
 
@@ -2377,7 +2430,7 @@ void TwitterCollector::saveProfileExcel(const QString &saveDir, const QString &t
         if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {
             QTextStream ts(&f);
             ts << "━━━ @"<< sn << "━━━\n";
-            ts << "날짜: "<< QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n";
+            ts << "날짜: "<< Common::jstNow().toString("yyyy-MM-dd HH:mm:ss") << "\n";
             ts << "이름: "<< p["name"].toString() << "\n";
             ts << "설명: "<< p["description"].toString() << "\n";
             ts << "팔로워: "<< p["followers_count"].toInt() << "\n";
@@ -2839,7 +2892,7 @@ int TwitterCollector::captureTweet(const QJsonObject &tweet, const QString &capt
 
     QString tweetUrl = QString("https://x.com/%1/status/%2").arg(screenName, tweetId);
     QString createdAt = legacy["created_at"].toString();
-    QString filename = FileHelper::uploadOrderPrefix(Common::parseISODate(createdAt)) + tweetId;
+    QString filename = FileHelper::captureNameCompat(capturesDir, Common::parseISODate(createdAt), tweetId);
 
     QDir().mkpath(capturesDir);
 
@@ -3070,6 +3123,7 @@ void TwitterCollector::collectThreadsAuto(const QJsonObject &config, const QStri
 
 void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool> &isRunning)
 {
+    m_runFlag = &isRunning;
     // ★ 이 워커의 HttpClient 로 갈아 끼운다 — adoptHttpToCurrentThread 설명 참고.
     //   collect() 가 자기를 다시 부르는 경우(전체 모드의 하위 수집, 스레드 자동탐지)에도
     //   같은 워커라 그대로 맞다. m_http 는 downloadMedia() 에서만 꺼내 쓰므로 옛 포인터를
@@ -3136,6 +3190,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         // 새트윗 확인용 변수 초기화 (최상위 호출만)
         m_currentTarget = target;
         m_newestTweetId.clear();
+        m_excelSaveFailed = false;
         // ★ multi-target 큐: 직전 target에서 누적된 RL 추적 상태가 새 target/계정에 잘못 적용되지 않도록 reset
         m_accountRateLimitTime.clear();
         m_rateLimitHits = 0;
@@ -3309,7 +3364,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             writer.setColumnWidth(2, 60);
 
             // 통일된 프로필 폴더: profiles/target/{이름(@handle)}/
-            QString dateTag = QDate::currentDate().toString("yyyyMMdd");
+            QString dateTag = Common::jstToday().toString("yyyyMMdd");
             QString tDisplayName = userName;
             tDisplayName.remove(QRegularExpression("[/\\\\:*?\"<>|]"));
             tDisplayName = tDisplayName.trimmed().left(40);
@@ -3604,7 +3659,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 QString userProfileDir = profileDir + "/"+ type + "/"+ userDirName;
                 QDir().mkpath(userProfileDir);
 
-                QString dateTag = QDateTime::currentDateTime().toString("yyyyMMdd");
+                QString dateTag = Common::jstNow().toString("yyyyMMdd");
 
                 // Profile image (400x400) — 새 API 구조 대응
                 QString profUrl = pLeg["profile_image_url_https"].toString();
@@ -3755,7 +3810,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
         // 날짜별 프로필 폴더에 저장 (덮어쓰기 방지)
         {
-            QString pdateStr = QDate::currentDate().toString("yyyy-MM-dd");
+            QString pdateStr = Common::jstToday().toString("yyyy-MM-dd");
             QString pDateDir = userDir + "/profiles/"+ pdateStr;
             QDir().mkpath(pDateDir);
             QString pPath2 = pDateDir + "/"+ target + "_profile.xlsx";
@@ -3767,7 +3822,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
         // Download profile picture (날짜별 폴더)
         {
-            QString pdateStr = QDate::currentDate().toString("yyyy-MM-dd");
+            QString pdateStr = Common::jstToday().toString("yyyy-MM-dd");
             QString pDateDir = userDir + "/profiles/"+ pdateStr;
             QDir().mkpath(pDateDir);
             QString profileImgUrl = userLegacy["profile_image_url_https"].toString().replace("_normal", "_400x400");
@@ -3852,6 +3907,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 QString tweetId = legacy["id_str"].toString();
                 if (tweetId.isEmpty()) tweetId = tweet["rest_id"].toString();
                 if (collectedIds.contains(tweetId)) continue;
+                if (tweetPeriodSide(config, legacy["created_at"].toString()) != 0) continue;   // 기간 지정 — 그 글을 쓴 때로
                 if (kr.see(tweetId)) break;   // 받아 둔 것이 이어졌다 — 여기서 멈춘다(멈춘 그 글은 보지 않았다 — 실패 기록에서 빼지 않는다)
                 collectedIds.insert(tweetId);
 
@@ -3901,7 +3957,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         if (const int gaveUp = stopAfterKnown > 0 ? int((failedNow & prevFailed).size()) : 0)
             m_backend->log(QString("두 판 잇따라 미디어를 받지 못한 %1 %2개는 일찍 멈춤을 더는 막지 않습니다(지워졌거나 막힌 듯 — 4~5주마다 끝까지 볼 때 다시 받아 봅니다)").arg(QStringLiteral("좋아요")).arg(gaveUp), "info", "twitter");
         Common::putWalkFailures(userDir, walkKind, failedNow + (prevFailed - collectedIds));   // 이번 판에 보지 못한 것은 그대로 둔다
-        if (isRunning && (kr.stopped || !hasMore) && !capHit() && newFails.isEmpty())
+        if (isRunning && (kr.stopped || !hasMore) && !capHit() && newFails.isEmpty()
+            && config["mode"].toString() != QLatin1String("period"))   // 기간 판은 목록 전체를 본 것이 아니다
             Common::putCleanWalkMark(userDir, walkKind);
         m_backend->noteTrackFresh(kr.fresh);
         if (kr.stopped) m_backend->noteTrackEarlyStop(kr.stopped);
@@ -3975,6 +4032,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 QString tweetId = legacy["id_str"].toString();
                 if (tweetId.isEmpty()) tweetId = tweet["rest_id"].toString();
                 if (collectedIds.contains(tweetId)) continue;
+                if (tweetPeriodSide(config, legacy["created_at"].toString()) != 0) continue;   // 기간 지정 — 그 글을 쓴 때로
                 if (kr.see(tweetId)) break;   // 받아 둔 것이 이어졌다 — 여기서 멈춘다(멈춘 그 글은 보지 않았다 — 실패 기록에서 빼지 않는다)
                 collectedIds.insert(tweetId);
 
@@ -4023,7 +4081,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         if (const int gaveUp = stopAfterKnown > 0 ? int((failedNow & prevFailed).size()) : 0)
             m_backend->log(QString("두 판 잇따라 미디어를 받지 못한 %1 %2개는 일찍 멈춤을 더는 막지 않습니다(지워졌거나 막힌 듯 — 4~5주마다 끝까지 볼 때 다시 받아 봅니다)").arg(QStringLiteral("북마크")).arg(gaveUp), "info", "twitter");
         Common::putWalkFailures(userDir, walkKind, failedNow + (prevFailed - collectedIds));   // 이번 판에 보지 못한 것은 그대로 둔다
-        if (isRunning && (kr.stopped || !hasMore) && !capHit() && newFails.isEmpty())
+        if (isRunning && (kr.stopped || !hasMore) && !capHit() && newFails.isEmpty()
+            && config["mode"].toString() != QLatin1String("period"))   // 기간 판은 목록 전체를 본 것이 아니다
             Common::putCleanWalkMark(userDir, walkKind);
         m_backend->noteTrackFresh(kr.fresh);
         if (kr.stopped) m_backend->noteTrackEarlyStop(kr.stopped);
@@ -4072,8 +4131,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         if (mode == "period") {
             QString since = config["since"].toString();
             QString until = config["until"].toString();
-            if (!since.isEmpty()) sinceDate = QDateTime::fromString(since + "T00:00:00", Qt::ISODate);
-            if (!until.isEmpty()) untilDate = QDateTime::fromString(until + "T23:59:59", Qt::ISODate);
+            if (!since.isEmpty()) sinceDate = QDateTime::fromString(since + "T00:00:00+09:00", Qt::ISODate);
+            if (!until.isEmpty()) untilDate = QDateTime::fromString(until + "T23:59:59+09:00", Qt::ISODate);
             if (sinceDate.isValid() || untilDate.isValid())
                 m_backend->log(QString("기간: %1 ~ %2").arg(since, until), "info", "twitter");
         }
@@ -4524,8 +4583,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     if (mode == "period") {
         QString since = config["since"].toString();
         QString until = config["until"].toString();
-        if (!since.isEmpty()) sinceDate = QDateTime::fromString(since + "T00:00:00", Qt::ISODate);
-        if (!until.isEmpty()) untilDate = QDateTime::fromString(until + "T23:59:59", Qt::ISODate);
+        if (!since.isEmpty()) sinceDate = QDateTime::fromString(since + "T00:00:00+09:00", Qt::ISODate);
+        if (!until.isEmpty()) untilDate = QDateTime::fromString(until + "T23:59:59+09:00", Qt::ISODate);
         if (sinceDate.isValid() || untilDate.isValid())
             m_backend->log(QString("기간: %1 ~ %2").arg(since, until), "info", "twitter");
     }
@@ -4550,8 +4609,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         // mode 무관하게 since/until 을 읽음 (기간 좁히기)
         const QString nSince = config["since"].toString();
         const QString nUntil = config["until"].toString();
-        if (!nSince.isEmpty()) sinceDate = QDateTime::fromString(nSince + "T00:00:00", Qt::ISODate);
-        if (!nUntil.isEmpty()) untilDate = QDateTime::fromString(nUntil + "T23:59:59", Qt::ISODate);
+        if (!nSince.isEmpty()) sinceDate = QDateTime::fromString(nSince + "T00:00:00+09:00", Qt::ISODate);
+        if (!nUntil.isEmpty()) untilDate = QDateTime::fromString(nUntil + "T23:59:59+09:00", Qt::ISODate);
         m_backend->log("🔎 포스트 좁히기 (키워드/기간 검색)...", "info", "twitter");
     } else {
         m_backend->log("1. 트윗 수집 (아니포 검색)...", "info", "twitter");
@@ -4753,6 +4812,17 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     //   기존 파일에 이미 newestDate가 있으면 그보다 새로운 것만 갱신 (newer wins)
     //   기존 oldestDate가 있으면 그보다 오래된 것만 갱신 (older wins)
     auto saveProgress = [&](const QString &oldestDate) {
+        // ★ 기간 판은 표시를 옮기지 않는다 — 기간만 본 판의 가장 옛 날짜를 적으면(옛것이 이긴다) 다음 '과거에서 이어서' 가
+        //   지난 경계와 그 기간 사이를 통째로 건너뛰었다(검토 — tweets_api 기간 판도 이제 같은 파일을 쓴다). 가장 새 쪽도 같다.
+        if (mode == QLatin1String("period")) {
+            m_backend->log("기간 판이라 이어받기 표시는 그대로 둡니다(기간 밖은 보지 않았습니다)", "info", "twitter");
+            return;
+        }
+        // ★ 엑셀을 저장하지 못한 판은 표시를 옮기지 않는다 — 옮기면 다음 판이 '지난번 이후' 만 보아 이번 판의 글이 엑셀에서 영영 빠진다
+        if (m_excelSaveFailed) {
+            m_backend->log("이어받기 표시를 그대로 둡니다 — 이번 판에 엑셀을 저장하지 못해, 다음 판이 이 구간을 다시 받습니다", "warning", "twitter");
+            return;
+        }
         QJsonObject prev;
         if (QFile::exists(progressPath)) {
             QFile pfr(progressPath);
@@ -4799,7 +4869,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         prog["newestId"]   = outNewestId;
         prog["tweetCount"] = tweetCount;
         prog["mediaCount"] = mediaCount;
-        prog["timestamp"]  = QDateTime::currentDateTime().toString(Qt::ISODate);
+        prog["timestamp"]  = Common::jstNow().toString(Qt::ISODate);
         QFile pf(progressPath);
         if (pf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             pf.write(QJsonDocument(prog).toJson(QJsonDocument::Compact));
@@ -4811,7 +4881,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
     // 타겟 프로필 사진/배너 저장 — 통일된 구조: profiles/target/{이름(@handle)}/
     {
-        QString dateTag = QDate::currentDate().toString("yyyyMMdd");
+        QString dateTag = Common::jstToday().toString("yyyyMMdd");
         QString tDispName = userName;
         tDispName.remove(QRegularExpression("[/\\\\:*?\"<>|]"));
         tDispName = tDispName.trimmed().left(40);
@@ -5257,7 +5327,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                   << QString::number(l["statuses_count"].toInt())
                   << (u["is_blue_verified"].toBool() ? "True": "False")
                   << l["description"].toString()
-                  << l["created_at"].toString()
+                  << Common::formatDateJapanese(l["created_at"].toString())
                   << l["location"].toString()
                   << l["url"].toString()
                   << l["profile_image_url_https"].toString();
@@ -5381,10 +5451,12 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     //   복잡한 아니포 백트래킹 없이, 좁힌 쿼리로 커서 페이지네이션만 한다.
     if (isRunning && type == "narrow") {
         const QString kw = config["narrowQuery"].toString().trimmed();
+        // ★ 기간은 일본 시간의 하루인데 X 검색의 since · until 은 UTC 날짜이고 until 은 그 날을 뺀다 — 앞뒤로 하루씩 넓혀 묻고 글마다 거른다
+        //   (예전엔 끝 날의 글을 검색이 돌려주지 않았고, 시작 날의 일본 시간 아침 9시 전 글도 빠졌다)
         QString q = QString("from:%1").arg(target);
         if (!kw.isEmpty()) q += " " + kw;
-        if (sinceDate.isValid()) q += QString(" since:%1").arg(sinceDate.toString("yyyy-MM-dd"));
-        if (untilDate.isValid()) q += QString(" until:%1").arg(untilDate.toString("yyyy-MM-dd"));
+        if (sinceDate.isValid()) q += QString(" since:%1").arg(sinceDate.addDays(-1).toString("yyyy-MM-dd"));
+        if (untilDate.isValid()) q += QString(" until:%1").arg(untilDate.addDays(1).toString("yyyy-MM-dd"));
         m_backend->log(QString("🔎 포스트 좁히기 검색: %1").arg(q), "info", "twitter");
         const int before = collectedIds.size();
         QString cur;
@@ -5413,7 +5485,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         // 미디어는 processTweetBatch 내부 downloadTweetMedia 로 트윗별 자동 다운로드됨.
     }
 
-    if (isRunning && (type == "tweets"|| type == "media"|| type == "all"))
+    if (isRunning && (type == "tweets"|| type == "media"|| type == "all" || (type == "tweets_api" && mode == "period")))
     {
         // Resume support
         int phase1Start = tweetCount;
@@ -5436,8 +5508,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             // period 모드: since~until 사이만 검색
             // ★ BUG FIX: since:/until: 앞 공백 누락 → "usersince:..."로 검색돼서 결과 0개
             QString currentQuery = QString("from:%1").arg(target);
-            if (sinceDate.isValid()) currentQuery += QString(" since:%1").arg(sinceDate.toString("yyyy-MM-dd"));
-            if (untilDate.isValid()) currentQuery += QString(" until:%1").arg(untilDate.toString("yyyy-MM-dd"));
+            if (sinceDate.isValid()) currentQuery += QString(" since:%1").arg(sinceDate.addDays(-1).toString("yyyy-MM-dd"));
+            if (untilDate.isValid()) currentQuery += QString(" until:%1").arg(untilDate.addDays(1).toString("yyyy-MM-dd"));
 
             m_backend->log(QString("Phase 1: 기간 검색 (%1)").arg(currentQuery), "info", "twitter");
 
@@ -5752,6 +5824,26 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     // Phase 3: 답글 별도 검색 (filter:replies)
     // type="replies"또는 type="all"에서만 실행
     // ══════════════════════════════════════════════════════════════
+    // ★ 기간 지정 — 예전엔 이 단계가 기간 판에서 통째로 빠져, '답글' 을 기간으로 받으면 0개였다(검토).
+    //   기간 검색처럼 앞뒤로 하루씩 넓혀 묻고(X 의 날짜는 UTC, until 은 그 날을 뺀다) 글마다 일본 시간의 하루로 거른다.
+    if (isRunning && !capReached() && (type == "replies"|| type == "all") && mode == "period") {
+        QString q = QString("from:%1 filter:replies").arg(target);
+        if (sinceDate.isValid()) q += QString(" since:%1").arg(sinceDate.addDays(-1).toString("yyyy-MM-dd"));
+        if (untilDate.isValid()) q += QString(" until:%1").arg(untilDate.addDays(1).toString("yyyy-MM-dd"));
+        m_backend->log(QString("Phase 3: 답글 기간 검색 (%1)").arg(q), "info", "twitter");
+        QString rc;
+        while (isRunning && !capReached()) {
+            auto [tweets, nextCursor] = searchTweets(q, rc);
+            if (nextCursor == "RATE_LIMITED") { handleRateLimit(accounts, currentAccountIdx, isRunning); continue; }
+            if (nextCursor == "ERROR") { if (searchErrorGiveUp()) break; continue; }
+            searchErrStreak = 0;
+            if (tweets.isEmpty()) break;
+            if (processTweetBatch(tweets)) break;     // 기간의 시작보다 옛 답글에 닿았다(새 것부터 온다)
+            if (nextCursor.isEmpty() || nextCursor == rc) break;
+            rc = nextCursor;
+            for (int w = qMax(2, (int)m_delay); w > 0 && isRunning; --w) QThread::sleep(1);
+        }
+    }
     if (isRunning && !capReached() && (type == "replies"|| type == "all") && mode != "period") {
         m_backend->log("Phase 3: 답글 검색 (filter:replies) + 주간 백트래킹...", "info", "twitter");
         int replyNew = 0;
@@ -6045,6 +6137,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
 void TwitterCollector::checkNewPosts(const QJsonObject &config, const std::atomic<bool> &isRunning)
 {
+    m_runFlag = &isRunning;
     // ★ 여기가 문제의 자리다 — 이 함수는 collect() 를 돌린 워커와 '다른' 워커에서 온다
     //   (HanishikiBackend::checkNewPosts 의 QThread::create). 앞서 만든 것을 그대로 쓰면
     //   죽은 스레드의 NAM 이다. 새로 만들었으니 중지 플래그도 다시 단다

@@ -150,7 +150,7 @@ void Config::load(const QString &filePath)
     //   → 깨진 경우도 복구를 돌린다. 그리고 깨진 원본을 지우지 않고 옆으로 치운다.
     if (QFile::exists(m_configPath) && QFileInfo(m_configPath).size() > 0) {
         const QString aside = m_configPath + QStringLiteral(".damaged_%1")
-                                                 .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
+                                                 .arg(Common::jstNow().toString("yyyyMMdd_HHmmss"));
         if (QFile::rename(m_configPath, aside))
             qWarning() << "[config] 설정이 깨져 있어 옆으로 옮겼습니다(지우지 않았습니다):" << aside;
         else

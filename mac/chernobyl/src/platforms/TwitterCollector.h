@@ -157,6 +157,10 @@ private:
 
     // 새트윗 확인용
     QString m_newestTweetId;
+    // 이번 판에 엑셀 저장이 실패했다 — 이어받기 표시를 앞으로 옮기지 않는다(다음 판이 그 구간을 다시 받아 엑셀에 채우게)
+    bool m_excelSaveFailed = false;
+    // 지금 판의 중지 깃발(백엔드의 깃발 맵에 산다 — 지워지지 않는다). 데몬을 띄우는 곳에서 중지를 보려고
+    const std::atomic<bool> *m_runFlag = nullptr;
     bool m_lastPageShaped = false;       // 마지막 타임라인 쪽(UserTweets · 좋아요 · 북마크)이 제 모양이었나(instructions 있고 errors 없음) —
                                          //   트윗 없는 쪽이 '목록 끝' 인지 '막힌 응답' 인지 가른다
     int m_mediaFailures = 0;             // 받지 못한 미디어 수 — 좋아요 · 북마크 · 리포스트 걸음의 '끊김 없이 다 봄' 판정

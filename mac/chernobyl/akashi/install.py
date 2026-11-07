@@ -41,7 +41,13 @@ def ask(q: str, yes: bool) -> bool:
 
 def codesign_ok(app: Path) -> tuple:
     r = subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], capture_output=True, text=True)
-    return r.returncode == 0, (r.stderr or r.stdout).strip().splitlines()[-1:] if r.returncode else []
+    if r.returncode:
+        return False, (r.stderr or r.stdout).strip().splitlines()[-1:]
+    # ★ ad-hoc 빌드를 올리면 앱의 신원이 바뀌어 macOS 가 권한(TCC)을 초기화한다(인증서 만료 · 없음)
+    d = subprocess.run(["codesign", "-dvv", str(app)], capture_output=True, text=True)
+    if "Signature=adhoc" in (d.stderr or "") + (d.stdout or ""):
+        return False, ["ad-hoc 서명 — 인증서를 갱신하고 다시 빌드하십시오"]
+    return True, []
 
 
 def running_pids(app: Path) -> list:

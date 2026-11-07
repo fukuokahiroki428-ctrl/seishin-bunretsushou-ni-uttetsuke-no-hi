@@ -26,7 +26,9 @@ void setFileTimes(const QString &filePath, const QString &timestampStr);
 QDateTime parseISODate(const QString &dateStr);
 
 // EXIF 메타데이터 기록 (exiftool 사용, 미설치 시 자동 스킵)
-void addExifMetadata(const QString &imagePath, const QString &artist,
+//   1 = 적었다, 0 = 해당 없음(그림 · 영상이 아님 · exiftool 이 쓰지 못하는 형식), -1 = 실패(시간 초과 · exiftool 오류),
+//   -2 = exiftool 을 띄우지 못했다(번들이 깨짐 등 — 고쳐진 뒤 다시 적어야 하는 것)
+int addExifMetadata(const QString &imagePath, const QString &artist,
                      const QString &description, const QString &copyright,
                      const QString &comment, const QString &dateStr);
 
@@ -87,6 +89,13 @@ QHash<QString, QString> hotfixTools();
 
 // ★ macOS: 앱 번들 경로(.../Chernobyl.app). 번들이 아니면 빈 문자열.
 QString appBundlePath();
+// 이 빌드의 판 번호(번들의 CFBundleVersion, 예: 4.0.47 — 끝자리가 맥 릴리스 rN). 번들이 아니면 PREDORMITION_VERSION_STR
+QString appBuildVersion();
+// AI 자가수리가 고친 사본(script_overrides)은 그때의 번들 원본을 고친 것이다. 앱이 새 판으로 바뀌어 원본이 달라졌으면 쓰지 않는다
+bool scriptOverrideStillValid(const QString &overridePath, const QString &bundledPath);
+QString fileSha256Hex(const QString &path);
+// 켤 때 — 원본이 바뀐 옛 사본은 옆으로 비킨다(<이름>.stale, 지우지 않는다). PYTHONPATH 로 import 되는 것까지 막는다
+void retireStaleScriptOverrides();
 // 캡처 Chrome 디버그 포트의 기준(순차 캡처 = 이 값, 병렬 트랙 = 이 값 + 1 부터). 기본 9223.
 //   HANISHIKI_CAPTURE_PORT 로 바꾼다 — 공작함의 격리 사본은 19223 부터 써서, 같은 맥에서 돌고 있는
 //   사용자 앱의 Chrome 과 포트가 겹치지 않게 한다(겹치면 서로를 '좀비' 로 보고 끈다).
@@ -181,6 +190,21 @@ QString bundledResourcesDir();
 //   플랫폼이 계정을 묶어 정지시키는 근거가 된다. 몇 년 지난 UA 는 더 눈에 띈다.
 //   → 설치된 브라우저에서 실제 판을 읽어 만든다. 한 번 만들고 캐시한다.
 QString browserUserAgent();
+
+// ★ 이 앱의 날짜는 일본 시간 기준이다 — 파일 · 폴더 이름, 엑셀, EXIF 에 적는 날짜는 맥의 시간대와 무관하게 JST 로 적는다.
+// 파이썬 교체가 한가운데서 끊겼으면(앱이 꺼짐 · 모듈 설치 중) 옛 환경을 제자리로 — 앱 시작 · 업그레이드 · 복구 앞에서 부른다
+void recoverInterruptedPythonSwap();
+// 이 판의 파이썬(bundle_python.sh · requirements.txt 의 고정과 같게 고친다)
+constexpr int kBundledPythonMajor = 3;
+constexpr int kBundledPythonMinor = 14;
+// python-build-standalone 릴리스 JSON 에서 그 major.minor 의 가장 높은 안정판을 고른다(베타 · rc 제외). 없으면 false
+bool pickPythonRelease(const QString &releaseJson, const QString &arch, int wantMajor, int wantMinor,
+                       QString *url, QString *version);
+// 글 시각 문자열 → 일본 시간으로 적은 글. 비었거나 읽지 못하면 받은 그대로
+QString jstText(const QString &raw, const QString &format);
+QDateTime jstTime(const QDateTime &dt);   // 같은 순간을 JST 로 표시하는 값(.toString · .date() 가 일본 시간)
+QDateTime jstNow();
+QDate jstToday();
 // ★ UA 와 짝이 맞는 클라이언트 힌트(sec-ch-ua 계열). UA 만 Chrome 이라 적고 이것들이 없으면
 //   Meta 쪽이 XHR 로 보지 않아 JSON 대신 HTML 한 판을 준다(인스타 429 실측 2026-09-20).
 QMap<QString, QString> browserClientHints();

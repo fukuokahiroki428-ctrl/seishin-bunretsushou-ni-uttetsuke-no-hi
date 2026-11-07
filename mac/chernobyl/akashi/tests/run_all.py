@@ -42,8 +42,8 @@ sys.path.insert(0, str(HERE))
 import _common as C  # noqa: E402
 from lib import paths  # noqa: E402
 
-TESTS = ["unit_common", "capture_cleanup", "quit_during_hotfix", "viewer", "resume", "youtube_layout", "crawl", "crawl_record", "organize", "targets", "early_stop", "naikakukai", "proxy_exit", "singlefile"]
-LABEL = {"unit_common": "공통 단위", "capture_cleanup": "캡처 정리", "quit_during_hotfix": "끄기", "viewer": "옛 트위터", "resume": "이어받기", "youtube_layout": "저장 방식", "crawl": "크롤러", "crawl_record": "끝까지 기록", "organize": "정리하기", "targets": "대상 목록", "early_stop": "일찍 멈춤", "naikakukai": "内閣会 옵션", "proxy_exit": "프록시 출구", "singlefile": "SingleFile"}
+TESTS = ["unit_common", "capture_cleanup", "quit_during_hotfix", "viewer", "resume", "youtube_layout", "crawl", "crawl_record", "organize", "targets", "early_stop", "naikakukai", "proxy_exit", "jst_time", "python_swap", "singlefile"]
+LABEL = {"unit_common": "공통 단위", "capture_cleanup": "캡처 정리", "quit_during_hotfix": "끄기", "viewer": "옛 트위터", "resume": "이어받기", "youtube_layout": "저장 방식", "crawl": "크롤러", "crawl_record": "끝까지 기록", "organize": "정리하기", "targets": "대상 목록", "early_stop": "일찍 멈춤", "naikakukai": "内閣会 옵션", "proxy_exit": "프록시 출구", "jst_time": "일본 시간", "python_swap": "파이썬 교체", "singlefile": "SingleFile"}
 
 
 def run(name: str, verbose: bool, env: dict, timeout: int = 1200):

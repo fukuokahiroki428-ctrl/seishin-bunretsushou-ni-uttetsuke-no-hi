@@ -25,6 +25,84 @@ import os, sys, json, time, asyncio, re, subprocess, shutil
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+
+def _jst_now():
+    """파일 · 폴더에 적는 날짜는 일본 시간 — 컴퓨터의 시간대와 무관하게(앱의 다른 수집기와 같다)"""
+    return datetime.now(timezone(timedelta(hours=9)))
+
+
+class PeriodWindow:
+    """화면의 '기간 지정' — 일본 시간의 하루 단위(시작 날 00:00 ~ 끝 날 23:59:59.999)로 거른다.
+    ★ 예전엔 앱이 기간을 넘기지 않아(그리고 여기서 읽지도 않아) 기간을 골라도 전부 받았다(검토).
+    새 글부터 오는 목록(ordered)이면 시작 날보다 옛 글이 셋 이어질 때 멈춘다 — 맨 위 고정 글이 옛것일 수 있다.
+    좋아요처럼 날짜 순이 아닌 목록은 거르기만 한다."""
+
+    def __init__(self, args, ordered=True):
+        jst = timezone(timedelta(hours=9))
+
+        def day(val, end):
+            val = str(val or "").strip()[:10]
+            if not val:
+                return None
+            try:
+                d0 = datetime.strptime(val, "%Y-%m-%d").replace(tzinfo=jst)
+            except Exception:
+                return None
+            return d0 + timedelta(days=1) - timedelta(microseconds=1) if end else d0
+
+        self.since = day(args.get("since"), False)
+        self.until = day(args.get("until"), True)
+        self.on = args.get("mode") == "period" and (self.since is not None or self.until is not None)
+        self.ordered = ordered
+        self.older = 0
+        self.stopped = False
+
+    @staticmethod
+    def when(post, item=None):
+        """글이 목록에 오른 때 — 리포스트면 리포스트한 때, 아니면 쓴 때. 못 읽으면 None."""
+        val = ''
+        reason = getattr(item, 'reason', None) if item is not None else None
+        if reason is not None:
+            val = getattr(reason, 'indexed_at', '') or getattr(reason, 'created_at', '')
+        if not val:
+            rec = getattr(post, 'record', None)
+            val = (getattr(rec, 'created_at', '') if rec is not None else '') or getattr(post, 'indexed_at', '')
+        try:
+            dt = datetime.fromisoformat(str(val).replace('Z', '+00:00'))
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+
+    def keep(self, post, item=None):
+        """이 글을 받을지. 기간 밖이면 False — 멈출 때가 됐는지는 self.stopped."""
+        if not self.on:
+            return True
+        t = self.when(post, item)
+        if t is None:
+            return True
+        if self.until is not None and t > self.until:
+            return False
+        if self.since is not None and t < self.since:
+            if self.ordered:
+                self.older += 1
+                if self.older >= 3:
+                    self.stopped = True
+            return False
+        self.older = 0
+        return True
+
+
+def _jst_text(val):
+    """AT 프로토콜의 시각(UTC) → 엑셀에 적는 일본 시간. 비었거나 읽지 못하면 받은 그대로."""
+    if not val:
+        return ''
+    try:
+        dt = datetime.fromisoformat(str(val).replace('Z', '+00:00'))
+        return dt.astimezone(timezone(timedelta(hours=9))).strftime('%Y/%m/%d %H:%M:%S')
+    except Exception:
+        return str(val)
+
+
 def log(msg):
     print(json.dumps({"log": str(msg)}), flush=True)
 
@@ -712,14 +790,9 @@ def main():
                         dt = datetime.strptime(post_data[4], '%Y/%m/%d %H:%M:%S')
                         dt = dt.replace(tzinfo=timezone(timedelta(hours=9)))
                         ts = dt.timestamp()
+                        # 수정 날짜 · 맥의 만든 날짜를 함께 맞춘다 — 맥은 수정 날짜를 만든 날짜보다 앞으로 놓으면 만든 날짜도 따라온다(실측).
+                        #   예전의 SetFile 은 일본 시간 글자를 그 맥의 현지 시각으로 읽어 다른 시간대에서 틀렸고, 파일마다 프로세스를 띄웠다.
                         os.utime(filepath, (ts, ts))
-                        # macOS creation date
-                        mac_date = dt.strftime('%m/%d/%Y %H:%M:%S')
-                        # ★ os.system + f-string 금지 — filepath 에 " $ ` \ 가 있으면 셸 주입.
-                        #   argv 로 직접 실행(셸 미경유). SetFile 은 legacy 라 없으면 조용히 스킵.
-                        if shutil.which('SetFile'):
-                            subprocess.run(['SetFile', '-d', mac_date, filepath],
-                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         pass
                 # macOS xattr: kMDItemWhereFroms (소스 URL 메타데이터)
@@ -1040,7 +1113,7 @@ def main():
                             return  # Same file
                         # Archive old version
                         from datetime import datetime
-                        date_str = datetime.now().strftime("%Y-%m-%d")
+                        date_str = _jst_now().strftime("%Y-%m-%d")
                         archive_dir = os.path.join(os.path.dirname(path), "archive", date_str)
                         os.makedirs(archive_dir, exist_ok=True)
                         os.replace(path, os.path.join(archive_dir, os.path.basename(path)))   # 같은 날 두 번 바뀌어도(윈도우의 rename 은 있으면 실패해 새 그림을 버렸다)
@@ -1052,7 +1125,7 @@ def main():
                     if os.path.exists(tmp): os.remove(tmp)
             # Date-based profile directory
             from datetime import datetime as _dt_main
-            _main_pdir = os.path.join(user_dir, "profiles", _dt_main.now().strftime("%Y-%m-%d"))
+            _main_pdir = os.path.join(user_dir, "profiles", _jst_now().strftime("%Y-%m-%d"))
             os.makedirs(_main_pdir, exist_ok=True)
             if avatar_url:
                 _ap = os.path.join(_main_pdir, f"{short_handle}_avatar.jpg")
@@ -1074,6 +1147,9 @@ def main():
         dl_failed.clear()
         prev_failed = take_walk_failures(excel_dir, walk_kind)
         sak = max(0, int(args.get("stop_after_known", 0) or 0))
+        pw = PeriodWindow(args)
+        if pw.on:
+            log(f"기간: {args.get('since') or '처음'} ~ {args.get('until') or '끝'} (일본 시간의 하루 단위)")
         def hit():   # 최대 수 — 일찍 멈춤을 쓰면 새로 받은 것만 센다(받아 둔 것까지 세면 늘 최대 수에서 끊겨 표시가 영영 안 적혔다 — 검토)
             return cap_limit > 0 and ((ks.new if sak > 0 else len(all_data)) >= cap_limit)
 
@@ -1131,6 +1207,10 @@ def main():
                 # 리포스트를 빼기로 했으면 여기서 건너뛴다(서버 필터로는 못 뺀다).
                 if is_repost and not inc_reposts:
                     continue
+                if not pw.keep(post, item):
+                    if pw.stopped:
+                        break
+                    continue
 
                 data = process_post(post)
                 if not data:
@@ -1180,6 +1260,9 @@ def main():
 
             page += 1
             progress(len(all_data), total_media, fresh=ks.new, newest=ks.newest)
+            if pw.stopped:
+                log("기간의 시작 날보다 옛 글에 닿아 여기서 멈춥니다")
+                break
             if ks.stopped:
                 log(f"이미 받은 글이 {ks.stopped}개 이어져 여기서 멈춥니다 — 새 글 {ks.new}개")
                 clean = True
@@ -1216,7 +1299,7 @@ def main():
         log(f"Complete! Posts: {len(all_data)}, Media: {total_media}")
         progress(len(all_data), total_media, "완료", fresh=ks.new, newest=ks.newest)
         dl_blocked = finish_failures(excel_dir, walk_kind, prev_failed, ks, sak)
-        if clean and not api_error and not capped and not hit() and not dl_blocked:
+        if clean and not api_error and not capped and not hit() and not dl_blocked and not pw.on:   # 기간 판은 목록 전체를 본 것이 아니다
             put_walk_mark(excel_dir, walk_kind)
         res = {"status": "ok", "posts": len(all_data), "media": total_media, **ks.fields()}
         if api_error:
@@ -1261,6 +1344,9 @@ def main():
         dl_failed.clear()
         prev_failed = take_walk_failures(excel_dir, walk_kind)
         sak = max(0, int(args.get("stop_after_known", 0) or 0))
+        pw = PeriodWindow(args, ordered=False)   # 좋아한 순서라 글의 날짜 순이 아니다 — 거르기만 한다
+        if pw.on:
+            log(f"기간: {args.get('since') or '처음'} ~ {args.get('until') or '끝'} (일본 시간의 하루 단위)")
         def hit():   # 최대 수 — 일찍 멈춤을 쓰면 새로 받은 것만 센다(받아 둔 것까지 세면 늘 최대 수에서 끊겨 표시가 영영 안 적혔다 — 검토)
             return cap_limit > 0 and ((ks.new if sak > 0 else len(all_data)) >= cap_limit)
 
@@ -1299,6 +1385,8 @@ def main():
                 if hit(): break
                 post = pick(item, ['post', 'value', 'record'])
                 if not post:
+                    continue
+                if not pw.keep(post):   # 그 글을 쓴 때로
                     continue
                 data = process_post(post)
                 if data:
@@ -1339,7 +1427,7 @@ def main():
             log(f"Excel saved: {len(all_data)} likes")
 
         dl_blocked = finish_failures(excel_dir, walk_kind, prev_failed, ks, sak)
-        if clean and not api_error and not hit() and not dl_blocked:
+        if clean and not api_error and not hit() and not dl_blocked and not pw.on:   # 기간 판은 목록 전체를 본 것이 아니다
             put_walk_mark(excel_dir, walk_kind)
         res = {"status": "ok", "count": len(all_data), "media": total_media, **ks.fields()}
         res.pop("newest", None)   # 남의 글 — 그 계정이 얼마나 자주 쓰는지와 상관없다
@@ -1357,7 +1445,7 @@ def main():
         profile_dir = os.path.join(user_dir, "profiles")
         excel_dir = os.path.join(user_dir, "excel")
         from datetime import datetime as _dt
-        _date_dir = os.path.join(profile_dir, _dt.now().strftime("%Y-%m-%d"))
+        _date_dir = os.path.join(profile_dir, _jst_now().strftime("%Y-%m-%d"))
         os.makedirs(_date_dir, exist_ok=True)
         os.makedirs(excel_dir, exist_ok=True)
 
@@ -1440,7 +1528,7 @@ def main():
         profile_dir = os.path.join(user_dir, "profiles")
         excel_dir = os.path.join(user_dir, "excel")
         from datetime import datetime as _dt
-        _date_dir = os.path.join(profile_dir, _dt.now().strftime("%Y-%m-%d"))
+        _date_dir = os.path.join(profile_dir, _jst_now().strftime("%Y-%m-%d"))
         os.makedirs(_date_dir, exist_ok=True)
         os.makedirs(excel_dir, exist_ok=True)
 
@@ -1775,7 +1863,7 @@ def main():
             avatar_url = getattr(profile, 'avatar', '')
             banner_url = getattr(profile, 'banner', '')
             from datetime import datetime as _dt_p
-            _pdir = os.path.join(user_dir, "profiles", _dt_p.now().strftime("%Y-%m-%d"))
+            _pdir = os.path.join(user_dir, "profiles", _jst_now().strftime("%Y-%m-%d"))
             os.makedirs(_pdir, exist_ok=True)
             if avatar_url:
                 _ap = os.path.join(_pdir, f"{short_handle}_avatar.jpg")
@@ -1824,8 +1912,8 @@ def main():
                 ("Posts", getattr(profile, 'posts_count', 0)),
                 ("Avatar URL", getattr(profile, 'avatar', '')),
                 ("Banner URL", getattr(profile, 'banner', '')),
-                ("Created At", getattr(profile, 'created_at', '')),
-                ("Indexed At", getattr(profile, 'indexed_at', '')),
+                ("Created At", _jst_text(getattr(profile, 'created_at', ''))),
+                ("Indexed At", _jst_text(getattr(profile, 'indexed_at', ''))),
             ]
             for i, (key, val) in enumerate(items, 2):
                 ws.cell(row=i, column=1, value=key)
@@ -1856,6 +1944,9 @@ def main():
         dl_failed.clear()
         prev_failed = take_walk_failures(excel_dir, walk_kind)
         sak = max(0, int(args.get("stop_after_known", 0) or 0))
+        pw = PeriodWindow(args)
+        if pw.on:
+            log(f"기간: {args.get('since') or '처음'} ~ {args.get('until') or '끝'} (일본 시간의 하루 단위)")
         def hit():   # 최대 수 — 일찍 멈춤을 쓰면 새로 받은 것만 센다(받아 둔 것까지 세면 늘 최대 수에서 끊겨 표시가 영영 안 적혔다 — 검토)
             return cap_limit > 0 and ((ks.new if sak > 0 else len(all_data)) >= cap_limit)
         clean = False
@@ -1912,6 +2003,10 @@ def main():
 
                 if not reply_info and not reply_ref:
                     continue  # 원본 포스트는 스킵, 답글만
+                if not pw.keep(post, item):
+                    if pw.stopped:
+                        break
+                    continue
 
                 data = process_post(post)
                 if not data:
@@ -1950,6 +2045,9 @@ def main():
                     break
 
             progress(len(all_data), total_media, fresh=ks.new, newest=ks.newest)
+            if pw.stopped:
+                log("기간의 시작 날보다 옛 답글에 닿아 여기서 멈춥니다")
+                break
             if ks.stopped:
                 log(f"이미 받은 답글이 {ks.stopped}개 이어져 여기서 멈춥니다 — 새로 {ks.new}개")
                 clean = True
@@ -1984,7 +2082,7 @@ def main():
         log(f"Complete! Replies: {len(all_data)}, Media: {total_media}")
         progress(len(all_data), total_media, "완료", fresh=ks.new, newest=ks.newest)
         dl_blocked = finish_failures(excel_dir, walk_kind, prev_failed, ks, sak)
-        if clean and not api_error and not hit() and not dl_blocked:
+        if clean and not api_error and not hit() and not dl_blocked and not pw.on:
             put_walk_mark(excel_dir, walk_kind)
         res = {"status": "ok", "count": len(all_data), "media": total_media, **ks.fields()}
         if api_error:

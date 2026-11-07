@@ -282,8 +282,14 @@ def main() -> int:
 
     todo, skipped, scanned = [], 0, 0
     unreadable = []
+    seen = set()          # 이번에 실제로 본 파일 — 끝까지 다 본 판이면, 이 폴더 아래의 나머지 줄은 지워졌거나 옮겨진 것이다
+    cut_short = False
     t0 = time.time()
-    for dirpath, dirnames, filenames in os.walk(root):
+    # 폴더 목록을 못 읽은 것도 '읽지 못한 것' 이다 — 그러면 없어진 파일 걷기를 하지 않는다(예전엔 조용히 건너뛰어
+    #   그 폴더의 줄이 '지워진 파일' 로 걷혔다 · 검토)
+    def _walk_err(e):
+        unreadable.append((getattr(e, "filename", "") or "", getattr(e, "errno", 0) or 0))
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_walk_err):
         dirnames[:] = [d for d in dirnames if not d.startswith('.') and d != '#recycle']
         for fn in filenames:
             if fn in SKIP_NAME or fn.startswith('._') or fn.startswith(SKIP_PREFIX):
@@ -296,14 +302,17 @@ def main() -> int:
                 unreadable.append((str(p), getattr(e, "errno", 0)))
                 continue
             scanned += 1
+            seen.add(str(p))
             prev = known.get(str(p))
             if prev and prev[0] == st.st_size and prev[1] == int(st.st_mtime):
                 skipped += 1
                 continue
             todo.append((p, st))
             if args.limit and len(todo) >= args.limit:
+                cut_short = True
                 break
         if args.limit and len(todo) >= args.limit:
+            cut_short = True
             break
 
     if unreadable:
@@ -314,6 +323,20 @@ def main() -> int:
             print(f"      … 외 {len(unreadable) - 5:,}건")
 
     print(f"훑음 {scanned:,}건 · 변경없음 {skipped:,}건 · 새로 색인 {len(todo):,}건\n")
+
+    # ★ 없어진 파일의 줄을 걷는다 — 예전엔 지우거나 옮기거나 이름을 바꾼 파일이 색인에 영영 남아, 찾으면 없는 경로가 나오고
+    #   색인만 커졌다(장기 지원 점검: 338MB). 이 폴더를 끝까지, 하나도 빠짐없이 읽은 판에서만 한다 — 디스크가 빠졌거나
+    #   일부를 못 읽었으면 그것을 '지워졌다' 로 볼 수 없다.
+    if not cut_short and not unreadable and scanned > 0 and root.is_dir():
+        prefix = str(root).rstrip(os.sep) + os.sep
+        gone = [k for k in known if k.startswith(prefix) and k not in seen]
+        for i in range(0, len(gone), 500):
+            db.executemany("DELETE FROM files WHERE path=?", [(k,) for k in gone[i:i + 500]])
+        if gone:
+            db.commit()
+            db.execute("PRAGMA optimize")
+            print(f"  없어진 파일 {len(gone):,}건을 색인에서 걷었습니다\n")
+
     if not todo:
         print("할 일이 없습니다."); return 0
 

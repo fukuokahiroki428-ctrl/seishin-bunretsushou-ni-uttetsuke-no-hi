@@ -140,6 +140,10 @@ int main(int argc, char *argv[])
     //   이 줄이 기록에 없으면 앱은 끝나는 도중에 죽은 것이다(충돌 보고서는 몇 분 늦게 써지기도 한다 — 2026-10-06 3분).
     //   공작함 tests/quit_during_hotfix.py 가 이것으로 '깨끗이 끝났는가' 를 잰다.
     struct CleanExitMark { ~CleanExitMark() { std::fprintf(stderr, "[exit] 정상 종료\n"); std::fflush(stderr); } } cleanExitMark;
+    // ★ 이 앱이 띄우는 파이썬은 어디서든 바이트코드(.pyc)를 쓰지 않는다 — 번들 파이썬이 번들 안에 .pyc 를 남기면 서명 봉인이 깨지고,
+    //   켤 때마다 다시 서명하려 든다(인증서가 없거나 만료되면 그 서명은 ad-hoc 이 되어 macOS 권한이 초기화된다).
+    //   예전엔 띄우는 곳마다 따로 넣어, 메일 감시 · 정리하기 · 끝까지 기록 · 압축 · 프록시 중계기가 빠져 있었다(2026-11-05 실제로 70개).
+    qputenv("PYTHONDONTWRITEBYTECODE", "1");
     QApplication app(argc, argv);
     // ★ 본 스레드에도 이름을 단다 — 스레드 경고에 '(이름없음)' 이 찍히면 본 스레드인지
     //   이름 안 단 작업 스레드인지 가를 수가 없다.
@@ -308,6 +312,7 @@ int main(int argc, char *argv[])
 
     // ★ 자가진단·자가복구 (백그라운드) — 번들 도구 검증→복구, stale lock 정리,
     //   복구 실패 항목은 로컬 LLM(Ollama/LM Studio/llama.cpp/번들 llm/)이 원인 진단.
+    Common::recoverInterruptedPythonSwap();   // 지난번 파이썬 교체가 끊겼으면 옛 환경부터 제자리로(자가진단이 파이썬을 쓰기 전에)
     SelfRepair::runStartupMaintenanceAsync();
 
 #ifdef Q_OS_MACOS

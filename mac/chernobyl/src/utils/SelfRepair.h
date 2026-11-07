@@ -823,7 +823,9 @@ inline void markFreshChecked()
 // 전부 최신으로 밀면 멀쩡하던 것이 깨질 위험이 오히려 커진다.
 inline QStringList serviceFollowingPackages()
 {
-    return {"yt-dlp", "twikit", "atproto", "discord.py", "browser_cookie3"};
+    // xclienttransaction — X 의 요청 서명(x-client-transaction-id)을 만든다. X 가 계산법을 바꾸면 고친 판이 나올 때까지
+    //   수집이 401/404 로 멈추는데, 불러오기 검사로는 드러나지 않는다(x_session 이 실제로 쓰는 것은 이것이다 — twikit 은 물러설 자리).
+    return {"yt-dlp", "twikit", "atproto", "discord.py", "browser_cookie3", "xclienttransaction"};
 }
 
 // 꾸러미 이름과 import 이름은 같지 않다.
@@ -900,9 +902,173 @@ inline bool removeOnePackageFromOverlay(const QString &python,
         && QString::fromUtf8(rm.readAllStandardOutput()).contains(QLatin1String("OK"));
 }
 
-inline QString updatePackagesIfDue(const QString &python, bool allowNetwork,
-                                   int everyDays = 3, bool force = false)
+// 갱신 뒤 '되는지' 보는 문장. 불러오기만으로 모자란 것은 앱이 실제로 쓰는 이름까지 본다 —
+//   xclienttransaction 은 x_session 이 쓰는 세 함수와 서명 메서드가 없으면 X 수집이 401/404 로 멈춘다.
+inline QString apiCheckFor(const QString &pkg)
 {
+    if (pkg == QLatin1String("xclienttransaction"))
+        return QStringLiteral(
+            "from x_client_transaction import ClientTransaction\n"
+            "from x_client_transaction.utils import get_ondemand_file_url, get_migration_url, get_migration_form\n"
+            "assert callable(getattr(ClientTransaction, 'generate_transaction_id', None))\n");
+    return QStringLiteral("import %1").arg(importModuleFor(pkg));
+}
+
+// pip --target --upgrade 는 꾸러미 폴더는 갈아 끼우지만 옛 판의 *.dist-info 는 이름이 달라 그대로 둔다.
+//   그러면 importlib.metadata 가 먼저 찾은 아무 판이나 말한다(실측 2026-11-05: yt-dlp 파일은 2026.10.26 인데
+//   2026.10.21 이라 했다) — 갱신 뒤 검사를 '바뀐 것 없음' 으로 건너뛰거나 판 비교가 어긋난다.
+//   같은 이름의 dist-info 가 여럿이면 가장 나중에 깐 것(파일이 실제로 그 판이다)만 남기고 나머지 dist-info 만 지운다.
+inline int pruneOverlayDistInfo(const QString &python, const QString &overlay)
+{
+    if (!QDir(overlay).exists()) return 0;
+    static const char kPy[] =
+        "import os,sys,glob,shutil,re\n"
+        "ov=sys.argv[1]\n"
+        "groups={}\n"
+        "for di in glob.glob(os.path.join(ov,'*.dist-info')):\n"
+        "    base=os.path.basename(di)[:-len('.dist-info')]\n"
+        "    name=re.sub(r'[-_.]+','_',base.rsplit('-',1)[0]).lower()\n"
+        "    groups.setdefault(name,[]).append(di)\n"
+        "n=0\n"
+        "for dis in groups.values():\n"
+        "    if len(dis)<2: continue\n"
+        "    dis.sort(key=os.path.getmtime)\n"
+        "    for d in dis[:-1]:\n"
+        "        shutil.rmtree(d,ignore_errors=True); n+=1\n"
+        "print(n)\n";
+    QProcess q;
+    q.setProcessEnvironment(Common::bundledProcessEnv());
+    q.start(python, {"-c", QString::fromLatin1(kPy), overlay});
+    if (!q.waitForFinished(60000)) { q.kill(); q.waitForFinished(3000); return 0; }
+    return QString::fromUtf8(q.readAllStandardOutput()).trimmed().toInt();
+}
+
+// 덧씌우기 폴더에 pip 를 둘이 동시에 돌리지 않는다(켤 때의 갱신 · 모듈 업데이트 단추 · X 서명 고치기가 겹칠 수 있다)
+inline QMutex &overlayMutex()
+{
+    static QMutex m;
+    return m;
+}
+
+// 그 꾸러미가 지금 환경(덧씌우기 + 번들)에서 실제로 되는가 — 불러오고, 앱이 쓰는 이름까지(apiCheckFor)
+inline bool overlayPackageWorks(const QString &python, const QString &pkg)
+{
+    QProcess chk;
+    chk.setProcessEnvironment(Common::bundledProcessEnv());
+    chk.start(python, {"-c", apiCheckFor(pkg)});
+    if (!chk.waitForFinished(30000)) { chk.kill(); chk.waitForFinished(3000); return false; }
+    return chk.exitStatus() == QProcess::NormalExit && chk.exitCode() == 0;
+}
+
+// 다른 덧씌우기 폴더(새 판으로 바꾸기 전의 것)에서 그 꾸러미 하나만 옮겨 온다 — dist-info 의 RECORD 에 적힌 파일만.
+//   이미 그 꾸러미가 있으면 손대지 않고, 같은 자리의 파일(새로 받은 의존)은 덮지 않는다.
+//   "OK" = 옮겼다 · "HAVE" = 이미 있다 · "MISS" = 옮길 것이 없다(전에도 덧씌우지 않았다 등)
+inline QString carryOverOverlayPackage(const QString &python, const QString &from, const QString &to, const QString &pkg)
+{
+    static const char kPy[] =
+        "import os,sys,glob,shutil,re\n"
+        "src,dst,pkg=sys.argv[1],sys.argv[2],sys.argv[3]\n"
+        "norm=lambda s: re.sub(r'[-_.]+','_',s).lower()\n"
+        "def dists(d):\n"
+        "    out={}\n"
+        "    for di in glob.glob(os.path.join(d,'*.dist-info')):\n"
+        "        base=os.path.basename(di)[:-len('.dist-info')]\n"
+        "        out.setdefault(norm(base.rsplit('-',1)[0]),[]).append(di)\n"
+        "    return out\n"
+        "n=norm(pkg)\n"
+        "if n in dists(dst):\n"
+        "    print('HAVE'); sys.exit(0)\n"
+        "cand=dists(src).get(n)\n"
+        "rec=os.path.join(max(cand,key=os.path.getmtime),'RECORD') if cand else ''\n"
+        "if not rec or not os.path.exists(rec):\n"
+        "    print('MISS'); sys.exit(0)\n"
+        "S=os.path.normpath(src); D=os.path.normpath(dst); n=0\n"
+        "for line in open(rec,encoding='utf-8',errors='replace'):\n"
+        "    rel=line.split(',')[0].strip()\n"
+        "    if not rel or os.path.isabs(rel): continue\n"
+        // 합친 뒤 정규화해서 '정말 그 폴더 안인가' 로 본다(removeOnePackageFromOverlay 와 같은 까닭)
+        "    s=os.path.normpath(os.path.join(S,rel))\n"
+        "    if not s.startswith(S+os.sep) or not os.path.isfile(s): continue\n"
+        "    t=os.path.join(D,os.path.relpath(s,S))\n"
+        "    if os.path.exists(t): continue\n"
+        "    os.makedirs(os.path.dirname(t),exist_ok=True)\n"
+        "    shutil.copy2(s,t); n+=1\n"
+        "print('OK' if n else 'MISS')\n";
+    QProcess q;
+    q.setProcessEnvironment(Common::bundledProcessEnv());
+    q.start(python, {"-c", QString::fromLatin1(kPy), from, to, pkg});
+    if (!q.waitForFinished(120000)) { q.kill(); q.waitForFinished(3000); return QStringLiteral("MISS"); }
+    const QString r = QString::fromUtf8(q.readAllStandardOutput()).trimmed();
+    return (q.exitCode() == 0 && (r == QLatin1String("OK") || r == QLatin1String("HAVE"))) ? r : QStringLiteral("MISS");
+}
+
+// 꾸러미 하나를 최신으로 덧씌우고, 되는지 보고, 안 되면 되돌린다.
+//   1 = 올렸다, 0 = 그대로(이미 최신), -1 = 올렸다가 되돌렸다, -2 = pip 가 실패했다(오프라인 등 — 다음 기회에)
+inline int updateOneOverlayPackage(const QString &python, const QString &overlay, const QString &pkg, QString &out)
+{
+    QMutexLocker lock(&overlayMutex());
+    // 지금 실제로 쓰이는 판 (덧씌우기가 있으면 그것이 잡힌다)
+    auto versionNow = [&]() -> QString {
+        QProcess q;
+        q.setProcessEnvironment(Common::bundledProcessEnv());
+        q.start(python, {"-c",
+            "import importlib.metadata as m,sys\n"
+            "try: print(m.version(sys.argv[1]))\n"
+            "except Exception: print('')", pkg});
+        q.waitForFinished(20000);
+        return QString::fromUtf8(q.readAllStandardOutput()).trimmed();
+    };
+    const QString before = versionNow();
+
+    // 최신으로 덧씌운다. --target 이라 번들은 손대지 않는다.
+    QProcess pip;
+    pip.setProcessEnvironment(Common::bundledProcessEnv());
+    pip.start(python, {"-m", "pip", "install", "--quiet", "--upgrade",
+                       "--target", overlay, "--no-input", pkg});
+    if (!pip.waitForFinished(300000)) { pip.kill(); pip.waitForFinished(3000); return -2; }
+    if (pip.exitStatus() != QProcess::NormalExit || pip.exitCode() != 0) return -2;      // 오프라인 등 — 다음 기회에 다시
+    pruneOverlayDistInfo(python, overlay);
+
+    const QString after = versionNow();
+    if (after.isEmpty() || after == before) return 0;   // 바뀐 게 없으면 조용히 넘어간다
+
+    // ★ 갱신했으면 반드시 '실제로 되는지' 본다. 안 되면 되돌린다.
+    auto works = [&](const QString &p) { return overlayPackageWorks(python, p); };
+    if (!works(pkg)) {
+        // 그 꾸러미만 걷어내면 번들의 옛 판으로 즉시 돌아간다.
+        // 못 걷어냈을 때만 폴더째 지운다 — 다른 갱신분을 잃는 마지막 수단이다.
+        bool rolledBack = removeOnePackageFromOverlay(python, overlay, pkg);
+        if (rolledBack) {
+            // ★ 그 꾸러미만 걷어냈다고 끝이 아니다. pip 는 갱신하면서 의존 꾸러미도
+            //   함께 올린다. 주인공만 빼면 그 새 의존만 덧씌운 채 남아, 번들의 옛
+            //   판과 짝이 안 맞을 수 있다. 남은 것들이 아직 다 불러와지는지 본다.
+            for (const QString &other : serviceFollowingPackages()) {
+                if (other == pkg) continue;
+                if (!works(other)) {
+                    out += QString("[UPD]  %1 을 빼고 나니 %2 가 불러와지지 않습니다 — "
+                                   "덧씌운 것을 통째로 비웁니다\n").arg(pkg, other);
+                    rolledBack = false;     // 아래에서 폴더째 비운다
+                    break;
+                }
+            }
+        }
+        if (!rolledBack) {
+            QDir(overlay).removeRecursively();
+            QDir().mkpath(overlay);
+        }
+        out += QString("[UPD]  %1 %2 → %3 이 불러오기에 실패해 되돌렸습니다\n")
+                   .arg(pkg, before.isEmpty() ? "?" : before, after);
+        return -1;
+    }
+    out += QString("[UPD]  %1 %2 → %3 으로 맞췄습니다\n")
+               .arg(pkg, before.isEmpty() ? "(없음)" : before, after);
+    return 1;
+}
+
+inline QString updatePackagesIfDue(const QString &python, bool allowNetwork,
+                                   int everyDays = 3, bool force = false, int *notGot = nullptr)
+{
+    if (notGot) *notGot = 0;
     if (!allowNetwork) return QString();
     if (!force && !freshCheckDue(everyDays)) return QString();
     if (python.isEmpty() || !QFile::exists(python)) return QString();
@@ -918,79 +1084,225 @@ inline QString updatePackagesIfDue(const QString &python, bool allowNetwork,
     const QString overlay = Common::userPyOverlayDir();
     QString out;
     int updated = 0, failed = 0;
-
-    for (const QString &pkg : serviceFollowingPackages()) {
-        // 지금 실제로 쓰이는 판 (덧씌우기가 있으면 그것이 잡힌다)
-        auto versionNow = [&]() -> QString {
-            QProcess q;
-            QProcessEnvironment e = Common::bundledProcessEnv();
-            q.setProcessEnvironment(e);
-            q.start(python, {"-c",
-                "import importlib.metadata as m,sys\n"
-                "try: print(m.version(sys.argv[1]))\n"
-                "except Exception: print('')", pkg});
-            q.waitForFinished(20000);
-            return QString::fromUtf8(q.readAllStandardOutput()).trimmed();
-        };
-        const QString before = versionNow();
-
-        // 최신으로 덧씌운다. --target 이라 번들은 손대지 않는다.
-        QProcess pip;
-        pip.setProcessEnvironment(Common::bundledProcessEnv());
-        pip.start(python, {"-m", "pip", "install", "--quiet", "--upgrade",
-                           "--target", overlay, "--no-input", pkg});
-        if (!pip.waitForFinished(300000)) { pip.kill(); pip.waitForFinished(3000); continue; }
-        if (pip.exitCode() != 0) continue;      // 오프라인 등 — 다음 기회에 다시
-
-        const QString after = versionNow();
-        if (after.isEmpty() || after == before) continue;   // 바뀐 게 없으면 조용히 넘어간다
-
-        // ★ 갱신했으면 반드시 '실제로 되는지' 본다. 안 되면 되돌린다.
-        QProcess chk;
-        chk.setProcessEnvironment(Common::bundledProcessEnv());
-        const QString mod = importModuleFor(pkg);
-        chk.start(python, {"-c", QString("import %1").arg(mod)});
-        chk.waitForFinished(30000);
-        if (chk.exitStatus() != QProcess::NormalExit || chk.exitCode() != 0) {
-            // 그 꾸러미만 걷어내면 번들의 옛 판으로 즉시 돌아간다.
-            // 못 걷어냈을 때만 폴더째 지운다 — 다른 갱신분을 잃는 마지막 수단이다.
-            bool rolledBack = removeOnePackageFromOverlay(python, overlay, pkg);
-            if (rolledBack) {
-                // ★ 그 꾸러미만 걷어냈다고 끝이 아니다. pip 는 갱신하면서 의존 꾸러미도
-                //   함께 올린다. 주인공만 빼면 그 새 의존만 덧씌운 채 남아, 번들의 옛
-                //   판과 짝이 안 맞을 수 있다. 남은 것들이 아직 다 불러와지는지 본다.
-                for (const QString &other : serviceFollowingPackages()) {
-                    if (other == pkg) continue;
-                    QProcess c2;
-                    c2.setProcessEnvironment(Common::bundledProcessEnv());
-                    c2.start(python, {"-c", QString("import %1").arg(importModuleFor(other))});
-                    c2.waitForFinished(30000);
-                    if (c2.exitStatus() != QProcess::NormalExit || c2.exitCode() != 0) {
-                        out += QString("[UPD]  %1 을 빼고 나니 %2 가 불러와지지 않습니다 — "
-                                       "덧씌운 것을 통째로 비웁니다\n").arg(pkg, other);
-                        rolledBack = false;     // 아래에서 폴더째 비운다
-                        break;
-                    }
-                }
-            }
-            if (!rolledBack) {
-                QDir(overlay).removeRecursively();
-                QDir().mkpath(overlay);
-            }
-            out += QString("[UPD]  %1 %2 → %3 이 불러오기에 실패해 되돌렸습니다\n")
-                       .arg(pkg, before.isEmpty() ? "?" : before, after);
-            ++failed;
-            continue;
-        }
-        out += QString("[UPD]  %1 %2 → %3 으로 맞췄습니다\n")
-                   .arg(pkg, before.isEmpty() ? "(없음)" : before, after);
-        ++updated;
+    {
+        QMutexLocker lock(&overlayMutex());
+        if (const int pruned = pruneOverlayDistInfo(python, overlay); pruned > 0)   // 지난 판들이 남긴 것부터
+            out += QString("[UPD]  덧씌운 꾸러미의 옛 판 정보 %1개를 치웠습니다\n").arg(pruned);
     }
+    int missed = 0;
+    for (const QString &pkg : serviceFollowingPackages()) {
+        const int r = updateOneOverlayPackage(python, overlay, pkg, out);
+        if (r > 0) ++updated;
+        else if (r == -1) ++failed;
+        else if (r == -2) { ++missed; out += QString("[UPD]  %1 을 받지 못했습니다(네트워크 · pip) — 하루 뒤에 다시 해 봅니다\n").arg(pkg); }
+    }
+    if (notGot) *notGot = missed;
 
     markFreshChecked();
+    if (missed > 0) {   // 받지 못한 것이 있으면 3일이 아니라 하루 뒤에 다시
+        QFile f(freshStampPath());
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            f.write(QByteArray::number(QDateTime::currentSecsSinceEpoch() - qint64(qMax(0, everyDays - 1)) * 86400));
+    }
     if (updated == 0 && failed == 0)
-        return QStringLiteral("[UPD]  꾸러미 신선도 확인 — 맞출 것이 없었습니다\n");
+        return out + QStringLiteral("[UPD]  꾸러미 신선도 확인 — 맞출 것이 없었습니다\n");
     return out;
+}
+
+// 새 판으로 바뀐 뒤 처음 켤 때 — 덧씌운 꾸러미(pypkgs)를 이 판의 번들 위에서 새로 맞춘다.
+//   덧씌우기는 PYTHONPATH 맨 앞이라, 앱을 새 판으로 바꿔 번들에 더 새 모듈이 들어와도 몇 달 전에 덧씌운 옛 판이 계속 이겼다
+//   (업데이트했는데 고친 것이 되돌아온 것처럼 보인다 — 장기 지원 점검). 골라 걷으면 남은 것끼리 의존 판이 어긋날 수 있어,
+//   통째로 옆에 비키고(pypkgs.prev) 새로 받는다. 하나도 받지 못하면(오프라인 · PyPI 장애) 전의 것을 되돌리고 하루 뒤에 다시 한다.
+//   일부만 받지 못하면 그 꾸러미만 전의 덧씌우기에서 옮겨 와 마친다(되면 · 안 되면 번들 것) — 3일 갱신이 그것을 다시 받아 본다.
+inline QString refreshOverlayForNewBuild(const QString &python)
+{
+    const QString overlay = Common::userPyOverlayDir();
+    const QFileInfo exe(QCoreApplication::applicationFilePath());
+    const QString key = Common::appBuildVersion() + QLatin1Char(':') + QString::number(exe.size());
+    const QString sdir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/selfrepair";
+    const QString stamp = sdir + "/overlay_build.txt";
+    const QString tryStamp = sdir + "/overlay_build_try.txt";   // 하나도 받지 못한 시도 — "판<TAB>시각"
+    {
+        QFile f(stamp);
+        if (f.open(QIODevice::ReadOnly) && QString::fromUtf8(f.readAll()).trimmed() == key) return QString();
+    }
+    // ★ 하나도 받지 못한 시도 뒤에는 하루를 기다린다 — 예전엔 켤 때마다 통째로 비키고 꾸러미마다(최대 5분) 다시 받으려 했다(검토)
+    {
+        QFile f(tryStamp);
+        if (f.open(QIODevice::ReadOnly)) {
+            const QStringList parts = QString::fromUtf8(f.readAll()).trimmed().split(QLatin1Char('\t'));
+            const qint64 age = parts.size() == 2 ? QDateTime::currentSecsSinceEpoch() - parts.at(1).toLongLong() : -1;
+            if (parts.size() == 2 && parts.at(0) == key && age >= 0 && age < 86400) return QString();
+        }
+    }
+    auto markDone = [&]() {
+        QDir().mkpath(sdir);
+        QFile f(stamp);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.write(key.toUtf8());
+        QFile::remove(tryStamp);
+    };
+    auto markTried = [&]() {
+        QDir().mkpath(sdir);
+        QFile f(tryStamp);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            f.write((key + QLatin1Char('\t') + QString::number(QDateTime::currentSecsSinceEpoch())).toUtf8());
+    };
+    const QString prev = overlay + ".prev";
+    // 지난번 새로 맞추기가 한가운데서 끊겼다(앱이 꺼짐) — 새 폴더가 비었으면 전의 것을 되돌리고, 무엇이든 들어왔으면 새것을 쓴다
+    if (QDir(prev).exists()) {
+        QMutexLocker lock(&overlayMutex());
+        if (!QDir(overlay).exists() || QDir(overlay).isEmpty()) {
+            QDir(overlay).removeRecursively();
+            QDir().rename(prev, overlay);
+        } else {
+            QDir(prev).removeRecursively();
+        }
+    }
+    const bool hadOverlay = QDir(overlay).exists() && !QDir(overlay).isEmpty();
+    if (!hadOverlay) { markDone(); return QString(); }
+    if (python.isEmpty() || !QFile::exists(python)) return QString();
+    if (!internetReachable())
+        return QStringLiteral("[UPD]  새 판 — 덧씌운 꾸러미를 새로 맞추려 했지만 인터넷에 닿지 않아 다음에 합니다\n");
+
+    {
+        QMutexLocker lock(&overlayMutex());
+        if (!QDir().rename(overlay, prev)) return QString();
+        QDir().mkpath(overlay);
+    }
+    const QString out = updatePackagesIfDue(python, /*allowNetwork=*/true, 3, /*force=*/true);
+    const bool gotAny = !QDir(overlay).entryList({QStringLiteral("*.dist-info")}, QDir::Dirs).isEmpty();
+    QMutexLocker lock(&overlayMutex());
+    if (!gotAny) {
+        QDir(overlay).removeRecursively();
+        QDir().rename(prev, overlay);
+        markTried();
+        return out + QStringLiteral("[UPD]  새 판 — 덧씌운 꾸러미를 하나도 받지 못해 전의 것을 되돌렸습니다(하루 뒤에 다시)\n");
+    }
+    // ★ 받지 못했거나(pip 실패) 새 판이 불러지지 않아 걷은 꾸러미는 전의 덧씌우기에서 그 꾸러미만 옮겨 온다 — 번들의 옛 판으로
+    //   돌아가지 않게(예: 덧씌운 yt-dlp 2026.10 이 번들의 2026.08 로 — 검토). 옮긴 것이 이 번들 위에서 불러지지 않으면 걷어
+    //   번들 것을 쓴다. 예전엔 하나라도 못 받으면 통째로 되돌리고 다음 실행에 처음부터 다시 받아, 늘 실패하는 꾸러미가 하나
+    //   있으면 켤 때마다 모두를 다시 받았다(검토). 덧씌운 것이 지금 무엇이 됐든 낱낱이 대 보므로 받지 못한 이유는 묻지 않는다.
+    QStringList carried, dropped;
+    for (const QString &pkg : serviceFollowingPackages()) {
+        if (carryOverOverlayPackage(python, prev, overlay, pkg) != QLatin1String("OK")) continue;   // 이미 새로 받았거나 전에도 없었다
+        if (overlayPackageWorks(python, pkg)) carried << pkg;
+        else { removeOnePackageFromOverlay(python, overlay, pkg); dropped << pkg; }
+    }
+    QDir(prev).removeRecursively();
+    markDone();
+    QString msg = QStringLiteral("[UPD]  새 판 — 덧씌운 꾸러미를 이 판의 번들 위에서 새로 맞췄습니다(옛 판이 깔아 둔 것이 새 번들을 가리지 않게)\n");
+    if (!carried.isEmpty())
+        msg += QStringLiteral("[UPD]  받지 못한 %1 은(는) 전에 덧씌운 판을 그대로 씁니다 — 다음 꾸러미 갱신 때 다시 받아 봅니다\n")
+                   .arg(carried.join(QStringLiteral(", ")));
+    if (!dropped.isEmpty())
+        msg += QStringLiteral("[UPD]  %1 은(는) 전에 덧씌운 판도 이 번들 위에서 불러지지 않아 번들에 든 것을 씁니다\n")
+                   .arg(dropped.join(QStringLiteral(", ")));
+    return msg + out;
+}
+
+// yt-dlp 의 유튜브 JS 풀이 스크립트 — yt-dlp-ejs 꾸러미. yt-dlp 는 판마다 그 판에 맞는 yt-dlp-ejs 를 정확히 고정한다
+//   (Requires-Dist: yt-dlp-ejs==X; extra == 'default'). 없으면 JS 확인이 필요한 형식이 모두 빠지고 JS 없이 되는 클라이언트
+//   하나로만 받는다 — 유튜브가 그것을 막으면 통째로 멈춘다(장기 지원 점검, 번들 deno 는 있었다). 지금 쓰이는 yt-dlp 가 원하는
+//   판이 아니면 덧씌우기 폴더에 맞춰 깐다(--no-deps — 이 꾸러미는 의존이 없다).
+//   1 = 맞췄다, 0 = 이미 맞다 · 필요 없다, -1 = 깔았지만 불러지지 않아 걷었다, -2 = 받지 못했다
+inline int syncYtDlpEjs(const QString &python, const QString &overlay, QString &out)
+{
+    if (python.isEmpty() || !QFile::exists(python)) return 0;
+    static const QString kPy = QStringLiteral(R"PY(
+import importlib.metadata as m, re
+spec = ''
+for r in (m.requires('yt-dlp') or []):
+    mm = re.match(r'\s*yt[-_.]dlp[-_.]ejs\s*([^;]*)', r)
+    if mm and mm.group(1).strip():
+        spec = mm.group(1).strip()
+        break
+try:
+    have = m.version('yt-dlp-ejs')
+except Exception:
+    have = ''
+ok = not spec
+if spec and have:
+    try:
+        from pip._vendor.packaging.specifiers import SpecifierSet
+        ok = SpecifierSet(spec).contains(have)
+    except Exception:
+        ok = False
+print(spec)
+print(have)
+print('OK' if ok else 'NEED')
+)PY");
+    QMutexLocker lock(&overlayMutex());
+    QProcess q;
+    q.setProcessEnvironment(Common::bundledProcessEnv());
+    q.start(python, {"-c", kPy});
+    if (!q.waitForFinished(30000)) { q.kill(); q.waitForFinished(3000); return 0; }
+    const QStringList lines = QString::fromUtf8(q.readAllStandardOutput()).split('\n');
+    if (lines.size() < 3 || lines.at(2).trimmed() != QLatin1String("NEED")) return 0;
+    const QString spec = lines.at(0).trimmed(), have = lines.at(1).trimmed();
+    if (!internetReachable()) {
+        out += QStringLiteral("[UPD]  yt-dlp 의 유튜브 JS 풀이(yt-dlp-ejs %1)가 없습니다 — 인터넷에 닿지 않아 다음에 맞춥니다\n").arg(spec);
+        return -2;
+    }
+    QDir().mkpath(overlay);
+    QProcess pip;
+    pip.setProcessEnvironment(Common::bundledProcessEnv());
+    pip.start(python, {"-m", "pip", "install", "--quiet", "--upgrade", "--no-deps", "--no-input",
+                       "--target", overlay, QStringLiteral("yt-dlp-ejs") + spec});
+    if (!pip.waitForFinished(300000)) { pip.kill(); pip.waitForFinished(3000); return -2; }
+    if (pip.exitStatus() != QProcess::NormalExit || pip.exitCode() != 0) {
+        out += QStringLiteral("[UPD]  yt-dlp 의 유튜브 JS 풀이(yt-dlp-ejs %1)를 받지 못했습니다 — 다음에 다시 해 봅니다\n").arg(spec);
+        return -2;
+    }
+    pruneOverlayDistInfo(python, overlay);
+    QProcess chk;
+    chk.setProcessEnvironment(Common::bundledProcessEnv());
+    chk.start(python, {"-c", "import yt_dlp_ejs"});
+    chk.waitForFinished(30000);
+    if (chk.exitStatus() != QProcess::NormalExit || chk.exitCode() != 0) {
+        removeOnePackageFromOverlay(python, overlay, QStringLiteral("yt-dlp-ejs"));
+        out += QStringLiteral("[UPD]  yt-dlp-ejs %1 이 불러지지 않아 걷었습니다\n").arg(spec);
+        return -1;
+    }
+    out += QStringLiteral("[UPD]  yt-dlp 의 유튜브 JS 풀이(yt-dlp-ejs)를 %1 → %2 로 맞췄습니다\n")
+               .arg(have.isEmpty() ? QStringLiteral("(없음)") : have, spec);
+    return 1;
+}
+
+// X 서명(x-client-transaction-id)을 만들지 못했을 때 — 서명 부품만 바로 최신으로 맞춰 본다.
+//   X 가 계산법을 바꾸면 고친 판이 나올 때까지 수집이 401/404 로 멈춘다. 예전엔 3일마다의 갱신 목록에도 없어,
+//   사용자가 '모듈 업데이트' 를 누를 때까지 그대로였다. 12시간에 한 번만 해 본다(이미 최신이면 아무 일도 없다).
+inline QString xSigningRepairStampPath()
+{
+    const QString d = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/selfrepair";
+    QDir().mkpath(d);
+    return d + "/x_signing_repair.txt";
+}
+
+inline bool xSigningRepairDue()
+{
+    QFile f(xSigningRepairStampPath());
+    if (!f.open(QIODevice::ReadOnly)) return true;
+    const qint64 last = QString::fromUtf8(f.readAll()).trimmed().toLongLong();
+    return last <= 0 || QDateTime::currentSecsSinceEpoch() - last >= 12 * 3600;
+}
+
+inline bool repairXSigningIfDue(const QString &python, QString *log)
+{
+    if (!xSigningRepairDue() || python.isEmpty() || !QFile::exists(python)) return false;
+    if (!internetReachable()) {
+        if (log) *log = QStringLiteral("인터넷에 닿지 않아 서명 부품을 맞추지 못했습니다");
+        return false;
+    }
+    {
+        QFile f(xSigningRepairStampPath());
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            f.write(QByteArray::number(QDateTime::currentSecsSinceEpoch()));
+    }
+    QString out;
+    const int r = updateOneOverlayPackage(python, Common::userPyOverlayDir(), QStringLiteral("xclienttransaction"), out);
+    if (log) *log = r == 0 ? QStringLiteral("서명 부품(xclienttransaction)은 이미 최신입니다")
+                  : r == -2 ? QStringLiteral("서명 부품(xclienttransaction)을 받지 못했습니다(네트워크)") : out.trimmed();
+    return r > 0;
 }
 
 inline QString checkEnvironment()
@@ -1190,7 +1502,7 @@ inline QString runStartupMaintenance()
     } guard;
 
     QString report;
-    report += "═ SelfRepair 자가진단 " + QDateTime::currentDateTime().toString(Qt::ISODate) + " ═\n";
+    report += "═ SelfRepair 자가진단 " + Common::jstNow().toString(Qt::ISODate) + " ═\n";
     report += "appDir: " + appDir() + "\n";
 
     const QStringList tools = {"yt-dlp", "ffmpeg", "python", "exiftool", "rclone"};
@@ -1275,8 +1587,12 @@ inline QString runStartupMaintenance()
     //   버전이 찍히는지만 보는 진단은 그 고장을 원리적으로 못 잡는다.
     {
         const QString py = Common::bundledPythonPath();
+        report += refreshOverlayForNewBuild(py);   // 새 판의 첫 실행이면 여기서 새로 맞춘다(그때는 아래가 할 일이 없다)
         const QString upd = updatePackagesIfDue(py, /*allowNetwork=*/true);
         if (!upd.isEmpty()) report += upd;
+        QString ejs;
+        syncYtDlpEjs(py, Common::userPyOverlayDir(), ejs);   // 켤 때마다 본다 — 갱신된 yt-dlp 가 다른 판을 원하면 곧장 맞춘다
+        report += ejs;
     }
 
 #ifdef Q_OS_MACOS

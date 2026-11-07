@@ -13,6 +13,7 @@
 가짜 daemon 은 격리 사본의 script_overrides 에만 넣는다(번들 · 진짜 자료 폴더는 건드리지 않는다).
 계정은 이 시험이 만든 가짜 값이고 수집 설정으로만 넘긴다."""
 import glob, json, os, shutil, subprocess, sys, time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -298,11 +299,21 @@ def main() -> int:
     st, reqs = run("bookmarks", label="K1", stopAfterKnown=0)
     cards = sorted(capdir.glob("*.html"))
     check("K1 캡처를 끈 판은 합성 카드를 만든다", len(cards) == 30, len(cards))
+    jst = timezone(timedelta(hours=9))
+    bk0 = w.st["bookmarks"][0]
+    bk0_new = datetime.fromtimestamp(bk0["ms"] // 1000, jst).strftime("%Y%m%d_%H%M%S_") + bk0["id"] + ".html"
+    bk0_old = datetime.fromtimestamp(bk0["ms"] // 1000, timezone.utc).strftime("%Y%m%d_%H%M%S_") + bk0["id"] + ".html"
+    check("K1 캡처 파일 이름의 날짜는 일본 시간", (capdir / bk0_new).exists(), (bk0_new, [c.name for c in cards[:2]]))
     for c in cards:
         c.write_text(REAL, encoding="utf-8")   # 앞서 켜고 받아 둔 진짜 캡처라 치자
     st, reqs = run("bookmarks", label="K2", stopAfterKnown=0)
     kept = sum(1 for c in cards if c.read_text(encoding="utf-8") == REAL)
     check("K2 끈 판이 다시 돌아도 진짜 캡처 30개가 그대로", kept == 30, kept)
+    # 예전 판이 UTC 이름으로 받아 둔 캡처 — 그 이름을 그대로 쓰고 한 벌 더 만들지 않는다
+    (capdir / bk0_new).rename(capdir / bk0_old)
+    st, reqs = run("bookmarks", label="K2b", stopAfterKnown=0)
+    check("K2 옛 이름(UTC)의 캡처는 그대로 두고 새 이름으로 또 만들지 않는다",
+          (capdir / bk0_old).read_text(encoding="utf-8") == REAL and not (capdir / bk0_new).exists(), sorted(c.name for c in capdir.glob("*" + bk0["id"] + "*")))
     shutil.rmtree(capdir)
     st, reqs = run("bookmarks", label="K3", stopAfterKnown=0, realCaptureMode="off")
     n_off = len(list(capdir.glob("*.html"))) if capdir.exists() else 0

@@ -295,7 +295,7 @@ def scan_account(ud: str) -> dict:
         "stats": {"tweets": len(tl), "media": mcount, "captures": ccount,
                   "first": min((t["t"] for t in tl if t["t"]), default=""),
                   "last": max((t["t"] for t in tl if t["t"]), default=""),
-                  "built": _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")},
+                  "built": _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M:%S")},
     }
 
 

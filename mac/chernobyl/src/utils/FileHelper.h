@@ -80,16 +80,18 @@ void setDownloadMeta(const QString &filePath, const QString &url);
 // 업로드 순서대로 OS 기본 정렬 시에도 올바르게 배치되도록
 QString uploadOrderPrefix(const QDateTime &uploadTime);
 QString uploadOrderPrefix(qint64 unixSec);  // unix timestamp
+// 캡처 파일 이름(확장자 없이) — 일본 시간 + id. 예전 판이 받은 값의 시간대 그대로(대개 UTC) 적어 둔 파일이 있으면 그 이름을 그대로 쓴다.
+QString captureNameCompat(const QString &capturesDir, const QDateTime &postedAt, const QString &id);
 
 // 타입별 하위 폴더 경로 (공통 정책)
-//   baseDir: 플랫폼 루트 (예: /path/twitter/@shio)
+//   baseDir: 플랫폼 루트 (예: /path/twitter/@example)
 //   type: 수집 타입 (tweets, replies, likes, reposts, followers, ...)
 //   → baseDir/type/ 반환. 자동으로 mkpath
 //   type이 "all"이면 baseDir/_complete/ 반환
 QString typeFolder(const QString &baseDir, const QString &type);
 
 // 타입별 Excel 파일 경로 (공통 정책)
-//   excelDir: Excel이 저장되는 루트 (예: /path/twitter/@shio/excel)
+//   excelDir: Excel이 저장되는 루트 (예: /path/twitter/@example/excel)
 //   type: 수집 타입
 //   target: 대상 식별자 (유저명 등)
 //   → excelDir/{target}_{type}.xlsx

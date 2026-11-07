@@ -9,6 +9,7 @@
 #include <QSemaphore>
 #include <QNetworkCookie>
 #include <QHash>
+#include <QSet>
 #include <QThread>
 #include <QPointer>
 #include <atomic>
@@ -507,12 +508,16 @@ public:
 
     // 内閣会 내부 상태
     void naikakukaiTick();
+    void naikakukaiPoll(const QJsonObject &watch);   // 감시 하나를 지금 돌린다(차례는 naikakukaiTick 이 고른다)
     QTimer *m_naikakukaiTimer = nullptr;
     QJsonArray m_naikakukaiWatches;
     QJsonObject m_naikakukaiOptions;   // 内閣会가 받을 때 쓰는 옵션 {플랫폼: {키: 값}} — 감시 대상의 options 가 앞선다
     int m_naikakukaiIntervalMin = 30;
-    int m_naikakukaiCursor = 0;
+    // ★ 대상마다 마지막으로 본 시각(밀리초) · 플랫폼마다 마지막으로 띄운 시각 — 메인 스레드에서만 만진다
+    QHash<QString, qint64> m_naikakukaiLastPoll;
+    QHash<QString, qint64> m_naikakukaiPlatformLast;
     bool m_naikakukaiDiskGoneLogged = false;   // 디스크 빠짐/돌아옴을 한 줄씩만 적으려고
+    QSet<QString> m_naikakukaiLowSpaceRoots;     // 거의 찬 저장 디스크(볼륨 뿌리) — 빠질 때와 돌아올 때 한 줄씩만
     bool m_autoResumeDone = false;          // autoResumeWatchers 는 앱이 뜬 뒤 한 번만
     void autoResumeWatchers();
     void loadHotfixFromDisk();                       // 켤 때 — 받아 둔 꾸러미를 곧장 쓴다(인터넷 없어도)
@@ -523,7 +528,7 @@ public:
     // 内閣会가 띄운 수집의 플랫폼. 중지 버튼이 '그것만' 멈추게 하려고 둔다.
     //   사용자가 직접 시작한 수집까지 멈추면 안 되므로 구별이 필요하다.
     //   m_runningMutex 로 보호한다.
-    QString m_naikakukaiActivePlatform;
+    QStringList m_naikakukaiActivePlatforms;   // 플랫폼이 다르면 함께 돈다
 
     // NAS 백업 워커 — 큐 + 진행률 + 2-thread 병렬
     // ★ 메모리 큐 X — 사용자 임시 디스크에 append-only 텍스트 큐 파일 사용.

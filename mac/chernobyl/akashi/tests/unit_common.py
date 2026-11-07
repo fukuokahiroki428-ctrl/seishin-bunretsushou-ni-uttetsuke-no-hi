@@ -21,7 +21,7 @@ import _common as C  # noqa: E402
 
 CHERNOBYL = HERE.parent.parent
 MOC = "/opt/homebrew/share/qt/libexec/moc"
-OBJS = ("src/core/Common.cpp.o", "src/utils/FileHelper.cpp.o", "src/utils/HttpClient.cpp.o")
+OBJS = ("src/core/Common.cpp.o", "src/utils/FileHelper.cpp.o", "src/utils/HttpClient.cpp.o", "src/utils/ExcelWriter.cpp.o")
 
 
 def main() -> int:
@@ -43,6 +43,8 @@ def main() -> int:
     exe = work / "ut_common"
     cmd = ["clang++", "-std=gnu++17", "-O1", "-arch", "arm64"] + defs + incs + ["-F/opt/homebrew/lib",
            str(HERE / "unit" / "ut_common.cpp"), str(moc_cpp)] + [str(b / o) for o in OBJS] + [
+           str(CHERNOBYL / "build" / "_deps" / "qxlsx-build" / "libQXlsxQt6.a"),   # ExcelWriter 가 쓰는 QXlsx
+          
            "-F/opt/homebrew/lib", "-framework", "QtCore", "-framework", "QtNetwork", "-framework", "QtGui",
            "-framework", "CoreFoundation", "-framework", "CoreServices", "-framework", "Foundation", "-framework", "AppKit", "-o", str(exe)]
     r = subprocess.run(cmd, cwd=str(CHERNOBYL), capture_output=True, text=True)

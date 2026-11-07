@@ -58,6 +58,39 @@ def next_tag(version: str) -> str:
     return "mac-%s-r%d" % (version, (max(nums) if nums else 0) + 1)
 
 
+def build_footer(app: Path, info: dict) -> str:
+    """알림 글 끝에 붙이는 '빌드에 쓴 것' — 다른 맥에서 같은 것으로 다시 빌드할 때의 기준(장기 지원 점검)."""
+    def out(cmd):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            return ((r.stdout or "") + (r.stderr or "")).strip()
+        except Exception:
+            return ""
+    brew = {}
+    for line in out(["brew", "list", "--versions", "qtbase", "qtwebengine", "cmake"]).splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            brew[parts[0]] = parts[-1]
+    macos = app / "Contents" / "MacOS"
+    tools = app / "Contents" / "Resources" / "tools"
+    def first(text, pat):
+        m = re.search(pat, text)
+        return m.group(1) if m else "?"
+    py = app / "Contents" / "Resources" / "python_env" / "bin" / "python3"
+    items = [
+        "Qt %s" % brew.get("qtbase", "?"),
+        "QtWebEngine %s" % brew.get("qtwebengine", "?"),
+        "cmake %s" % brew.get("cmake", "?"),
+        "최소 macOS %s" % (info.get("LSMinimumSystemVersion") or "?"),
+        "파이썬 %s" % first(out([str(py), "-I", "-B", "--version"]), r"Python (\S+)"),
+        "ffmpeg %s" % first(out([str(macos / "ffmpeg"), "-version"]), r"ffmpeg version (\S+)"),
+        "ffprobe %s" % first(out([str(macos / "ffprobe"), "-version"]), r"ffprobe version (\S+)"),
+        "deno %s" % first(out([str(macos / "deno"), "--version"]), r"deno (\S+)"),
+        "rclone %s" % first(out([str(tools / "rclone"), "version"]), r"rclone (v\S+)"),
+    ]
+    return "\n\n---\n빌드에 쓴 것: " + " · ".join(items) + "\n"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="판 내기(맥) — DMG · 태그 · GitHub 판. 단계마다 묻는다")
     ap.add_argument("--notes", required=True, help="판 알림 글(마크다운 파일)")
@@ -92,11 +125,17 @@ def main() -> int:
         print("태그가 이미 있습니다: " + tag)
         return 2
     title = "%s %s (%s)" % (name, version, tag.rsplit("-", 1)[-1])
+    # ★ 빌드본의 판 번호(CFBundleVersion)는 build.sh 가 '다음 릴리스 번호' 로 적는다 — 낼 태그와 맞아야 고침 꾸러미가 판을 가른다
+    rnum = tag.rsplit("-r", 1)[-1]
+    want_bv = "%s.%s" % (".".join(version.split(".")[:2]), rnum)
+    have_bv = str(info.get("CFBundleVersion") or "")
     branch = git("rev-parse", "--abbrev-ref", "HEAD")
     head = git("rev-parse", "--short", "HEAD")
 
     # ── 확인 ────────────────────────────────────────────────────────────
     problems = []
+    if rnum.isdigit() and have_bv != want_bv:
+        problems.append("빌드본 판 번호 %s 가 낼 판(%s)과 다릅니다 — 다시 빌드하십시오" % (have_bv or "?", want_bv))
     dirty = [l for l in git("status", "--porcelain", "--", str(CH)).splitlines()
              if not l.startswith("??") and "/build/" not in l]
     if dirty:
@@ -106,6 +145,9 @@ def main() -> int:
     sig = run(["codesign", "--verify", "--deep", "--strict", str(app)])
     if sig.returncode != 0:
         problems.append("빌드본 서명이 틀립니다")
+    who = run(["codesign", "-dvv", str(app)])
+    if "Signature=adhoc" in (who.stderr or "") + (who.stdout or ""):
+        problems.append("빌드본이 ad-hoc 서명입니다 — 받는 사람마다 앱의 신원이 바뀌어 권한이 초기화됩니다(인증서 만료 · 없음)")
     src_html, app_html = CH / "resources" / "html" / "index.html", app / "Contents" / "Resources" / "html" / "index.html"
     if app_html.exists() and src_html.read_bytes() != app_html.read_bytes():
         problems.append("빌드본 화면이 소스와 다릅니다 — 다시 빌드하십시오")
@@ -144,7 +186,9 @@ def main() -> int:
             if not dmgs:
                 print("DMG 가 없습니다")
                 return 1
-            cmd = ["gh", "release", "create", tag, dmgs[-1], "--title", title, "--notes-file", str(notes), "--latest"]
+            full = Path(str(notes) + ".with_build.md")
+            full.write_text(notes.read_text("utf-8").rstrip() + build_footer(app, info), "utf-8")
+            cmd = ["gh", "release", "create", tag, dmgs[-1], "--title", title, "--notes-file", str(full), "--latest"]
         cwd = CH if cmd[0].startswith("./") else paths.REPO
         print("  … " + label)
         r = run(cmd, cwd=cwd)

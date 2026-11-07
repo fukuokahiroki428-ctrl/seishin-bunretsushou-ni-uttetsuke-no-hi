@@ -509,10 +509,25 @@ async def main():
     #   계정에 프록시를 걸어도 트위터 API 요청은 이 컴퓨터의 회선으로 바로 나갔다
     #   (닫힌 길 127.0.0.1:9 도 먹지 않았다). 그래서 출구를 생성자에 직접 준다.
     _proxy = init_args.get("proxy") or ""
+    # ★ 브라우저 흉내 — 앱이 설치된 Chrome 의 판으로 만든 UA 와 클라이언트 힌트를 넘겨 준다(Common::browserUserAgent).
+    #   예전엔 늘 '윈도우 Chrome 153' 고정값으로 나갔다. 맥 Chrome 156 의 쿠키로 윈도우 153 이라 말하는 셈이라
+    #   그 자체가 자동화 신호였고, 판이 갈수록 벌어졌다. 같은 계정의 캡처 Chrome 은 이미 맥 Chrome 으로 나간다.
+    _ua = init_args.get("user_agent") or None
+    _hints = {k: v for k, v in (init_args.get("client_hints") or {}).items()
+              if k in ("sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform")}
     if USING_SHIM:
-        client = Client(language="ja", proxy=(_proxy or None))
+        client = Client(language="ja", proxy=(_proxy or None), user_agent=_ua, client_hints=_hints)
     else:
-        client = Client(language="ja")
+        try:
+            client = Client(language="ja", user_agent=_ua) if _ua else Client(language="ja")
+        except TypeError:
+            client = Client(language="ja")
+    if not _hints and USING_SHIM:
+        _hints = dict(getattr(client, "_client_hints", {}) or {})
+    _ua_major = re.search(r"Chrome/(\d+)", client._user_agent or "")
+    print(json.dumps({"info": "브라우저 흉내: %s Chrome %s" % (
+        "맥" if "Macintosh" in (client._user_agent or "") else "윈도우" if "Windows" in (client._user_agent or "") else "?",
+        _ua_major.group(1) if _ua_major else "?")}), flush=True)
     client.set_cookies({
         "auth_token": auth_token,
         "ct0": ct0,
@@ -577,6 +592,7 @@ async def main():
         'Cache-Control': 'no-cache',
         'Referer': 'https://x.com',
         'User-Agent': client._user_agent,
+        **_hints,
     }
 
     # Method 1: Direct manual TID init with auth cookies (most reliable)
@@ -755,6 +771,7 @@ async def main():
                             'Cache-Control': 'no-cache',
                             'Referer': 'https://x.com',
                             'User-Agent': client._user_agent,
+                            **_hints,
                         }
                         if await client.client_transaction.init(client.http, ct_headers) is not False:
                             _tid_reinit_ok()
@@ -821,6 +838,7 @@ async def main():
                                 'Cache-Control': 'no-cache',
                                 'Referer': 'https://x.com',
                                 'User-Agent': client._user_agent,
+                                **_hints,
                             }
                             if await client.client_transaction.init(client.http, ct_headers) is not False:
                                 _tid_reinit_ok()

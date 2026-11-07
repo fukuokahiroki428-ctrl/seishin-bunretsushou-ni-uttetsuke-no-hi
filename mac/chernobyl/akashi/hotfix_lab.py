@@ -3,7 +3,7 @@
 """고침 꾸러미 실험실 — 좋은 꾸러미·바꿔치기·서명 없음·낯선 열쇠·판 올림을 격리 사본에 하나씩 먹여,
 앱이 약속대로 받거나 버리는지 본다.
 
-    python3 akashi/hotfix_lab.py run                        # 여덟 가지를 차례로 (사본이 없으면 띄우고, 끝나면 끈다)
+    python3 akashi/hotfix_lab.py run                        # 시나리오 열 가지를 차례로 (사본이 없으면 띄우고, 끝나면 끈다)
     python3 akashi/hotfix_lab.py run --only good,unsigned -v
     python3 akashi/hotfix_lab.py build                      # 시험 꾸러미만 만든다(임시 폴더 · 앱 없이 셈한 예상까지)
     python3 akashi/hotfix_lab.py serve good                 # 한 가지를 http://127.0.0.1:8765/hotfix/ 로 (앞에서 · Ctrl-C)
@@ -19,7 +19,9 @@
   5 forged           낯선 열쇠로 서명                        → 서명 틀림 · 앞 판 그대로
   6 minapp           이 앱보다 새 판이 있어야 쓰는 꾸러미      → 받지 않음 · 앞 판 그대로
   7 badname          앱에 없는 이름의 도우미를 섞어 서명      → 그 도우미만 버림(내려받지도 않음) · 나머지는 받음
-  8 bumped           판을 올린 좋은 꾸러미                    → 받음 · 도우미도 새것
+  8 legacy           maxApp 칸이 없는 옛 꾸러미(도우미 있음)   → 값만 받음 · 도우미는 받지도 않음(그때의 판을 위한 것)
+  9 bumped           판을 올린 좋은 꾸러미                    → 받음 · 도우미도 새것
+ 10 maxapp           이 앱보다 옛 판을 위한 꾸러미(maxApp)      → 받지 않음 · 앞 판 그대로(새 판엔 이미 들어 있다)
   run 은 끝에 사본을 한 번 다시 켜서, 앱 기록의 「[고침 꾸러미] vN 을 씀」 줄로 판이 남았는지, 그리고 꺼진 사이
   디스크에서 몰래 고친 도우미를 켤 때 버리는지 본다(이 공구가 띄운 사본일 때만 — 남의 사본은 다시 켜지 않는다).
 
@@ -139,6 +141,7 @@ APP_PHRASES = (
     "고침 꾸러미 v%1 — %2 을(를) 받지 못했거나 내용이 맞지 않습니다",
     "고침 꾸러미 v%1 — 도우미 %2 의 내용이 맞지 않습니다",
     "고침 꾸러미 v%1 받음(서명 맞음)",
+    "고침 꾸러미 v%1 은 판 범위가 적히지 않은 옛 꾸러미라 파이썬 도우미는 받지 않습니다",
     "앱에 없는 도우미라 받지 않은 것: %1",
     "v%1 을 쓰는 중",
     "[고침 꾸러미] v%1 을 씀 — 값 %2 · 별명 %3 · 수리 규칙 %4 · 파이썬 도우미 %5",
@@ -165,13 +168,16 @@ SCENARIOS = [
     Scn("minapp", "새 판이 있어야 쓰는 꾸러미", "real", "minapp", "받지 않음 · 앞 판 그대로"),
     Scn("badname", "앱에 없는 이름의 도우미를 섞음", "real", "applied",
         "그 도우미만 버림(내려받지도 않음) · 나머지는 받음"),
+    Scn("legacy", "판 범위 칸이 없는 옛 꾸러미(도우미 있음)", "real", "applied",
+        "값만 받음 · 도우미는 받지도 않음(그때의 판을 위한 것)"),
     Scn("bumped", "판을 올린 좋은 꾸러미", "real", "applied", "받음 · 도우미도 새것"),
+    Scn("maxapp", "옛 판을 위한 꾸러미(maxApp)", "real", "maxapp", "받지 않음 · 앞 판 그대로"),
 ]
 BY_ID = {s.sid: s for s in SCENARIOS}
 CODE_KO = {
     "applied": "받음", "sig-bad": "서명 틀림", "sig-missing": "서명 없음", "minapp": "새 판이 있어야 씀",
     "latest": "최신이라 건너뜀", "file-bad": "파일이 어긋나 판을 버림", "tool-bad": "도우미가 어긋나 판을 버림",
-    "no-manifest": "manifest 를 못 받음",
+    "no-manifest": "manifest 를 못 받음", "maxapp": "옛 판용이라 쓰지 않음",
 }
 
 
@@ -447,6 +453,11 @@ def predict(b: Path, pem: Path, have: int, app_ver: str, tool_ok) -> dict:
     ver = qt_int(man.get("version"))
     need = man.get("minApp") if isinstance(man.get("minApp"), str) else "0"
     r["version"], r["need"] = ver, need
+    # 앱과 같은 차례 — 옛 판을 위한 꾸러미(maxApp 보다 새 앱)는 minApp 보다 먼저 거른다
+    mx = man.get("maxApp") if isinstance(man.get("maxApp"), str) else ""
+    if mx and qver_cmp(qver(app_ver), qver(mx)) > 0:
+        r["code"] = "maxapp"
+        return r
     if qver_cmp(qver(need), qver(app_ver)) > 0:
         r["code"] = "minapp"
         return r
@@ -466,6 +477,9 @@ def predict(b: Path, pem: Path, have: int, app_ver: str, tool_ok) -> dict:
             r["code"], r["name"] = "file-bad", name
             return r
     tools = man.get("tools") if isinstance(man.get("tools"), dict) else {}
+    if "maxApp" not in man:                            # 판 범위 칸이 없는 옛 꾸러미 — 앱은 도우미를 받지도 않는다(값만 쓴다)
+        r["unscoped"] = sorted(tools)
+        tools = {}
     for name in sorted(tools):                         # QJsonObject 는 열쇠 차례로 돈다
         if not tool_ok(name):
             r["rejected"].append(name)
@@ -491,6 +505,7 @@ def result_fragments(pred: dict) -> list:
         "sig-bad": ["서명이 맞지 않아", "서명 틀림"],
         "sig-missing": ["서명이 맞지 않아", "서명 없음", "HTTP 404"],
         "minapp": ["v%d 은 새 판(" % v, "이상)이 있어야"],
+        "maxapp": ["v%d 은 " % v, "판까지를 위한 것입니다"],
         "latest": ["최신입니다 (v%d)" % pred["have"]],
         "file-bad": ["v%d — %s 을(를) 받지 못했거나" % (v, pred["name"])],
         "tool-bad": ["v%d — 도우미 %s 의 내용이 맞지 않습니다" % (v, pred["name"])],
@@ -504,6 +519,8 @@ def log_fragments(pred: dict) -> list:
         out = [["고침 꾸러미 v%d 받음(서명 맞음)" % pred["version"]]]
         for b in pred["rejected"]:
             out.append(["앱에 없는 도우미라 받지 않은 것", b])
+        if pred.get("unscoped"):
+            out.append(["고침 꾸러미 v%d 은 판 범위가 적히지 않은 옛 꾸러미라" % pred["version"], "도우미는 받지 않습니다"])
         return out
     if pred["code"] == "no-manifest":
         return []
@@ -617,7 +634,9 @@ def make_src(src: Path, s: Scn, v: int, ctx: Ctx, tool_bytes: bytes) -> None:
     for n in list(hp.FILES) + ["README.md"]:
         shutil.copyfile(root / n, src / n)
     # minApp 은 앱 판과 '같게' — 같으면 받는다는 경계까지 함께 대 본다. minapp 시나리오만 먼 미래 판.
+    # maxApp 도 앱 판과 같게(같으면 받는다) — maxapp 시나리오만 먼 옛 판.
     meta = {"version": v, "minApp": "999.0" if s.sid == "minapp" else ctx.app_ver,
+            "maxApp": "0.1" if s.sid == "maxapp" else ctx.app_ver,
             "notes": "아카시 실험실 시험 꾸러미(%s) — 배포용 아님" % s.sid}
     (src / "hotfix.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", "utf-8")
     (src / "tools").mkdir()
@@ -638,6 +657,14 @@ def post_edit(s: Scn, b: Path, ctx: Ctx, trusted_key, cwd):
             f.write("import os  # 아카시 실험실 — 서명한 뒤에 몰래 끼운 줄\n".encode("utf-8"))
     elif s.sid == "unsigned":
         (b / "manifest.sig").unlink()
+    elif s.sid == "legacy":
+        # r46 까지의 hotfix_publish.py 처럼 maxApp 칸이 없는 꾸러미 — 같은 열쇠로 다시 서명한다
+        man = read_json(mp)
+        man.pop("maxApp", None)
+        dump_manifest(mp, man)
+        ok, msg = run_publisher("sign", mp, b / "manifest.sig", trusted_key, cwd=cwd)
+        if not ok:
+            return "다시 서명하지 못함 — " + tail(msg)
     elif s.sid == "badname":
         data = "# 아카시 실험실 — 앱에 없는 이름의 도우미. 앱은 이것을 내려받지도 말아야 한다.\n".encode("utf-8")
         (b / "tools" / ctx.bad).write_bytes(data)
@@ -700,7 +727,12 @@ def build_lab(lab: Path, ids: list, base: int, ctx: Ctx, pem: Path, trusted_key=
                 else:
                     rec["why"].append("앱이 할 일이 '%s' 로 셈됨(뜻: %s)" % (CODE_KO.get(pred["code"], pred["code"]),
                                                                   CODE_KO[s.expect]))
-            if s.expect == "applied" and ctx.tool not in pred["accepted"]:
+            if sid == "legacy":
+                # 판 범위 칸이 없는 옛 꾸러미 — 도우미는 받을 것에 없어야 하고, '받지 않은 옛 도우미' 로 셈돼야 시험이 된다
+                if pred["accepted"] or ctx.tool not in pred.get("unscoped", []):
+                    rec["why"].append("옛 꾸러미의 도우미가 받을 것 %s · 받지 않을 것 %s (뜻: 받지 않을 것에 %s)"
+                                      % (names(pred["accepted"]), ", ".join(pred.get("unscoped", [])) or "없음", ctx.tool))
+            elif s.expect == "applied" and ctx.tool not in pred["accepted"]:
                 rec["why"].append("도우미 %s 가 받을 것에 없음" % ctx.tool)
             if sid == "badname" and pred["rejected"] != [ctx.bad]:
                 rec["why"].append("버려질 이름이 %s (뜻: %s)" % (pred["rejected"] or "없음", ctx.bad))
@@ -1020,6 +1052,7 @@ class LabRun:
                     tools[f.name] = sha256_file(f)
         return {"version": qt_int(st.get("version")), "tools": tools,
                 "state_tools": st.get("tools") if isinstance(st.get("tools"), dict) else {},
+                "has_max": "maxApp" in st,
                 "staging": (d / "tools.staging").exists()}
 
     # ── 사본 ──
@@ -1066,6 +1099,9 @@ class LabRun:
         before = self.last_status()
         disk_b = self.disk()
         have = qt_int(before.get("version"))
+        # 앱과 같다 — 판 범위를 모르는 옛 앱이 받아 둔 꾸러미(도우미 있음)는 같은 판이라도 한 번 다시 받는다
+        if not disk_b["has_max"] and disk_b["state_tools"]:
+            have = 0
         pem = self.lab / "_app_pub.pem"
         # 앱이 '지금' 할 일을 다시 셈한다 — 앞 단계가 뜻과 다르게 끝났으면 이 시험은 할 수 없다
         pred = predict(b, pem, have, self.ctx.app_ver, self.ctx.tool_ok)
@@ -1425,12 +1461,16 @@ def judge(pred: dict, before: dict, after: dict, disk_b: dict, disk_a: dict, req
                 probs.append("앱에 없는 이름 %s 이(가) 들어옴" % bn)
             if ("tools/" + bn) in reqs:
                 probs.append("앱에 없는 이름 %s 을(를) 내려받음(이름만 보고 건너뛰어야)" % bn)
+        for un in pred.get("unscoped", []):
+            if ("tools/" + un) in reqs:
+                probs.append("판 범위가 없는 옛 꾸러미의 도우미 %s 을(를) 내려받음(받지도 말아야)" % un)
         if qt_int(after.get("rejected")) < len(pred["rejected"]):
             probs.append("버린 수가 %d (기대 %d 이상)" % (qt_int(after.get("rejected")), len(pred["rejected"])))
         tl = sorted(pred["accepted"])
-        summary = "받음 — v%d → v%d · 도우미 %s%s" % (
+        summary = "받음 — v%d → v%d · 도우미 %s%s%s" % (
             v_b, v, ", ".join(tl) or "없음",
-            " · 버린 이름 %s(내려받지 않음)" % ", ".join(pred["rejected"]) if pred["rejected"] else "")
+            " · 버린 이름 %s(내려받지 않음)" % ", ".join(pred["rejected"]) if pred["rejected"] else "",
+            " · 판 범위 없는 옛 꾸러미라 도우미 %s 은(는) 받지 않음" % ", ".join(pred["unscoped"]) if pred.get("unscoped") else "")
     else:
         if v_a != v_b:
             probs.append("판이 바뀜 v%d → v%d (앞 판을 지켜야)" % (v_b, v_a))
@@ -1441,13 +1481,13 @@ def judge(pred: dict, before: dict, after: dict, disk_b: dict, disk_a: dict, req
         if disk_a["tools"] != disk_b["tools"]:
             probs.append("디스크의 도우미가 바뀜 %s → %s" % (names(disk_b["tools"]), names(disk_a["tools"])))
         extra = []
-        if code in ("sig-bad", "sig-missing", "minapp"):
+        if code in ("sig-bad", "sig-missing", "minapp", "maxapp"):
             extra = sorted(set(r for r in reqs if r not in ("manifest.json", "manifest.sig")))
             if extra:
                 probs.append("서명·판을 보기 전에 받아 감: %s" % ", ".join(extra))
         summary = "버림 — %s · v%d 그대로%s" % (
             CODE_KO.get(code, code), v_b,
-            " · 다른 파일은 받지도 않음" if code in ("sig-bad", "sig-missing", "minapp") and not extra else "")
+            " · 다른 파일은 받지도 않음" if code in ("sig-bad", "sig-missing", "minapp", "maxapp") and not extra else "")
     if disk_a["staging"]:
         probs.append("tools.staging 폴더가 남음")
     for fr in log_fragments(pred):
@@ -1751,7 +1791,7 @@ def cmd_selftest(a) -> int:
         pem = write_pub_pem(thex, work / "trusted_pub.pem")
         base = 5
         recs, probs = build_lab(lab, [s.sid for s in SCENARIOS], base, ctx, pem, trusted_key=str(tkey))
-        check(not probs, "여덟 가지를 hotfix_publish.py 로 만들고 서명함" + ("" if not probs else " — " + " / ".join(probs[:3])))
+        check(not probs, "시나리오 %d가지를 hotfix_publish.py 로 만들고 서명함" % len(SCENARIOS) + ("" if not probs else " — " + " / ".join(probs[:3])))
         for r in recs:
             pred = r.get("pred") or {}
             check(pred.get("code") == r["expect"] and not r["why"],

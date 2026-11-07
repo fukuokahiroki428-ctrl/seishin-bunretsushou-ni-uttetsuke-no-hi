@@ -53,6 +53,18 @@ def check_override(key, v):
     return False, "모르는 열쇠"
 
 
+def current_release_version():
+    """지금 나가 있는 맥 판(가장 높은 mac-<VERSION>-rN 태그)의 판 번호 — build.sh 가 CFBundleVersion 에 적는 모양(예: 4.0.47)."""
+    try:
+        ver = open(os.path.join(REPO, "VERSION"), encoding="utf-8").read().strip()
+    except OSError:
+        return ""
+    tags = subprocess.run(["git", "-C", REPO, "tag", "-l", "mac-%s-r*" % ver],
+                          capture_output=True, text=True).stdout.split()
+    nums = [int(m.group(1)) for t in tags for m in [re.fullmatch(r"mac-%s-r(\d+)" % re.escape(ver), t)] if m]
+    return "%s.%d" % (".".join(ver.split(".")[:2]), max(nums)) if nums else ""
+
+
 def validate(data):
     errs = []
     for k, v in data["api_overrides.json"].items():
@@ -232,6 +244,8 @@ def main():
     manifest = {
         "version": int(meta["version"]),
         "minApp": meta.get("minApp", "0"),
+        # ★ 이 꾸러미는 지금 나가 있는 판을 위한 것이다 — 그보다 새 판(그 고침이 이미 들어 있다)은 받지 않는다
+        "maxApp": meta["maxApp"] if "maxApp" in meta else current_release_version(),   # "" = 판 제한 없음
         "notes": meta.get("notes", "")[:200],
         "files": {n: {"sha256": hashlib.sha256(b).hexdigest(), "size": len(b)} for n, b in raw.items()},
     }

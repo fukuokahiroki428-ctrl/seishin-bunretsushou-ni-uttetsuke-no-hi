@@ -130,10 +130,12 @@ def cmd_start(a) -> int:
     app = src_app
     if not a.in_place:
         dst = bd / "app" / src_app.name
-        shutil.rmtree(bd / "app", ignore_errors=True)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        r = subprocess.run(["cp", "-cR", str(src_app), str(dst)], capture_output=True, text=True)
-        if r.returncode == 0 and paths.is_our_app(dst):
+        r = None
+        if not (a.keep_app and paths.is_our_app(dst)):     # --keep-app: 시험이 사본 번들에 만들어 둔 자리를 그대로 두고 다시 켠다
+            shutil.rmtree(bd / "app", ignore_errors=True)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            r = subprocess.run(["cp", "-cR", str(src_app), str(dst)], capture_output=True, text=True)
+        if (r is None or r.returncode == 0) and paths.is_our_app(dst):
             app = dst
         else:
             shutil.rmtree(bd / "app", ignore_errors=True)
@@ -177,6 +179,8 @@ def cmd_start(a) -> int:
     # ★ 캡처 Chrome 포트를 사용자 앱과 다른 대로 — 앱은 기본 9223 을 쓰고, 시작할 때 그 포트의 '자기 프로필'
     #   Chrome 을 정리한다. 포트가 겹치면 시험 사본이 사용자의 캡처를 방해한다(--env 로 덮을 수 있다).
     env["HANISHIKI_CAPTURE_PORT"] = str(cap_port)
+    # 격리 사본은 홈이 달라 로그인 키체인이 안 보인다 — 사본의 재서명은 ad-hoc 이어도 된다(버릴 사본, 빌드본은 건드리지 않는다)
+    env["ALLOW_ADHOC"] = "1"
     env.update({
         "HOME": str(home), "CFFIXED_USER_HOME": str(home), "TMPDIR": str(tmp) + "/",
         "QTWEBENGINE_REMOTE_DEBUGGING": "127.0.0.1:%d" % port,
@@ -296,6 +300,7 @@ def main() -> int:
     s.add_argument("--settle", type=float, default=3, help="준비된 뒤 더 기다릴 초(글꼴·첫 배치)")
     s.add_argument("--selfrepair-wait", type=float, default=150, help="앱의 자가 진단(봉인 복구 포함)을 기다릴 초 — 0 이면 안 기다림")
     s.add_argument("--in-place", action="store_true", help="복제하지 않고 빌드본 그 자리에서 띄운다(앱이 빌드본을 고칠 수 있음)")
+    s.add_argument("--keep-app", action="store_true", help="이미 뜬 사본 번들을 그대로 다시 켠다(시험이 번들에 만들어 둔 자리를 볼 때)")
     t = sub.add_parser("stop", help="끈다")
     t.add_argument("--wipe", action="store_true", help="사본 폴더를 지운다")
     t.add_argument("--keep", action="store_true", help="설정을 복사했어도 지우지 않는다")

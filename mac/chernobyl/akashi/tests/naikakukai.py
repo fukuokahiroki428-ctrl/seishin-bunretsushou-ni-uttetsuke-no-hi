@@ -46,6 +46,12 @@ def main() -> int:
 
     with C.page() as p:
         time.sleep(1.5)
+        # 사람이 들어오는 길 — 사이드바의 메뉴가 보이고, 눌러서 탭이 열린다(코드로 탭을 바로 열면 메뉴가 없어도 통과한다)
+        nav = p.eval("""(function(){ var n=Array.from(document.querySelectorAll('.sidebar-nav .nav-item')).find(function(e){return (e.getAttribute('onclick')||'').indexOf("'naikakukai'")>=0});
+                  if(!n) return {found:false}; var r=n.getBoundingClientRect(); var st=getComputedStyle(n); n.click();
+                  return {found:true, shown:r.width>0&&r.height>0&&st.display!=='none'&&st.visibility!=='hidden',
+                          opened:document.getElementById('tab-naikakukai').classList.contains('active')}; })()""")
+        check("사이드바에 내각회 메뉴가 보이고 눌러서 열린다", bool(nav) and nav.get("found") and nav.get("shown") and nav.get("opened"), nav)
         p.eval("""(function(){ accounts.twitter = [{name:'akashi', auth_token:'akashi-test-token', ct0:'akashi-test-ct0'}];
                   saveConfig(); switchTab('naikakukai');
                   document.getElementById('naikakukai-path').value = %s;
@@ -98,6 +104,35 @@ def main() -> int:
               and not any(r["action"] == "likes" for r in reqs), [r["action"] for r in reqs][:6])
         check("2판: 그 밖의 내각회 옵션(Excel 켬)은 그대로 물려받는다", len(T.xlsx_ids(udir / "tgt_complete.xlsx")) >= 20,
               len(T.xlsx_ids(udir / "tgt_complete.xlsx")))
+        p.eval("stopNaikakukai()")
+        time.sleep(3)
+
+        # 3판 — 대상 둘. 주기는 '대상마다' 이고 같은 플랫폼은 앞 폴링이 끝난 뒤 간격(트위터 90초)을 쉬고 하나씩 — 둘 다 한 바퀴 안에 돈다.
+        #   예전엔 주기(최소 5분)마다 전체에서 하나만 봐, 둘째 대상은 다음 주기까지 기다렸다. 간격도 1분 틱에 걸려 실제로는 2분이었다.
+        p.eval("""(function(){ document.getElementById('naikakukai-platform').value = 'twitter';
+                  document.getElementById('naikakukai-target').value = 'tgt2'; addNaikakukaiWatch(); return true; })()""")
+        time.sleep(1)
+        w.clear_requests()
+        p.eval("document.getElementById('naikakukai-log').innerText=''; startNaikakukai()")
+        t0 = time.time()
+        seen_at = {}
+        end_marks = ("twitter/tgt 새 글 없음", "twitter/tgt 폴링을 마쳤습니다", "twitter/tgt 새 글")
+        while time.time() - t0 < 360 and "tgt2" not in seen_at:   # 끝난 시각(tgt_end)도 같은 사전에 넣으므로 수로 세지 않는다
+            txt = p.eval("(document.getElementById('naikakukai-log')||{}).innerText||''", retry=True) or ""
+            for tg in ("tgt", "tgt2"):
+                if tg not in seen_at and ("폴링 → twitter / %s\n" % tg) in (txt + "\n"):
+                    seen_at[tg] = time.time() - t0
+            if "tgt" in seen_at and "tgt_end" not in seen_at and any(m in txt for m in end_marks):
+                seen_at["tgt_end"] = time.time() - t0
+            time.sleep(1)
+        started = [k for k in ("tgt", "tgt2") if k in seen_at]
+        rest = (seen_at["tgt2"] - seen_at["tgt_end"]) if ("tgt2" in seen_at and "tgt_end" in seen_at) else None
+        check("3판: 대상 둘 다 한 번 시작에 돈다(대상마다의 주기)", len(started) == 2, seen_at)
+        # 앞 폴링이 끝난 뒤 90초 — 끝난 그 시각에 틱을 하나 더 건다(로그를 1초마다 보므로 ±2초)
+        check("3판: 같은 플랫폼은 앞 폴링이 끝난 뒤 90초를 쉬고 하나씩(1분 틱에 걸려 2분이 되지 않는다)",
+              rest is not None and 86 <= rest <= 100, seen_at)
+        txt = p.eval("(document.getElementById('naikakukai-log')||{}).innerText||''", retry=True) or ""
+        check("3판: 시작 줄이 '대상마다' 라고 말한다", "대상마다 " in txt and "분마다 다시 봅니다" in txt, txt[:200])
         p.eval("stopNaikakukai()")
         time.sleep(3)
 

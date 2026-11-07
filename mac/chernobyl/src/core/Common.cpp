@@ -11,6 +11,7 @@
 #include <QProcess>
 #include <QUrl>
 #include <QCryptographicHash>
+#include <QSettings>
 #include <QProcessEnvironment>
 #include <QTimeZone>
 #include <QLocale>
@@ -23,6 +24,7 @@
 #include <QDateTime>
 #include <QStorageInfo>
 #include <QDebug>
+#include <QRegularExpression>
 #include <QCoreApplication>
 #include <QFileInfo>
 #include <QAtomicInt>
@@ -65,6 +67,23 @@ static const QStringList weekdays = {
 
 // English locale for parsing Twitter/Bluesky date strings (Mon, Jan, etc.)
 static QLocale enLocale(QLocale::English, QLocale::UnitedStates);
+
+QDateTime jstTime(const QDateTime &dt)
+{
+    static const QTimeZone jst = QTimeZone::fromSecondsAheadOfUtc(9 * 3600);
+    return dt.toTimeZone(jst);
+}
+
+QDateTime jstNow() { return jstTime(QDateTime::currentDateTimeUtc()); }
+
+QString jstText(const QString &raw, const QString &format)
+{
+    if (raw.isEmpty()) return raw;
+    const QDateTime dt = parseISODate(raw);
+    return dt.isValid() ? jstTime(dt).toString(format) : raw;
+}
+
+QDate jstToday() { return jstNow().date(); }
 
 QString formatDateJapanese(const QDateTime &dt)
 {
@@ -381,7 +400,7 @@ QString exiftoolProgram(QStringList *leadingArgs)
     return way.program;
 }
 
-void addExifMetadata(const QString &imagePath, const QString &artist,
+int addExifMetadata(const QString &imagePath, const QString &artist,
                      const QString &description, const QString &copyright,
                      const QString &comment, const QString &dateStr)
 {
@@ -389,13 +408,16 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
     QString lower = imagePath.toLower();
     bool isImage = lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") ||
                    lower.endsWith(".tiff") || lower.endsWith(".webp");
-    bool isVideo = lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".webm") ||
-                   lower.endsWith(".avi") || lower.endsWith(".mkv");
-    if (!isImage && !isVideo) return;
+    // ★ exiftool 은 WebM · MKV · AVI 에 쓰지 못한다(13.59 -listwf 실측 — 읽기만). 예전엔 넘겨서 늘 오류(-1)였고, 유튜브 뒤처리가
+    //   그것을 '실패' 로 보아 그런 영상마다 한 판을 더 돌렸다(검토). 쓸 수 없는 형식은 '해당 없음'(0)이다.
+    bool isVideo = lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".m4v");
+    if (!isImage && !isVideo) return 0;
 
     // Check exiftool availability (only once)
     static int exiftoolAvailable = -1;
-    if (exiftoolAvailable == 0) return;
+    // ★ exiftool 을 띄우지 못하는 것은 '해당 없음' 이 아니다 — 유튜브 뒤처리가 그것을 '마침' 으로 적으면 번들이 고쳐진 뒤에도
+    //   그 영상들의 EXIF 를 영영 적지 않았다(검토). 따로 알린다(-2).
+    if (exiftoolAvailable == 0) return -2;
 
     // Parse date → JST EXIF format
     QDateTime dt = parseISODate(dateStr);
@@ -444,7 +466,7 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
         argFile.setAutoRemove(true);
         if (!argFile.open()) {
             qWarning() << "[Common] exiftool argfile 을 만들지 못했습니다 — EXIF 기록을 건너뜁니다";
-            return;
+            return -1;
         }
         {
             QTextStream ts(&argFile);
@@ -465,13 +487,25 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
                        << "error:" << proc.errorString();
             exiftoolAvailable = 0;
         }
-        return;
+        return -2;
     }
     exiftoolAvailable = 1;
-    proc.waitForFinished(10000);
-    if (proc.exitCode() != 0) {
-        qWarning() << "[Common] exiftool error:" << proc.readAllStandardError().trimmed();
+    // ★ 큰 영상은 exiftool 이 파일을 통째로 다시 쓰므로 10초로는 모자랐다 — 끊기면 <파일>_exiftool_tmp 반쪽이 남는다
+    //   (원본은 그대로). 크기에 맞춰 기다리고(100MB 당 10초, 최대 10분), 그래도 끝나지 않으면 끊고 반쪽을 치운다.
+    const qint64 sizeMB = QFileInfo(imagePath).size() / (1024 * 1024);
+    const int waitMs = int(std::min<qint64>(600000, 10000 + sizeMB * 100));   // 100MB 당 10초, 최대 10분
+    if (!proc.waitForFinished(waitMs)) {
+        proc.kill();
+        proc.waitForFinished(5000);
+        QFile::remove(imagePath + "_exiftool_tmp");
+        qWarning().noquote() << "[Common] exiftool 시간 초과 — 끊고 반쪽 임시 파일을 치웠습니다:" << QFileInfo(imagePath).fileName();
+        return -1;
     }
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
+        qWarning() << "[Common] exiftool error:" << proc.readAllStandardError().trimmed();
+        return -1;
+    }
+    return 1;
 }
 
 // ─── Cross-platform path helpers ───
@@ -526,6 +560,58 @@ QString activePythonEnvDir()
 #endif
 }
 
+bool pickPythonRelease(const QString &releaseJson, const QString &arch, int wantMajor, int wantMinor,
+                       QString *url, QString *version)
+{
+    // install_only 타입의 URL 전부 수집 → 안정 버전 중 최신 선택.
+    // ★ 버전 뒤 '\+' 강제 — python-build-standalone 안정판은 'cpython-3.14.3+20250612-...' 형식이라
+    //   버전 바로 뒤가 '+'. 베타/rc(예: 'cpython-3.15.0b4+...')는 뒤가 'b4'라 제외됨.
+    //   (이전 정규식은 '3.15.0b4' 에서 '3.15.0' 을 뽑아 베타를 안정판으로 오인·설치 → env 손상 원인)
+    QRegularExpression urlRe(
+        QString("\"browser_download_url\"\\s*:\\s*\"(https://[^\"]*cpython-(\\d+\\.\\d+\\.\\d+)\\+[^\"]*%1-install_only\\.tar\\.gz)\"")
+            .arg(QRegularExpression::escape(arch)));
+    auto it = urlRe.globalMatch(releaseJson);
+    int bestPatch = -1;
+    while (it.hasNext()) {
+        const auto m = it.next();
+        const QString u = m.captured(1);
+        if (u.contains("freethreaded")) continue;
+        const QStringList parts = m.captured(2).split('.');
+        if (parts[0].toInt() != wantMajor || parts[1].toInt() != wantMinor) continue;
+        if (parts[2].toInt() > bestPatch) {
+            bestPatch = parts[2].toInt();
+            *url = u;
+            *version = m.captured(2);
+        }
+    }
+    return bestPatch >= 0;
+}
+
+void recoverInterruptedPythonSwap()
+{
+#ifdef Q_OS_MACOS
+    // python_env.old 는 교체가 다 끝나기 전에만 있다 — 있으면 끊긴 것이다.
+    //   지금 python_env 는 모듈이 덜 깔린 새 환경이거나 비어 있으므로 비키고, 옛 환경을 되돌린다.
+    for (const QString &name : {QStringLiteral("python_env" KAMERA_PY_ARCH), QStringLiteral("python_env")}) {
+        const QString dir = bundledResourcesDir() + "/" + name;
+        const QString dead = dir + ".dead";
+        if (QFileInfo::exists(dir + ".new")) QDir(dir + ".new").removeRecursively();
+        if (QFileInfo::exists(dead)) QDir(dead).removeRecursively();
+        if (!QFileInfo::exists(dir + ".old/bin/python3")) {   // 파이썬이 없는 .old 는 되살릴 것이 아니다 — 번들 안에 남기지 않는다
+            if (QFileInfo::exists(dir + ".old")) QDir(dir + ".old").removeRecursively();
+            continue;
+        }
+        if (QFileInfo::exists(dir) && !QDir().rename(dir, dead)) continue;
+        if (QDir().rename(dir + ".old", dir)) {
+            QDir(dead).removeRecursively();
+            qWarning().noquote() << "[python] 끊긴 교체를 되돌렸습니다:" << name;
+        } else if (QFileInfo::exists(dead)) {
+            QDir().rename(dead, dir);
+        }
+    }
+#endif
+}
+
 QString bundledPythonPath()
 {
 #ifdef Q_OS_WIN
@@ -547,6 +633,65 @@ QString scriptOverrideDir()
 {
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/script_overrides";
 }
+QString fileSha256Hex(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return QString();
+    QCryptographicHash h(QCryptographicHash::Sha256);
+    h.addData(&f);
+    return QString::fromLatin1(h.result().toHex());
+}
+
+QString appBuildVersion()
+{
+    static const QString v = []() {
+        const QString app = appBundlePath();
+        if (!app.isEmpty()) {
+            const QSettings plist(app + "/Contents/Info.plist", QSettings::NativeFormat);
+            const QString bv = plist.value(QStringLiteral("CFBundleVersion")).toString().trimmed();
+            if (!bv.isEmpty()) return bv;
+        }
+        return QStringLiteral(PREDORMITION_VERSION_STR);
+    }();
+    return v;
+}
+
+bool scriptOverrideStillValid(const QString &overridePath, const QString &bundledPath)
+{
+    if (!QFileInfo::exists(bundledPath)) return true;           // 비교할 원본이 없다
+    QFile base(overridePath + ".base");
+    if (base.open(QIODevice::ReadOnly))                          // 고칠 때의 원본 sha256
+        return QString::fromLatin1(base.readAll()).trimmed() == fileSha256Hex(bundledPath);
+    // .base 가 없는 옛 사본 — 원본보다 나중에 만든 것만(새 판을 깔면 원본이 더 새것이 된다)
+    return QFileInfo(overridePath).lastModified() > QFileInfo(bundledPath).lastModified();
+}
+
+static QString bundledToolPathFor(const QString &name)
+{
+    const QString tools = bundledToolsDir();
+    for (const QString &sub : { QString(), QStringLiteral("/archive") }) {
+        const QString p = tools + sub + "/" + name;
+        if (QFileInfo::exists(p)) return p;
+    }
+    return QString();
+}
+
+void retireStaleScriptOverrides()
+{
+    const QDir d(scriptOverrideDir());
+    if (!d.exists()) return;
+    for (const QFileInfo &fi : d.entryInfoList({QStringLiteral("*.py")}, QDir::Files)) {
+        const QString bundled = bundledToolPathFor(fi.fileName());
+        if (bundled.isEmpty() || scriptOverrideStillValid(fi.absoluteFilePath(), bundled)) continue;
+        const QString aside = fi.absoluteFilePath() + ".stale";
+        QFile::remove(aside);
+        if (QFile::rename(fi.absoluteFilePath(), aside)) {
+            QFile::rename(fi.absoluteFilePath() + ".base", aside + ".base");
+            qWarning().noquote() << "[자가수리] 앱이 새 판이라 옛 사본을 쓰지 않습니다(옆으로 비킴):" << fi.fileName();
+        }
+    }
+}
+
 QString activeToolScriptPath(const QString &name)
 {
     // 쓰는 순서: 서명이 맞은 고침 꾸러미 > 이 맥의 자가수리가 고친 것 > 번들 원본
@@ -555,7 +700,7 @@ QString activeToolScriptPath(const QString &name)
         if (QFileInfo::exists(hf)) return hf;
     }
     const QString ov = scriptOverrideDir() + "/" + name;
-    if (QFileInfo::exists(ov)) return ov;
+    if (QFileInfo::exists(ov) && scriptOverrideStillValid(ov, bundledToolPathFor(name))) return ov;
 
     // 번들 원본 찾기.
     //   tools/ 바로 밑에만 있는 게 아니다 — CMake 는 보관함 스크립트를

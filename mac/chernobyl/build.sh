@@ -201,6 +201,16 @@ if [ -x "$APPDIR/Contents/Resources/tools/perl/bin/perl" ]; then
     fi
 fi
 
+# ★ 판 번호(CFBundleVersion) — VERSION 의 앞 두 자리 + 다음 맥 릴리스 번호(mac-<VERSION>-rN 의 N+1). 예: 4.0.47
+#   예전엔 판마다 늘 4.0.0 이라 고침 꾸러미(minApp · maxApp)가 r46 과 r47 을 가르지 못했다. 서명 전에 고친다.
+VER="$(tr -d '[:space:]' < "$(dirname "$0")/../../VERSION")"
+LAST_R="$(git -C "$(dirname "$0")" tag -l "mac-${VER}-r*" 2>/dev/null | sed -nE 's/^mac-.*-r([0-9]+)$/\1/p' | sort -n | tail -1)"
+if [ -n "$LAST_R" ]; then
+    BUNDLE_VER="$(echo "$VER" | cut -d. -f1-2).$((LAST_R + 1))"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUNDLE_VER}" "$APPDIR/Contents/Info.plist"
+    echo "  판 번호    : ${BUNDLE_VER} (다음 릴리스 r$((LAST_R + 1)))"
+fi
+
 echo "=== Codesign (inside-out + --deep --strict verify) ==="
 # 단일 서명 경로로 위임 — 서명/검증 실패 시 codesign_app.sh 가 exit 1 → set -e 로 중단.
 bash "$(dirname "$0")/codesign_app.sh" "$APPDIR"

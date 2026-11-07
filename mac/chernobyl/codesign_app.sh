@@ -28,6 +28,18 @@ if [ -z "$SIGN_ID" ]; then
         | grep -oE '"Apple Development:[^"]+"' | head -1 | tr -d '"')
     [ -z "$SIGN_ID" ] && SIGN_ID="-"
 fi
+# ★ 인증서로 서명돼 있던 번들을 ad-hoc 으로 바꾸지 않는다. 그러면 앱의 신원이 바뀌어 macOS 가 권한(TCC)을
+#   초기화한다(2026-09-26 실제로 겪음). 인증서가 만료되면(2027-01-17) find-identity -v 에서 빠져 여기로 온다 —
+#   예전엔 조용히 ad-hoc 으로 서명했다. 그대로 두면 앱은 봉인이 깨진 채로도 돈다(하드닝 런타임 없음).
+#   일부러 ad-hoc 으로 서명하려면 ALLOW_ADHOC=1(격리 사본 시험 등).
+if [ "$SIGN_ID" = "-" ] && [ "${ALLOW_ADHOC:-0}" != "1" ]; then
+    OLD_TEAM=$(codesign -dvv "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+    if [ -n "$OLD_TEAM" ] && [ "$OLD_TEAM" != "not set" ]; then
+        echo "[codesign] ❌ 쓸 수 있는 서명 인증서가 없습니다(만료 · 없음). 팀 $OLD_TEAM 로 서명된 번들을 ad-hoc 으로 바꾸지 않습니다."
+        echo "[codesign]    인증서를 갱신한 뒤 다시 하십시오(일부러 ad-hoc 이면 ALLOW_ADHOC=1)."
+        exit 3
+    fi
+fi
 case "$SIGN_ID" in
     "Developer ID Application:"*) IS_DEVID=1; echo "[codesign] Using Developer ID: $SIGN_ID" ;;
     "-")  IS_DEVID=0; echo "[codesign] 서명 인증서 없음 → ad-hoc(-)." ;;
@@ -65,8 +77,10 @@ try_sign() {
 
 echo "[codesign] Signing $APP ..."
 
-# 0. 기존 _CodeSignature 제거
+# 0. 기존 _CodeSignature 제거 · Finder 정보 같은 확장 속성을 먼저 걷는다(남아 있으면 메인 번들 서명이
+#    "resource fork, Finder information, or similar detritus not allowed" 로 실패한다 — 2026-11-05 iCloud 의 문서 폴더)
 find "$APP" -name "_CodeSignature" -type d -exec rm -rf {} + 2>/dev/null || true
+xattr -cr "$APP" 2>/dev/null || true
 
 # 1. companion app 안의 Python.framework 구조 정상화(있을 때만 — 현재 빌드엔 미포함)
 find "$APP/Contents/Resources" -maxdepth 1 -name "*.app" -type d 2>/dev/null | while IFS= read -r capp; do
