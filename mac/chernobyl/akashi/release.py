@@ -5,6 +5,7 @@
     python3 akashi/release.py --notes notes.md --dry-run   # 계획만
     python3 akashi/release.py --notes notes.md             # 한 단계씩 묻고
     python3 akashi/release.py --notes notes.md --skip-dmg  # 이미 만든 build/*.dmg 로
+    python3 akashi/release.py --notes notes.md --resume    # 태그까지 나간 뒤 끊긴 판을 잇는다(태그가 HEAD 일 때만)
 
 ★ 규칙(지금까지의 판과 같게)
   태그는 mac-<판>-r<번호> — 번호는 그 판의 가장 큰 r 번호 + 1 을 스스로 셈한다. 'v' 로 시작하는 태그는
@@ -98,9 +99,12 @@ def main() -> int:
     ap.add_argument("--skip-dmg", action="store_true", help="make_dmg.sh 를 건너뛰고 build/*.dmg 를 쓴다")
     ap.add_argument("--dry-run", action="store_true", help="계획만 보이고 아무것도 하지 않는다")
     ap.add_argument("--yes", action="store_true", help="묻지 않는다 — 사용자가 이미 허락한 때만")
+    ap.add_argument("--resume", action="store_true",
+                    help="태그까지 나간 뒤 끊긴 판을 잇는다 — 태그가 지금 HEAD 를 가리킬 때만 · 이미 만든 DMG 를 쓴다")
     a = ap.parse_args()
 
-    notes = Path(a.notes)
+    # ★ 절대 경로로 — 명령마다 작업 폴더가 달라(gh 는 저장소 뿌리에서) 상대 경로면 알림 글을 못 찾았다(r47 첫 시도)
+    notes = Path(a.notes).resolve()
     if not notes.is_file() or not notes.read_text("utf-8").strip():
         print("알림 글이 없거나 비었습니다 — 판을 내지 않습니다")
         return 2
@@ -121,9 +125,14 @@ def main() -> int:
     if tag.startswith("v"):
         print("'v' 로 시작하는 태그는 만들지 않습니다: " + tag)
         return 2
-    if git("tag", "-l", tag):
-        print("태그가 이미 있습니다: " + tag)
+    tag_exists = bool(git("tag", "-l", tag))
+    if tag_exists and not a.resume:
+        print("태그가 이미 있습니다: " + tag + " (태그까지 나간 뒤 끊겼으면 --resume)")
         return 2
+    if tag_exists and git("rev-list", "-n", "1", tag) != git("rev-parse", "HEAD"):
+        print("태그 %s 가 지금 HEAD 를 가리키지 않습니다 — 잇지 않습니다" % tag)
+        return 2
+    tag_pushed = tag_exists and bool(git("ls-remote", "--tags", "origin", "refs/tags/" + tag))
     title = "%s %s (%s)" % (name, version, tag.rsplit("-", 1)[-1])
     # ★ 빌드본의 판 번호(CFBundleVersion)는 build.sh 가 '다음 릴리스 번호' 로 적는다 — 낼 태그와 맞아야 고침 꾸러미가 판을 가른다
     rnum = tag.rsplit("-r", 1)[-1]
@@ -165,10 +174,12 @@ def main() -> int:
     steps = []
     if ahead not in ("0", "?"):
         steps.append(("git push origin " + branch, ["git", "push", "origin", branch], True))
-    if not a.skip_dmg:
+    if not a.skip_dmg and not a.resume:
         steps.append(("./make_dmg.sh", ["./make_dmg.sh"], False))
-    steps.append(("git tag -a %s -m '%s'" % (tag, title), ["git", "tag", "-a", tag, "-m", title], False))
-    steps.append(("git push origin " + tag, ["git", "push", "origin", tag], True))
+    if not tag_exists:
+        steps.append(("git tag -a %s -m '%s'" % (tag, title), ["git", "tag", "-a", tag, "-m", title], False))
+    if not tag_pushed:
+        steps.append(("git push origin " + tag, ["git", "push", "origin", tag], True))
     steps.append(("gh release create %s <dmg> --title '%s' --notes-file <알림> --latest" % (tag, title), None, True))
     print("  할 일:")
     for s, _, outward in steps:
