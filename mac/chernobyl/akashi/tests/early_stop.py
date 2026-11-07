@@ -165,6 +165,7 @@ def main() -> int:
             while not idle() and time.time() - t0 < 300:   # 앞 판이 정말 끝날 때까지
                 time.sleep(1)
             p.eval("(typeof platformStats!=='undefined') && (platformStats.twitter = {status: 'akashi-wait'}) && true")
+            p.eval("(function(){var e=document.getElementById('twitter-log'); if(e) e.innerHTML=''; return true;})()")
             p.eval("backend.startCollection(%s)" % json.dumps(json.dumps(cfg)))
             t0 = time.time()
             while time.time() - t0 < 60 and C.platform_stats(p, "twitter").get("status") == "akashi-wait":
@@ -173,7 +174,9 @@ def main() -> int:
             t1 = time.time()
             while not idle() and time.time() - t1 < 120:
                 time.sleep(1)
-        time.sleep(4)   # 끝자락(표시 되돌리기 · 엑셀)
+            time.sleep(4)   # 끝자락(표시 되돌리기 · 엑셀) — 기록은 모아서 온다
+            run.log = p.eval("(document.getElementById('twitter-log')||{}).innerText||''", retry=True) or ""
+        time.sleep(1)
         reqs = w.requests()
         print("   [%s] %s %s · %.0fs · 요청 %d" % (label, kind, (st or {}).get("status"), took or -1, len(reqs)), flush=True)
         return st, reqs
@@ -184,6 +187,7 @@ def main() -> int:
             out = [r for r in out if ("filter:replies" in r["query"]) == replies]
         return out
 
+    run.log = ""
     xl = udir / "tgt_complete.xlsx"
 
     # ── A. 첫 판(끝까지) → 새 글 뒤 일찍 멈춤 ──
@@ -196,6 +200,10 @@ def main() -> int:
     check("A1 검색 · 타임라인 표시에 top", int(m.get("tw_tweets_search_m0", {}).get("top", 0)) > 0
           and int(m.get("tw_tweets_timeline_m0", {}).get("top", 0)) > 0, m)
     check("A1 은 끝까지 되짚었다(until: 검색이 있다)", len(until_searches(reqs)) > 0, len(until_searches(reqs)))
+    # 엑셀 저장 — 이번 판이 쓴 파일은 다시 읽지 않는다(예전엔 저장마다 통째로 두 번 읽어 큰 계정에서 제곱으로 느려졌다)
+    saves, rereads = run.log.count("저장: "), run.log.count("기존 파일:")
+    check("A1 엑셀을 여러 번 저장했고(%d번), 이번 판이 쓴 파일을 다시 읽지 않았다(%d번)" % (saves, rereads),
+          saves >= 2 and rereads == 0, (saves, rereads))
     rows = xlsx_rows(xl)
     check("X1 트윗 엑셀 — 모든 줄에 글 주소 · 작성자 · 종류 · 언어", not bad_rows(rows, ["tweet_url", "author_username", "type", "language"]),
           bad_rows(rows, ["tweet_url", "author_username", "type", "language"])[:3])

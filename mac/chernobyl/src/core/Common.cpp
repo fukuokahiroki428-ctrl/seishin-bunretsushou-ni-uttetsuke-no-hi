@@ -1440,7 +1440,8 @@ bool resealAppBundle(QString *err)
         // 스크립트가 실패 사유를 표준출력에도 적는다(개별 서명 실패 목록 등).
         const QString out = QString::fromUtf8(cs.readAllStandardOutput()).right(400);
         const QString e   = QString::fromUtf8(cs.readAllStandardError()).left(300);
-        if (err) *err = (e.isEmpty() ? out : e);
+        // 표준 오류에 잡음이 있어도 스크립트가 표준 출력에 적은 까닭(인증서 없음 등)을 잃지 않게 둘 다 넘긴다
+        if (err) *err = e.isEmpty() ? out : (e + QLatin1Char('\n') + out);
         return false;
     }
 

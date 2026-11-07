@@ -21,13 +21,27 @@ ENTITLEMENTS="${ENTITLEMENTS:-$SCRIPT_DIR/hanishiki.entitlements}"
 #   3) ad-hoc(-) — 인증서가 하나도 없을 때. 매 빌드 해시가 바뀌어 권한이 재설정됨.
 #   SIGN_ID 환경변수로 강제 지정 가능.
 # ─────────────────────────────────────────────────────────────────────────────
+# ★ 이름이 아니라 지문(SHA-1 40자)으로 서명한다 — 인증서를 만료 전에 갱신하면 같은 이름의 인증서가 둘 생겨,
+#   이름으로 넘기면 codesign 이 'ambiguous' 로 멈췄다(검토). 이름(SIGN_NAME)은 판별 · 기록에만 쓴다.
+IDS="$(security find-identity -v -p codesigning 2>/dev/null)"
 if [ -z "$SIGN_ID" ]; then
-    SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
-        | grep -oE '"Developer ID Application:[^"]+"' | head -1 | tr -d '"')
-    [ -z "$SIGN_ID" ] && SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
-        | grep -oE '"Apple Development:[^"]+"' | head -1 | tr -d '"')
+    SIGN_LINE=$(printf '%s\n' "$IDS" | grep -m1 '"Developer ID Application:')
+    [ -z "$SIGN_LINE" ] && SIGN_LINE=$(printf '%s\n' "$IDS" | grep -m1 '"Apple Development:')
+    if [ -n "$SIGN_LINE" ]; then
+        SIGN_ID=$(printf '%s\n' "$SIGN_LINE" | grep -oE '[0-9A-F]{40}' | head -1)
+        SIGN_NAME=$(printf '%s\n' "$SIGN_LINE" | sed -E 's/.*"(.*)".*/\1/')
+    fi
     [ -z "$SIGN_ID" ] && SIGN_ID="-"
 fi
+# 지문으로 받았으면 그 이름을, 이름으로 받았으면 그 이름의 지문을 찾는다(같은 이름이 둘이면 첫 것 — 둘 다 같은 신원이다)
+if printf '%s' "$SIGN_ID" | grep -qiE '^[0-9a-f]{40}$'; then
+    [ -z "${SIGN_NAME:-}" ] && SIGN_NAME=$(printf '%s\n' "$IDS" | grep -i -m1 "$SIGN_ID" | sed -E 's/.*"(.*)".*/\1/')
+elif [ "$SIGN_ID" != "-" ]; then
+    SIGN_NAME="$SIGN_ID"
+    _fp=$(printf '%s\n' "$IDS" | grep -F -m1 "\"$SIGN_ID\"" | grep -oE '[0-9A-F]{40}' | head -1)
+    [ -n "$_fp" ] && SIGN_ID="$_fp"
+fi
+[ -z "${SIGN_NAME:-}" ] && SIGN_NAME="$SIGN_ID"
 # ★ 인증서로 서명돼 있던 번들을 ad-hoc 으로 바꾸지 않는다. 그러면 앱의 신원이 바뀌어 macOS 가 권한(TCC)을
 #   초기화한다(2026-09-26 실제로 겪음). 인증서가 만료되면(2027-01-17) find-identity -v 에서 빠져 여기로 온다 —
 #   예전엔 조용히 ad-hoc 으로 서명했다. 그대로 두면 앱은 봉인이 깨진 채로도 돈다(하드닝 런타임 없음).
@@ -36,14 +50,15 @@ if [ "$SIGN_ID" = "-" ] && [ "${ALLOW_ADHOC:-0}" != "1" ]; then
     OLD_TEAM=$(codesign -dvv "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p')
     if [ -n "$OLD_TEAM" ] && [ "$OLD_TEAM" != "not set" ]; then
         echo "[codesign] ❌ 쓸 수 있는 서명 인증서가 없습니다(만료 · 없음). 팀 $OLD_TEAM 로 서명된 번들을 ad-hoc 으로 바꾸지 않습니다."
-        echo "[codesign]    인증서를 갱신한 뒤 다시 하십시오(일부러 ad-hoc 이면 ALLOW_ADHOC=1)."
+        echo "[codesign]    인증서를 갱신한 뒤 다시 하거나, ハンイシキ_개발자인증.command(DMG · 저장소 packaging/)로 직접 다시 서명하십시오."
+        echo "[codesign]    (그 파일로 임시 서명을 고르면 됩니다 — 스크립트로 일부러 ad-hoc 이면 ALLOW_ADHOC=1)"
         exit 3
     fi
 fi
-case "$SIGN_ID" in
-    "Developer ID Application:"*) IS_DEVID=1; echo "[codesign] Using Developer ID: $SIGN_ID" ;;
+case "$SIGN_NAME" in
+    "Developer ID Application:"*) IS_DEVID=1; echo "[codesign] Using Developer ID: $SIGN_NAME" ;;
     "-")  IS_DEVID=0; echo "[codesign] 서명 인증서 없음 → ad-hoc(-)." ;;
-    *)    IS_DEVID=0; echo "[codesign] Using identity: $SIGN_ID (개발자 ID — 로컬 안정 식별자)" ;;
+    *)    IS_DEVID=0; echo "[codesign] Using identity: $SIGN_NAME (개발자 ID — 로컬 안정 식별자)" ;;
 esac
 
 # 하드닝 런타임+타임스탬프+entitlements 는 Developer ID(공증 경로)에서만.

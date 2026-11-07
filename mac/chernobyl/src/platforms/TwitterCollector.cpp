@@ -2138,6 +2138,15 @@ void TwitterCollector::saveExcel(const QString &saveDir, const QString &target, 
     m_backend->log("저장: "+ filepath, "success", "twitter");
 }
 
+// 중간 저장을 할 때인가 — 판의 첫 중간 저장은 곧바로, 그 뒤로는 지난 저장에 걸린 시간의 다섯 배(적어도 60초)가 지났을 때만.
+//   판의 끝 · 이어받기 표시를 옮기기 전의 저장은 이것을 보지 않는다(엑셀보다 표시가 앞서지 않게).
+bool TwitterCollector::excelCheckpointDue() const
+{
+    // 단조 시계로 잰다 — 시계를 뒤로 돌려도(수동 · NTP) 저장이 그만큼 멎지 않게(검토)
+    if (!m_xlSinceSave.isValid()) return true;
+    return m_xlSinceSave.elapsed() >= qMax<qint64>(60000, 5 * m_xlLastSaveCostMs);
+}
+
 int TwitterCollector::saveExcelStreaming(const QString &saveDir, const QString &target, DiskJsonBuffer &buffer, const QString &suffix)
 {
     // 아니포 호환 파일명: _complete.xlsx (tweets일 때)
@@ -2146,23 +2155,55 @@ int TwitterCollector::saveExcelStreaming(const QString &saveDir, const QString &
 
     QString filepath = saveDir + "/"+ target + "_"+ fileSuffix + ".xlsx";
 
-    // ── Step 1: 기존 Excel에서 ID만 읽기 (행 데이터는 메모리에 올리지 않음) ──
+    // ── Step 1: 기존 Excel 읽기 — 한 번만. 이번 판에 우리가 마지막으로 쓴 그 파일이 그대로면(경로 · 크기 · 시각) 다시 읽지 않고
+    //   기억해 둔 줄을 쓴다. 예전엔 저장마다 ID 를 읽느라 한 번, 다시 쓰느라 한 번, 파일 전체를 두 번 열었다(장기 지원 점검).
+    QElapsedTimer xlTimer;
+    xlTimer.start();
     QSet<QString> existingIds;
-    int existingLastRow = 1;  // 1 = 헤더만 있음
-
-    if (QFile::exists(filepath)) {
-        QXlsx::Document existingDoc(filepath);
-        existingLastRow = existingDoc.dimension().lastRow();
-        // ID만 읽기 (1열) — 행 데이터 전체를 메모리에 올리지 않음
-        for (int r = 2; r <= existingLastRow; ++r) {
-            QString id = existingDoc.read(r, 1).toString().trimmed();
-            if (!id.isEmpty() && !id.startsWith("─") && !id.startsWith("===")) {
-                existingIds.insert(id);
+    QList<QStringList> existingRows;
+    {
+        const QFileInfo xfi(filepath);
+        const bool cacheHit = xfi.exists() && filepath == m_xlCachePath && xfi.size() == m_xlCacheSize
+                              && xfi.lastModified().toMSecsSinceEpoch() == m_xlCacheMtimeMs;
+        if (cacheHit) {
+            existingRows = m_xlCacheRows;   // 암묵적 공유 — 고칠 때만 복사된다
+        } else if (xfi.exists()) {
+            QXlsx::Document existingDoc(filepath);
+            // ★ 있는 파일을 읽지 못했으면(잠깐의 입출력 오류 · 깨진 파일) 덮어쓰지 않는다 — QXlsx 는 실패해도 빈 시트를 주어,
+            //   그대로 쓰면 이번 판의 줄만 남고 그 대상의 기록을 잃었다(검토). 줄은 버퍼에 그대로 두어 다음 저장이 다시 해 본다.
+            if (!existingDoc.isLoadPackage()) {
+                m_excelSaveFailed = true;
+                m_xlLastSaveCostMs = xlTimer.elapsed();
+                m_xlSinceSave.start();
+                m_backend->log(QString("엑셀을 읽지 못해 덮어쓰지 않습니다: %1 — 파일이 깨졌으면 다른 이름으로 옮겨 두고 다시 받으십시오"
+                                       "(이어받기 · 일찍 멈춤 표시는 옮기지 않습니다)").arg(filepath), "error", "twitter");
+                return 0;
+            }
+            const int existingLastRow = existingDoc.dimension().lastRow();
+            int lastCol = existingDoc.dimension().lastColumn();
+            if (lastCol < 21) lastCol = 21;
+            for (int r = 2; r <= existingLastRow; ++r) {
+                QStringList rowData;
+                rowData.reserve(qMax(lastCol, 30));
+                for (int c = 1; c <= lastCol; ++c) rowData << existingDoc.read(r, c).toString();
+                // 30컬럼으로 패딩 (아니포 21컬럼 호환)
+                while (rowData.size() < 30) rowData << "";
+                // 구분선/빈 행 건너뜀
+                if (rowData[0].startsWith("─") || rowData[0].startsWith("===")) continue;
+                if (rowData[0].trimmed().isEmpty()) continue;
+                existingRows.append(rowData);
+            }
+            // 읽은 그대로를 기억한다 — 이번에 쓸 것이 없어 건너뛰어도 다음 저장이 다시 읽지 않게(아래 빈칸 채우기는 사본을 고친다)
+            if (existingRows.size() <= 150000) {
+                m_xlCachePath = filepath;
+                m_xlCacheSize = xfi.size();
+                m_xlCacheMtimeMs = xfi.lastModified().toMSecsSinceEpoch();
+                m_xlCacheRows = existingRows;
             }
         }
-        if (!existingIds.isEmpty()) {
+        for (const QStringList &r : std::as_const(existingRows)) existingIds.insert(r[0].trimmed());
+        if (!cacheHit && !existingIds.isEmpty())
             m_backend->log(QString("기존 파일: %1개 ID 확인").arg(existingIds.size()), "info", "twitter");
-        }
     }
 
     // ── Step 2: 버퍼에서 새 데이터만 추출 (중복 제거) ──
@@ -2215,10 +2256,10 @@ int TwitterCollector::saveExcelStreaming(const QString &saveDir, const QString &
         else newRows.append(rowOut);
     }
 
-    // 버퍼 비움 → 디스크 + 메모리 해제 (다음 저장 시 새 데이터만 처리)
-    buffer.clear();
-
+    // 버퍼는 다 쓴 뒤에야 비운다 — 쓰다 실패하면 그대로 두어 다음 저장이 그 줄을 다시 넣는다(예전엔 쓰기 전에 비워
+    //   저장에 실패하면 지난 저장 이후의 줄을 잃었다 — 검토). 쓸 것이 없으면 여기서 비운다.
     if (newRows.isEmpty() && refill.isEmpty()) {
+        buffer.clear();
         m_backend->log("새 데이터 없음, 저장 건너뜀", "info", "twitter");
         return 0;
     }
@@ -2234,27 +2275,7 @@ int TwitterCollector::saveExcelStreaming(const QString &saveDir, const QString &
                            "possibly_sensitive", "user_followers", "user_following",
                            "user_verified", "user_profile_image"};
 
-    // ── Step 3: 기존 데이터 읽기 + 새 파일로 재작성 (QXlsx append는 openpyxl 파일 깨뜨림) ──
-    QList<QStringList> existingRows;
-
-    if (QFile::exists(filepath) && existingLastRow > 1) {
-        QXlsx::Document existingDoc(filepath);
-        int lastCol = existingDoc.dimension().lastColumn();
-        if (lastCol < 21) lastCol = 21;
-
-        for (int r = 2; r <= existingLastRow; ++r) {
-            QStringList rowData;
-            for (int c = 1; c <= lastCol; ++c) {
-                rowData << existingDoc.read(r, c).toString();
-            }
-            // 30컬럼으로 패딩 (아니포 21컬럼 호환)
-            while (rowData.size() < 30) rowData << "";
-            // 구분선/빈 행 건너뜀
-            if (rowData[0].startsWith("─") || rowData[0].startsWith("===")) continue;
-            if (rowData[0].trimmed().isEmpty()) continue;
-            existingRows.append(rowData);
-        }
-    }
+    // ── Step 3: 새 파일로 재작성 (QXlsx append는 openpyxl 파일 깨뜨림) — 기존 줄은 Step 1 에서 이미 읽었다 ──
     // 있던 줄의 빈칸 채우기 — 다시 받은 줄에서. 그래도 비는 글 주소는 ID 로(x.com/i/status/<ID> 도 그 글로 열린다)
     bool refilled = false;
     static const QRegularExpression reNumId(QStringLiteral("^\\d{5,25}$"));
@@ -2274,6 +2295,7 @@ int TwitterCollector::saveExcelStreaming(const QString &saveDir, const QString &
         }
     }
     if (newRows.isEmpty() && !refilled) {
+        buffer.clear();
         m_backend->log("새 데이터 없음, 저장 건너뜀", "info", "twitter");
         return 0;
     }
@@ -2340,12 +2362,28 @@ int TwitterCollector::saveExcelStreaming(const QString &saveDir, const QString &
     writer.setColumnWidth(29, 8);   // user_verified
     writer.setColumnWidth(30, 40);  // user_profile_image
 
-    if (!writer.save(filepath)) {            // 실패는 저장 쪽이 기록에 적었다 — 새 줄 수 · '저장' 을 적지 않는다
+    // 파일을 바꾸기 직전에 잊는다 — 쓰다 실패하면 비운 채로 두어 다음 저장이 파일을 읽게
+    m_xlCachePath.clear();
+    m_xlCacheRows.clear();
+    const bool xlSaved = writer.save(filepath);
+    m_xlSinceSave.start();
+    m_xlLastSaveCostMs = xlTimer.elapsed();
+    if (!xlSaved) {            // 실패는 저장 쪽이 기록에 적었다 — 새 줄 수 · '저장' 을 적지 않는다
         m_excelSaveFailed = true;
         return 0;
     }
 
+    buffer.clear();   // 다 썼다 — 디스크 버퍼 비움(다음 저장은 새 줄만)
     FileHelper::setDownloadMeta(filepath, "(\"https://x.com\", \"Hanishiki\")");
+
+    // 이번에 쓴 것을 기억한다 — 다음 저장이 파일을 다시 읽지 않게. 줄이 아주 많으면(메모리) 기억하지 않는다.
+    if (mergedRows.size() <= 150000) {
+        const QFileInfo wrote(filepath);
+        m_xlCachePath = filepath;
+        m_xlCacheSize = wrote.size();
+        m_xlCacheMtimeMs = wrote.lastModified().toMSecsSinceEpoch();
+        m_xlCacheRows = mergedRows;
+    }
 
     // 기존 행 메모리 즉시 해제
     existingRows.clear();
@@ -3185,12 +3223,19 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
     // "all"모드에서 재귀 호출 시 _subCall=true → 상태 초기화 건너뜀
     bool isSubCall = config["_subCall"].toBool(false);
+    // 판이 끝나면 엑셀 줄 기억을 놓는다 — 수집기는 '새 트윗 확인' 때문에 다음 판까지 남아, 큰 계정이면 수백 MB 를 쥐고 있었다(검토)
+    struct XlCacheRelease {
+        TwitterCollector *c; bool on;
+        ~XlCacheRelease() { if (on) { c->m_xlCacheRows.clear(); c->m_xlCacheRows.squeeze(); c->m_xlCachePath.clear(); } }
+    } _xlCacheRelease{this, !isSubCall};
 
     if (!isSubCall) {
         // 새트윗 확인용 변수 초기화 (최상위 호출만)
         m_currentTarget = target;
         m_newestTweetId.clear();
         m_excelSaveFailed = false;
+        m_xlCachePath.clear(); m_xlCacheRows.clear(); m_xlCacheSize = -1; m_xlCacheMtimeMs = 0;
+        m_xlSinceSave.invalidate(); m_xlLastSaveCostMs = 0;
         // ★ multi-target 큐: 직전 target에서 누적된 RL 추적 상태가 새 target/계정에 잘못 적용되지 않도록 reset
         m_accountRateLimitTime.clear();
         m_rateLimitHits = 0;
@@ -3957,12 +4002,18 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         if (const int gaveUp = stopAfterKnown > 0 ? int((failedNow & prevFailed).size()) : 0)
             m_backend->log(QString("두 판 잇따라 미디어를 받지 못한 %1 %2개는 일찍 멈춤을 더는 막지 않습니다(지워졌거나 막힌 듯 — 4~5주마다 끝까지 볼 때 다시 받아 봅니다)").arg(QStringLiteral("좋아요")).arg(gaveUp), "info", "twitter");
         Common::putWalkFailures(userDir, walkKind, failedNow + (prevFailed - collectedIds));   // 이번 판에 보지 못한 것은 그대로 둔다
-        if (isRunning && (kr.stopped || !hasMore) && !capHit() && newFails.isEmpty()
+        // ★ 이 목록의 엑셀을 먼저 저장하고, 그 저장이 실패했으면 표시를 옮기지 않는다 — 예전엔 표시를 적은 뒤에 저장해, 저장에
+        //   실패해도 표시가 남아 다음 판이 빠진 줄을 건너뛰었다(검토). 앞선 다른 파일(트윗 엑셀)의 실패와는 따로 본다(실패 사실은 그대로).
+        const bool xlFailedBefore = m_excelSaveFailed;
+        m_excelSaveFailed = false;
+        if (collectedData.count() > 0) saveExcelStreaming(userDir, target, collectedData, "likes");
+        const bool listXlFailed = m_excelSaveFailed;
+        m_excelSaveFailed = xlFailedBefore || listXlFailed;
+        if (isRunning && (kr.stopped || !hasMore) && !capHit() && newFails.isEmpty() && !listXlFailed
             && config["mode"].toString() != QLatin1String("period"))   // 기간 판은 목록 전체를 본 것이 아니다
             Common::putCleanWalkMark(userDir, walkKind);
         m_backend->noteTrackFresh(kr.fresh);
         if (kr.stopped) m_backend->noteTrackEarlyStop(kr.stopped);
-        if (collectedData.count() > 0) saveExcelStreaming(userDir, target, collectedData, "likes");
         m_backend->log(QString("완료! 좋아요: %1, 미디어: %2").arg(tweetCount).arg(mediaCount), "success", "twitter");
         m_backend->updateStats(tweetCount, mediaCount, "완료", "twitter");
         stopDaemon();
@@ -4081,12 +4132,18 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         if (const int gaveUp = stopAfterKnown > 0 ? int((failedNow & prevFailed).size()) : 0)
             m_backend->log(QString("두 판 잇따라 미디어를 받지 못한 %1 %2개는 일찍 멈춤을 더는 막지 않습니다(지워졌거나 막힌 듯 — 4~5주마다 끝까지 볼 때 다시 받아 봅니다)").arg(QStringLiteral("북마크")).arg(gaveUp), "info", "twitter");
         Common::putWalkFailures(userDir, walkKind, failedNow + (prevFailed - collectedIds));   // 이번 판에 보지 못한 것은 그대로 둔다
-        if (isRunning && (kr.stopped || !hasMore) && !capHit() && newFails.isEmpty()
+        // ★ 이 목록의 엑셀을 먼저 저장하고, 그 저장이 실패했으면 표시를 옮기지 않는다 — 예전엔 표시를 적은 뒤에 저장해, 저장에
+        //   실패해도 표시가 남아 다음 판이 빠진 줄을 건너뛰었다(검토). 앞선 다른 파일(트윗 엑셀)의 실패와는 따로 본다(실패 사실은 그대로).
+        const bool xlFailedBefore = m_excelSaveFailed;
+        m_excelSaveFailed = false;
+        if (collectedData.count() > 0) saveExcelStreaming(userDir, target, collectedData, "bookmarks");
+        const bool listXlFailed = m_excelSaveFailed;
+        m_excelSaveFailed = xlFailedBefore || listXlFailed;
+        if (isRunning && (kr.stopped || !hasMore) && !capHit() && newFails.isEmpty() && !listXlFailed
             && config["mode"].toString() != QLatin1String("period"))   // 기간 판은 목록 전체를 본 것이 아니다
             Common::putCleanWalkMark(userDir, walkKind);
         m_backend->noteTrackFresh(kr.fresh);
         if (kr.stopped) m_backend->noteTrackEarlyStop(kr.stopped);
-        if (collectedData.count() > 0) saveExcelStreaming(userDir, target, collectedData, "bookmarks");
         m_backend->log(QString("완료! 북마크: %1, 미디어: %2").arg(tweetCount).arg(mediaCount), "success", "twitter");
         m_backend->updateStats(tweetCount, mediaCount, "완료", "twitter");
         stopDaemon();
@@ -4324,15 +4381,21 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         if (const int gaveUp = stopAfterKnown > 0 ? int((failedNow & prevFailed).size()) : 0)
             m_backend->log(QString("두 판 잇따라 미디어를 받지 못한 %1 %2개는 일찍 멈춤을 더는 막지 않습니다(지워졌거나 막힌 듯 — 4~5주마다 끝까지 볼 때 다시 받아 봅니다)").arg(QStringLiteral("리포스트")).arg(gaveUp), "info", "twitter");
         Common::putWalkFailures(userDir, walkKind, failedNow + (prevFailed - collectedIds));   // 이번 판에 보지 못한 것은 그대로 둔다
-        if (isRunning && (kr.stopped || !hasMore) && !capHit() && newFails.isEmpty()
-            && !sinceDate.isValid() && !untilDate.isValid())   // 기간으로 거른 걸음은 목록 전체를 본 것이 아니다
-            Common::putCleanWalkMark(userDir, walkKind);
-        m_backend->noteTrackFresh(kr.fresh);
-        if (kr.stopped) m_backend->noteTrackEarlyStop(kr.stopped);
+        // ★ 이 목록의 엑셀을 먼저 저장하고, 그 저장이 실패했으면 표시를 옮기지 않는다 — 예전엔 표시를 적은 뒤에 저장해, 저장에
+        //   실패해도 표시가 남아 다음 판이 빠진 줄을 건너뛰었다(검토). 앞선 다른 파일(트윗 엑셀)의 실패와는 따로 본다(실패 사실은 그대로).
+        const bool xlFailedBefore = m_excelSaveFailed;
+        m_excelSaveFailed = false;
         if (collectedData.count() > 0) {
             m_backend->log("Excel 저장...", "info", "twitter");
             saveExcelStreaming(userDir, target, collectedData, "reposts");
         }
+        const bool listXlFailed = m_excelSaveFailed;
+        m_excelSaveFailed = xlFailedBefore || listXlFailed;
+        if (isRunning && (kr.stopped || !hasMore) && !capHit() && newFails.isEmpty() && !listXlFailed
+            && !sinceDate.isValid() && !untilDate.isValid())   // 기간으로 거른 걸음은 목록 전체를 본 것이 아니다
+            Common::putCleanWalkMark(userDir, walkKind);
+        m_backend->noteTrackFresh(kr.fresh);
+        if (kr.stopped) m_backend->noteTrackEarlyStop(kr.stopped);
 
         m_backend->log(QString("완료! 리포스트: %1, 미디어: %2").arg(tweetCount).arg(mediaCount), "success", "twitter");
         m_backend->updateStats(tweetCount, mediaCount, "완료", "twitter");
@@ -4720,6 +4783,13 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
     QString walkList;
     auto putWalk = [&](const QString &list) {
         if (legacyExcel) return;
+        // ★ 표시는 지금까지 모은 줄을 다 저장한 뒤에만 남긴다 — 중간 저장을 띄엄띄엄 하게 되어(excelCheckpointDue) 표시만 남고
+        //   줄은 빠지는 틈이 커졌다(저장 실패 · 끄기 · 죽음 — 검토). 저장에 실패한 판은 표시를 옮기지 않는다(saveProgress 와 같다).
+        if (collectedData.count() > 0) saveExcelStreaming(userDir, target, collectedData, excelSuffix);
+        if (m_excelSaveFailed) {
+            m_backend->log(QString("'%1' 의 일찍 멈춤 표시는 그대로 둡니다 — 이번 판에 엑셀을 저장하지 못해, 다음 판이 끝까지 봅니다").arg(list), "warning", "twitter");
+            return;
+        }
         qulonglong seen = list == walkList ? walkSeenTop : 0ULL;
         if (list != "timeline") {
             // 검색(search · replies)은 색인이 늦게 붙는 글이 있다 — 걸음을 시작하기 6시간 전보다 새것은 top 에 넣지 않는다. 그 사이는
@@ -5054,8 +5124,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
             collectedData.append(data);
 
-            // Intermediate save every 50 tweets — 메모리 부족 방지 + 크래시 시 데이터 보존
-            if (tweetCount % 50 == 0) {
+            // 중간 저장 — 크래시 때 잃는 것을 줄인다. 예전엔 50개마다 저장해, 큰 계정에서는 저장마다 파일 전체를 다시 써 판 전체가
+            //   제곱으로 느려졌다(10만 개면 2,000번). 이제 50개가 쌓였고 저장할 때가 됐을 때만(excelCheckpointDue). 쌓인 것은
+            //   디스크 버퍼(DiskJsonBuffer)에 있어 메모리는 그대로이고, 판의 끝 · 이어받기 표시 앞의 저장은 그대로다.
+            if (tweetCount % 50 == 0 && excelCheckpointDue()) {
                 m_backend->log(QString("저장 (%1개, 미디어 %2개)").arg(tweetCount).arg(mediaCount), "info", "twitter");
                 saveExcelStreaming(userDir, target, collectedData, excelSuffix);
             }
@@ -5471,7 +5543,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             processTweetBatch(tweets);
             pages++;
             if (pages % 5 == 0) {
-                saveExcelStreaming(userDir, target, collectedData, excelSuffix);
+                if (excelCheckpointDue()) saveExcelStreaming(userDir, target, collectedData, excelSuffix);   // 저장은 할 때가 됐을 때만
                 m_backend->log(QString("🔎 좁히기 진행: %1페이지 · %2개")
                                    .arg(pages).arg(collectedIds.size() - before), "info", "twitter");
             }
@@ -5803,8 +5875,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             if (phase2Pages % 10 == 0) {
                 m_backend->log(QString("UserTweets %1 페이지, +%2개 새 트윗 (총 %3개)")
                                    .arg(phase2Pages).arg(phase2New).arg(tweetCount), "info", "twitter");
-                // 중간 저장
-                saveExcelStreaming(userDir, target, collectedData, excelSuffix);
+                // 중간 저장 — 할 때가 됐을 때만(excelCheckpointDue)
+                if (excelCheckpointDue()) saveExcelStreaming(userDir, target, collectedData, excelSuffix);
             }
 
             cursor = nextCursor;
@@ -5814,10 +5886,10 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
         if (knownStop)
             m_backend->log(QString("Phase 2: 이미 받은 트윗이 %1개 이어져 여기서 멈춥니다").arg(knownStreak), "info", "twitter");
+        m_backend->log(QString("Phase 2 완료: +%1개 보충 (총 %2개)").arg(phase2New).arg(tweetCount), "success", "twitter");
+        if (collectedData.count() > 0) saveExcelStreaming(userDir, target, collectedData, excelSuffix);   // 저장한 뒤에 표시
         if (isRunning && !capReached() && !p2Broken)   // 목록 끝 · 일찍 멈춤
             putWalk("timeline");
-        m_backend->log(QString("Phase 2 완료: +%1개 보충 (총 %2개)").arg(phase2New).arg(tweetCount), "success", "twitter");
-        if (phase2New > 0) saveExcelStreaming(userDir, target, collectedData, excelSuffix);
     }
 
     // ══════════════════════════════════════════════════════════════

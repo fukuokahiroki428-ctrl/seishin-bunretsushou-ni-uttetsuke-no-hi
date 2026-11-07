@@ -68,6 +68,15 @@ for _f in "$(dirname "$0")"/resources/dmg/*; do
     case "$_f" in *.command) chmod +x "$STAGE/$(basename "$_f")" ;; esac
     echo "  동봉: $(basename "$_f")"
 done
+# 개발자 인증(코드 서명 다시 하기) — 서명 인증서가 만료 · 교체됐을 때 사용자가 직접 돌린다. 원본은 packaging/ 의 하나만 둔다.
+_cert="$(dirname "$0")/packaging/ハンイシキ_개발자인증.command"
+if [ ! -f "$_cert" ]; then
+    echo "❌ $_cert 가 없습니다 — 앱의 안내(서명 인증서 만료 때)가 이 파일을 가리킵니다. 되살린 뒤 다시 하십시오."
+    exit 1
+fi
+cp -p "$_cert" "$STAGE/"
+chmod +x "$STAGE/$(basename "$_cert")"
+echo "  동봉: $(basename "$_cert")"
 
 echo "=== DMG 만드는 중 ($OUT) ==="
 rm -f "$OUT"

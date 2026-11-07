@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <atomic>
 #include <QString>
@@ -159,6 +160,16 @@ private:
     QString m_newestTweetId;
     // 이번 판에 엑셀 저장이 실패했다 — 이어받기 표시를 앞으로 옮기지 않는다(다음 판이 그 구간을 다시 받아 엑셀에 채우게)
     bool m_excelSaveFailed = false;
+    // ★ 이번 판에 마지막으로 쓴 엑셀 — 그 파일이 그대로면(경로 · 크기 · 시각) 다음 저장에서 다시 읽지 않는다. 예전엔 저장마다
+    //   기존 파일을 통째로 두 번 읽고 다시 써, 큰 계정에서 판 전체가 제곱으로 느려졌다(장기 지원 점검). 줄이 아주 많으면 기억하지 않는다.
+    QString m_xlCachePath;
+    qint64 m_xlCacheSize = -1;
+    qint64 m_xlCacheMtimeMs = 0;
+    QList<QStringList> m_xlCacheRows;
+    // 중간 저장(50개마다 · 몇 쪽마다)의 간격 — 지난 저장에 걸린 시간의 다섯 배, 적어도 60초(excelCheckpointDue)
+    QElapsedTimer m_xlSinceSave;      // 단조 시계 — 지난 저장부터(무효 = 이번 판에 아직 저장 안 함)
+    qint64 m_xlLastSaveCostMs = 0;
+    bool excelCheckpointDue() const;
     // 지금 판의 중지 깃발(백엔드의 깃발 맵에 산다 — 지워지지 않는다). 데몬을 띄우는 곳에서 중지를 보려고
     const std::atomic<bool> *m_runFlag = nullptr;
     bool m_lastPageShaped = false;       // 마지막 타임라인 쪽(UserTweets · 좋아요 · 북마크)이 제 모양이었나(instructions 있고 errors 없음) —

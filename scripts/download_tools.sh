@@ -33,7 +33,9 @@ fi
 
 # ── 판 고정 — 어느 맥에서 받아도 같은 도구가 들어가게(지금 번들의 판). 고정한 주소가 없으면 latest 로 물러선다 ──
 #   판을 올릴 때는 여기와 akashi/docs/정비수칙.md 의 '새 맥에서 빌드하기' 를 함께 고친다.
-FFMPEG_TAG="b6.0"         # eugeneware/ffmpeg-static — ffmpeg 6.0
+# ffmpeg · ffprobe — OSXExperts 의 정적 빌드(예전 eugeneware/ffmpeg-static 의 darwin-arm64 도 이 빌더의 것을 다시 묶은 것이었다).
+#   받은 '실행 파일' 의 sha256 을 그쪽 쪽지에 적힌 값으로 고정해 대 본다 — 다르면 받지 않는다(latest 로 물러서지 않는다).
+FFMPEG_VER="9.0.2"        # 인텔 맥은 그 빌더의 마지막 인텔 판(8.0)
 DENO_VER="v2.9.3"
 RCLONE_VER="v1.74.4"
 EXIFTOOL_VER="13.59"
@@ -41,27 +43,37 @@ dl_pinned() {   # dl_pinned <받을 자리> <고정 주소> <latest 주소>
     dl "$1" "$2" || { echo "  (고정 판 주소를 못 받아 latest 로 받습니다: $3)"; dl "$1" "$3"; }
 }
 
-# ── ffmpeg (static — dylib 의존 없음) ──────────────────────────────────────
-if [ ! -x ffmpeg ]; then
-    echo "▶ ffmpeg (static)..."
-    FF="ffmpeg-darwin-arm64.gz"; [ "$ARCH" = "x86_64" ] && FF="ffmpeg-darwin-x64.gz"
-    dl_pinned "$TMP/ff.gz" "https://github.com/eugeneware/ffmpeg-static/releases/download/$FFMPEG_TAG/$FF" \
-              "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/$FF"
-    gunzip -c "$TMP/ff.gz" > ffmpeg
-    chmod +x ffmpeg
+# ── ffmpeg · ffprobe (static — 시스템 라이브러리 말고는 dylib 의존 없음) ─────────────────────────
+if [ "$ARCH" = "x86_64" ]; then
+    FF_ZIP="ffmpeg80intel.zip";  FF_SHA="df3f1e3facdc1ae0ad0bd898cdfb072fbc9641bf47b11f172844525a05db8d11"
+    FP_ZIP="ffprobe80intel.zip"; FP_SHA="5228e651e2bd67bb55819b27f6138351587b16d2b87446007bf35b7cf930d891"
+else
+    FF_ZIP="ffmpeg902arm.zip";   FF_SHA="762f16b2913b8d3b8fdb8092df12b691053b035b13ae9b88205513c55cb8e71e"
+    FP_ZIP="ffprobe902arm.zip";  FP_SHA="e9d3ad989b11d1ff4e3b0d140df170a6b38f194f83ac77f0e05a127a0f3a0ae4"
 fi
-
-# ── ffprobe (static) — 예전엔 이 스크립트에 없어, 새 맥의 빌드에는 ffprobe 가 빠졌다 ──────────────
+get_ff() {   # get_ff <이름> <zip> <실행 파일의 sha256>
+    curl -fsSL --retry 3 -A "Mozilla/5.0" -o "$TMP/$2" "https://www.osxexperts.net/$2" || {
+        echo "❌ $2 를 받지 못했습니다(https://www.osxexperts.net/$2). 그쪽이 판을 바꿨으면 쪽지를 보고 FFMPEG_VER · zip 이름 · sha256 을 함께 고치십시오."
+        exit 1
+    }
+    rm -rf "$TMP/$1.x"; mkdir -p "$TMP/$1.x"
+    ditto -x -k "$TMP/$2" "$TMP/$1.x"
+    local bin got
+    bin="$(find "$TMP/$1.x" -type f -name "$1" ! -path "*__MACOSX*" | head -1)"
+    [ -n "$bin" ] || { echo "❌ $2 안에 $1 이 없습니다 — 받지 않습니다"; exit 1; }
+    got="$(shasum -a 256 "$bin" | cut -d' ' -f1)"
+    [ "$got" = "$3" ] || { echo "❌ $1 의 sha256 이 고정값과 다릅니다($got) — 받지 않습니다"; exit 1; }
+    cp "$bin" "$1"
+    chmod +x "$1"
+}
+if [ ! -x ffmpeg ]; then
+    echo "▶ ffmpeg $FFMPEG_VER (static)..."
+    get_ff ffmpeg "$FF_ZIP" "$FF_SHA"
+fi
+# ffprobe — 예전엔 이 스크립트에 없어, 새 맥의 빌드에는 ffprobe 가 빠졌다
 if [ ! -x ffprobe ]; then
-    echo "▶ ffprobe (static)..."
-    FP="ffprobe-darwin-arm64.gz"; [ "$ARCH" = "x86_64" ] && FP="ffprobe-darwin-x64.gz"
-    if dl_pinned "$TMP/fp.gz" "https://github.com/eugeneware/ffmpeg-static/releases/download/$FFMPEG_TAG/$FP" \
-                 "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/$FP"; then
-        gunzip -c "$TMP/fp.gz" > ffprobe
-        chmod +x ffprobe
-    else
-        echo "⚠ ffprobe 를 받지 못했습니다 — 앱은 Homebrew 의 ffprobe 로 물러서거나 영상 길이 확인을 건너뜁니다"
-    fi
+    echo "▶ ffprobe $FFMPEG_VER (static)..."
+    get_ff ffprobe "$FP_ZIP" "$FP_SHA"
 fi
 
 # ── deno (yt-dlp 2025+ YouTube nsig JS 런타임) ─────────────────────────────
