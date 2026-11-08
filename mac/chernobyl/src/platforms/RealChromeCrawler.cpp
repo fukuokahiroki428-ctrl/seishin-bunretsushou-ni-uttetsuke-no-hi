@@ -449,10 +449,37 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
                 //   --disable-blink-features 플래그 대신 사용 (Chrome 보안 경고 회피)
                 {
                     QJsonObject p;
+                    // ★ IntersectionObserver 기록기 — 무엇을 관찰하는지만 적어 둔다(동작은 원래와 같다). 화면이 꺼진 맥(덮개 닫힘 ·
+                    //   화면 잠듦)은 그리기를 멈춰 IntersectionObserver 가 울리지 않아, 밤의 内閣会 캡처에서 지연 그림이 빠졌다
+                    //   (시험 io.html 0/6). 캡처 직전에 __hkFireIO() 가 아직 못 들은 '그림' 대상에만 '보인다' 를 직접 알린다
+                    //   (HanishikiBackend::captureRealPageCDP). 관찰자는 WeakRef 로 들고 있어 지운 것은 놓아준다.
                     p["source"] =
                         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
                         "Object.defineProperty(navigator, 'languages', {get: () => ['ko-KR', 'ko', 'en-US', 'en']});"
-                        "Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});";
+                        "Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});"
+                        "(() => { try {"
+                        " const N = window.IntersectionObserver; if (!N || N.__hk || typeof WeakRef !== 'function') return;"
+                        " const data = new WeakMap(), refs = new Set();"
+                        " class IntersectionObserver extends N {"
+                        "  constructor(cb, opts) { super(cb, opts); data.set(this, {cb, targets: new Set()}); refs.add(new WeakRef(this)); }"
+                        "  observe(t) { const d = data.get(this); if (d && t) d.targets.add(t); return super.observe(t); }"
+                        "  unobserve(t) { const d = data.get(this); if (d) d.targets.delete(t); return super.unobserve(t); }"
+                        "  disconnect() { const d = data.get(this); if (d) d.targets.clear(); return super.disconnect(); }"
+                        " }"
+                        " Object.defineProperty(IntersectionObserver, '__hk', {value: true});"
+                        " Object.defineProperty(IntersectionObserver, 'toString', {value: () => N.toString()});"
+                        " window.IntersectionObserver = IntersectionObserver;"
+                        " const imgLike = t => t && t.isConnected && (t.tagName === 'IMG' || t.tagName === 'PICTURE'"
+                        "   || t.hasAttribute('data-src') || t.hasAttribute('data-srcset') || t.hasAttribute('data-bg') || t.hasAttribute('data-background'));"
+                        " Object.defineProperty(window, '__hkFireIO', {value: () => { let n = 0;"
+                        "  for (const w of Array.from(refs)) { const o = w.deref(); if (!o) { refs.delete(w); continue; }"
+                        "   const d = data.get(o); if (!d) continue; const ents = [];"
+                        "   for (const t of Array.from(d.targets)) { if (!imgLike(t)) continue; const b = t.getBoundingClientRect();"
+                        "    ents.push({target: t, isIntersecting: true, isVisible: true, intersectionRatio: 1, boundingClientRect: b,"
+                        "      intersectionRect: b, rootBounds: new DOMRect(0, 0, innerWidth, innerHeight), time: performance.now()}); }"
+                        "   if (ents.length) { try { d.cb.call(o, ents, o); n += ents.length; } catch (e) {} } }"
+                        "  return n; }});"
+                        "} catch (e) {} })();";
                     sendCommand("Page.enable", QJsonObject(), nullptr);
                     sendCommand("Page.addScriptToEvaluateOnNewDocument", p, nullptr);
                     // ★ SingleFile 은 페이지 안(main world)에서 fetch()·DOMParser 로 자원을 모은다.

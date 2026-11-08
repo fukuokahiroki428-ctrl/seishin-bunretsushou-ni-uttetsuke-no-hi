@@ -7727,6 +7727,26 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                             window.scrollTo(0, document.body.scrollHeight);
                             await sleep(500);
                         }
+                        // 3b) 그리지 않고도 지연 그림 — 화면이 꺼진 맥(덮개 닫힘 · 화면 잠듦)은 그리기를 멈춰 IntersectionObserver 가
+                        //   울리지 않는다(밤의 内閣会 캡처에서 그림이 빠졌다 — 시험 io.html 0/6). 문서가 열릴 때 심어 둔 기록
+                        //   (RealChromeCrawler 의 __hkFireIO)으로 아직 못 들은 '그림' 대상에만 '보인다' 를 알리고, loading=lazy 는
+                        //   eager 로, 빈 자리의 data-src 류는 src 로 옮긴 뒤 그림이 다 올 때까지(최대 15초) 기다린다.
+                        //   화면이 켜져 있으면 위의 스크롤이 이미 다 불러 두어 바뀌는 것이 없다.
+                        try {
+                            if (typeof window.__hkFireIO === 'function') window.__hkFireIO();
+                            document.querySelectorAll('img[loading="lazy"], iframe[loading="lazy"]').forEach(e => { try { e.loading = 'eager'; } catch (x) {} });
+                            const blank = v => !v || /^data:,?$/i.test(v) || /^data:image\/(gif|png|svg\+xml)[;,].{0,400}$/i.test(v)
+                                || /\/(blank|spacer|pixel|transparent|placeholder)[^\/]*\.(gif|png|svg)(\?|$)/i.test(v);
+                            document.querySelectorAll('img[data-src], img[data-lazy-src], img[data-original], img[data-srcset], source[data-srcset]').forEach(e => {
+                                const d = e.getAttribute('data-src') || e.getAttribute('data-lazy-src') || e.getAttribute('data-original');
+                                if (d && e.tagName === 'IMG' && blank(e.getAttribute('src'))) e.setAttribute('src', d);
+                                const ds = e.getAttribute('data-srcset') || e.getAttribute('data-lazy-srcset');
+                                if (ds && !e.getAttribute('srcset')) e.setAttribute('srcset', ds);
+                            });
+                            const until = performance.now() + 15000;
+                            while (performance.now() < until
+                                   && Array.from(document.images).some(i => i.getAttribute('src') && !i.complete)) await sleep(250);
+                        } catch (e) {}
                         // 4) 페이지 맨 위 (캡쳐 상태 정상화)
                         window.scrollTo(0, 0);
                         await sleep(500);

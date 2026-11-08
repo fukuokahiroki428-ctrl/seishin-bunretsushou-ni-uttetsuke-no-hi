@@ -32,7 +32,7 @@ import _common as C  # noqa: E402
 import fixtures  # noqa: E402
 
 XORIGIN_CSP = "default-src 'self'; img-src *; connect-src 'self'; script-src 'unsafe-inline'"
-PAGES = ['index.html', 'gallery.html', 'io.html', 'xorigin.html', 'csp.html']
+PAGES = ['index.html', 'gallery.html', 'io.html', 'io2.html', 'xorigin.html', 'csp.html']
 
 
 def main() -> int:
@@ -43,8 +43,9 @@ def main() -> int:
     idle = C.user_idle_seconds()
     if idle > 300:
         # 화면이 잠들면 macOS 가 그리기를 멈춰, 최소화된 캡처 Chrome 의 IntersectionObserver 가 한 번도 판정하지 않는다
-        # (2026-10-06 실측: 옛 판 1.22.98 · 새 판 1.28.1 모두 io.html 0/6, 나머지 쪽은 그대로). 판의 문제가 아니다.
-        print('   주의: 사람 입력 없이 %d분 — 화면이 꺼져 있으면 지연 그림 쪽(io.html)이 0/6 로 실패한다(판과 무관)' % (idle // 60))
+        # (2026-10-06 실측: 옛 판 1.22.98 · 새 판 1.28.1 모두 io.html 0/6). r50 부터 앱이 캡처 직전에 지연 그림을 직접 불러온다
+        # (__hkFireIO · loading=eager · data-src) — 화면이 꺼져 있어도 io.html 이 담겨야 한다. 비면 그 수리가 듣지 않는 것이다.
+        print('   알림: 사람 입력 없이 %d분 — 화면이 꺼져 있을 수 있다(r50 부터는 그래도 지연 그림이 담겨야 한다)' % (idle // 60))
     site = fixtures.build_site(C.work_dir('testsite_sf'))
     sb, b = fixtures.serve(site)                                   # 다른 출처 — 그림만
     (site / 'io.html').write_text(
@@ -53,6 +54,17 @@ def main() -> int:
                 % (c, i, i) for i, c in enumerate(['red', 'blue', 'green', 'lazy1', 'lazy2', 'bg'])) +
         '<script>var o=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.src=e.target.dataset.src;o.unobserve(e.target);}})});'
         'document.querySelectorAll("img.io").forEach(function(i){o.observe(i)});</script>', encoding='utf-8')
+    # 그리지 않아도 뜨는 그림 — 관찰자의 root 가 크기 0 이라 스크롤해도 '보인다' 가 오지 않는다(화면이 꺼진 맥과 같은 처지).
+    #   그림 주소는 data-real 에 둔다(앱이 옮겨 주는 data-src 가 아니다) — 앱이 캡처 직전에 아직 못 들은 그림 대상에
+    #   '보인다' 를 직접 알려야만(__hkFireIO) 담긴다. 옛 판은 이 쪽의 그림이 빈다.
+    (site / 'io2.html').write_text(
+        '<!doctype html><meta charset="utf-8"><title>그리지 않아도 뜨는 그림</title><h1>IO2</h1>'
+        '<div id="r" style="width:0;height:0;overflow:hidden"></div>' +
+        ''.join('<img class="io2" data-real="/img/%s.png?io2=%d" width="60" height="60" alt="io2-%d">' % (c, i, i)
+                for i, c in enumerate(['red', 'blue', 'green'])) +
+        '<script>var o=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){'
+        'e.target.src=e.target.getAttribute("data-real");o.unobserve(e.target);}})},{root:document.getElementById("r")});'
+        'document.querySelectorAll("img.io2").forEach(function(i){o.observe(i)});</script>', encoding='utf-8')
     (site / 'xorigin.html').write_text(
         '<!doctype html><meta charset="utf-8"><title>다른 출처 그림</title><h1>교차 출처</h1>'
         '<img src="http://127.0.0.1:%d/img/blue.png" width="60"><img src="http://127.0.0.1:%d/img/green.png" width="60">' % (b, b),
@@ -107,6 +119,9 @@ def main() -> int:
                     print('      ' + re.sub(r'(base64,)[A-Za-z0-9+/=]{20,}', r'\1…', tag)[:220])
             check('%s — SingleFile 결과 · 그림 %d개 중 data: %d개 · 빈 그림 %d · 바깥 주소 %d' % (Path(f).name, imgs, datas, empties, len(left)),
                   sf and not err and not left and empties == 0 and datas >= max(1, imgs - 1))
+            if 'IO2' in h:
+                check('그리지 않아도 뜨는 그림(io2) — 3장 모두 담겼다(화면이 꺼진 맥의 밤 캡처와 같은 처지)', datas >= 3 and imgs == 3,
+                      '그림 %d · data: %d' % (imgs, datas))
     except Exception as e:  # noqa: BLE001
         check('시험 진행 중 오류 없음', False, '%s: %s' % (type(e).__name__, e))
     finally:
