@@ -2,6 +2,7 @@
 #include <QHash>
 #include <QMutex>
 #include "core/Common.h"
+#include <QTimeZone>
 #include "HttpClient.h"
 #include <QDir>
 #include <QFile>
@@ -393,13 +394,26 @@ void setDownloadMeta(const QString &filePath, const QString &url)
 QString uploadOrderPrefix(const QDateTime &uploadTime)
 {
     if (!uploadTime.isValid()) return QString();
-    return uploadTime.toString("yyyyMMdd_HHmmss_");
+    // ★ 일본 시간으로 적는다(미디어 이름 · 엑셀 · EXIF 와 같다). 예전엔 받은 값의 시간대 그대로라
+    //   트위터 · 인스타 캡처 이름이 UTC 로 나갔다(일본 시간 아침 8시 30분 글이 전날 23시 30분).
+    return Common::jstTime(uploadTime).toString("yyyyMMdd_HHmmss_");
 }
 
 QString uploadOrderPrefix(qint64 unixSec)
 {
     if (unixSec <= 0) return QString();
-    return QDateTime::fromSecsSinceEpoch(unixSec).toString("yyyyMMdd_HHmmss_");
+    return uploadOrderPrefix(QDateTime::fromSecsSinceEpoch(unixSec, QTimeZone::UTC));   // 예전엔 맥의 현지 시각이었다
+}
+
+QString captureNameCompat(const QString &capturesDir, const QDateTime &postedAt, const QString &id)
+{
+    const QString name = uploadOrderPrefix(postedAt) + id;
+    if (!postedAt.isValid() || QFile::exists(capturesDir + "/" + name + ".html")) return name;
+    // 트위터 · 인스타 · 픽시브 캡처는 예전에 일본 시간이 아니었다. 이름만 새로 짓면 다음 끝까지 보기에 받아 둔 글을 모두 또 캡처한다.
+    for (const QString &old : {postedAt.toString("yyyyMMdd_HHmmss_") + id, postedAt.toUTC().toString("yyyyMMdd_HHmmss_") + id}) {
+        if (QFile::exists(capturesDir + "/" + old + ".html")) return old;
+    }
+    return name;
 }
 
 QString typeFolder(const QString &baseDir, const QString &type)
@@ -571,7 +585,7 @@ QString capturePageHtml(const QString &saveDir,
         "\n<!-- SingleFile capture by Hanishiki -->\n"
         "<!-- source: %1 -->\n"
         "<!-- captured: %2 -->\n")
-        .arg(url.toHtmlEscaped(), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+        .arg(url.toHtmlEscaped(), Common::jstNow().toString(Qt::ISODate));
     int headEnd = html.indexOf("</head>", 0, Qt::CaseInsensitive);
     if (headEnd > 0) {
         html.insert(headEnd, metaTag);
@@ -697,7 +711,7 @@ QString capturePageHtmlFromContent(const QString &saveDir,
         "\n<!-- Hanishiki browser capture (rendered DOM) -->\n"
         "<!-- source: %1 -->\n"
         "<!-- captured: %2 -->\n")
-        .arg(url.toHtmlEscaped(), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+        .arg(url.toHtmlEscaped(), Common::jstNow().toString(Qt::ISODate));
     int headEnd = html.indexOf("</head>", 0, Qt::CaseInsensitive);
     if (headEnd > 0) html.insert(headEnd, metaTag);
     else html.prepend(metaTag);

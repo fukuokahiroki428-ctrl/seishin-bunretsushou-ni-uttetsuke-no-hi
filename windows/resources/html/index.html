@@ -767,6 +767,14 @@
         .modal-wide .gs-names { gap: 6px; }
         .modal-wide .gs-n { font-size: 10.5px; opacity: .7; }
         .modal-wide .gs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px 14px; }
+        /* 内閣会 — 받을 때 옵션(탭 안 · 감시 대상 창 모두) */
+        .nk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 14px; }
+        .nk-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; min-width: 0; }
+        .nk-lbl { flex: 0 0 88px; color: var(--text-secondary); }
+        .nk-row .input, .nk-row .select-wrap { flex: 1 1 auto; min-width: 0; height: 30px; font-size: 12.5px; }
+        .nk-plats { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+        .nk-note { font-size: 12px; color: var(--text-secondary); margin-top: 8px; line-height: 1.6; }
+        .nk-own { font-size: 11.5px; color: var(--accent); margin-left: 6px; }
         .modal-wide .gs-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; min-width: 0; }
         .modal-wide .gs-lbl { flex: 0 0 64px; color: var(--text-secondary); }
         .modal-wide .gs-row .input, .modal-wide .gs-row .select-wrap { flex: 1 1 auto; min-width: 0; height: 30px; font-size: 12.5px; }
@@ -1574,6 +1582,8 @@
                                         <label class="option-item"><input type="checkbox" id="youtube-sponsor"> SponsorBlock</label>
                                         <label class="option-item"><input type="checkbox" id="youtube-comments"> 댓글 (상위 300)</label>
                                         <label class="option-item" title="영상 페이지를 보이는 그대로 HTML 한 장으로 저장합니다(제목·설명 서식·화면의 댓글·추천 영상). 영상이 내려가도 화면은 남습니다. 다운로드가 끝난 뒤에 진행합니다."><input type="checkbox" id="youtube-real-capture"> 진짜 페이지 캡쳐</label>
+                                        <!-- ★ 끝나면 _complete 만 남기기 — 백엔드 runYoutubeDownload 의 completeOnly(ytLeaveOnlyComplete) -->
+                                        <label class="option-item" title="다운로드가 끝나 _complete 사본과 엑셀을 만든 뒤, 받은 폴더(video · audio · thumbnail)를 비웁니다. 지우는 것: 원본(_complete 사본과 같은지 확인한 뒤) · info.json · 받다 남은 조각(.part · .ytdl · .f137.mp4 등). 자막 · 댓글(.comments.txt) · 설명(.description) · 썸네일 그림은 _complete 로 옮깁니다. _complete 에 같은 이름의 파일이 있는데 원본과 다르면 그 파일은 덮지 않고 이 영상을 이름 끝에 [영상 번호] 를 붙여 따로 둡니다. 엑셀 · 페이지 캡쳐 · 받은 기록(다시 받지 않게 하는 장부)은 그대로 둡니다. 예전에 받아 둔 영상도 같이 정리합니다. 중지한 판은 다음 판에 정리합니다."><input type="checkbox" id="youtube-complete-only" onchange="confirmCompleteOnly(this)"> 끝나면 _complete 만 남기기</label>
                                     </div>
                                 </div>
                             </div>
@@ -1653,6 +1663,7 @@
                                         <label class="option-item"><input type="checkbox" id="niconico-thumb"> 썸네일</label>
                                         <label class="option-item"><input type="checkbox" id="niconico-comments"> 댓글</label>
                                         <label class="option-item" title="영상 페이지를 보이는 그대로 HTML 한 장으로 저장합니다. 영상이 내려가도 화면은 남습니다. 다운로드가 끝난 뒤에 진행합니다."><input type="checkbox" id="niconico-real-capture"> 진짜 페이지 캡쳐</label>
+                                        <label class="option-item" title="다운로드가 끝나 _complete 사본과 엑셀을 만든 뒤, 받은 폴더(video · audio · thumbnail)를 비웁니다. 지우는 것: 원본(_complete 사본과 같은지 확인한 뒤) · info.json · 받다 남은 조각(.part · .ytdl · .f137.mp4 등). 자막 · 댓글(.comments.txt) · 설명(.description) · 썸네일 그림은 _complete 로 옮깁니다. _complete 에 같은 이름의 파일이 있는데 원본과 다르면 그 파일은 덮지 않고 이 영상을 이름 끝에 [영상 번호] 를 붙여 따로 둡니다. 엑셀 · 페이지 캡쳐 · 받은 기록(다시 받지 않게 하는 장부)은 그대로 둡니다. 예전에 받아 둔 영상도 같이 정리합니다. 중지한 판은 다음 판에 정리합니다. 内閣会 감시도 이 값을 따릅니다(内閣会 → 받을 때 옵션에서 정했으면 그 값)."><input type="checkbox" id="niconico-complete-only" onchange="confirmCompleteOnly(this)"> 끝나면 _complete 만 남기기</label>
                                         <label class="option-item"><input type="checkbox" id="niconico-cookies"> Chrome 쿠키 (로그인 필요 영상)</label>
                                     </div>
                                     <div class="input-row" style="margin-top:8px;">
@@ -2812,7 +2823,7 @@
                                         </div>
                                         <button class="btn btn-secondary btn-sm" onclick="browseFolder('naikakukai')">찾아보기</button>
                                         <div class="field" style="margin:0;">
-                                            <label class="field-label">주기 (분)</label>
+                                            <label class="field-label" title="대상마다 이 간격으로 다시 봅니다. 같은 플랫폼은 계정을 지키려고 하나씩 차례로, 앞 폴링이 끝난 뒤 쉬었다가 봅니다(트위터 90초 · 니코동 60초 · 텀블러 30초 · 블루스카이 20초).">주기 (분, 대상마다)</label>
                                             <input type="number" class="input" id="naikakukai-interval" value="30" min="5" max="1440" onchange="saveConfig()">
                                         </div>
                                     </div>
@@ -2827,6 +2838,15 @@
                                     <div id="naikakukai-list" style="max-height:220px; overflow-y:auto; border:1px solid var(--border); border-radius:6px; padding:8px; min-height:60px;">
                                         <div style="text-align:center; color:var(--text-secondary); padding:14px; font-size:13px;">아직 추가된 대상이 없습니다</div>
                                     </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="fx-frame" data-single="1">
+                            <div class="fx-title">받을 때 옵션</div>
+                            <div class="fx-body">
+                                <div class="section">
+                                    <div class="section-label">받을 때 옵션 — 플랫폼마다</div>
+                                    <div id="nk-opt-box"></div>
                                 </div>
                             </div>
                         </div>
@@ -3896,8 +3916,22 @@
             if (d < 3600) return Math.round(d / 60) + '분 전';
             if (d < 86400) return Math.round(d / 3600) + '시간 전';
             if (d < 86400 * 45) return Math.round(d / 86400) + '일 전';
-            return new Date(ms).toLocaleDateString();
+            return new Date(ms).toLocaleDateString(undefined, {timeZone: 'Asia/Tokyo'});
         }
+        // 이 앱의 날짜는 일본 시간 기준 — 일본 시간의 '벽시계'(이름 · 달 폴더 미리 보기에 쓴다).
+        //   돌려준 것의 getFullYear · getMonth · getDate · getHours · getMinutes · getSeconds · getDay 가 일본 시간이다.
+        //   ★ 현지 Date 로 만들지 않는다 — 예전엔 '지금' 의 시간대 차이만큼 밀어 서머타임이 바뀌기 전 반나절 동안 한 시간 어긋났고,
+        //   일본 시간의 칸으로 현지 Date 를 만들면 서머타임이 시작되는 날 없는 시각(뉴욕 02:xx)이 03:xx 로 밀렸다(검토).
+        //   UTC 칸으로 읽는 Date 를 감싸 돌려준다 — 현지 시간대와 상관이 없다.
+        window._jstWallClock = function() {
+            const u = new Date(Date.now() + 9 * 3600e3);   // UTC 칸으로 읽으면 일본 시간
+            return {
+                getFullYear: () => u.getUTCFullYear(), getMonth: () => u.getUTCMonth(), getDate: () => u.getUTCDate(),
+                getHours: () => u.getUTCHours(), getMinutes: () => u.getUTCMinutes(), getSeconds: () => u.getUTCSeconds(),
+                getDay: () => u.getUTCDay(), getMilliseconds: () => u.getUTCMilliseconds(),
+                getTime: () => u.getTime() - 9 * 3600e3,   // 그 순간(보통의 epoch 밀리초)
+            };
+        };
         function _tlFillStatus(el, entry, plat) {
             const l = entry.last;
             const qz = _collectPrefs.quietSkip ? _tlQuiet(entry, Date.now(), plat) : null;
@@ -3906,12 +3940,12 @@
             const mark = l.status === 'error' ? '✕ ' : l.status === 'stopped' ? '⏹ ' : '';
             const what = typeof l.fresh === 'number' ? ' · 새 ' + l.fresh : (l.status === 'done' && l.media ? ' · ' + l.media : '');
             el.textContent = (qz && qz.skip ? (qz.dead ? '쉼 · ' : '뜸 · ') : '') + mark + _tlAgo(l.at) + what + (l.early ? ' ⏭' : '');
-            el.title = (l.status === 'error' ? '오류' + (l.errors ? ' ' + l.errors + '건' : '') : l.status === 'stopped' ? '중단' : '완료') + ' — ' + new Date(l.at).toLocaleString()
+            el.title = (l.status === 'error' ? '오류' + (l.errors ? ' ' + l.errors + '건' : '') : l.status === 'stopped' ? '중단' : '완료') + ' — ' + new Date(l.at).toLocaleString(undefined, {timeZone: 'Asia/Tokyo'})
                 + (typeof l.fresh === 'number' ? ' · 새 글 ' + l.fresh : '') + ' · 게시물 ' + (l.posts || 0) + ' · 미디어 ' + (l.media || 0)
                 + (l.early ? ' · 이미 받은 글이 이어져 일찍 멈춤' : '')
-                + (entry.newest ? '\n가장 새 글: ' + new Date(entry.newest).toLocaleDateString() : '')
+                + (entry.newest ? '\n가장 새 글: ' + new Date(entry.newest).toLocaleDateString(undefined, {timeZone: 'Asia/Tokyo'}) : '')
                 + (qz ? '\n' + (qz.dead ? '쉬는 계정' : '뜸한 계정') + ' — 새 글 없이 ' + qz.days + '일 · ' + qz.interval + '일마다 받음'
-                       + (qz.skip ? ' · 다음: ' + new Date(qz.due).toLocaleDateString() : '') : '');
+                       + (qz.skip ? ' · 다음: ' + new Date(qz.due).toLocaleDateString(undefined, {timeZone: 'Asia/Tokyo'}) : '') : '');
         }
         // ── 뜸한 계정(사용자 2026-10-24 — Hydrus 처럼 쉴수록 덜 자주). 활동 = 그 계정의 가장 새 글 시각(수집기가 알려 줌) ·
         //   새 글을 받은 마지막 판 중 늦은 것. 모르면 늘 받는다. 2주 넘게 없으면 쉰 날의 1/5 쯤(2~30일)마다, 반년 넘게 없으면 60일마다.
@@ -4878,9 +4912,9 @@
                 items = items.filter(function(e){ const q = _tlQuiet(e, now, plat); if (q && q.skip) { rest.push(q); return false; } return true; });
                 if (rest.length) {
                     const next = Math.min.apply(null, rest.map(q => q.due));
-                    restNote = ' · 뜸한 계정 ' + rest.length + '개는 이번엔 쉼(다음: ' + new Date(next).toLocaleDateString() + ')';
+                    restNote = ' · 뜸한 계정 ' + rest.length + '개는 이번엔 쉼(다음: ' + new Date(next).toLocaleDateString(undefined, {timeZone: 'Asia/Tokyo'}) + ')';
                     if (!items.length) {
-                        appendLog('켜진 대상이 모두 뜸한 계정이라 이번엔 쉽니다 — 다음: ' + new Date(next).toLocaleDateString()
+                        appendLog('켜진 대상이 모두 뜸한 계정이라 이번엔 쉽니다 — 다음: ' + new Date(next).toLocaleDateString(undefined, {timeZone: 'Asia/Tokyo'})
                             + ' · 지금 받으려면 「보이는 것만 받기」', 'info', plat === 'bluesky' ? 'bsky' : plat);
                         return true;
                     }
@@ -5073,6 +5107,7 @@
             settings: {posts:0, media:0, status:'대기'}
         };
         let naikakukaiWatches = [];  // 内閣会 감시 목록
+        let naikakukaiOptions = {};  // 内閣会가 받을 때 쓰는 옵션 {플랫폼: {키: 값}} — 감시 대상의 options 가 앞선다
 
         new QWebChannel(qt.webChannelTransport, function(channel) {
             backend = channel.objects.backend;
@@ -5267,7 +5302,7 @@
         function appendLog(message, type, platform) {
             const logEl = document.getElementById((platform||currentPlatform)+'-log');
             if (!logEl) return;
-            const time = new Date().toLocaleTimeString('en-US',{hour12:false});
+            const time = new Date().toLocaleTimeString('en-US',{hour12:false, timeZone:'Asia/Tokyo'});
             const cls = type ? 'log-'+type : 'log-info';
             const div = document.createElement('div');
             div.className = 'log-line';
@@ -5353,6 +5388,8 @@
                     naikakukaiWatches = config.naikakukaiWatches;
                     renderNaikakukaiList();
                 }
+                if (config.naikakukaiOptions && typeof config.naikakukaiOptions === 'object') naikakukaiOptions = config.naikakukaiOptions;
+                try { renderNaikakukaiOptions(); } catch (e) { try { console.warn('[内閣会] 옵션 그리기 실패', e); } catch (_) {} }
                 if (typeof config.naikakukaiInterval === 'number') {
                     const inp = document.getElementById('naikakukai-interval');
                     if (inp) inp.value = config.naikakukaiInterval;
@@ -5490,6 +5527,7 @@
                 secondaryPath: window._secondaryPath || '',
                 // ★ 내각회 영구 저장 — 감시 목록 + interval 앱 재시작해도 보존
                 naikakukaiWatches: naikakukaiWatches,
+                naikakukaiOptions: naikakukaiOptions,
                 naikakukaiInterval: parseInt(document.getElementById('naikakukai-interval')?.value) || 30
             }));
         }
@@ -6160,7 +6198,9 @@
                 // ★ 영상 사이 대기(빠름/보통/안전) — 백엔드 runYoutubeDownload 가 yt-dlp --sleep-* 값으로 바꾼다
                 ytPace:(document.getElementById('youtube-pace')||{}).value || 'normal',
                 // ★ 저장 방식 — 'channel'(채널별 폴더) · 'flat'(폴더 없이 바로)
-                saveLayout:(document.getElementById('youtube-save-layout')||{}).value || 'channel'
+                saveLayout:(document.getElementById('youtube-save-layout')||{}).value || 'channel',
+                // ★ 끝나면 _complete 만 남기기 — 받은 폴더의 원본 · info.json · 조각을 지우고 자막 · 댓글은 _complete 로
+                completeOnly:!!(document.getElementById('youtube-complete-only')||{}).checked
             };
             setRunning('youtube', true);
             clearLog('youtube'); setYoutubeProgress(0);
@@ -6169,6 +6209,19 @@
             backend.startYoutube(JSON.stringify(config));
         }
         function stopYoutube() { if(backend){ backend.stopYoutube(); appendLog('중지 중...','warning','youtube'); } }
+        // '끝나면 _complete 만 남기기' 를 켤 때 한 번 묻는다 — 지우는 옵션이고, 예전에 받아 둔 영상까지 정리한다
+        function confirmCompleteOnly(el) {
+            if (!el || !el.checked) return;
+            if (!askCompleteOnly()) el.checked = false;
+        }
+        // 켤 때 묻는 글 — 탭의 칸과 内閣会 옵션(받을 때 옵션 · 감시 대상마다)이 같이 쓴다
+        function askCompleteOnly() {
+            return confirm('끝나면 _complete 만 남기기\n\n다음 다운로드가 끝날 때부터 받은 폴더(video · audio · thumbnail)를 비웁니다 — 예전에 받아 둔 영상도 함께.\n\n'
+                + '· 원본: _complete 사본과 같은지 확인한 뒤 지웁니다(같은 이름의 다른 파일이 있으면 덮지 않고 [영상 번호] 를 붙여 따로 둡니다)\n'
+                + '· info.json · 받다 남은 조각: 지웁니다\n'
+                + '· 자막 · 댓글 · 설명 · 썸네일 그림: _complete 로 옮깁니다\n'
+                + '· 엑셀 · 페이지 캡쳐 · 받은 기록: 그대로 둡니다(지운 영상을 다시 받지 않습니다)\n\n켤까요?');
+        }
 
         // ── 니코니코동화 (니코동) — yt-dlp 파이프라인 재사용 ──
         function startNiconico() {
@@ -6187,7 +6240,8 @@
                 realCapture:!!(document.getElementById('niconico-real-capture')||{}).checked,
                 proxy:((document.getElementById('niconico-proxy')||{}).value || ''),
                 // ★ 저장 방식 — 유튜브와 같다('channel' 채널별 폴더 · 'flat' 폴더 없이 바로)
-                saveLayout:(document.getElementById('niconico-save-layout')||{}).value || 'channel'
+                saveLayout:(document.getElementById('niconico-save-layout')||{}).value || 'channel',
+                completeOnly:!!(document.getElementById('niconico-complete-only')||{}).checked
             };
             setRunning('niconico', true);
             clearLog('niconico');
@@ -6585,7 +6639,7 @@
         function _tlCounts(plat, arr) { const m = new Map(); (arr || []).forEach(e => { const k = _tlKey(plat, e.target); m.set(k, (m.get(k) || 0) + 1); }); return m; }
         function _tlToText(plat) {
             const arr = platformTargets[plat] || [];
-            const lines = ['# ハンイシキ 대상 목록 — ' + (_PLAT_TITLE[plat] || plat) + ' · ' + new Date().toLocaleDateString(),
+            const lines = ['# ハンイシキ 대상 목록 — ' + (_PLAT_TITLE[plat] || plat) + ' · ' + new Date().toLocaleDateString(undefined, {timeZone: 'Asia/Tokyo'}),
                            "# 한 줄에 하나: 아이디  # 별명   ·   '//' 로 시작하면 꺼 둔 대상   ·   '=== 이름' 아래는 그 묶음", ''];
             const one = e => (e.enabled === false ? '// ' : '') + e.target + (e.nickname ? '  # ' + _tlOneLine(e.nickname) : '');
             arr.filter(e => !e.group).forEach(e => lines.push(one(e)));
@@ -6913,7 +6967,7 @@
             const bad = _orgTplProblem(_orgTpl());
             if (bad) return '✕ ' + bad;
             const an = autoName || _orgNames[r.id];
-            const v = Object.assign(_orgVals(r, _orgWho(r, an)), _orgDateVals(new Date()));
+            const v = Object.assign(_orgVals(r, _orgWho(r, an)), _orgDateVals(window._jstWallClock()));
             const mo = _orgSplitTpl(_orgTpl()).date.map(x => _orgSafe(_orgRender(x, v))).join('/');
             return dest + '/' + _orgFolderName(r, an) + '/' + (mo ? mo + '/' : '');
         }
@@ -7128,7 +7182,7 @@
             if ((organizeConf.off || []).includes(a.plat)) return ['꺼짐', 'org-st-off', '이 플랫폼은 정리하지 않습니다(정리 틀)'];
             if (_orgRunning && _orgRunIds.includes(id) && _orgStatus[id] === 'run') return ['정리 중', 'org-st-run', ''];
             if (!s) return ['아직', 'org-st-off', '아직 정리한 적이 없습니다'];
-            const when = new Date(s.at).toLocaleString();
+            const when = new Date(s.at).toLocaleString(undefined, {timeZone: 'Asia/Tokyo'});
             if (s.errors) return ['✕ ' + _tlAgo(s.at), 'org-st-err', when + ' · 문제 ' + s.errors + '개 — 로그를 보십시오'];
             if (s.missing) return ['받은 것 없음', 'org-st-off', when + ' · 받은 곳에 아직 파일이 없습니다'];
             return [_tlAgo(s.at) + (s.copied ? ' · 새로 ' + s.copied : ''), '', when + ' · 새로 ' + (s.copied || 0) + ' · 중복 ' + (s.dup || 0)];
@@ -7547,6 +7601,160 @@
                 ? '예: 12345678 (유저번호) · mylist/123 · series/123 · sm12345'
                 : '예: user123 또는 handle.bsky.social';
         }
+        // ── 内閣会가 받을 때 쓰는 옵션(사용자 2026-10-29 — "내각회에서 다운받을 때 옵션 선택하는 거 따로 추가 · 각각의 기능들에 있는 것들")
+        //   칸은 그 탭에 있는 것 그대로다. 유형 · 품질 · 방식 · 저장 방식의 선택지는 그 탭의 고르기 칸에서 그대로 가져와 늘 같다.
+        //   쓰는 값: 감시 대상에 정한 것 > 여기(플랫폼마다) > '지금처럼'(예전 그대로 — 유형 · 최대 수는 기본값, 나머지는 그 앱을 켠 뒤
+        //   그 탭에서 마지막으로 돌린 설정, 없으면 기본값). 키는 그 탭이 수집에 넘기는 이름 그대로라 백엔드가 그대로 얹는다.
+        const NK_OPTION_SCHEMA = {
+            twitter: [
+                { k: 'type', t: 'select', dom: 'twitter-type', label: '유형' },
+                { k: 'count', t: 'number', label: '한 번에 최대', hint: '0 = 새 글 전부' },
+                { k: 'downloadMedia', t: 'check', label: '미디어 다운로드' },
+                { k: 'mediaQuality', t: 'select', dom: 'twitter-media-quality', label: '미디어 품질' },
+                { k: 'excel', t: 'check', label: 'Excel 저장' },
+                { k: 'threadComments', t: 'check', label: '게시물 댓글' },
+                { k: 'realCaptureMode', t: 'capture', label: '페이지 캡처' },
+                { k: 'method', t: 'select', dom: 'twitter-method', label: '수집 방식' },
+                { k: 'stopAfterKnown', t: 'number', label: '일찍 멈춤', hint: '이어진 받아 둔 글 수 · 0 = 끝까지' }
+            ],
+            bluesky: [
+                { k: 'type', t: 'select', dom: 'bsky-type', label: '수집 유형' },
+                { k: 'count', t: 'number', label: '한 번에 최대', hint: '0 = 새 글 전부' },
+                { k: 'media', t: 'check', label: '미디어 다운로드' },
+                { k: 'excel', t: 'check', label: 'Excel 저장' },
+                { k: 'includeReplies', t: 'check', label: '답글 포함' },
+                { k: 'includeReposts', t: 'check', label: '리포스트 포함' },
+                { k: 'realCaptureMode', t: 'capture', label: '페이지 캡처' },
+                { k: 'stopAfterKnown', t: 'number', label: '일찍 멈춤', hint: '이어진 받아 둔 글 수 · 0 = 끝까지' }
+            ],
+            tumblr: [
+                { k: 'type', t: 'select', dom: 'tumblr-type', label: '포스트 유형' },
+                { k: 'count', t: 'number', label: '한 번에 최대', hint: '0 = 새 글 전부' },
+                { k: 'downloadMedia', t: 'check', label: '미디어 다운로드' },
+                { k: 'excel', t: 'check', label: 'Excel 저장' },
+                // EXIF 칸은 두지 않는다 — 텀블러 수집기는 그 값을 읽지 않고 늘 기록한다(탭의 체크도 예전부터 그렇다). 듣지 않는 칸을 내놓지 않는다
+                { k: 'realCaptureMode', t: 'capture', label: '페이지 캡처' },
+                { k: 'method', t: 'select', dom: 'tumblr-method', label: '수집 방식' },
+                { k: 'stopAfterKnown', t: 'number', label: '일찍 멈춤', hint: '이어진 받아 둔 글 수 · 0 = 끝까지' }
+            ],
+            niconico: [
+                { k: 'quality', t: 'select', dom: 'niconico-quality', label: '화질' },
+                { k: 'type', t: 'select', dom: 'niconico-type', label: '유형' },
+                { k: 'saveLayout', t: 'select', dom: 'niconico-save-layout', label: '저장 방식' },
+                { k: 'metadata', t: 'check', label: '메타데이터' },
+                { k: 'thumb', t: 'check', label: '썸네일' },
+                { k: 'comments', t: 'check', label: '댓글' },
+                { k: 'completeOnly', t: 'check', label: '_complete 만 남기기', hint: '켜면 받은 폴더의 원본 · info.json · 조각을 지우고 자막 · 댓글 · 설명 · 썸네일은 _complete 로 옮깁니다(니코동 탭의 칸보다 앞섭니다)' }
+            ]
+        };
+        const _NK_PLAT = { twitter: 'Twitter', bluesky: 'Bluesky', tumblr: 'Tumblr', niconico: 'ニコニコ' };
+        const _NK_CAPTURE = [['off', '안 함'], ['media', '미디어만'], ['all', '전체']];
+        let _nkOptPlat = 'twitter';
+        function _nkChoices(sc) {
+            if (sc.t === 'capture') return _NK_CAPTURE;
+            const el = sc.dom && document.getElementById(sc.dom);   // 그 탭의 고르기 칸 — 선택지를 그대로
+            return el ? Array.from(el.options).map(o => [o.value, (o.textContent || '').trim()]) : [];
+        }
+        function _nkShow(sc, v) {
+            if (v === true) return '켬';
+            if (v === false) return '끔';
+            if (sc.t === 'select' || sc.t === 'capture') { const c = _nkChoices(sc).find(x => x[0] === v); return c ? c[1] : String(v); }
+            return String(v);
+        }
+        // 정한 것 한 줄 — 감시 목록에 보인다
+        function _nkSummary(plat, vals) {
+            return (NK_OPTION_SCHEMA[plat] || []).filter(sc => Object.prototype.hasOwnProperty.call(vals, sc.k))
+                .map(sc => sc.label + ' ' + _nkShow(sc, vals[sc.k])).join(' · ');
+        }
+        function _nkControlsHtml(plat, vals, inherit) {
+            return (NK_OPTION_SCHEMA[plat] || []).map(sc => {
+                const has = Object.prototype.hasOwnProperty.call(vals, sc.k), v = vals[sc.k];
+                let ctl;
+                if (sc.t === 'check') {
+                    ctl = '<select class="input nk-ctl" data-k="' + sc.k + '" data-t="check"><option value="">' + _tlEsc(inherit) + '</option>'
+                        + '<option value="1"' + (has && v === true ? ' selected' : '') + '>켬</option>'
+                        + '<option value="0"' + (has && v === false ? ' selected' : '') + '>끔</option></select>';
+                } else if (sc.t === 'select' || sc.t === 'capture') {
+                    ctl = '<select class="input nk-ctl" data-k="' + sc.k + '" data-t="select"><option value="">' + _tlEsc(inherit) + '</option>'
+                        + _nkChoices(sc).map(x => '<option value="' + _tlEsc(x[0]) + '"' + (has && v === x[0] ? ' selected' : '') + '>' + _tlEsc(x[1]) + '</option>').join('') + '</select>';
+                } else {
+                    ctl = '<input class="input nk-ctl" type="number" min="0" data-k="' + sc.k + '" data-t="number" value="' + (has ? _tlEsc(v) : '') + '" placeholder="' + _tlEsc(inherit) + '">';
+                }
+                return '<label class="nk-row"' + (sc.hint ? ' title="' + _tlEsc(sc.hint) + '"' : '') + '><span class="nk-lbl">' + _tlEsc(sc.label) + '</span>' + ctl + '</label>';
+            }).join('');
+        }
+        // 칸이 바뀌면 vals 에 적거나(정함) 지운다('지금처럼' · '기본 따름')
+        function _nkBind(root, vals, onChange) {
+            root.querySelectorAll('.nk-ctl').forEach(el => { el.dataset.prev = el.value; });   // '아니오' 때 되돌릴 값
+            root.querySelectorAll('.nk-ctl').forEach(el => el.addEventListener('change', function () {
+                const k = this.getAttribute('data-k'), t = this.getAttribute('data-t');
+                // '_complete 만 남기기' 를 켜는 것은 지우는 옵션 — 탭의 칸처럼 한 번 묻고, '아니오' 면 고르기 전 값으로 되돌린다
+                if (k === 'completeOnly' && this.value === '1' && !askCompleteOnly()) { this.value = this.dataset.prev || ''; return; }
+                this.dataset.prev = this.value;
+                const v = this.value;
+                if (v === '') delete vals[k];
+                else vals[k] = t === 'check' ? v === '1' : t === 'number' ? Math.max(0, parseInt(v, 10) || 0) : v;
+                onChange();
+            }));
+        }
+        // 도는 内閣会에도 다음 폴링부터 쓰게 알린다(감시 목록 · 주기는 다시 시작해야 바뀐다)
+        function _nkPushLive() {
+            if (backend && backend.setNaikakukaiOptions)
+                backend.setNaikakukaiOptions(JSON.stringify({ options: naikakukaiOptions, watches: naikakukaiWatches }));
+        }
+        function renderNaikakukaiOptions() {
+            const box = document.getElementById('nk-opt-box');
+            if (!box) return;
+            const plat = _nkOptPlat;
+            const vals = naikakukaiOptions[plat] || {};
+            const n = Object.keys(vals).length;
+            box.innerHTML = '<div class="nk-plats">' + Object.keys(_NK_PLAT).map(p => {
+                    const c = Object.keys(naikakukaiOptions[p] || {}).length;
+                    return '<button class="btn btn-sm ' + (p === plat ? 'btn-primary' : 'btn-secondary') + ' nk-plat" data-p="' + p + '">' + _NK_PLAT[p] + (c ? ' · ' + c : '') + '</button>';
+                }).join('') + '</div>'
+                + '<div class="nk-grid">' + _nkControlsHtml(plat, vals, '지금처럼') + '</div>'
+                + '<div class="nk-note">内閣会가 ' + _NK_PLAT[plat] + ' 대상을 받을 때 씁니다. 칸은 ' + _NK_PLAT[plat] + ' 탭에 있는 것과 같습니다. '
+                + '「지금처럼」 은 예전대로입니다 — ' + (plat === 'niconico' ? '니코동 탭에 저장된 값' :
+                    ('유형은 기본, 한 번에 최대는 ' + (plat === 'twitter' ? '새 글 전부' : '10개') + ', 나머지는 앱을 켠 뒤 그 탭에서 마지막으로 돌린 설정(없으면 기본값)')) + '입니다. '
+                + (plat === 'twitter' ? '트위터 타임라인의 Excel 은 이어받기 장부라 끌 수 없습니다(탭과 같습니다). ' : '')
+                + '감시 목록의 「옵션」 에서 대상마다 따로 정한 것이 앞섭니다. 새 글만 받는 방식은 바뀌지 않습니다.'
+                + (n ? ' <button class="btn btn-secondary btn-sm nk-clear" style="margin-left:6px">' + _NK_PLAT[plat] + ' 옵션 지우기</button>' : '') + '</div>';
+            box.querySelectorAll('.nk-plat').forEach(b => b.onclick = () => { _nkOptPlat = b.getAttribute('data-p'); renderNaikakukaiOptions(); });
+            const own = naikakukaiOptions[plat] || {};
+            _nkBind(box, own, () => {
+                if (Object.keys(own).length) naikakukaiOptions[plat] = own; else delete naikakukaiOptions[plat];
+                saveConfig(); _nkPushLive(); renderNaikakukaiOptions();
+            });
+            const clr = box.querySelector('.nk-clear');
+            if (clr) clr.onclick = () => { delete naikakukaiOptions[plat]; saveConfig(); _nkPushLive(); renderNaikakukaiOptions(); };
+            if (typeof window._initCustomSelects === 'function') window._initCustomSelects();
+        }
+        // 감시 대상 하나만 따로 — '내각회 기본 따름' 이면 위의 플랫폼 옵션(그것도 없으면 지금처럼)
+        function openNaikakukaiWatchOptions(i) {
+            const w = naikakukaiWatches[i];
+            if (!w) return;
+            const ov = _modal('nk-watch-modal', '감시 대상 옵션');
+            ov.querySelector('.modal-title').textContent = '감시 대상 옵션 — ' + (_NK_PLAT[w.platform] || w.platform) + ' / ' + w.target;
+            const body = ov.querySelector('.mw-body');
+            const own = Object.assign({}, w.options || {});
+            const draw = () => {
+                body.innerHTML = '<div class="mw-help">이 대상만 따로 받을 옵션입니다. 「내각회 기본 따름」 은 内閣会 탭의 「받을 때 옵션」(' + (_NK_PLAT[w.platform] || w.platform)
+                    + ') 을 쓰고, 그것도 정하지 않았으면 예전대로입니다.</div>'
+                    + '<div class="nk-grid">' + _nkControlsHtml(w.platform, own, '내각회 기본 따름') + '</div>'
+                    + '<div class="mw-foot"><span class="mw-note nk-state"></span><button class="btn btn-secondary btn-sm nk-wclear"' + (Object.keys(own).length ? '' : ' disabled') + '>이 대상의 옵션 지우기</button></div>';
+                _nkBind(body, own, save);
+                body.querySelector('.nk-wclear').onclick = () => { Object.keys(own).forEach(k => delete own[k]); save(); draw(); };
+                if (typeof window._initCustomSelects === 'function') window._initCustomSelects();
+            };
+            const save = () => {
+                if (Object.keys(own).length) w.options = Object.assign({}, own); else delete w.options;
+                saveConfig(); _nkPushLive(); renderNaikakukaiList();
+                const st = body.querySelector('.nk-state'); if (st) st.textContent = '저장했습니다 — 다음 폴링부터';
+                const b = body.querySelector('.nk-wclear'); if (b) b.disabled = !Object.keys(own).length;
+            };
+            draw();
+            ov.classList.remove('hidden');
+        }
         function renderNaikakukaiList() {
             const box = document.getElementById('naikakukai-list');
             const cnt = document.getElementById('naikakukai-count');
@@ -7559,9 +7767,13 @@
             let html = '';
             naikakukaiWatches.forEach((w,i) => {
                 const plName = {twitter:'Twitter', bluesky:'Bluesky', tumblr:'Tumblr', niconico:'ニコニコ'}[w.platform] || w.platform;
-                html += `<div style="display:flex; align-items:center; justify-content:space-between; padding:6px 8px; border-bottom:1px solid var(--border); font-size:13px;">
-                    <span>${plName} / <b>${w.target}</b></span>
-                    <button class="btn btn-secondary btn-sm" onclick="removeNaikakukaiWatch(${i})">삭제</button>
+                const own = _nkSummary(w.platform, w.options || {});
+                html += `<div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 8px; border-bottom:1px solid var(--border); font-size:13px;">
+                    <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${plName} / <b>${_tlEsc(w.target)}</b>${own ? '<span class="nk-own" title="이 대상만 따로 정한 옵션">' + _tlEsc(own) + '</span>' : ''}</span>
+                    <span style="display:flex; gap:6px; flex:0 0 auto;">
+                        <button class="btn btn-secondary btn-sm" onclick="openNaikakukaiWatchOptions(${i})" title="이 대상만 따로 받을 옵션">옵션</button>
+                        <button class="btn btn-secondary btn-sm" onclick="removeNaikakukaiWatch(${i})">삭제</button>
+                    </span>
                 </div>`;
             });
             box.innerHTML = html;
@@ -7605,7 +7817,7 @@
                 appendLog('감시 대상을 먼저 추가하세요', 'warning', 'naikakukai'); return;
             }
             const intervalMin = parseInt(document.getElementById('naikakukai-interval').value) || 30;
-            const config = { intervalMin, watches: naikakukaiWatches };
+            const config = { intervalMin, watches: naikakukaiWatches, options: naikakukaiOptions };
             backend.startNaikakukai(JSON.stringify(config));
         }
         function stopNaikakukai() {
@@ -7887,7 +8099,7 @@
             if (!tradFiles || tradFiles.length === 0) { appendLog('파일을 먼저 추가하세요','error','trad'); return; }
             let filename = document.getElementById('trad-filename').value.trim();
             if (!filename) {
-                const now = new Date();
+                const now = window._jstWallClock();
                 const ts = now.getFullYear() + ('0'+(now.getMonth()+1)).slice(-2) + ('0'+now.getDate()).slice(-2) +
                     '_' + ('0'+now.getHours()).slice(-2) + ('0'+now.getMinutes()).slice(-2) + ('0'+now.getSeconds()).slice(-2);
                 filename = 'result_' + ts;
@@ -9212,10 +9424,10 @@
             'bsky-target','bsky-path','bsky-type','bsky-mode','bsky-since','bsky-until',
             'bsky-query','bsky-count','bsky-media','bsky-excel','bsky-replies','bsky-reposts','bsky-comments','bsky-real-capture',
             'bsky-method','bsky-ratelimit-mins','bsky-ratelimit-wait','bsky-cookie',
-            'youtube-path','youtube-quality','youtube-type','youtube-subs','youtube-thumb','youtube-metadata','youtube-playlist','youtube-sponsor','youtube-comments','youtube-pace','youtube-save-layout','youtube-real-capture',
+            'youtube-path','youtube-quality','youtube-type','youtube-subs','youtube-thumb','youtube-metadata','youtube-playlist','youtube-sponsor','youtube-comments','youtube-pace','youtube-save-layout','youtube-real-capture','youtube-complete-only',
             // ★ 니코동이 통째로 빠져 있었다 — 바꿔도 다시 켜면 기본값으로 돌아갔고, 内閣会 니코동
             //   감시도 늘 기본 화질 · 기본 경로로 돌았다(윈도우는 1bf9056 에서 먼저 고쳤다).
-            'niconico-path','niconico-quality','niconico-type','niconico-thumb','niconico-metadata','niconico-comments','niconico-cookies','niconico-real-capture','niconico-proxy','niconico-save-layout',
+            'niconico-path','niconico-quality','niconico-type','niconico-thumb','niconico-metadata','niconico-comments','niconico-cookies','niconico-real-capture','niconico-proxy','niconico-save-layout','niconico-complete-only',
             'discord-server','discord-channel','discord-type','discord-count','discord-delay','discord-media','discord-excel','discord-profiles','discord-path',
             'discord-method',
             'instagram-target','instagram-count','instagram-delay',
@@ -9602,11 +9814,31 @@
             finishBatch();
         };
 
+        var batchItemError = false, batchItemStats = {posts: 0, media: 0}, batchItemSettled = false;
+        function _batchItemEnded() {
+            batchItemSettled = true;   // 다음 대상을 시작할 때까지 더 오는 끝 신호는 세지 않는다
+            var curItem = batchQueue[batchCurrentIdx];
+            var t = curItem ? (curItem.target || String(curItem)) : '?';
+            if (batchItemError) batchLog('' + t + ' — 오류');
+            else batchLog('' + t + ' — 완료 (게시물: ' + batchItemStats.posts + ', 미디어: ' + batchItemStats.media + ')');
+            batchItemError = false;
+            batchItemStats = {posts: 0, media: 0};
+            batchCurrentIdx++;
+            setTimeout(runNextBatchItem, 2000);
+        }
+        // 시작 전에 멈춘 판(저장 경로 · 임시 디스크가 없다) — 판 끝 정리가 오지 않으므로 여기서 넘어간다
+        window.onCollectionRefused = function(platform) {
+            if (!batchRunning || batchItemSettled || platform !== document.getElementById('batch-platform').value) return;
+            batchItemError = true;
+            _batchItemEnded();
+        };
+
         function runNextBatchItem() {
             if (batchStopped || batchCurrentIdx >= batchQueue.length) {
                 finishBatch();
                 return;
             }
+            batchItemSettled = false;
             var plat = document.getElementById('batch-platform').value;
             var item = batchQueue[batchCurrentIdx];
             var target = item.target;
@@ -9843,12 +10075,18 @@
             // 이미 받은 글이 N개 이어지면 그 대상을 끝냄(설정 · 묶음 · 대상) — 아는 수집기만 읽는다
             if (['twitter', 'bluesky', 'instagram', 'pixiv', 'fanbox', 'tumblr'].includes(plat))
                 config.stopAfterKnown = Math.max(0, parseInt(_mk('knownStop', _collectPrefs.knownStop), 10) || 0);
+            // 캡처 모드도 탭의 선택을 따른다('미디어만' 이 다중 수집 · 일괄에서 빠져 전체로 돌았다). 대상이 따로 켰으면 탭이 '안 함' 이어도 전체로
+            if (config.realCapture !== undefined) {
+                var _cm = document.getElementById((plat === 'bluesky' ? 'bsky' : plat) + '-real-capture-mode');
+                var _cmode = _cm ? _cm.value : 'all';
+                config.realCaptureMode = config.realCapture ? (_cmode === 'off' ? 'all' : _cmode) : 'off';
+            }
             return config;
         }
 
         function batchLog(msg) {
             var logEl = document.getElementById('batch-log');
-            var time = new Date().toLocaleTimeString('en-US', {hour12: false});
+            var time = new Date().toLocaleTimeString('en-US', {hour12: false, timeZone: 'Asia/Tokyo'});
             logEl.innerHTML += '<div>[' + time + '] ' + msg + '</div>';
             logEl.scrollTop = logEl.scrollHeight;
         }
@@ -9877,15 +10115,21 @@
             var isStopped = (status === '중단됨' || status === 'Stopped');
 
             // 1) 일괄 다운로드 모달 큐
+            // ★ 수집기는 끝에 '완료'(또는 '오류')를, 판 끝 정리는 'Done' 을 보낸다. 둘 다 세면 한 대상에 두 칸씩 넘어가,
+            //   다음 대상을 받지도 않고 '완료' 로 적었다 — 일괄이 하나 걸러 하나만 받았다(검토).
+            //   → 넘어가는 것은 판 끝 정리의 'Done' 하나로. 시작 전에 멈춘 판은 스레드가 없어 Done 이 없다(onCollectionRefused).
             if (batchRunning) {
                 var batchPlat = document.getElementById('batch-platform').value;
-                if (platform === batchPlat && (isDone || isError)) {
-                    var curItem = batchQueue[batchCurrentIdx];
-                    var t = curItem ? (curItem.target || String(curItem)) : '?';
-                    if (isError) batchLog('' + t + ' — 오류');
-                    else batchLog('' + t + ' — 완료 (게시물: ' + posts + ', 미디어: ' + media + ')');
-                    batchCurrentIdx++;
-                    setTimeout(runNextBatchItem, 2000);
+                if (platform === batchPlat && !batchItemSettled) {
+                    if (isStopped) {   // 탭 · 터미널 · 内閣会 쪽에서 멈췄다 — 일괄도 끝낸다(다음 대상을 기다리며 창도 닫히지 않았다)
+                        batchStopped = true;
+                        batchLog('수집이 중지되어 일괄을 멈춥니다');
+                        finishBatch();
+                    } else {
+                        if (isError) batchItemError = true;
+                        if (status !== 'Done' && (posts || media)) batchItemStats = {posts: posts, media: media};
+                        if (status === 'Done' || status === 'Error') _batchItemEnded();   // 'Error' 는 크롤이 주소 없이 끝날 때 — 그 뒤에 Done 이 없다
+                    }
                 }
             }
             // 2) 병렬 다중대상 큐 — _parallelKey 단위로 상태 갱신, 플랫폼별 _multis로 라우팅

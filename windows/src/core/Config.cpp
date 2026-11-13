@@ -163,7 +163,7 @@ void Config::load(const QString &filePath)
     //     치운다. 사람이 나중에 열어 볼 수 있어야 한다.
     if (QFile::exists(m_configPath) && QFileInfo(m_configPath).size() > 0) {
         const QString aside = m_configPath + QStringLiteral(".damaged_%1")
-                                  .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
+                                  .arg(Common::jstNow().toString("yyyyMMdd_HHmmss"));
         if (QFile::rename(m_configPath, aside))
             qWarning() << "[config] 설정이 깨져 있어 옆으로 옮겼습니다(지우지 않았습니다):" << aside;
         else
@@ -281,6 +281,7 @@ QJsonObject Config::toJson() const
     root["debugLogs"] = m_debugLogs;
     if (!m_secondaryPath.isEmpty()) root["secondaryPath"] = m_secondaryPath;
     if (!m_naikakukaiWatches.isEmpty()) root["naikakukaiWatches"] = m_naikakukaiWatches;
+    if (!m_naikakukaiOptions.isEmpty()) root["naikakukaiOptions"] = m_naikakukaiOptions;
     // 비어 있어도 적는다 — 마지막 규칙을 지운 것이 저장되어야 한다
     root["organizeRules"] = m_organizeRules;
     root["organizeAuto"] = m_organizeAuto;
@@ -340,6 +341,7 @@ void Config::fromJson(const QJsonObject &obj)
     if (obj.contains("debugLogs")) m_debugLogs = obj["debugLogs"].toBool();
     if (obj.contains("secondaryPath")) m_secondaryPath = obj["secondaryPath"].toString();
     if (obj.contains("naikakukaiWatches")) m_naikakukaiWatches = obj["naikakukaiWatches"].toArray();
+    if (obj.contains("naikakukaiOptions")) m_naikakukaiOptions = obj["naikakukaiOptions"].toObject();
     if (obj.contains("organizeRules"))     m_organizeRules = obj["organizeRules"].toArray();
     if (obj.contains("organizeAuto"))      m_organizeAuto = obj["organizeAuto"].toBool(true);
     if (obj.contains("organizeCaptures"))  m_organizeCaptures = obj["organizeCaptures"].toBool(false);

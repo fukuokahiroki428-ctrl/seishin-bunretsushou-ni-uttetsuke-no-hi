@@ -35,6 +35,8 @@ x_session.py — twikit 없이 X(트위터)에 붙는 얇은 세션 계층.
 """
 
 import json
+import os
+import sys
 from urllib.parse import urlparse
 
 import httpx
@@ -48,6 +50,44 @@ BEARER = ("Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D
 #   말하는 셈이라 그 자체가 자동화 신호였다. 기본값부터 윈도우 크롬으로 둔다.
 DEFAULT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36")
+
+
+def installed_chrome_major() -> str:
+    """맥에 설치된 Chrome 의 큰 판 번호. 못 읽으면 빈 글."""
+    if sys.platform != "darwin":
+        return ""
+    import plistlib
+    for app in ("/Applications/Google Chrome.app", os.path.expanduser("~/Applications/Google Chrome.app")):
+        try:
+            with open(os.path.join(app, "Contents", "Info.plist"), "rb") as f:
+                major = str(plistlib.load(f).get("CFBundleShortVersionString", "")).split(".")[0]
+            if major.isdigit():
+                return major
+        except Exception:
+            continue
+    return ""
+
+
+def mac_chrome_identity(major: str):
+    """앱의 Common::browserUserAgent · browserClientHints 와 같은 모양(맥 Chrome 은 판을 10_15_7 로 고정해 보낸다)."""
+    ua = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/%s.0.0.0 Safari/537.36" % major)
+    hints = {
+        "sec-ch-ua": '"Chromium";v="%s", "Google Chrome";v="%s", "Not=A?Brand";v="24"' % (major, major),
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"macOS"',
+    }
+    return ua, hints
+
+
+def default_identity():
+    """앱이 UA 를 넘겨 주지 않을 때(옛 앱에 새 도우미가 고침 꾸러미로 온 때 등)의 바닥값.
+    ★ 맥에서 '윈도우 Chrome 153' 이라 말하면 쿠키를 만든 맥 Chrome 과 어긋난다 — 그 자체가 자동화 신호다.
+      맥이면 설치된 Chrome 의 판으로 만든다."""
+    major = installed_chrome_major()
+    if major:
+        return mac_chrome_identity(major)
+    return DEFAULT_UA, {}
 
 
 class Endpoint:
@@ -203,8 +243,13 @@ class Client:
     """
 
     def __init__(self, language: str = "en-US", user_agent: str | None = None,
-                 proxy: str | None = None, timeout: float = 30.0):
-        self._user_agent = user_agent or DEFAULT_UA
+                 proxy: str | None = None, timeout: float = 30.0,
+                 client_hints: dict | None = None):
+        # ★ UA 와 클라이언트 힌트(sec-ch-ua 계열)는 짝이 맞아야 한다. 진짜 Chrome 은 모든 요청에 둘 다 보낸다.
+        if user_agent:
+            self._user_agent, self._client_hints = user_agent, dict(client_hints or {})
+        else:
+            self._user_agent, self._client_hints = default_identity()
         self._language = language
         self._cookies = {}
         self.client_transaction = _Transaction()
@@ -230,6 +275,10 @@ class Client:
             "Accept-Language": self._language,
             "X-Twitter-Client-Language": self._language,
         }
+        if self._client_hints:
+            # x.com 페이지가 x.com/i/api 를 부르는 XHR 과 같은 모양
+            h.update(self._client_hints)
+            h.update({"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"})
         if self._cookies.get("ct0"):
             h["x-csrf-token"] = self._cookies["ct0"]
         return h

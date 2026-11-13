@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QString>
 #include <QJsonObject>
@@ -56,6 +57,8 @@ private:
 
     // Auth & client setup
     void setupClient(const QString &authToken, const QString &ct0);
+    void setupClientFor(const QJsonObject &account);    // 이 계정의 출구를 건 뒤 setupClient — 계정을 정해 데몬을 띄우는 곳은 모두 이것으로
+    void applyAccountProxy(const QJsonObject &account);
     QMap<QString, QString> getHeaders() const;
     QMap<QString, QString> getHeadersWithTid(const QString &urlPath);
 
@@ -114,7 +117,8 @@ private:
     //   capturesDir: <userDir>/captures (호출자가 mkpath)
     //   config: realCapture 플래그 + 쿠키 컨텍스트
     //   force: 명시적으로 캡쳐할지 (likes/bookmarks 같이 별도 폴더 쓸 때 capturesDir만 다르게)
-    void captureTweet(const QJsonObject &tweet, const QString &capturesDir, const QJsonObject &config);
+    QJsonObject standardTweetRow(const QJsonObject &tweet, const QString &fallbackAuthor, bool *isSpaceCard = nullptr);   // 엑셀 한 줄(30칸)
+    int captureTweet(const QJsonObject &tweet, const QString &capturesDir, const QJsonObject &config);   // 1 = 이번에 진짜 캡처 · 0 = 할 것 없음(끔 · 이미 받음) · -1 = 못 받음(카드로 대신)
 
     HanishikiBackend *m_backend;
     // ★ 이 스레드에서 쓸 HttpClient 를 새로 만든다 — TwitterCollector.cpp 의 정의 설명 참고.
@@ -158,6 +162,20 @@ private:
 
     // 새트윗 확인용
     QString m_newestTweetId;
+    // 이번 판에 엑셀 저장이 실패했다 — 이어받기 표시를 앞으로 옮기지 않는다(다음 판이 그 구간을 다시 받아 엑셀에 채우게)
+    bool m_excelSaveFailed = false;
+    // ★ 이번 판에 마지막으로 쓴 엑셀 — 그 파일이 그대로면(경로 · 크기 · 시각) 다음 저장에서 다시 읽지 않는다. 예전엔 저장마다
+    //   기존 파일을 통째로 두 번 읽고 다시 써, 큰 계정에서 판 전체가 제곱으로 느려졌다(장기 지원 점검). 줄이 아주 많으면 기억하지 않는다.
+    QString m_xlCachePath;
+    qint64 m_xlCacheSize = -1;
+    qint64 m_xlCacheMtimeMs = 0;
+    QList<QStringList> m_xlCacheRows;
+    // 중간 저장(50개마다 · 몇 쪽마다)의 간격 — 지난 저장에 걸린 시간의 다섯 배, 적어도 60초(excelCheckpointDue)
+    QElapsedTimer m_xlSinceSave;      // 단조 시계 — 지난 저장부터(무효 = 이번 판에 아직 저장 안 함)
+    qint64 m_xlLastSaveCostMs = 0;
+    bool excelCheckpointDue() const;
+    // 지금 판의 중지 깃발(백엔드의 깃발 맵에 산다 — 지워지지 않는다). 데몬을 띄우는 곳에서 중지를 보려고
+    const std::atomic<bool> *m_runFlag = nullptr;
     bool m_lastPageShaped = false;       // 마지막 타임라인 쪽(UserTweets · 좋아요 · 북마크)이 제 모양이었나(instructions 있고 errors 없음) —
                                          //   트윗 없는 쪽이 '목록 끝' 인지 '막힌 응답' 인지 가른다
     int m_mediaFailures = 0;             // 받지 못한 미디어 수 — 좋아요 · 북마크 · 리포스트 걸음의 '끊김 없이 다 봄' 판정

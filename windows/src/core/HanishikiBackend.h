@@ -11,6 +11,7 @@
 #include <QSemaphore>
 #include <QNetworkCookie>
 #include <QHash>
+#include <QSet>
 #include <QThread>
 #include <QPointer>
 #include <atomic>
@@ -222,6 +223,7 @@ public slots:
     // 内閣会 — 지정 사용자 신글 자동 감지/다운로드 (Twitter/Bluesky/Tumblr 공식 API)
     void startNaikakukai(const QString &configJson);
     void stopNaikakukai();
+    void setNaikakukaiOptions(const QString &json);   // 도는 内閣会에 다음 폴링부터 — {options, watches}(감시 대상의 options 만 맞춘다)
     bool isNaikakukaiRunning() const { return m_naikakukaiRunning; }
 
     // 시스템 알림 (macOS osascript display notification — 다른 앱 쓰는 중에도 알림 옴)
@@ -532,11 +534,17 @@ public:
 
     // 内閣会 내부 상태
     void naikakukaiTick();
+    void naikakukaiPoll(const QJsonObject &watch);   // 감시 하나를 지금 돌린다(차례는 naikakukaiTick 이 고른다)
     QTimer *m_naikakukaiTimer = nullptr;
+    QTimer *m_naikakukaiGapTimer = nullptr;   // 쉬는 시간만 남은 플랫폼이 풀리는 그 시각에 한 번(정밀 · 하나만)
     QJsonArray m_naikakukaiWatches;
+    QJsonObject m_naikakukaiOptions;   // 内閣会가 받을 때 쓰는 옵션 {플랫폼: {키: 값}} — 감시 대상의 options 가 앞선다
     int m_naikakukaiIntervalMin = 30;
-    int m_naikakukaiCursor = 0;
+    // ★ 대상마다 마지막으로 본 시각(밀리초) · 플랫폼마다 마지막으로 띄운 시각 — 메인 스레드에서만 만진다
+    QHash<QString, qint64> m_naikakukaiLastPoll;
+    QHash<QString, qint64> m_naikakukaiPlatformLast;
     bool m_naikakukaiDiskGoneLogged = false;   // 디스크 빠짐/돌아옴을 한 줄씩만 적으려고
+    QSet<QString> m_naikakukaiLowSpaceRoots;     // 거의 찬 저장 디스크(볼륨 뿌리) — 빠질 때와 돌아올 때 한 줄씩만
     bool m_autoResumeDone = false;          // autoResumeWatchers 는 앱이 뜬 뒤 한 번만
     void autoResumeWatchers();
     void loadHotfixFromDisk();                       // 켤 때 — 받아 둔 꾸러미를 곧장 쓴다(인터넷 없어도)
@@ -547,7 +555,7 @@ public:
     // 内閣会가 띄운 수집의 플랫폼. 중지 버튼이 '그것만' 멈추게 하려고 둔다.
     //   사용자가 직접 시작한 수집까지 멈추면 안 되므로 구별이 필요하다.
     //   m_runningMutex 로 보호한다.
-    QString m_naikakukaiActivePlatform;
+    QStringList m_naikakukaiActivePlatforms;   // 플랫폼이 다르면 함께 돈다
     // 감시가 돌려놓은 수집인가 — 맞으면 그 수집 로그를 内閣会 창에도 같이 보여 준다.
     std::atomic<bool> m_naikakukaiMirroring{false};
 
@@ -629,6 +637,22 @@ public:
     void runDiscordCollection(const QJsonObject &config);
     void runInstagramCollection(const QJsonObject &config);
     void runYoutubeDownload(const QJsonObject &config);
+    // ★ 같은 플랫폼(youtube · niconico)의 yt-dlp 판은 하나만 — 두 판이 같은 상태 파일(abiwa_<플랫폼>/miyo_yt_status.txt)을
+    //   써서 먼저 끝난 쪽의 DONE 이 다른 판의 뒤처리('_complete 만 남기기' 의 정리까지)를 그 판의 yt-dlp 가 아직 쓰는 중에 돌렸다.
+    //   깃발(platformRunning)이 아니라 일꾼이 살아 있는지로 본다 — 중지한 판도 뒤처리가 끝날 때까지 산다.
+    bool ytWorkerBegin(const QString &platform);
+    void ytWorkerEnd(const QString &platform);
+    bool ytWorkerBusy(const QString &platform) const;
+    //   중지한 판의 bash · yt-dlp 가 아직 살아 있는가(메인 스레드에서만) — 일꾼은 DONE 을 보면 바로 끝나지만 스크립트는 1초마다 중지
+    //   표식을 보고 그 뒤에 yt-dlp 를 끝낸다. 그 사이 새 판이 표식을 지우면 옛 yt-dlp 가 멈추지 않고 같은 상태 파일을 썼다(검토).
+    bool ytBatchAlive(const QString &platform) const;
+    void ytRefuseStart(const QString &platform, const QString &why);   // 막은 시작 — 기록하고, 필요하면 탭을 되돌린다
+    //   판을 시작하며 장부에 더한 줄 수(内閣会가 '새 영상' 을 셀 때 뺀다)
+    void ytNoteArchivePrimed(const QString &platform, int lines);
+    int ytTakeArchivePrimed(const QString &platform);
+    mutable QMutex m_ytWorkerMutex;
+    QSet<QString> m_ytWorkerActive;
+    QHash<QString, int> m_ytArchivePrimed;
     void runPixivCollection(const QJsonObject &config);
     void runWebCrawlCollection(const QJsonObject &config);  // 웹 크롤 모드 (API 대체)
 
@@ -658,6 +682,8 @@ public:
     //   platform: 로그인 대기 알림 그룹 (instagram, pixiv, ...)
     //   config: 있으면 cookiesForCapture(platform, config)가 자동으로 계정 쿠키 주입
     //           → 캡쳐 시작 시 모든 플랫폼이 항상 "로그인된 상태"로 시작
+    // 그 진짜 캡처가 이미 끝나 있나(합성 카드가 아닌 진짜 페이지) — 이번에 새로 받은 것과 가르려고(일찍 멈춤의 캡처 실패 셈)
+    bool realCaptureFinished(const QString &saveDir, const QString &filename) const;
     bool captureRealPageCDPLoginAware(const QString &url,
                                       const QString &saveDir,
                                       const QString &filename,

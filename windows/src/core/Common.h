@@ -26,7 +26,9 @@ void setFileTimes(const QString &filePath, const QString &timestampStr);
 QDateTime parseISODate(const QString &dateStr);
 
 // EXIF 메타데이터 기록 (exiftool 사용, 미설치 시 자동 스킵)
-void addExifMetadata(const QString &imagePath, const QString &artist,
+//   1 = 적었다, 0 = 해당 없음(그림 · 영상이 아님 · exiftool 이 쓰지 못하는 형식), -1 = 실패(시간 초과 · exiftool 오류),
+//   -2 = exiftool 을 띄우지 못했다(번들이 깨짐 등 — 고쳐진 뒤 다시 적어야 하는 것)
+int addExifMetadata(const QString &imagePath, const QString &artist,
                      const QString &description, const QString &copyright,
                      const QString &comment, const QString &dateStr);
 
@@ -103,6 +105,13 @@ QHash<QString, QString> hotfixTools();
 
 // ★ macOS: 앱 번들 경로(.../<앱 이름>.app). 번들이 아니면 빈 문자열 — 윈도우·리눅스에서는 언제나 빈 문자열.
 QString appBundlePath();
+// 이 빌드의 판 번호(번들의 CFBundleVersion, 예: 4.0.47 — 끝자리가 맥 릴리스 rN). 번들이 아니면 PREDORMITION_VERSION_STR
+QString appBuildVersion();
+// AI 자가수리가 고친 사본(script_overrides)은 그때의 번들 원본을 고친 것이다. 앱이 새 판으로 바뀌어 원본이 달라졌으면 쓰지 않는다
+bool scriptOverrideStillValid(const QString &overridePath, const QString &bundledPath);
+QString fileSha256Hex(const QString &path);
+// 켤 때 — 원본이 바뀐 옛 사본은 옆으로 비킨다(<이름>.stale, 지우지 않는다). PYTHONPATH 로 import 되는 것까지 막는다
+void retireStaleScriptOverrides();
 // 캡처 Chrome 디버그 포트의 기준(순차 캡처 = 이 값, 병렬 트랙 = 이 값 + 1 부터). 기본 9223.
 //   HANISHIKI_CAPTURE_PORT 로 바꾼다 — 공작함의 격리 사본은 19223 부터 써서, 같은 맥에서 돌고 있는
 //   사용자 앱의 Chrome 과 포트가 겹치지 않게 한다(겹치면 서로를 '좀비' 로 보고 끈다).
@@ -187,6 +196,21 @@ QString checkFileIntegrity(const QString &filePath);
 //   → 설치된 브라우저에서 실제 판을 읽어 만든다. 한 번 만들고 캐시한다.
 //   (맥판 Common 의 같은 이름 함수와 짝이다. 맥은 맥 UA, 윈도우는 윈도우 UA.)
 QString browserUserAgent();
+
+// ★ 이 앱의 날짜는 일본 시간 기준이다 — 파일 · 폴더 이름, 엑셀, EXIF 에 적는 날짜는 맥의 시간대와 무관하게 JST 로 적는다.
+// 파이썬 교체가 한가운데서 끊겼으면(앱이 꺼짐 · 모듈 설치 중) 옛 환경을 제자리로 — 앱 시작 · 업그레이드 · 복구 앞에서 부른다
+void recoverInterruptedPythonSwap();
+// 이 판의 파이썬(bundle_python.sh · requirements.txt 의 고정과 같게 고친다)
+constexpr int kBundledPythonMajor = 3;
+constexpr int kBundledPythonMinor = 14;
+// python-build-standalone 릴리스 JSON 에서 그 major.minor 의 가장 높은 안정판을 고른다(베타 · rc 제외). 없으면 false
+bool pickPythonRelease(const QString &releaseJson, const QString &arch, int wantMajor, int wantMinor,
+                       QString *url, QString *version);
+// 글 시각 문자열 → 일본 시간으로 적은 글. 비었거나 읽지 못하면 받은 그대로
+QString jstText(const QString &raw, const QString &format);
+QDateTime jstTime(const QDateTime &dt);   // 같은 순간을 JST 로 표시하는 값(.toString · .date() 가 일본 시간)
+QDateTime jstNow();
+QDate jstToday();
 // ★ UA 와 짝이 맞는 클라이언트 힌트(sec-ch-ua 계열). UA 만 Chrome 이라 적고 이것들이 없으면
 //   Meta 쪽이 XHR 로 보지 않아 JSON 대신 HTML 한 판을 준다(인스타 429 실측 2026-09-20, 맥).
 QMap<QString, QString> browserClientHints();
@@ -268,7 +292,28 @@ qint64 freeSpace(const QString &path);
 //   한 달 안에 한 번은 끝까지 보아 메운다. 일찍 멈춘 판이 다시 적는 표시는 앞 표시의 '끝까지 본 때' 를 물려받는다.
 constexpr int kWalkMarkFormat = 1;   // 수집기를 고쳐 옛 글에서 놓친 것을 다시 받아야 하면 올린다 — 모든 목록이 한 번 끝까지 본다
 bool takeCleanWalkMark(const QString &dir, const QString &kind);
-void putCleanWalkMark(const QString &dir, const QString &kind);
+//   extra 는 목록마다의 값(트위터의 top — 그 목록이 끊김 없이 다 본 가장 새 트윗 ID)을 함께 적는다
+void putCleanWalkMark(const QString &dir, const QString &kind, const QJsonObject &extra = QJsonObject());
+// 이번 판을 시작할 때 읽은(믿을 만한) 표시의 내용 — 없으면 빈 것. put · restore 전까지 남아 있다
+QJsonObject takenWalkMark(const QString &dir, const QString &kind);
+// 끊긴 판 — 시작할 때 읽은 표시를 그대로(끝까지 본 때 · top) 되돌려 놓는다. 이미 put 했거나 읽은 것이 없으면 false.
+//   목록이 끝까지 본 곳(top)을 함께 적는 플랫폼(트위터)만 쓴다 — 그 위로 들어온 줄은 다음 판이 세지 않으니 끊긴 판도 표시를 지울 까닭이 없다
+bool restoreWalkMark(const QString &dir, const QString &kind);
+// 다른 걸음이 그 목록의 '받아 둔 것' 에 줄을 넣었다 — 표시를 지우고, 그 표시로 지금 도는 걸음이 있으면 그 걸음도 다시 적거나
+//   되돌리지 못하게 한다(take 와 달리 도는 걸음의 기록을 지우지 않는다 — 지우면 그 걸음이 '끝까지 본 때' 를 지금으로 적었다 — 검토)
+void dropCleanWalkMarks(const QString &dir, const QString &prefix);
+// 캡처 실패를 '받지 못한 것' 으로 셀까 — 이번 판에 캡처를 하나도 새로 받지 못하고 5개 넘게 실패했으면 캡처 길이 통째로 막힌 것
+//   (캡처 Chrome · 로그인 벽)으로 보고 세지 않는다. 그런 판마다 표시를 막으면 일찍 멈춤이 영영 켜지지 않았다(검토).
+//   그때 못 받은 캡처는 4~5주마다 끝까지 볼 때 다시 한다.
+inline bool captureFailuresCount(int captured, int failed) { return captured > 0 || failed < 5; }
+
+// 표시의 kind 에 넣을 캡처 설정 — 0 안 함 · 1 전체 · 2 미디어만. 바뀌면 한 번 끝까지 본다(그때부터 옛 글도 그 설정으로 캡처한다).
+inline int captureKindCode(const QJsonObject &config)
+{
+    const QString mode = config.value(QStringLiteral("realCaptureMode")).toString(QStringLiteral("all"));
+    if (!config.value(QStringLiteral("realCapture")).toBool(true) || mode == QLatin1String("off")) return 0;
+    return mode == QLatin1String("media") ? 2 : 1;
+}
 // 같은 엑셀(받아 둔 것 목록)을 함께 쓰는 목록들의 표시를 한꺼번에 읽고 지운다(<prefix>* 모두) — 있던 kind 들을 돌려준다.
 //   한 목록 · 한 범위(미디어 끔 · 기간 · 새 글만 …)의 판이 그 엑셀에 줄을 넣으면 다른 목록의 표시도 더는 믿을 수 없다 —
 //   제 표시만 지우면, 남은 표시가 그 판이 넣은 맨 위 조각에서 다음 판을 일찍 멈추게 했다(검토).

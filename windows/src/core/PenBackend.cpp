@@ -399,7 +399,7 @@ void PenBackend::crawlStart(const QString &startUrl, const QString &savePath, bo
         host.replace(QRegularExpression("[^a-zA-Z0-9._-]"), "_");
         if (!host.isEmpty()) siteName = host;
     }
-    QString ts = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+    QString ts = Common::jstNow().toString("yyyyMMdd_HHmmss");
     sp += "/" + siteName + "_" + ts;
     if (!QDir().mkpath(sp + "/captures")) {
         sp = QDir::homePath() + "/Downloads/Pen/" + siteName + "_" + ts;
@@ -2183,7 +2183,7 @@ void PenBackend::crawlSiteMirror(const QString &startUrl, int maxPages, bool sam
                             "<span class=badge>%2개 페이지</span> %3</div>")
                         .arg(eng.toHtmlEscaped())
                         .arg(m_autoPageCount)
-                        .arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm"));
+                        .arg(Common::jstNow().toString("yyyy-MM-dd HH:mm"));
             html += "<input id=q placeholder='🔍 제목·URL 검색 (오프라인)' autocomplete=off>";
             for (auto g = groups.constBegin(); g != groups.constEnd(); ++g) {
                 html += QString("<div class=grp data-grp>%1 <span style='color:#5a5a63'>(%2)</span></div>")
@@ -2469,7 +2469,7 @@ void PenBackend::crawlDeepMirror(const QString &startUrl, int maxPages, bool sam
             for (auto it = m_mirrorUrlMap.constBegin(); it != m_mirrorUrlMap.constEnd(); ++it) {
                 if (it.value().endsWith(".html")) pageCount++;
             }
-            html += QString("<div class=count>페이지 %1개 — %2</div>").arg(pageCount).arg(QDateTime::currentDateTime().toString());
+            html += QString("<div class=count>페이지 %1개 — %2</div>").arg(pageCount).arg(Common::jstNow().toString());
             for (auto it = m_mirrorUrlMap.constBegin(); it != m_mirrorUrlMap.constEnd(); ++it) {
                 if (!it.value().endsWith(".html")) continue;
                 QString rel = QDir(mirrorRoot).relativeFilePath(it.value());
@@ -2911,7 +2911,7 @@ void PenBackend::crawlTwitterMirror(const QString &profileUrl, int maxScrolls)
             h += ".count{color:#888;font-size:13px;margin-bottom:16px}</style></head><body>";
             h += "<h1>Twitter 미러 — " + profile.toHtmlEscaped() + "</h1>";
             h += QString("<div class=count>프로필 1 + 트윗 %1개 — %2</div>")
-                .arg(tweetUrlMap.size()).arg(QDateTime::currentDateTime().toString());
+                .arg(tweetUrlMap.size()).arg(Common::jstNow().toString());
             QString profRel = QDir(mirrorRoot).relativeFilePath(profileLocal);
             h += QString("<a href=\"%1\"><strong>📋 프로필 페이지</strong></a>").arg(profRel);
             h += "<hr style='margin:12px 0;border-color:#333'>";

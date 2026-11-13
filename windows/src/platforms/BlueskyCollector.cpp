@@ -238,6 +238,10 @@ void BlueskyCollector::stopDaemon()
         daemon->write("{\"action\":\"quit\"}\n");
         daemon->waitForFinished(3000);
         if (daemon->state() == QProcess::Running) {
+#ifndef Q_OS_WIN
+            // 자식부터 — quit 을 못 들은 데몬은 ffmpeg 를 돌리는 중이다. 데몬만 죽이면 고아가 되어 영상을 끝까지 받는다(검토)
+            if (pid > 0) QProcess::execute("/usr/bin/pkill", {"-TERM", "-P", QString::number(pid)});
+#endif
             daemon->kill();
             daemon->waitForFinished(2000);
         }
@@ -442,6 +446,12 @@ void BlueskyCollector::collect(const QJsonObject &config, const std::atomic<bool
             // 최대 수집 수(0 = 전체) — 종류마다 이 개수까지. 예전엔 넘기지 않아
             // 5 를 넣어도 7종을 끝까지 받았다(맥 실측 2026-09-15: 10분에 465파일).
             cmd["max_count"] = qMax(0, config["count"].toInt(0));
+            // ★ 화면의 '기간 지정' — 예전엔 데몬에 넘기지 않아 기간을 골라도 전부 받았다(검토). 데몬이 일본 시간의 하루로 거른다
+            if (config["mode"].toString() == QLatin1String("period")) {
+                cmd["mode"] = "period";
+                cmd["since"] = config["since"].toString();
+                cmd["until"] = config["until"].toString();
+            }
 
             QJsonObject result = sendCommand(cmd, isRunning, 24 * 3600 * 1000);
 
@@ -489,6 +499,11 @@ void BlueskyCollector::collect(const QJsonObject &config, const std::atomic<bool
     cmd["rl_mode"] = m_rateLimitWait ? "wait" : "stop";
     cmd["rl_wait_mins"] = m_rateLimitWaitMins;
     cmd["max_count"] = qMax(0, config["count"].toInt(0));   // 최대 수집 수(0 = 전체)
+    if (config["mode"].toString() == QLatin1String("period")) {   // 화면의 '기간 지정' — 데몬이 일본 시간의 하루로 거른다
+        cmd["mode"] = "period";
+        cmd["since"] = config["since"].toString();
+        cmd["until"] = config["until"].toString();
+    }
 
     if (type == "search") {
         cmd["query"] = config["query"].toString();
@@ -530,17 +545,21 @@ void BlueskyCollector::collect(const QJsonObject &config, const std::atomic<bool
                     QXlsx::Document doc(xlsxPath);
                     int lastRow = doc.dimension().lastRow();
                     // post_url 컬럼 찾기 (헤더 행에서 검색)
-                    int urlCol = 0;
-                    for (int c = 1; c <= 20; ++c) {
+                    int urlCol = 0, hasMediaCol = 0;
+                    for (int c = 1; c <= 40; ++c) {
                         QString h = doc.read(1, c).toString().trimmed();
-                        if (h == "post_url") { urlCol = c; break; }
+                        if (h == "post_url") urlCol = c;
+                        else if (h == "has_media") hasMediaCol = c;
                     }
+                    // ★ 화면의 '미디어만' 을 따른다 — 예전엔 읽지 않아 모든 글을 캡처했다(칸이 없는 옛 엑셀은 예전처럼 모두)
+                    const bool capMediaOnly = config["realCaptureMode"].toString() == QLatin1String("media") && hasMediaCol > 0;
                     if (urlCol > 0) {
                         m_backend->log(QString("진짜 페이지 캡쳐 시작 — %1행").arg(lastRow - 1), "info", "bluesky");
                         int captured = 0;
                         for (int r = 2; r <= lastRow && isRunning; ++r) {
                             QString postUrl = doc.read(r, urlCol).toString().trimmed();
                             if (postUrl.isEmpty() || !postUrl.contains("bsky.app/profile/")) continue;
+                            if (capMediaOnly && doc.read(r, hasMediaCol).toString().trimmed() != QLatin1String("Yes")) continue;
                             // filename = post_id from URL tail
                             QString postId = postUrl.section('/', -1);
                             if (postId.isEmpty()) continue;
@@ -665,7 +684,7 @@ void BlueskyCollector::generateMediaGallery(const QString &userDir, const QStrin
     </style></head><body>)";
     html += "<h1>🦋 Bluesky 미디어 갤러리 — @" + handle.toHtmlEscaped() + "</h1>";
     html += QString("<div class=meta>미디어 %1개 · %2 그룹 · 생성 %3</div>")
-        .arg(items.size()).arg(grouped.size()).arg(QDateTime::currentDateTime().toString());
+        .arg(items.size()).arg(grouped.size()).arg(Common::jstNow().toString());
     html += "<div class=nav><div id=filter><input type=text id=q placeholder='파일명 검색...' oninput='filterItems()'></div></div>";
 
     int totalIdx = 0;

@@ -667,7 +667,7 @@ void PenChromeCrawler::handleEvent(const QString &method, const QJsonObject &par
             wrapped["url"] = url;
             wrapped["mimeType"] = mt;
             wrapped["status"] = resp["status"];
-            wrapped["capturedAt"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+            wrapped["capturedAt"] = Common::jstNow().toString(Qt::ISODate);
             QJsonDocument bodyDoc = QJsonDocument::fromJson(body.toUtf8());
             if (bodyDoc.isObject()) wrapped["body"] = bodyDoc.object();
             else if (bodyDoc.isArray()) wrapped["body"] = bodyDoc.array();

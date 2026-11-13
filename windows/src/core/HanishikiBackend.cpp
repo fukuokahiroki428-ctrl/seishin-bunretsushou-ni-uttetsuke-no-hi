@@ -157,6 +157,12 @@ QSemaphore* HanishikiBackend::platformSem(const QString &platform)
 #include <psapi.h>
 #else
 #include <sys/resource.h>
+#include <sys/stat.h>
+#ifdef Q_OS_MACOS
+#include <mach/mach.h>
+#include <sys/xattr.h>
+#endif
+// (매니페스트 이름 kManifestBase · isManifestName 은 파일 맨 위에 있다 — 맥과 같은 세 이름을 알아본다)
 #endif
 
 // Forward declaration — 정의는 upgradePython() 앞에
@@ -262,6 +268,13 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
     // WebDAV uploader 로그 라우팅
     connect(m_webdav, &WebDavUploader::logMessage, this, [this](const QString &msg, const QString &type) {
         log(msg, type, "settings");
+    });
+    // ★ 엑셀 저장 실패를 그 수집의 기록에 — 부르는 곳 대부분이 반환값을 보지 않아, 디스크가 차도 '저장' 으로만 보였다
+    ExcelWriter::setSaveFailureHook([this](const QString &path, const QString &why) {
+        const QString tk = currentThreadTrackKey();
+        log(QString("❌ 엑셀을 저장하지 못했습니다: %1 — %2. 기존 파일은 그대로입니다.")
+                .arg(QFileInfo(path).fileName(), why),
+            "error", tk.isEmpty() ? QStringLiteral("settings") : tk.section(QLatin1Char('#'), 0, 0));
     });
 
     // ★ 하루에 한 번 자가진단을 다시 돌린다 (갱신 + 실기능 확인).
@@ -550,6 +563,7 @@ HanishikiBackend::~HanishikiBackend()
     // 内閣会 타이머 정리
     m_naikakukaiRunning = false;
     if (m_naikakukaiTimer) { m_naikakukaiTimer->stop(); }
+    if (m_naikakukaiGapTimer) { m_naikakukaiGapTimer->stop(); }
 
     // 로컬 AI(llama-server) 종료 — 수 GB 모델 든 고아 프로세스 방지
     if (m_llmProc && m_llmProc->state() != QProcess::NotRunning) {
@@ -682,14 +696,19 @@ void HanishikiBackend::memoryMonitorTick()
         rssMB = static_cast<qint64>(pmc.WorkingSetSize / (1024 * 1024));
     }
 #else
+    #ifdef Q_OS_MACOS
+    // ★ 지금 쓰는 양으로 본다(윈도우의 WorkingSetSize 와 같다). 예전엔 ru_maxrss — 내려가지 않는 평생 최고치 — 를 써서,
+    //   한 번 2.5GB 를 넘으면 그 뒤 앱을 끌 때까지 5분마다 거짓 경고를 내고 HTTP 캐시를 지우고 쌓인 기록 줄을 버렸다(검토).
+    mach_task_basic_info_data_t mti;
+    mach_msg_type_number_t mtiCount = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, reinterpret_cast<task_info_t>(&mti), &mtiCount) == KERN_SUCCESS)
+        rssMB = static_cast<qint64>(mti.resident_size) / (1024 * 1024);
+    #else
     struct rusage r;
     if (getrusage(RUSAGE_SELF, &r) == 0) {
-    #ifdef Q_OS_MACOS
-        rssMB = static_cast<qint64>(r.ru_maxrss) / (1024 * 1024);  // macOS: bytes
-    #else
         rssMB = static_cast<qint64>(r.ru_maxrss) / 1024;  // Linux: KB
-    #endif
     }
+    #endif
 #endif
     if (rssMB < 0) return;
 
@@ -723,6 +742,22 @@ void HanishikiBackend::memoryMonitorTick()
 //         수집기는 이미 파일 존재 여부로 중복 스킵 → 신글만 자동 추가됨
 // ─────────────────────────────────────────────
 
+// 内閣会 대상의 열쇠(플랫폼 + 대상)
+static QString naikakukaiWatchKey(const QJsonObject &w)
+{
+    return w["platform"].toString() + QLatin1Char('\n') + w["target"].toString();
+}
+
+// 같은 플랫폼에서 다음 감시를 띄우기까지의 최소 간격 — 대상이 수백 개여도 한 계정에 요청을 몰아치지 않게.
+//   트위터는 계정 정지 위험이 가장 커서 넉넉히 둔다.
+static qint64 naikakukaiMinGapMs(const QString &platform)
+{
+    if (platform == QLatin1String("twitter"))  return 90 * 1000;
+    if (platform == QLatin1String("niconico")) return 60 * 1000;
+    if (platform == QLatin1String("tumblr"))   return 30 * 1000;
+    return 20 * 1000;
+}
+
 void HanishikiBackend::startNaikakukai(const QString &configJson)
 {
     QJsonDocument doc = QJsonDocument::fromJson(configJson.toUtf8());
@@ -735,6 +770,9 @@ void HanishikiBackend::startNaikakukai(const QString &configJson)
     openTerminalLog("naikakukai", QString());
     m_naikakukaiWatches = cfg["watches"].toArray();
     m_naikakukaiIntervalMin = qMax(5, cfg["intervalMin"].toInt(30));
+    // 받을 때 쓰는 옵션 — 화면이 넘긴 것, 없으면(이어 돌림 · 옛 화면) 설정 파일의 것
+    m_naikakukaiOptions = cfg.contains("options") ? cfg["options"].toObject()
+                                                  : (m_config ? m_config->naikakukaiOptions() : QJsonObject());
 
     if (m_naikakukaiWatches.isEmpty()) {
         log("内閣会: 감시 대상이 없습니다", "warning", "naikakukai");
@@ -758,7 +796,8 @@ void HanishikiBackend::startNaikakukai(const QString &configJson)
         return;
     }
 
-    m_naikakukaiCursor = 0;
+    m_naikakukaiLastPoll.clear();       // 다시 시작하면 모두 곧장 한 번씩 본다
+    m_naikakukaiPlatformLast.clear();
     m_naikakukaiRunning = true;
     if (m_window) m_window->holdAwake(false);   // 폴링 사이에 맥이 잠들면 다음 폴링이 오지 않는다(화면은 놓아 둔다)
     if (m_config && !m_config->naikakukaiResume()) { m_config->setNaikakukaiResume(true); m_config->save(); }
@@ -767,15 +806,63 @@ void HanishikiBackend::startNaikakukai(const QString &configJson)
         m_naikakukaiTimer = new QTimer(this);
         connect(m_naikakukaiTimer, &QTimer::timeout, this, &HanishikiBackend::naikakukaiTick);
     }
-    m_naikakukaiTimer->setInterval(m_naikakukaiIntervalMin * 60 * 1000);
+    if (!m_naikakukaiGapTimer) {
+        // ★ 정밀 타이머 — Qt 는 2초가 넘는 타이머를 '굵은 타이머' 로 잡아 ±5% 안에서 일찍 울린다. 90초면 4.5초 일찍 울려
+        //   쉬는 시간이 덜 찼다고 보고 넘어가, 다음 15초 틱까지 늦었다(실측 104.6초 — 시험).
+        m_naikakukaiGapTimer = new QTimer(this);
+        m_naikakukaiGapTimer->setSingleShot(true);
+        m_naikakukaiGapTimer->setTimerType(Qt::PreciseTimer);
+        connect(m_naikakukaiGapTimer, &QTimer::timeout, this, &HanishikiBackend::naikakukaiTick);
+    }
+    // ★ 틱은 15초마다다. 주기는 '대상마다' 다시 보는 간격이다 — 예전엔 주기마다 전체에서 하나만 봐, 대상이 300개면
+    //   같은 대상을 다시 보는 데 300 × 주기(30분이면 6일)가 걸렸다(장기 지원 점검). 화면의 '주기' 는 대상마다로 읽힌다.
+    //   같은 플랫폼의 다음 폴링은 앞 폴링이 끝난 순간부터 간격(트위터 90초)을 쉰 뒤 — 쉬는 시간이 다음 틱 전에 풀리면 그 시각에
+    //   정밀 타이머(m_naikakukaiGapTimer)로 다시 본다.
+    //   (틱이 1분이면 90초 간격이 실제로는 2분이었다 — 검토)
+    m_naikakukaiTimer->setInterval(15 * 1000);
     m_naikakukaiTimer->start();
 
-    log(QString("内閣会 시작 — 대상 %1개 | 주기 %2분")
+    log(QString("内閣会 시작 — 대상 %1개 | 대상마다 %2분마다 다시 봅니다 (같은 플랫폼은 하나씩 차례로)")
         .arg(m_naikakukaiWatches.size()).arg(m_naikakukaiIntervalMin), "success", "naikakukai");
+    {
+        // 한 플랫폼에 대상이 많으면 한 바퀴가 주기보다 길다 — 그렇다고 알린다(요청 간격은 계정을 지키려고 둔다)
+        QHash<QString, int> per;
+        for (const auto &v : m_naikakukaiWatches) per[v.toObject()["platform"].toString()]++;
+        for (auto it = per.constBegin(); it != per.constEnd(); ++it) {
+            // 받는 시간은 대상마다 달라 셀 수 없으니 뺀다 — 쉬는 시간만 더해도 이만큼은 걸린다(적어도)
+            const qint64 cycleMin = (qint64(it.value()) * naikakukaiMinGapMs(it.key()) + 59999) / 60000;
+            if (cycleMin > m_naikakukaiIntervalMin)
+                log(QString("  %1 대상 %2개 — 같은 플랫폼은 앞 폴링이 끝난 뒤 %3초를 쉬고 하나씩 보므로, 한 바퀴에 받는 시간을 빼고도 %4분 넘게 걸립니다")
+                        .arg(it.key()).arg(it.value()).arg(naikakukaiMinGapMs(it.key()) / 1000).arg(cycleMin),
+                    "info", "naikakukai");
+        }
+    }
     runJs("setNaikakukaiRunning(true)");
 
     // 즉시 1회 실행 (30분 기다리지 말고)
     QTimer::singleShot(1000, this, &HanishikiBackend::naikakukaiTick);
+}
+
+void HanishikiBackend::setNaikakukaiOptions(const QString &json)
+{
+    // 받을 때 쓰는 옵션만 바꾼다 — 다음 폴링부터 쓴다. 감시 목록 · 주기는 다시 시작해야 바뀐다(예전 그대로).
+    const QJsonObject o = QJsonDocument::fromJson(json.toUtf8()).object();
+    if (o.contains("options")) m_naikakukaiOptions = o["options"].toObject();
+    const QJsonArray ws = o["watches"].toArray();
+    if (ws.isEmpty() || m_naikakukaiWatches.isEmpty()) return;
+    QJsonArray upd;
+    for (const auto &v : m_naikakukaiWatches) {
+        QJsonObject w = v.toObject();
+        for (const auto &nv : ws) {
+            const QJsonObject n = nv.toObject();
+            if (n["platform"] == w["platform"] && n["target"] == w["target"]) {
+                if (n.contains("options")) w["options"] = n["options"]; else w.remove("options");
+                break;
+            }
+        }
+        upd.append(w);
+    }
+    m_naikakukaiWatches = upd;
 }
 
 void HanishikiBackend::stopNaikakukai()
@@ -784,6 +871,7 @@ void HanishikiBackend::stopNaikakukai()
     // 다음 tick 이 또 폴링을 띄우면 끝이 없다.
     m_naikakukaiRunning = false;
     if (m_naikakukaiTimer) m_naikakukaiTimer->stop();
+    if (m_naikakukaiGapTimer) m_naikakukaiGapTimer->stop();
     // 사용자가 끈 것 — 앱을 다시 켜도 이어 돌지 않게 기억한다(앱 종료는 이 길을 안 지난다).
     if (m_config && m_config->naikakukaiResume()) { m_config->setNaikakukaiResume(false); m_config->save(); }
 
@@ -794,12 +882,13 @@ void HanishikiBackend::stopNaikakukai()
     //   건드리지 않는다(그래서 플랫폼을 따로 기억해 둔다).
     //   ※ 자물쇠를 놓고 부른다. m_runningMutex 는 비재귀이고
     //     stopCollection 이 그 안에서 다시 잠근다 — 쥔 채로 부르면 교착이다.
-    QString active;
+    QStringList actives;
     {
         QMutexLocker lock(&m_runningMutex);
-        active = m_naikakukaiActivePlatform;
+        actives = m_naikakukaiActivePlatforms;
     }
-    if (!active.isEmpty() && platformRunning(active)) {
+    for (const QString &active : actives) {
+        if (!platformRunning(active)) continue;
         log(QString("内閣会: 진행 중이던 %1 폴링도 함께 멈춥니다").arg(active),
             "warning", "naikakukai");
         // ★ 니코동은 수집 트랙이 아니라 yt-dlp 배치다. stopCollection 은 깃발만
@@ -989,7 +1078,7 @@ void HanishikiBackend::testBackup()
     QString testFile = Common::resolveTempBase(m_config ? m_config->tempDir() : QString()) + "/.backup_write_test.txt";
     QFile f(testFile);
     if (f.open(QIODevice::WriteOnly)) {
-        f.write(QString("백업 테스트 — %1\n").arg(QDateTime::currentDateTime().toString()).toUtf8());
+        f.write(QString("백업 테스트 — %1\n").arg(Common::jstNow().toString()).toUtf8());
         f.close();
         enqueueBackup(testFile);
         log("📦 테스트 파일 큐 추가 — 잠시 후 백업 로그 확인", "info", "settings");
@@ -1898,7 +1987,7 @@ void HanishikiBackend::backupNow()
     QFile::remove(stopSentinel);
     writeTerminalLog("\033[1;36m📦 " APP_NAME_DISPLAY " 백업 시작 — 파일별 병렬 cp 모드 (한국어/일본어/NAS 안전)\033[0m", "backup");
     writeTerminalLog(QString("\033[90m  📂 백업 위치:\033[0m %1").arg(backupRoot), "backup");
-    writeTerminalLog(QString("\033[90m  🕐 시작 시각:\033[0m %1").arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss")), "backup");
+    writeTerminalLog(QString("\033[90m  🕐 시작 시각:\033[0m %1").arg(Common::jstNow().toString("yyyy-MM-dd HH:mm:ss")), "backup");
     writeTerminalLog(QString("\033[90m  📁 대상 폴더:\033[0m %1 개  /  \033[90m🚀 병렬 워커:\033[0m %2").arg(platformDirs.size()).arg(CONCURRENT), "backup");
     if (isMountainDuck) {
         writeTerminalLog("\033[1;32m  🦆 Mountain Duck 마운트 감지\033[0m — local cache 사용 (write 즉시 응답)", "backup");
@@ -2552,7 +2641,7 @@ void HanishikiBackend::writeDownloadManifest(const QString &dir, const QString &
     root["app"] = QStringLiteral(APP_NAME_ASCII);
     root["platform"] = platform;
     root["dir"] = dir;
-    root["created_at"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+    root["created_at"] = Common::jstNow().toString(Qt::ISODate);
     root["created_unix"] = QDateTime::currentSecsSinceEpoch();
 
     QJsonObject summary;
@@ -2620,7 +2709,7 @@ void HanishikiBackend::writeDownloadManifest(const QString &dir, const QString &
         out << "═══════════════════════════════════════════════════════════════\n";
         out << "  📦 " APP_NAME_DISPLAY " — " << platform.toUpper() << " 다운로드 manifest\n";
         out << "═══════════════════════════════════════════════════════════════\n";
-        out << "생성: " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n";
+        out << "생성: " << Common::jstNow().toString("yyyy-MM-dd HH:mm:ss") << "\n";
         out << "위치: " << dir << "\n";
         out << "\n";
         out << QString("전체 파일: %1 개  ·  총 사이즈: %2\n")
@@ -2749,7 +2838,7 @@ void HanishikiBackend::exportConfig()
 {
     QString defaultName = QString("%1_config_%2.json")
         .arg(QStringLiteral(APP_NAME_ASCII).toLower(),
-             QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
+             Common::jstNow().toString("yyyyMMdd_HHmmss"));
     QString path = QFileDialog::getSaveFileName(m_window,
         "💾 사용자 정보 내보내기 — JSON 파일 저장",
         QDir::homePath() + "/" + defaultName,
@@ -2763,7 +2852,7 @@ void HanishikiBackend::exportConfig()
     QJsonObject meta;
     meta["app"] = QStringLiteral(APP_NAME_ASCII);
     meta["version"] = QCoreApplication::applicationVersion().isEmpty() ? "1.0" : QCoreApplication::applicationVersion();
-    meta["exported_at"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+    meta["exported_at"] = Common::jstNow().toString(Qt::ISODate);
     meta["exported_unix"] = QDateTime::currentSecsSinceEpoch();
     meta["platform"] = QSysInfo::prettyProductName();
     root["__meta__"] = meta;
@@ -3479,13 +3568,12 @@ void HanishikiBackend::emailWatchTick()
                 log("⚠ 内閣会 감시 대상 미설정 — 알림만 받음", "warning", "naikakukai");
                 return;
             }
-            // 전체 watch 1회 실행 (커서 무시 — 알림 받았으니 전부 체크)
-            int saved = m_naikakukaiCursor;
-            for (int i = 0; i < m_naikakukaiWatches.size(); ++i) {
-                m_naikakukaiCursor = i;
-                naikakukaiTick();
-            }
-            m_naikakukaiCursor = saved;
+            // 알림을 받았으니 모든 대상을 곧장 차례에 올린다 — 플랫폼마다 하나씩, 끝나는 대로 다음 것(틱이 고른다).
+            //   예전엔 대상마다 틱을 불렀지만 같은 플랫폼의 둘째부터는 '수집 중' 으로 건너뛰어 사실상 하나씩만 봤다(검토).
+            //   같은 플랫폼의 쉬는 시간(m_naikakukaiPlatformLast)은 지우지 않는다 — 알림이 와도 앞 폴링이 막 끝난 계정에
+            //   곧바로 몰아치지 않게(검토). 쉬는 시간이 지나면 틱이 차례대로 고른다.
+            m_naikakukaiLastPoll.clear();
+            naikakukaiTick();
         }, Qt::QueuedConnection);
     });
     connect(t, &QThread::finished, t, &QThread::deleteLater);
@@ -3620,19 +3708,90 @@ void HanishikiBackend::naikakukaiTick()
         }
     }
 
-    // 이번 tick 에서 처리할 watch 선택 (순환 커서)
-    if (m_naikakukaiCursor >= m_naikakukaiWatches.size()) m_naikakukaiCursor = 0;
-    QJsonObject watch = m_naikakukaiWatches.at(m_naikakukaiCursor).toObject();
-    m_naikakukaiCursor++;
+    // ★ 차례 — 플랫폼마다, 주기가 지난 대상 중 가장 오래 안 본 것 하나. 그 플랫폼이 돌고 있으면 끝난 뒤의 틱에서.
+    //   플랫폼이 다르면 함께 돈다. 같은 플랫폼은 앞 수집이 끝난 뒤 간격(naikakukaiMinGapMs)을 쉰다 — 대상이 많아도 계정에
+    //   몰아치지 않게. 손으로 돌린 수집도 같다 — 돌고 있는 동안은 그 플랫폼의 마지막 시각을 지금으로 민다.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 intervalMs = qint64(m_naikakukaiIntervalMin) * 60 * 1000;
+    QHash<QString, int> pick;
+    QHash<QString, qint64> dueIn;   // 아직 때가 안 된 대상이 때가 되기까지 — 플랫폼마다 가장 이른 것(ms)
+    QSet<QString> plats;
+    for (int i = 0; i < m_naikakukaiWatches.size(); ++i) {
+        const QJsonObject w = m_naikakukaiWatches.at(i).toObject();
+        const QString p = w["platform"].toString();
+        if (!plats.contains(p)) {
+            plats.insert(p);
+            QThread *busy = m_collectionThreads.value(p);
+            if (platformRunning(p) || (busy && !busy->isFinished())
+                || (p == QLatin1String("niconico") && (ytWorkerBusy(p) || ytBatchAlive(p)))) m_naikakukaiPlatformLast[p] = now;
+        }
+        const qint64 last = m_naikakukaiLastPoll.value(naikakukaiWatchKey(w), 0);
+        if (last > 0 && now - last < intervalMs) {
+            const qint64 d = last + intervalMs - now;   // 이 대상이 때가 되기까지
+            if (!dueIn.contains(p) || d < dueIn.value(p)) dueIn[p] = d;
+            continue;
+        }
+        if (!pick.contains(p)
+            || last < m_naikakukaiLastPoll.value(naikakukaiWatchKey(m_naikakukaiWatches.at(pick.value(p)).toObject()), 0))
+            pick[p] = i;
+    }
+    qint64 nextDue = -1;   // 쉬는 시간만 남은 플랫폼 가운데 가장 먼저 풀리는 것까지(ms)
+    for (auto it = pick.constBegin(); it != pick.constEnd(); ++it) {
+        if (platformRunning(it.key())) continue;                                   // 끝나면 다음 틱에
+        // 니코동은 탭에서 직접 받는 판(중지한 판의 마무리 · 남은 스크립트 포함)이 끝날 때까지 — 차례를 써 버리지 않게(검토)
+        if (it.key() == QLatin1String("niconico") && (ytWorkerBusy(it.key()) || ytBatchAlive(it.key()))) continue;
+        // ★ 깃발만 내려가고 앞선 워커가 아직 정리 중이면(중지 직후 · 서명 수리 중) 띄우지 않는다 — 새 워커가 쓰던 수집기를
+        //   지워 버린다(startCollection 과 같은 가드 · 검토)
+        if (QThread *prev = m_collectionThreads.value(it.key()); prev && !prev->isFinished()) continue;
+        const qint64 wait = m_naikakukaiPlatformLast.value(it.key(), 0) + naikakukaiMinGapMs(it.key()) - now;
+        if (wait > 0) { nextDue = (nextDue < 0) ? wait : qMin(nextDue, wait); continue; }
+        naikakukaiPoll(m_naikakukaiWatches.at(it.value()).toObject());
+    }
+    // 때가 된 대상이 아직 없는 플랫폼 — 쉬는 시간과 다음 대상의 때 가운데 늦은 쪽에 다시 본다. 이것을 빼면 쉬는 시간이 끝나기
+    //   직전 틱 구간에 때가 되는 대상은 다음 15초 틱까지 늦었다(검토).
+    for (auto it = dueIn.constBegin(); it != dueIn.constEnd(); ++it) {
+        if (pick.contains(it.key()) || platformRunning(it.key())) continue;
+        if (QThread *prev = m_collectionThreads.value(it.key()); prev && !prev->isFinished()) continue;
+        const qint64 rest = m_naikakukaiPlatformLast.value(it.key(), 0) + naikakukaiMinGapMs(it.key()) - now;
+        const qint64 cand = qMax(rest, it.value());
+        if (cand > 0) nextDue = (nextDue < 0) ? cand : qMin(nextDue, cand);
+    }
+    // 그 시각이 다음 틱 전이면 정밀 타이머로 그때 다시 본다 — 간격 · 주기가 틱(15초)에 걸려 늘지 않게.
+    //   타이머는 하나라 겹쳐 쌓이지 않는다(다시 걸면 가장 이른 시각으로 바뀐다).
+    if (nextDue > 0 && nextDue <= 16000 && m_naikakukaiGapTimer)
+        m_naikakukaiGapTimer->start(int(nextDue + 30));
+}
 
+void HanishikiBackend::naikakukaiPoll(const QJsonObject &watch)
+{
     QString platform = watch["platform"].toString();
     QString target = watch["target"].toString();
-
-    // 이미 해당 플랫폼이 다른 작업 중이면 이번 tick은 건너뜀
-    if (platformRunning(platform)) {
-        log(QString("内閣会: %1 은(는) 현재 수집 중 — 다음 tick으로 연기")
-            .arg(platform), "info", "naikakukai");
-        return;
+    // 직접 받는 니코동 판(중지한 판의 마무리 · 남은 스크립트 포함)이 있으면 차례를 쓰지 않고 다음 틱에 — 아래에서 고른 순간을 적으면 그 대상은
+    //   한 주기를 통째로 건너뛰었다(검토)
+    if (platform == QLatin1String("niconico") && (ytWorkerBusy(platform) || ytBatchAlive(platform))) return;
+    // 고른 순간을 적는다 — 아래에서 건너뛰어도(계정 없음 등) 1분마다 같은 오류를 되풀이하지 않게
+    m_naikakukaiLastPoll[naikakukaiWatchKey(watch)] = QDateTime::currentMSecsSinceEpoch();
+    m_naikakukaiPlatformLast[platform] = QDateTime::currentMSecsSinceEpoch();
+    if (platformRunning(platform)) return;
+    if (QThread *prev = m_collectionThreads.value(platform); prev && !prev->isFinished()) return;   // 앞선 워커가 아직 정리 중
+    // ★ 저장 디스크가 거의 찼으면 이번 차례는 건너뛴다 — 무인 감시가 빈 칸 없는 디스크에 반쪽 파일 · 저장 못 한 엑셀만
+    //   쌓지 않게(장기 지원 점검). 빠질 때와 돌아올 때 한 줄씩만 적는다. 공간이 돌아오면 다음 차례부터 다시 받는다.
+    {
+        QString savePath = watch["path"].toString().trimmed();
+        if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
+        const QStorageInfo si(savePath);
+        const bool low = !savePath.isEmpty() && si.isValid() && si.isReady()
+                         && si.bytesAvailable() < qint64(2) * 1024 * 1024 * 1024;
+        if (low) {
+            if (!m_naikakukaiLowSpaceRoots.contains(si.rootPath())) {
+                m_naikakukaiLowSpaceRoots.insert(si.rootPath());
+                log(QString("저장 디스크의 여유 공간이 %1 MB 뿐입니다: %2\n   공간이 2GB 넘게 돌아올 때까지 감시는 받지 않고 기다립니다.")
+                        .arg(si.bytesAvailable() / (1024 * 1024)).arg(si.rootPath()), "warning", "naikakukai");
+            }
+            return;
+        }
+        if (!savePath.isEmpty() && si.isValid() && m_naikakukaiLowSpaceRoots.remove(si.rootPath()))   // 그 디스크가 모자랐을 때만
+            log(QString("저장 디스크에 공간이 돌아왔습니다: %1 — 다시 받습니다.").arg(si.rootPath()), "success", "naikakukai");
     }
 
     log(QString("内閣会 폴링 → %1 / %2").arg(platform, target), "info", "naikakukai");
@@ -3642,6 +3801,25 @@ void HanishikiBackend::naikakukaiTick()
     // 여기서 보충해야 실제로 다운로드가 동작한다.
     QJsonObject runConfig = watch;
     runConfig["platform"] = platform;
+    // ★ 받을 때 쓰는 옵션(사용자 2026-10-29 — "내각회에서 다운받을 때 옵션 선택하는 거 따로") — 감시 대상에 정한 것 >
+    //   내각회의 플랫폼 옵션. 키는 그 탭이 수집에 넘기는 이름 그대로다(유형 · 최대 · 미디어 · Excel · 캡처 · 일찍 멈춤 …).
+    //   정하지 않은 것은 예전처럼 아래에서 채운다(지난 수집 설정 · 기본값) — 아무것도 정하지 않으면 동작이 그대로다.
+    runConfig.remove(QStringLiteral("options"));
+    {
+        QJsonObject eff = m_naikakukaiOptions.value(platform).toObject();
+        const QJsonObject own = watch.value(QStringLiteral("options")).toObject();
+        for (auto it = own.begin(); it != own.end(); ++it) eff[it.key()] = it.value();
+        for (auto it = eff.begin(); it != eff.end(); ++it) runConfig[it.key()] = it.value();
+        if (eff.contains(QStringLiteral("realCaptureMode")))   // 캡처는 '안 함 · 미디어만 · 전체' — 옛 켬/끔 칸도 맞춘다
+            runConfig["realCapture"] = eff.value(QStringLiteral("realCaptureMode")).toString() != QLatin1String("off");
+        if (!eff.isEmpty()) {
+            QStringList kv;
+            for (auto it = eff.begin(); it != eff.end(); ++it)
+                kv << it.key() + "=" + (it.value().isBool() ? (it.value().toBool() ? "켬" : "끔")
+                                       : it.value().isDouble() ? QString::number(it.value().toDouble()) : it.value().toString());
+            log(QString("内閣会: %1 옵션 — %2").arg(target, kv.join(" · ")), "info", "naikakukai");
+        }
+    }
     // ★ 니코동은 수집기가 아니라 yt-dlp 배치다. 트윗용 기본값(count/type/mode)을
     //   그대로 넣으면 type 이 "tweets" 가 되어 저장 폴더(video/audio/thumbnail)도
     //   포맷 선택도 어긋난다. 대신 감시 대상을 주소로 바꾸고, 화면의 니코동 설정을
@@ -3683,6 +3861,8 @@ void HanishikiBackend::naikakukaiTick()
         if (!runConfig.contains("proxy"))    runConfig["proxy"]    = formStr("niconico-proxy", QString());
         // 저장 방식도 니코동 탭과 같게 — 탭에서 '폴더 없이 바로' 를 골랐는데 감시만 채널 폴더에 넣으면 한 폴더에 두 모양이 섞인다
         if (!runConfig.contains("saveLayout")) runConfig["saveLayout"] = formStr("niconico-save-layout", QStringLiteral("channel"));
+        // '끝나면 _complete 만 남기기' 도 니코동 탭의 값을 따른다(감시 대상마다 · 内閣会 옵션에서 정했으면 그것)
+        if (!runConfig.contains("completeOnly")) runConfig["completeOnly"] = formBool("niconico-complete-only", false);
 
         // ★ 페이지 캡쳐는 끈다. 캡쳐 대상은 '넘긴 주소' 라서, 감시에서는 같은 유저
         //   페이지를 주기마다 한 장씩 다시 찍을 뿐이다. 그때마다 크롬이 뜬다.
@@ -3743,16 +3923,23 @@ void HanishikiBackend::naikakukaiTick()
         runConfig["saveProgress"] = true;
     }
 
+    // ★ 니코동은 탭에서 직접 받는 판과 같은 상태 파일을 쓴다 — 일꾼 자리를 먼저(메인 스레드에서) 잡는다. 깃발을 올린 뒤에 잡으면,
+    //   그 사이 탭에서 시작한 판이 자리를 잡았을 때 이쪽이 물러나며 깃발을 내려 그 판을 '중지됨' 으로 끊는다.
+    if (platform == QLatin1String("niconico") && (ytBatchAlive("niconico") || !ytWorkerBegin("niconico"))) {
+        log("内閣会: 니코동을 직접 받는 중이라 이번 감시는 건너뜁니다", "info", "naikakukai");
+        return;
+    }
     // 니코동은 yt-dlp 의 진행 줄이 터미널 로그로 나간다. 창은 띄우지 않고
     // 로그만 열어 둔다 — 그러면 그 줄이 内閣会 창으로 그대로 흘러들고,
     // 주기마다 창이 튀어나와 포커스를 빼앗는 일도 없다.
+    //   ★ 위에서 건너뛸 때는 열지 않는다 — 직접 받는 판의 로그 통로를 이 감시가 가로채지 않게.
     if (platform == "niconico") openTerminalLog("niconico", nicoBase, false);
 
     // 백그라운드 스레드에서 실행
     setPlatformRunning(platform, true);
     {   // 어느 플랫폼을 内閣会가 띄웠는지 기억한다 — 중지 버튼이 이것만 멈추게.
         QMutexLocker lock(&m_runningMutex);
-        m_naikakukaiActivePlatform = platform;
+        if (!m_naikakukaiActivePlatforms.contains(platform)) m_naikakukaiActivePlatforms << platform;
     }
     QThread *thread = QThread::create([this, runConfig, platform, target, nicoBase]() {
         const QString p = platform;
@@ -3762,6 +3949,7 @@ void HanishikiBackend::naikakukaiTick()
         //   Chrome 정리 블록은 스레드별 맵만 훑으므로, 그 Chrome 은 중지
         //   신호를 영영 못 받는다 — 중지를 눌러도 캡쳐가 계속 돈다.
         setThreadTrackKey(p);
+        { QMutexLocker lk(&m_trackMetaMutex); m_trackMeta.remove(p); }   // 이번 폴링 결과를 새로 모은다(아래 foundNew)
         // 실행 전 트윗 카운트 비교 위해 m_lastConfig의 newestId 저장
         QString prevNewest;
         if (p == "twitter" && m_twitterCollector) {
@@ -3769,6 +3957,7 @@ void HanishikiBackend::naikakukaiTick()
         }
         // 니코동은 '새 글' 을 아카이브 줄 수로 잰다 — 폴링 전후를 비교한다.
         const int prevArchive = naikakukaiArchiveCount(nicoBase);
+        if (p == "niconico") ytTakeArchivePrimed("niconico");   // 앞 판(탭에서 직접 받은 판)이 남긴 값을 비운다
 
         // ★ 계정별 프록시 — startCollection 워커와 똑같이 이 스레드에만 건다(윈도우 모델).
         //   예전엔 여기서 걸지 않아, 内閣会가 돌린 수집만 계정이 고른 출구를 벗어났다.
@@ -3788,11 +3977,13 @@ void HanishikiBackend::naikakukaiTick()
         else if (p == "tumblr") runTumblrCollection(runConfig);
         else if (p == "niconico") runYoutubeDownload(runConfig);
         m_naikakukaiMirroring = false;
+        const int nicoPrimed = (p == "niconico") ? ytTakeArchivePrimed("niconico") : 0;   // 판을 시작하며 장부에 더한 줄 — 새로 받은 것이 아니다
         setPlatformRunning(p, false);
+        if (p == "niconico") ytWorkerEnd("niconico");   // 자리는 띄우기 전에(메인 스레드) 잡았다 — 깃발을 내린 뒤에 놓는다(프록시가 없어 건너뛴 때도)
         clearThreadTrackKey();
         {
             QMutexLocker lock(&m_runningMutex);
-            if (m_naikakukaiActivePlatform == p) m_naikakukaiActivePlatform.clear();
+            m_naikakukaiActivePlatforms.removeAll(p);
         }
 
         // 맵에서 자기를 뺀다 — 반드시 메인 스레드에서, 그리고 '아직 나인지' 확인하고.
@@ -3801,6 +3992,9 @@ void HanishikiBackend::naikakukaiTick()
             QThread *self = QThread::currentThread();
             QMetaObject::invokeMethod(this, [this, p, self]() {
                 if (m_collectionThreads.value(p) == self) m_collectionThreads.remove(p);
+                // 같은 플랫폼의 다음 차례는 지금(끝난 순간)부터 간격을 쉰 뒤 — 쉬는 시간이 다음 틱 전에 풀리면 틱이 정밀 타이머를 건다
+                if (m_naikakukaiRunning && !Common::appQuitting())
+                    m_naikakukaiPlatformLast[p] = QDateTime::currentMSecsSinceEpoch();
                 // ★ 폴링이 도는 동안 끝난 다른 일은 놓지 못했다(isAnyRunning 이 이 폴링을 셌다) — 여기서 다시 본다.
                 //   안 그러면 그 사이 붙든 화면(-dims)이 内閣会가 켜져 있는 내내 남아 덮개를 연 맥의 화면이 밤새 켜졌다(검토).
                 //   releaseAwake 는 지금 상태를 다시 보고 内閣会 대기면 맥만 붙든다.
@@ -3809,26 +4003,34 @@ void HanishikiBackend::naikakukaiTick()
         }
 
         // 새 글 발견 여부 — 시스템 알림
+        //   ★ 수집기가 센 새 글 수(noteTrackFresh)를 먼저 본다. 예전엔 트위터의 가장 새 ID 만 비교해, 블루스카이 · 텀블러 감시와
+        //     좋아요 · 진짜 Chrome 같은 길은 새 글을 받고도 늘 '새 글 없음' 이었고 알림도 없었다(검토).
+        //     세지 않는 길(진짜 Chrome · 웹 방식 · 목록 종류)은 모른다고 말한다.
+        TrackMeta tm;
+        { QMutexLocker lk(&m_trackMetaMutex); tm = m_trackMeta.take(p); }
         QString newNewest;
         if (p == "twitter" && m_twitterCollector) {
             newNewest = m_twitterCollector->newestTweetId();
         }
-        bool foundNew = !newNewest.isEmpty() && newNewest != prevNewest;
+        bool foundNew = tm.freshKnown ? tm.fresh > 0 : (!newNewest.isEmpty() && newNewest != prevNewest);
+        const bool freshUnknown = !tm.freshKnown && !foundNew && p != "niconico";
+        const int freshCount = tm.fresh;
         // 니코동 — 아카이브가 늘어난 만큼이 이번에 새로 받은 영상이다.
         int nicoNew = 0;
         if (p == "niconico") {
             const int nowCount = naikakukaiArchiveCount(nicoBase);
-            if (nowCount >= 0) nicoNew = qMax(0, nowCount - qMax(0, prevArchive));
+            if (nowCount >= 0) nicoNew = qMax(0, nowCount - qMax(0, prevArchive) - nicoPrimed);
             foundNew = nicoNew > 0;
         }
-        QMetaObject::invokeMethod(this, [this, p, target, foundNew, nicoNew]() {
+        QMetaObject::invokeMethod(this, [this, p, target, foundNew, nicoNew, freshUnknown, freshCount]() {
             // 니코동 폴링이 열어 둔 로그를 닫는다(창은 남는다 — [DONE] 만 찍는다).
             //   다른 플랫폼 폴링에서 부르면 안 된다. 사용자가 그 사이 직접 돌리고 있는
             //   니코동 다운로드의 로그 통로를 남의 폴링이 끊어 버린다.
             if (p == "niconico") closeTerminalLog("niconico");
             if (foundNew) {
                 const QString what = (nicoNew > 0) ? QString("새 영상 %1개 발견").arg(nicoNew)
-                                                   : QStringLiteral("새 글 발견");
+                                   : (freshCount > 0) ? QString("새 글 %1개 발견").arg(freshCount)
+                                                      : QStringLiteral("새 글 발견");
                 // 니코동 대상은 핸들이 아니라 번호·주소라 @ 를 붙이지 않는다.
                 const QString who = (p == "niconico") ? target : QStringLiteral("@") + target;
                 log(QString("📢 内閣会: %1/%2 %3 — 다운 완료").arg(p, target, what),
@@ -3836,6 +4038,8 @@ void HanishikiBackend::naikakukaiTick()
                 showSystemNotification(
                     QString("내각회 — %1").arg(target),
                     QString("%1 %2 → 자동 다운로드 완료").arg(who, what));
+            } else if (freshUnknown) {
+                log(QString("内閣会: %1/%2 폴링을 마쳤습니다 — 이 방식은 새 글 수를 세지 않습니다").arg(p, target), "info", "naikakukai");
             } else {
                 log(QString("内閣会: %1/%2 새 글 없음").arg(p, target), "info", "naikakukai");
             }
@@ -4722,10 +4926,26 @@ static QJsonDocument readJsonFile(const QString &path)
 void HanishikiBackend::loadHotfixFromDisk()
 {
     const QString d = Common::hotfixDir();
+    Common::retireStaleScriptOverrides();   // 새 판으로 바뀌었으면 옛 자가수리 사본부터 비킨다
     if (!QFile::exists(d + "/state.json")) return;
+    // 받아 둔 고침 꾸러미가 이 판보다 옛 판을 위한 것이면 쓰지 않는다(새 판에 이미 들어 있다)
+    if (const QString maxApp = hotfixState().value("maxApp").toString(); !maxApp.isEmpty()
+        && QVersionNumber::fromString(Common::appBuildVersion()) > QVersionNumber::fromString(maxApp)) {
+        qInfo().noquote() << QString("[고침 꾸러미] v%1 은 %2 판까지를 위한 것이라 이 판(%3)에서는 쓰지 않습니다")
+                                 .arg(hotfixState().value("version").toInt()).arg(maxApp, Common::appBuildVersion());
+        return;
+    }
     const auto res = Common::applyHotfix(readJsonFile(d + "/api_overrides.json").object(),
                                          readJsonFile(d + "/shape_aliases.json").object(),
                                          readJsonFile(d + "/repair_rules.json").array());
+    // ★ 판 범위(maxApp)를 모르는 옛 앱이 받아 둔 꾸러미 — 그 도우미는 그 앱의 판을 위한 것이라 이 판의 고친 도우미를 가린다.
+    //   값(api_overrides 등)은 코드가 아니라 최근 값이므로 그대로 쓰고, 도우미만 쓰지 않는다(검토).
+    if (!hotfixState().contains("maxApp") && !hotfixState().value("tools").toObject().isEmpty()) {
+        Common::setHotfixTools({});
+        qInfo().noquote() << QString("[고침 꾸러미] v%1 은 판 범위를 모르는 옛 앱이 받은 것이라 파이썬 도우미는 쓰지 않습니다")
+                                 .arg(hotfixState().value("version").toInt());
+        return;
+    }
     // 서명을 통과해 받아 둔 도우미 — 이 폴더엔 검증된 것만 있어야 한다. 켤 때마다 다시 대 본다.
     QHash<QString, QString> keep;
     const QJsonObject want = hotfixState().value("tools").toObject();
@@ -4786,7 +5006,7 @@ void HanishikiBackend::checkHotfix(bool manual)
         };
         auto status = [this](const QString &line) {
             QMetaObject::invokeMethod(this, [this, line]() {
-                QJsonObject st = hotfixState(); st["lastCheck"] = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm");
+                QJsonObject st = hotfixState(); st["lastCheck"] = Common::jstNow().toString("yyyy-MM-dd HH:mm");
                 st["lastResult"] = line; saveHotfixState(st); getHotfixStatus();
             }, Qt::QueuedConnection);
         };
@@ -4812,9 +5032,24 @@ void HanishikiBackend::checkHotfix(bool manual)
         }
         const QJsonObject man = mr.json();
         const int ver = man.value("version").toInt(0);
-        const int have = hotfixState().value("version").toInt(0);
+        // ★ 판 범위(maxApp)를 모르는 옛 앱이 받아 둔 꾸러미는 켤 때 도우미를 껐다(loadHotfixFromDisk). 같은 판이라도 한 번 다시
+        //   받는다 — 올라온 꾸러미가 이 판을 품으면 그 도우미를 다시 쓴다(예전엔 '최신입니다' 로 다음 판이 나올 때까지 꺼져 있었다 — 검토).
+        //   다시 받으면 maxApp 이 적혀 다음부터는 그대로 '최신' 이다.
+        const bool haveUnscoped = !hotfixState().contains("maxApp") && !hotfixState().value("tools").toObject().isEmpty();
+        const int have = haveUnscoped ? 0 : hotfixState().value("version").toInt(0);
         const QVersionNumber need = QVersionNumber::fromString(man.value("minApp").toString("0"));
-        if (need > QVersionNumber::fromString(QStringLiteral(PREDORMITION_VERSION_STR))) {
+        const QVersionNumber appVer = QVersionNumber::fromString(Common::appBuildVersion());
+        // ★ 고침 꾸러미는 그것을 만든 판을 위한 것이다(maxApp). 새 판에는 그 고침이 이미 들어 있고, 옛 도우미가
+        //   새 판의 고친 도우미를 가리면 고친 것이 되돌아온 것처럼 보인다.
+        if (const QString maxApp = man.value("maxApp").toString(); !maxApp.isEmpty()
+            && appVer > QVersionNumber::fromString(maxApp)) {
+            const QString m = QStringLiteral("고침 꾸러미 v%1 은 %2 판까지를 위한 것입니다 — 이 판(%3)에는 이미 들어 있어 쓰지 않습니다")
+                                  .arg(ver).arg(maxApp, Common::appBuildVersion());
+            if (manual) say(m, "info");
+            status(m);
+            return;
+        }
+        if (need > appVer) {
             const QString m = QStringLiteral("고침 꾸러미 v%1 은 새 판(%2 이상)이 있어야 씁니다").arg(ver).arg(need.toString());
             if (manual) say(m, "warning");
             status(m);
@@ -4844,7 +5079,13 @@ void HanishikiBackend::checkHotfix(bool manual)
         }
         // 파이썬 도우미 — 번들에 이미 있는 이름만, sha256 이 하나라도 어긋나면 이번 판은 통째로 버린다.
         //   대기 폴더에 모았다가 한꺼번에 옮긴다(반쯤 바뀐 채로 남지 않게).
-        const QJsonObject toolsMeta = man.value("tools").toObject();
+        //   ★ maxApp 칸이 아예 없는 꾸러미는 그것을 모르던 때(r46 까지)에 올린 것이다 — 그 도우미는 그때의 판을 위한 것이라
+        //   이 판의 고친 도우미를 가린다. 값(api_overrides 등)만 쓰고 도우미는 받지 않는다(켤 때의 규칙과 같다).
+        //   빈 값("")은 hotfix_publish.py 가 일부러 적는 '판 제한 없음' 이라 받는다.
+        const bool manScoped = man.contains("maxApp");
+        const QJsonObject toolsMeta = manScoped ? man.value("tools").toObject() : QJsonObject();
+        if (!manScoped && !man.value("tools").toObject().isEmpty())
+            say(QStringLiteral("   고침 꾸러미 v%1 은 판 범위가 적히지 않은 옛 꾸러미라 파이썬 도우미는 받지 않습니다(값만 씁니다)").arg(ver), "info");
         const QString stage = Common::hotfixDir() + "/tools.staging";
         QDir(stage).removeRecursively();
         QDir().mkpath(stage);
@@ -4888,12 +5129,13 @@ void HanishikiBackend::checkHotfix(bool manual)
         notes.remove(QRegularExpression(R"(\S+://\S+)"));             // 안내 글에 링크는 싣지 않는다
         QJsonObject st = hotfixState();
         st["version"] = ver;
-        st["appliedAt"] = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm");
+        st["appliedAt"] = Common::jstNow().toString("yyyy-MM-dd HH:mm");
         st["notes"] = notes;
         st["counts"] = QJsonObject{{"overrides", res.overrides}, {"aliases", res.aliases}, {"rules", res.rules}};
         st["rejected"] = res.rejected.size() + toolRejected.size();
         st["tools"] = toolsState;
         st["signed"] = true;
+        st["maxApp"] = man.value("maxApp").toString();
         QMetaObject::invokeMethod(this, [this, st]() { saveHotfixState(st); }, Qt::QueuedConnection);
         say(QStringLiteral("🔧 고침 꾸러미 v%1 받음(서명 맞음) — 값 %2 · 별명 %3 · 수리 규칙 %4 · 파이썬 도우미 %5%6")
                 .arg(ver).arg(res.overrides).arg(res.aliases).arg(res.rules).arg(newTools.size())
@@ -4927,6 +5169,7 @@ void HanishikiBackend::autoResumeWatchers()
             QJsonObject cfg;
             cfg["intervalMin"] = m_config->naikakukaiInterval();
             cfg["watches"] = watches;
+            cfg["options"] = m_config->naikakukaiOptions();
             startNaikakukai(QString::fromUtf8(QJsonDocument(cfg).toJson(QJsonDocument::Compact)));
         }
     }
@@ -5294,7 +5537,427 @@ void HanishikiBackend::openYoutubeWindow() {}
 void HanishikiBackend::openDiscordWindow() {}
 void HanishikiBackend::openInstagramWindow() {}
 
+// yt-dlp 장부에 없는 줄만 덧붙인다. 마지막 줄이 줄바꿈 없이 끝났으면 먼저 줄을 바꾼다 — 그대로 붙이면 두 줄이 한 줄이 되어
+// 둘 다 장부에서 사라진다(그 두 영상을 다시 받는다). 덧붙인 줄 수, 쓰지 못하면 -1.
+static int ytArchiveAppend(const QString &archivePath, const QStringList &lines)
+{
+    QSet<QString> known;
+    bool endsWithNewline = true;
+    {
+        QFile in(archivePath);
+        if (in.open(QIODevice::ReadOnly)) {
+            const QByteArray all = in.readAll();
+            endsWithNewline = all.isEmpty() || all.endsWith('\n');
+            for (const QByteArray &l : all.split('\n')) known.insert(QString::fromUtf8(l).trimmed());
+        }
+    }
+    QStringList add;
+    for (const QString &l : lines) {
+        const QString t = l.trimmed();
+        if (!t.isEmpty() && !known.contains(t)) { known.insert(t); add << t; }
+    }
+    if (add.isEmpty()) return 0;
+    QFile out(archivePath);
+    if (!out.open(QIODevice::Append)) return -1;
+    const QByteArray bytes = (endsWithNewline ? QByteArray() : QByteArray("\n")) + (add.join('\n') + '\n').toUtf8();
+    return (out.write(bytes) == bytes.size() && out.flush()) ? int(add.size()) : -1;
+}
+
+// 디스크에 끝까지 받아 둔 것을 yt-dlp 장부에 올린다. 이름의 날짜가 일본 시간으로 바뀌어, 일본 시간 아침 9시 전에 올린 영상은
+// --no-overwrites 가 예전 이름의 파일을 알아보지 못한다 — 장부에 없는 것(썸네일만 받기 · 장부를 적기 전에 끊긴 판)을 또 받았다.
+// finalExts 는 끝난 파일의 확장자만: 동영상 판의 .jpg 는 썸네일, 오디오 판의 .m4a 는 변환 전일 수 있다.
+static int seedYtArchive(const QString &typeDir, const QString &archivePath, const QStringList &finalExts)
+{
+    QStringList add;
+    QDirIterator it(typeDir, {"*.info.json"}, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString infoPath = it.next();
+        const QString base = infoPath.chopped(QStringLiteral(".info.json").size());
+        bool done = false;
+        for (const QString &ext : finalExts) {
+            if (QFileInfo::exists(base + "." + ext)) { done = true; break; }
+        }
+        if (!done) continue;
+        QFile f(infoPath);
+        if (!f.open(QIODevice::ReadOnly)) continue;
+        const QJsonObject info = QJsonDocument::fromJson(f.readAll()).object();
+        const QString ie = info["extractor_key"].toString().toLower();     // yt-dlp 의 make_archive_id 와 같은 모양
+        const QString id = info["id"].toString();
+        if (ie.isEmpty() || id.isEmpty()) continue;
+        add << ie + " " + id;
+    }
+    return qMax(0, ytArchiveAppend(archivePath, add));
+}
+
+// ── '끝나면 _complete 만 남기기'(화면 youtube-complete-only · niconico-complete-only → completeOnly) ──
+// 두 파일이 같은가 — 크기 + 앞 1MB + 뒤 1MB. 영상 전체를 견주면 처음 켤 때 예전 영상 모두를 두 번씩 읽는다(NAS 면 몇 시간).
+//   반쪽 사본은 크기에서, 다른 파일은 앞뒤에서 갈린다. 2MB 이하는 통째로 견준다.
+static bool ytSameBytes(const QString &a, const QString &b)
+{
+    QFile fa(a), fb(b);
+    if (!fa.open(QIODevice::ReadOnly) || !fb.open(QIODevice::ReadOnly)) return false;
+    const qint64 n = fa.size();
+    if (n != fb.size()) return false;
+    constexpr qint64 kPart = 1 << 20;
+    const qint64 head = qMin(n, kPart);
+    if (fa.read(head) != fb.read(head)) return false;
+    if (n > head) {
+        const qint64 tailAt = qMax(head, n - kPart);
+        if (!fa.seek(tailAt) || !fb.seek(tailAt)) return false;
+        if (fa.readAll() != fb.readAll()) return false;
+    }
+    return true;
+}
+
+// 디스크에서 같은 파일인가(링크를 따라 inode 로) — _complete 를 받은 폴더에 링크해 두었거나 사본 자리가 원본을 가리키는 링크면
+//   '사본과 같다' 가 자기 자신과 견준 결과다. 그대로 원본을 지우면 하나뿐인 파일을 지운다.
+static bool ytSameFileOnDisk(const QString &a, const QString &b)
+{
+#ifndef Q_OS_WIN
+    struct stat sa, sb;
+    if (::stat(QFile::encodeName(a).constData(), &sa) != 0 || ::stat(QFile::encodeName(b).constData(), &sb) != 0) return false;
+    return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+#else
+    return QFileInfo(a).canonicalFilePath().compare(QFileInfo(b).canonicalFilePath(), Qt::CaseInsensitive) == 0;
+#endif
+}
+
+// 그 파일이 이 영상의 것인가 — 앱이 사본에 단 '받은 곳'(kMDItemWhereFroms, FileHelper::setDownloadMeta 의 XML 꼴)이 이 영상의
+//   주소인가. 이름만으로는 모른다: 채널별 폴더의 이름(<날짜>_<제목>)에는 영상 번호가 없어, 같은 날 같은 제목의 다른 영상이 같은 이름이 된다.
+static bool ytFileIsFromUrl(const QString &path, const QString &url)
+{
+#ifdef Q_OS_MACOS
+    if (url.isEmpty()) return false;
+    const QByteArray p = QFile::encodeName(path);
+    const char *key = "com.apple.metadata:kMDItemWhereFroms";
+    const ssize_t n = getxattr(p.constData(), key, nullptr, 0, 0, 0);
+    if (n <= 0 || n > 65536) return false;
+    QByteArray buf(int(n), '\0');
+    if (getxattr(p.constData(), key, buf.data(), size_t(n), 0, 0) != n) return false;
+    return buf.contains(("<string>" + url.toHtmlEscaped() + "</string>").toUtf8());
+#else
+    Q_UNUSED(path); Q_UNUSED(url);
+    return false;
+#endif
+}
+
+// 같은 폴더의 숨은 임시 이름 — 끊겨도 진짜 이름에 반쪽이 남지 않게(.part 라 정리하기도 건너뛴다)
+static QString ytTempBeside(const QString &dest)
+{
+    const QFileInfo fi(dest);
+    return fi.absolutePath() + QStringLiteral("/.ytc_")
+        + QString::fromLatin1(QCryptographicHash::hash(fi.fileName().toUtf8(), QCryptographicHash::Sha1).toHex().left(20))
+        + QStringLiteral(".part");
+}
+
+// src 를 dest 에 '확인한' 사본으로 둔다(있으면 바꾼다 — 바꿔도 되는지는 부르는 쪽이 정한다). 임시 이름에 복사 → 원본과 견줌 → 이름 바꾸기.
+static bool ytCopyVerified(const QString &src, const QString &dest)
+{
+    QDir().mkpath(QFileInfo(dest).absolutePath());
+    const QString tmp = ytTempBeside(dest);
+    QFile::remove(tmp);
+    if (!QFile::copy(src, tmp) || !ytSameBytes(src, tmp)) { QFile::remove(tmp); return false; }
+    if (std::rename(QFile::encodeName(tmp).constData(), QFile::encodeName(dest).constData()) != 0) { QFile::remove(tmp); return false; }
+    return true;
+}
+
+// src 를 dest 로 옮긴다. dest 에 '다른' 파일이 있으면 덮지 않고 false(같은 내용이면 src 만 치운다). 같은 디스크면 이름만 바꾸고,
+//   다른 디스크(_complete 를 다른 곳에 링크해 둔 경우)면 확인한 사본을 둔 뒤 원본을 지운다. 덮지 않는 까닭: 같은 이름의 파일이
+//   다른 영상의 곁 파일이거나 썸네일만 받은 판의 하나뿐인 그림일 수 있다(_complete 는 세 형태가 함께 쓴다 — 검토).
+static bool ytMoveInto(const QString &src, const QString &dest)
+{
+    QDir().mkpath(QFileInfo(dest).absolutePath());
+    if (QFileInfo::exists(dest) || QFileInfo(dest).isSymLink()) {
+        if (ytSameFileOnDisk(src, dest)) return false;                     // 자기 자신(링크) — 옮길 것도 지울 것도 없다
+        if (ytSameBytes(src, dest)) return QFile::remove(src);
+        return false;
+    }
+    if (std::rename(QFile::encodeName(src).constData(), QFile::encodeName(dest).constData()) == 0) return true;
+    if (!ytCopyVerified(src, dest)) return false;
+    return QFile::remove(src);
+}
+
+// '<이름> [<영상 번호>].<확장자>' — 이 영상의 사본을 둘 다른 이름. 그 이름에도 다른 영상이 있으면 ' (2)' · ' (3)' …
+static QString ytIdName(const QString &mirrorPath, const QString &vid, const QString &media)
+{
+    const QFileInfo fi(mirrorPath);
+    QString id = vid;
+    id.replace(QRegularExpression(QStringLiteral("[\\\\/:*?\"<>|]")), QStringLiteral("_"));
+    const QString stem = fi.suffix().isEmpty() ? fi.fileName() : fi.fileName().chopped(fi.suffix().size() + 1);
+    for (int n = 1; n < 100; ++n) {
+        const QString cand = fi.absolutePath() + "/" + stem + " [" + id + "]" + (n > 1 ? QString(" (%1)").arg(n) : QString())
+                             + (fi.suffix().isEmpty() ? QString() : "." + fi.suffix());
+        if (!QFileInfo::exists(cand) && !QFileInfo(cand).isSymLink()) return cand;
+        if (!QFileInfo(cand).isSymLink() && ytSameBytes(media, cand)) return cand;   // 지난번에 둔 이 영상의 사본(끊긴 정리)
+    }
+    return QString();
+}
+
+struct YtCleanTask {
+    QString base;          // <유형 폴더>/…/<이름>(확장자 없이) — info.json 은 base + ".info.json"
+    QString mediaPath;     // 끝난 원본. 비면 '지난 정리에서 남은 것'(장부에 있고 원본은 이미 없고 _complete 에 사본이 있다)
+    QString mirrorPath;    // _complete 사본 자리
+    QString archiveLine;   // yt-dlp 장부 줄("youtube <ID>")
+    QString vid, url, comment, doneKey;
+};
+struct YtCleanResult {
+    int cleaned = 0, recopied = 0, renamed = 0, moved = 0, removed = 0, kept = 0, sidecarRenamed = 0;
+    qint64 freed = 0;
+    bool aborted = false;     // 시작도 하지 않았다(장부를 못 씀 · _complete 에 닿지 못함 · 받은 폴더와 겹침)
+    bool stoppedEarly = false; // 도중에 중지 — 나머지는 다음 판에
+    QSet<QString> doneKeys;   // 정리한 원본의 '뒤처리 마침' 장부 키 — 장부에서 뺀다
+    QStringList problems;     // 남겨 둔 까닭(앞의 몇 개만 기록에)
+};
+
+// 유형 폴더의 끝난 영상들을 _complete 만 남기고 비운다.
+//   ⓪ _complete 에 닿지 못하거나(빠진 디스크 · 끊긴 링크) 받은 폴더와 같은 곳(링크)이면 하지 않는다.
+//   ① yt-dlp 장부(동영상 · 오디오)에 모두 적는다 — 지운 뒤에 앱이 꺼져도 다시 받지 않게(이미 받은 영상이라 남겨 둔 것에도 해가 없다).
+//   ② 원본과 _complete 사본을 견준다(크기 + 앞뒤 1MB). 사본이 없으면 확인한 사본을 둔다. 사본이 다르면 덮지 않는다 — 같은 이름의
+//      다른 영상(채널별 폴더의 이름에는 번호가 없다)이거나 사용자가 손댄 파일일 수 있고, 그 파일의 '받은 곳' 도 믿을 수 없다(r50 은 있는
+//      사본마다 지금 영상의 주소를 달았고, 손으로 원본만 지운 자리에 같은 이름의 영상이 받히면 info.json 은 앞 영상의 것이 남는다 — 검토).
+//      이 영상은 '<이름> [<번호>]' 로 따로 둔다. 같은 영상의 낡은 사본이었다면 한 벌 겹칠 뿐 잃는 것은 없다. 사본이 원본 자신(링크)이면 둔다.
+//   ③ 자막 · 댓글 · 설명 · 썸네일 그림은 _complete 로 옮긴다(썸네일은 yt-dlp 가 영상에 넣으면 스스로 지운다 — 남은 것은 사용자가 '썸네일'
+//      로 받은 것이거나 넣지 못한 것. 설명도 영상 안에 적혔다고 늘 장담할 수 없다 — 작은 글 파일이라 옮긴다). info.json · 받다 남은
+//      조각(.part · -Frag · .ytdl · .f<형식>.<ext> · .temp.<ext>)은 지운다. 모르는 파일은 둔다. 옮길 자리에 다른 파일이 있으면 덮지 않는다
+//      (사본이 원본과 바이트까지 같은 이 영상의 것일 때만 같은 이름의 곁 파일을 더 새것으로 바꾼다).
+//   ④ 정리 장부(_complete/.yt_cleaned_<형태>.txt)는 영상마다, 원본을 지우기 직전에 적는다 — 남겨 둔 영상은 적지 않는다.
+//   stillWanted 가 false 가 되면(중지) 영상 사이에서 멈춘다. 엑셀 · 캡처 · 장부는 손대지 않는다.
+static YtCleanResult ytLeaveOnlyComplete(const QList<YtCleanTask> &tasks, const QString &typeDir, const QString &completeDir,
+                                         const QString &type, const QString &ledgerPath, const QString &archivePath,
+                                         const std::function<bool()> &stillWanted)
+{
+    YtCleanResult res;
+    if (tasks.isEmpty()) return res;
+    // ⓪
+    {
+        const QString ct = QFileInfo(typeDir).canonicalFilePath(), cc = QFileInfo(completeDir).canonicalFilePath();
+        if (ct.isEmpty() || cc.isEmpty()) {
+            res.aborted = true;
+            res.kept = tasks.size();
+            res.problems << QStringLiteral("_complete 나 받은 폴더에 닿지 못했습니다(빠진 디스크 · 끊긴 링크?) — 아무것도 지우지 않았습니다");
+            return res;
+        }
+        if (ytSameFileOnDisk(typeDir, completeDir) || ct.startsWith(cc + QLatin1Char('/')) || cc.startsWith(ct + QLatin1Char('/'))) {
+            res.aborted = true;
+            res.kept = tasks.size();
+            res.problems << QStringLiteral("받은 폴더와 _complete 가 같은 곳을 가리킵니다(링크) — 아무것도 지우지 않았습니다");
+            return res;
+        }
+    }
+    // ①
+    if (!archivePath.isEmpty()) {
+        QStringList lines;
+        for (const YtCleanTask &t : tasks) lines << t.archiveLine;
+        if (ytArchiveAppend(archivePath, lines) < 0) {
+            res.aborted = true;
+            res.kept = tasks.size();
+            res.problems << QStringLiteral("받은 기록(%1)에 적지 못해 아무것도 지우지 않았습니다").arg(QFileInfo(archivePath).fileName());
+            return res;
+        }
+    }
+    // ④ 정리 장부 — 한 번 읽고, 영상마다 덧붙인다
+    QSet<QString> ledgerKnown;
+    bool ledgerNl = true;
+    {
+        QFile lf(ledgerPath);
+        if (lf.open(QIODevice::ReadOnly)) {
+            const QByteArray all = lf.readAll();
+            ledgerNl = all.isEmpty() || all.endsWith('\n');
+            for (const QByteArray &l : all.split('\n')) ledgerKnown.insert(QString::fromUtf8(l).trimmed());
+        }
+    }
+    const auto ledgerAdd = [&](const QString &line) -> bool {
+        if (ledgerKnown.contains(line)) return true;
+        QFile out(ledgerPath);
+        if (!out.open(QIODevice::Append)) return false;
+        const QByteArray b = (ledgerNl ? QByteArray() : QByteArray("\n")) + line.toUtf8() + '\n';
+        if (out.write(b) != b.size() || !out.flush()) return false;
+        ledgerNl = true;
+        ledgerKnown.insert(line);
+        return true;
+    };
+    static const QRegularExpression kSub(QStringLiteral("^\\.[\\w-]+\\.(?:vtt|srt|ass|ssa|lrc|ttml|srv1|srv2|srv3|json3)$"));
+    static const QRegularExpression kThumb(QStringLiteral("^\\.(?:jpg|jpeg|png|webp)$"), QRegularExpression::CaseInsensitiveOption);
+    // 받다 남은 조각: 합치기 전 형식 파일(.f137.mp4 · .f251-drc.webm · .fhls-1080p.mp4 · 니코동 .fvideo-h264-1080p.mp4) ·
+    //   받던 것(.part · -Frag · .ytdl) · ffmpeg 임시(.temp.mp4). 형식 번호는 yt-dlp 가 쓰는 모양만 — '.final' · '.feat' 처럼
+    //   제목의 일부일 수 있는 것은 넣지 않는다(다른 영상 'Song.final.mp4' 를 'Song' 의 조각으로 지우지 않게)
+    static const QString kFmt = QStringLiteral("(?:\\.f(?:\\d[\\w-]*|(?:hls|dash|http|https|video|audio|dmc|dms)-[\\w-]+))");
+    static const QString kMediaExt = QStringLiteral("(?:mp4|m4a|m4v|webm|mkv|mov|mp3|opus|ogg|oga|aac|flv|3gp|ts|wav|flac)");
+    static const QRegularExpression kJunk(
+        QStringLiteral("^") + kFmt + QStringLiteral("?\\.") + kMediaExt + QStringLiteral("(?:\\.part(?:-Frag\\d+(?:\\.part)?)?|\\.ytdl)$")
+        + QStringLiteral("|^") + kFmt + QStringLiteral("\\.") + kMediaExt + QStringLiteral("$")
+        + QStringLiteral("|^\\.temp\\.") + kMediaExt + QStringLiteral("$"),
+        QRegularExpression::CaseInsensitiveOption);
+    QHash<QString, QStringList> dirFiles;   // 폴더마다 한 번만 읽는다(700개 폴더를 700번 읽지 않게)
+    QHash<QString, QStringList> dirBases;   // 그 폴더에서 info.json 을 가진 이름들
+    QSet<QString> touchedDirs;
+    const auto stamp = [](const YtCleanTask &t, const QString &path) {
+        FileHelper::applyPostMetadata(path, QFileInfo(t.mediaPath).lastModified(), t.url);
+        if (!t.comment.isEmpty()) FileHelper::setFinderComment(path, t.comment);
+    };
+    for (int ti = 0; ti < tasks.size(); ++ti) {
+        if (stillWanted && !stillWanted()) {
+            res.stoppedEarly = true;
+            res.kept += int(tasks.size()) - ti;
+            break;
+        }
+        YtCleanTask t = tasks.at(ti);
+        const QFileInfo bfi(t.base);
+        const QString dir = bfi.absolutePath(), baseName = bfi.fileName();
+        const QString mediaName = t.mediaPath.isEmpty() ? QString() : QFileInfo(t.mediaPath).fileName();
+        // ② _complete 사본 확인
+        if (!t.mediaPath.isEmpty()) {
+            const QFileInfo mfi(t.mirrorPath);
+            if (mfi.isSymLink() || ytSameFileOnDisk(t.mediaPath, t.mirrorPath)) {
+                ++res.kept;
+                res.problems << QStringLiteral("_complete 사본 자리가 원본을 가리키는 링크라 남겨 둠: %1").arg(mediaName);
+                continue;
+            }
+            if (!mfi.exists()) {
+                if (!ytCopyVerified(t.mediaPath, t.mirrorPath)) {
+                    ++res.kept;
+                    res.problems << QStringLiteral("_complete 사본을 만들지 못함(디스크 공간?): %1").arg(mediaName);
+                    continue;
+                }
+                stamp(t, t.mirrorPath);
+                ++res.recopied;
+            } else if (ytSameBytes(t.mediaPath, t.mirrorPath)) {
+                // 이 영상의 사본이 이미 있다
+            } else {
+                // 덮지 않는다 — 이 영상은 번호를 붙인 이름으로 따로
+                const QString alt = ytIdName(t.mirrorPath, t.vid, t.mediaPath);
+                const bool placed = !alt.isEmpty() && (QFileInfo::exists(alt) ? ytSameBytes(t.mediaPath, alt) : ytCopyVerified(t.mediaPath, alt));
+                if (!placed) {
+                    ++res.kept;
+                    res.problems << QStringLiteral("_complete 에 같은 이름의 다른 파일이 있고 따로 둘 이름도 만들지 못함: %1").arg(mediaName);
+                    continue;
+                }
+                stamp(t, alt);
+                t.mirrorPath = alt;
+                ++res.renamed;
+            }
+            if (ytSameFileOnDisk(t.mediaPath, t.mirrorPath) || !ytSameBytes(t.mediaPath, t.mirrorPath)) {   // 지우기 직전에 한 번 더
+                ++res.kept;
+                res.problems << QStringLiteral("_complete 사본이 원본과 달라 남겨 둠: %1").arg(mediaName);
+                continue;
+            }
+        } else if (!QFileInfo::exists(t.mirrorPath)) {
+            ++res.kept;
+            continue;
+        }
+        const QString mirrorDir = QFileInfo(t.mirrorPath).absolutePath();
+        const QString finalSuffix = QFileInfo(t.mediaPath.isEmpty() ? t.mirrorPath : t.mediaPath).suffix();
+        const QString mirrorName = QFileInfo(t.mirrorPath).fileName();
+        const QString mirrorStem = finalSuffix.isEmpty() ? mirrorName : mirrorName.chopped(finalSuffix.size() + 1);
+        // ③ 같은 이름의 곁 파일 나누기
+        if (!dirFiles.contains(dir)) {
+            const QStringList names = QDir(dir).entryList(QDir::Files | QDir::Hidden | QDir::System);
+            QStringList bases;
+            for (const QString &n : names)
+                if (n.endsWith(QLatin1String(".info.json"))) bases << n.chopped(QStringLiteral(".info.json").size());
+            dirFiles.insert(dir, names);
+            dirBases.insert(dir, bases);
+        }
+        // 'Song' 의 곁 파일로 보이는 'Song.f2.mp4' 가 실은 'Song.f2' 라는 다른 영상일 수 있다 — 그 이름의 info.json 이 있으면 그쪽 것
+        const auto ownedByOther = [&](const QString &name) {
+            for (const QString &b : dirBases.value(dir))
+                if (b.size() > baseName.size() && b.startsWith(baseName) && name.startsWith(b + QLatin1Char('.'))) return true;
+            return false;
+        };
+        QStringList toMove, toRemove;
+        for (const QString &name : dirFiles.value(dir)) {
+            if (name == mediaName || !name.startsWith(baseName)) continue;
+            const QString rest = name.mid(baseName.size());
+            if (!rest.startsWith(QLatin1Char('.'))) continue;            // 'Title Part 2.mp4' 같은 다른 영상
+            if (rest == QLatin1String(".info.json")) continue;           // 맨 끝에 지운다
+            if (ownedByOther(name) || !QFileInfo::exists(dir + "/" + name)) continue;   // 다른 영상의 것 · 앞 영상을 정리하며 이미 없어짐
+            if (rest == QLatin1String(".comments.txt") || rest == QLatin1String(".description") || kSub.match(rest).hasMatch()) toMove << name;
+            else if (kThumb.match(rest).hasMatch()) {
+                if (type == QLatin1String("thumbnail")) continue;        // 썸네일 판은 그림이 곧 받은 것 — 다른 그림은 둔다
+                toMove << name;
+            }
+            else if (kJunk.match(rest).hasMatch()) toRemove << name;
+        }
+        // 곁 파일을 _complete 로(사본과 같은 이름 줄기로). 그 자리에 다른 파일이 있으면 덮지 않고 '<줄기> [<번호>]' 로 —
+        //   하나라도 못 옮기면 이 영상은 손대지 않고 다음 판에 다시 해 본다
+        QString safeVid = t.vid;
+        safeVid.replace(QRegularExpression(QStringLiteral("[\\\\/:*?\"<>|]")), QStringLiteral("_"));
+        bool movedAll = true;
+        for (const QString &name : std::as_const(toMove)) {
+            const QString rest = name.mid(baseName.size());
+            bool ok = false;
+            for (int n = 0; n < 10 && !ok; ++n) {
+                const QString stemN = (n == 0) ? mirrorStem
+                                    : mirrorStem + (mirrorStem.endsWith("[" + safeVid + "]") ? QString() : " [" + safeVid + "]")
+                                      + (n > 1 ? QString(" (%1)").arg(n) : QString());
+                const QString dest = mirrorDir + "/" + stemN + rest;
+                if (ytMoveInto(dir + "/" + name, dest)) { ok = true; if (n > 0) ++res.sidecarRenamed; }
+                else if (!QFileInfo::exists(dir + "/" + name)) ok = true;   // 같은 내용이 이미 있어 치웠다
+                else if (!QFileInfo::exists(dest) && !QFileInfo(dest).isSymLink()) break;   // 자리가 비었는데 못 옮김 — 디스크 문제
+            }
+            if (ok) ++res.moved;
+            else { movedAll = false; res.problems << QStringLiteral("_complete 로 옮기지 못함: %1").arg(name); break; }
+        }
+        if (!movedAll) { ++res.kept; continue; }
+        // ④ 정리 장부 → ⑤ 원본 → 곁 파일 → info.json 순으로 지운다. 원본을 못 지우면 나머지도 두어 다음 판이 다시 해 본다
+        if (!ledgerAdd(t.archiveLine)) {
+            ++res.kept;
+            res.problems << QStringLiteral("정리 장부(%1)에 적지 못해 남겨 둠: %2").arg(QFileInfo(ledgerPath).fileName(), mediaName.isEmpty() ? baseName : mediaName);
+            continue;
+        }
+        if (!t.mediaPath.isEmpty()) {
+            const qint64 sz = QFileInfo(t.mediaPath).size();
+            if (!QFile::remove(t.mediaPath)) {
+                ++res.kept;
+                res.problems << QStringLiteral("원본을 지우지 못함(권한?): %1").arg(mediaName);
+                continue;
+            }
+            res.freed += sz;
+            ++res.removed;
+        }
+        for (const QString &name : std::as_const(toRemove)) {
+            const QString p = dir + "/" + name;
+            const qint64 sz = QFileInfo(p).size();
+            if (QFile::remove(p)) { res.freed += sz; ++res.removed; }
+        }
+        if (QFile::remove(t.base + QStringLiteral(".info.json"))) ++res.removed;
+        else if (QFileInfo::exists(t.base + QStringLiteral(".info.json")))
+            res.problems << QStringLiteral("info.json 을 지우지 못함(다음 판이 마저 치운다): %1").arg(baseName);
+        if (!t.doneKey.isEmpty()) res.doneKeys.insert(t.doneKey);
+        ++res.cleaned;
+        if (QDir::cleanPath(dir) != QDir::cleanPath(typeDir)) touchedDirs.insert(dir);
+    }
+    // ⑥ 비게 된 채널 폴더를 걷는다(Finder 의 .DS_Store 만 남았으면 빈 것으로 본다)
+    for (const QString &d : std::as_const(touchedDirs)) {
+        QDir qd(d);
+        const QStringList left = qd.entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+        if (left.isEmpty() || left == QStringList{QStringLiteral(".DS_Store")}) {
+            if (!left.isEmpty()) QFile::remove(d + QStringLiteral("/.DS_Store"));
+            QDir().rmdir(d);
+        }
+    }
+    return res;
+}
+
 // Helper: find bundled tool path, fallback to system
+// yt-dlp 의 --windows-filenames 는 파일 이름만이 아니라 '경로 전체' 에 윈도우 규칙을 건다
+// (YoutubeDL.get_output_path → sanitize_path(force=True) → _sanitize_path_parts):
+// 경로 조각마다 / < > : " | \ ? * 와 끝의 공백 · 마침표를 '#' 으로 바꾼다. 맥은 그런 폴더 이름을 허락한다
+// (Finder 에서 '/' 를 넣은 이름은 디스크에 ':' 로 있다). 저장 폴더가 그런 이름이면 yt-dlp 가 고른 폴더가 아니라
+// '#' 으로 바뀐 새 폴더에 쓴다. 그래서 저장 폴더가 이 규칙에 걸리지 않을 때만 그 옵션을 준다.
+// (윈도우에서는 그런 폴더가 애초에 만들어지지 않으므로, 이 판정이 참인 경우의 동작은 두 판이 같다.)
+static bool ytWindowsSafeDir(const QString &dir)
+{
+    // 파이썬 정규식의 \s 는 유니코드 공백(전각 공백 등)까지 본다 — 같게 맞춘다.
+    static const QRegularExpression bad(QStringLiteral("[<>:\"|\\\\?*]|[\\s.]$"),
+                                        QRegularExpression::UseUnicodePropertiesOption);
+    for (const QString &part : QDir::cleanPath(dir).split(QLatin1Char('/'), Qt::SkipEmptyParts)) {
+        if (part == QLatin1String(".") || part == QLatin1String("..")) continue;
+        if (bad.match(part).hasMatch()) return false;
+    }
+    return true;
+}
+
 static QString findBundledTool(const QString &name)
 {
     QString appDir = QCoreApplication::applicationDirPath();
@@ -5432,6 +6095,15 @@ void HanishikiBackend::startCollection(const QString &configJson)
     const QString trackKey = isParallel ? parallelKey : platformName;
     dbg(QString("platform=%1, trackKey=%2").arg(platformName, trackKey), platformName);
 
+    // 시작 전에 멈춘 판의 뒷정리 — 시작 버튼을 돌려주고, '수집 중' 으로 바꿔 둔 상태를 되돌린다.
+    //   ★ '오류' 로 끝낸다. '대기' 는 끝이 아니어서 다중 수집이 그 줄을 영영 기다렸다(검토). 병렬이면 다른 줄이 돌고 있을 수 있어
+    //     버튼은 끝 판정(checkMultiAllDone)에 맡긴다. 스레드가 없어 판 끝 정리('Done')가 오지 않으므로 일괄 창에는 따로 알린다.
+    auto refuseRun = [&]() {
+        if (!isParallel) runJsAll(QString("setRunning('%1', false)").arg(platformName));
+        updateStats(0, 0, "오류", trackKey);
+        if (!isParallel) runJs(QString("window.onCollectionRefused && onCollectionRefused('%1')").arg(platformName));
+    };
+
     // 디스크 설정 필수 체크 + 경로 존재 여부
     {
         QString td = m_config->tempDir();
@@ -5440,18 +6112,14 @@ void HanishikiBackend::startCollection(const QString &configJson)
             dbg("EARLY RETURN: 디스크가 안 보임", platformName);
             log(QString("⚠️ 디스크가 연결되어 있지 않습니다: %1 — 연결한 뒤 다시 시작하십시오. "
                         "디스크를 바꾸셨다면 설정에서 새로 고르십시오.").arg(td), "error", platformName);
-            runJsAll(QString("setRunning('%1', false)").arg(platformName));
-            updateStats(0, 0, "대기", trackKey);   // 화면이 시작할 때 '수집 중' 으로 바꿔 둔 것을 되돌린다
+            refuseRun();
             return;
         }
         if (td.isEmpty()) {
             // 아직 한 번도 정하지 않았다 — 정하라고 창을 띄운다.
             dbg("EARLY RETURN: 디스크 설정 없음", platformName);
             log("디스크 설정을 먼저 해주세요!", "error", platformName);
-            runJsAll(QString("setRunning('%1', false)").arg(platformName));
-            // ★ 시작 버튼만 돌려주고 상태는 '수집 중' 으로 남아, 사이드바 불과 상단 게이지가
-            //   계속 '돌고 있음' 을 가리켰다(실측 2026-09-19: spinspin·asked).
-            updateStats(0, 0, "대기", trackKey);
+            refuseRun();
             runJs("showDiskModal()");
             return;
         }
@@ -5473,18 +6141,16 @@ void HanishikiBackend::startCollection(const QString &configJson)
         }
     }
 
-    // ★ 저장 경로 검사 — 임시 디스크는 위에서 확인하는데 정작 저장 경로는 안 봤다.
-    //   비어 있거나 만들 수 없는 경로면 수집은 끝까지 돌지만 파일이 하나도 안 남는다.
-    //   내려받기가 조용히 실패할 뿐이라 사용자는 원인을 알 수 없었다.
-    //   여기서 미리 잡고, 왜 안 되는지 말해 준다.
+    // ★ 저장 경로 검사(맥과 같다) — 임시 디스크는 위에서 확인하는데 정작 저장 경로는 안 봤다.
+    //   비어 있거나 만들 수 없는 경로(빠진 외장 디스크 등)면 수집은 끝까지 돌지만 파일이 하나도
+    //   안 남는다. 내려받기가 조용히 실패할 뿐이라 원인을 알 수 없었다. 여기서 미리 잡고 말해 준다.
     QString savePath = config["path"].toString();
     if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
     if (savePath.trimmed().isEmpty()) {
         dbg("EARLY RETURN: 저장 경로 없음", platformName);
         log("저장 경로가 비어 있습니다 — 이 플랫폼 탭에서 저장 경로를 먼저 정해 주세요.",
             "error", platformName);
-        runJsAll(QString("setRunning('%1', false)").arg(platformName));
-        updateStats(0, 0, "대기", trackKey);   // 화면이 시작할 때 '수집 중' 으로 바꿔 둔 것을 되돌린다
+        refuseRun();
         return;
     }
     if (!QDir().mkpath(savePath)) {
@@ -5493,8 +6159,7 @@ void HanishikiBackend::startCollection(const QString &configJson)
                     "   드라이브가 연결돼 있는지, 쓰기 권한이 있는지 확인해 주세요.")
                 .arg(QDir::toNativeSeparators(savePath)),
             "error", platformName);
-        runJsAll(QString("setRunning('%1', false)").arg(platformName));
-        updateStats(0, 0, "대기", trackKey);
+        refuseRun();
         return;
     }
     config["path"] = savePath;   // ~ 를 펼친 결과를 아래로 넘긴다
@@ -5515,6 +6180,9 @@ void HanishikiBackend::startCollection(const QString &configJson)
         if (reallyRunning) {
             dbg("EARLY RETURN: 이미 수집 중", platformName);
             log(QString("이미 수집 중입니다! (%1)").arg(trackKey), "warning", platformName);
+            // 일괄 창에 알린다 — 그 대상은 받지 못했다. 안 알리면 돌고 있던 다른 판의 끝을 그 대상의 끝으로 적거나 영영 기다렸다(검토).
+            //   돌고 있는 판의 상태는 건드리지 않는다(refuseRun 을 쓰지 않는 까닭)
+            if (!isParallel) runJs(QString("window.onCollectionRefused && onCollectionRefused('%1')").arg(platformName));
             if (m_window) m_window->releaseAwake();   // 위에서 붙든 화면 몫을 돌려놓는다(돌고 있는 일이 있으면 그대로 둔다)
             return;
         }
@@ -5723,6 +6391,10 @@ void HanishikiBackend::startCollection(const QString &configJson)
             // ★ 터미널은 트랙마다 하나라 트랙이 끝나면 그 트랙 것만 닫는다 (맥과 같다).
             closeTerminalLog(trackKey);
             m_collectionThreads.remove(trackKey);
+            // 内閣会가 켜져 있으면 같은 플랫폼의 쉬는 시간을 지금(끝난 순간)부터 센다 — 손으로 돌린 수집 뒤에도 곧바로 몰아치지
+            //   않게(15초 틱이 '돌고 있다' 고 본 마지막 순간이 아니라 끝난 순간부터 · 검토). 풀릴 때가 되면 틱이 정밀 타이머를 건다.
+            if (m_naikakukaiRunning && platformIdle && !Common::appQuitting())
+                m_naikakukaiPlatformLast[platformName] = QDateTime::currentMSecsSinceEpoch();
             // ★ 이 트랙의 캡쳐용 Chrome 창 자동 닫기 — 수집/다운로드 끝났으니 더 안 씀.
             //   ★ take() 하면 안 된다 — 노드를 지우는 것이라 notifyCollectionEnded 에서
             //     erase 를 없앤 것과 같은 이유로 위험하다. getChromePtr() 이 이 맵 노드의
@@ -5811,6 +6483,8 @@ void HanishikiBackend::stopCollection(const QString &platformName)
 #ifdef Q_OS_WIN
         QProcess::execute("taskkill", {"/PID", QString::number(pid), "/F", "/T"});
 #else
+        // ★ 자식부터 — 블루스카이 데몬이 띄운 ffmpeg 는 데몬이 죽으면 고아가 되어, 중지한 뒤에도 그 영상을 끝까지 받았다(윈도우는 /T 로 함께 끈다)
+        QProcess::execute("/usr/bin/pkill", {"-TERM", "-P", QString::number(pid)});
         ::kill(static_cast<pid_t>(pid), SIGTERM);
 #endif
     };
@@ -7058,12 +7732,70 @@ void HanishikiBackend::checkNewPosts(const QString &platformName)
     }
 }
 
+bool HanishikiBackend::ytWorkerBegin(const QString &platform)
+{
+    QMutexLocker lk(&m_ytWorkerMutex);
+    if (m_ytWorkerActive.contains(platform)) return false;
+    m_ytWorkerActive.insert(platform);
+    return true;
+}
+void HanishikiBackend::ytWorkerEnd(const QString &platform)
+{
+    QMutexLocker lk(&m_ytWorkerMutex);
+    m_ytWorkerActive.remove(platform);
+}
+bool HanishikiBackend::ytWorkerBusy(const QString &platform) const
+{
+    QMutexLocker lk(&m_ytWorkerMutex);
+    return m_ytWorkerActive.contains(platform);
+}
+bool HanishikiBackend::ytBatchAlive(const QString &platform) const
+{
+    const QPointer<QProcess> p = m_batchProcs.value(platform);
+    return p && p->state() != QProcess::NotRunning;
+}
+void HanishikiBackend::ytRefuseStart(const QString &platform, const QString &why)
+{
+    log(why, "warning", platform);
+    // 화면은 누르는 순간 '받는 중' 으로 바꿨다. 손으로 띄운 판이 돌고 있으면 그 판이 끝날 때 되돌리므로 둔다 — 内閣会가 돌리는 판이거나
+    //   (그 판은 탭을 되돌리지 않는다) 일꾼은 끝나고 옛 스크립트만 남았으면 지금 되돌린다(안 그러면 탭이 '받는 중' 으로 굳었다 — 검토).
+    bool naikakukaiHolds = false;
+    {
+        QMutexLocker lk(&m_runningMutex);
+        naikakukaiHolds = m_naikakukaiActivePlatforms.contains(platform);
+    }
+    if (naikakukaiHolds || !ytWorkerBusy(platform))
+        runJs(QString("if(window.onCollectionEnded)window.onCollectionEnded('%1');").arg(platform));
+    // 지켜보는 일꾼이 없는데 스크립트만 살아 있으면(중지했는데 남은 것) 끝낸다 — 그대로 두면 끝날 때까지 시작을 막고 중지 단추도 닿지 않는다
+    if (!ytWorkerBusy(platform) && ytBatchAlive(platform)) {
+        log("지켜보는 판이 없는 다운로드가 남아 있어 끝냈습니다 — 잠시 뒤 다시 시작하십시오", "warning", platform);
+        killBatchGroup(platform);
+    }
+}
+void HanishikiBackend::ytNoteArchivePrimed(const QString &platform, int lines)
+{
+    QMutexLocker lk(&m_ytWorkerMutex);
+    m_ytArchivePrimed[platform] = lines;
+}
+int HanishikiBackend::ytTakeArchivePrimed(const QString &platform)
+{
+    QMutexLocker lk(&m_ytWorkerMutex);
+    return m_ytArchivePrimed.take(platform);
+}
+
 void HanishikiBackend::startYoutube(const QString &configJson)
 {
     QJsonDocument doc = QJsonDocument::fromJson(configJson.toUtf8());
     if (doc.isNull()) return;
 
     QJsonObject config = doc.object();
+    // ★ 받는 중(중지한 판의 마무리 포함)이면 새 판을 띄우지 않는다 — 두 판이 같은 상태 파일을 써서, 먼저 끝난 판의 DONE 이 다른 판의
+    //   뒤처리를 그 판의 yt-dlp 가 아직 쓰는 중에 돌렸다('분석' 단추는 받는 중에도 눌린다). 깃발도 건드리지 않는다 — 앞 판이 아직
+    //   돌고 있으므로, 여기서 내리면 앞 판이 '중지됨' 으로 끊긴다.
+    if (ytBatchAlive("youtube") || !ytWorkerBegin("youtube")) {
+        ytRefuseStart("youtube", "이미 받는 중입니다 — 지금 판(중지했으면 그 마무리)이 끝난 뒤에 다시 시작하십시오");
+        return;
+    }
     setPlatformRunning("youtube", true);
 
     if (m_window) m_window->holdAwake();
@@ -7080,6 +7812,7 @@ void HanishikiBackend::startYoutube(const QString &configJson)
         // 완료 처리 — 메인 스레드에서 실행 (QProcess/QSocketNotifier는 cross-thread 접근 불가)
         QMetaObject::invokeMethod(this, [this]() {
             setPlatformRunning("youtube", false);
+            ytWorkerEnd("youtube");   // 깃발을 내린 뒤에 놓는다 — 그 사이 받아들인 새 판의 깃발을 이 정리가 내리지 않게
             closeTerminalLog("youtube");   // 창은 닫지 않는다 — 끝났다고 표시만 한다
             // ★ 어떤 길로 끝났든 화면의 시작/중지 버튼을 되돌린다. 일찍 돌아가는 길(프록시를 못 씀·
             //   주소 없음·스크립트 못 만듦)은 '완료' 를 알리지 않아서, 중지 버튼이 켜진 채 시작
@@ -7163,6 +7896,11 @@ void HanishikiBackend::startNiconico(const QString &configJson)
     if (doc.isNull()) return;
     QJsonObject config = doc.object();
     config["platform"] = "niconico";        // runYoutubeDownload 가 <path>/niconico 저장 + 로그/게이지 키 분리
+    // ★ 유튜브와 같다 — 받는 중(内閣会의 니코동 감시 · 중지한 판의 마무리 포함)이면 새 판을 띄우지 않는다
+    if (ytBatchAlive("niconico") || !ytWorkerBegin("niconico")) {
+        ytRefuseStart("niconico", "이미 받는 중입니다(内閣会의 니코동 감시일 수 있습니다) — 지금 판이 끝난 뒤에 다시 시작하십시오");
+        return;
+    }
     m_lastConfig["niconico"] = config;
     setPlatformRunning("niconico", true);
     {   // 유튜브와 같은 이유로 앱 터미널 창을 연다 — ⏹ 중지가 여기에도 먹는다.
@@ -7176,6 +7914,7 @@ void HanishikiBackend::startNiconico(const QString &configJson)
         runYoutubeDownload(config);
         QMetaObject::invokeMethod(this, [this]() {
             setPlatformRunning("niconico", false);
+            ytWorkerEnd("niconico");   // 깃발을 내린 뒤에 놓는다
             closeTerminalLog("niconico");
             // ★ 어떤 길로 끝났든 화면의 시작/중지 버튼을 되돌린다. 일찍 돌아가는 길(프록시를 못 씀·
             //   주소 없음·스크립트 못 만듦)은 '완료' 를 알리지 않아서, 중지 버튼이 켜진 채 시작
@@ -7386,7 +8125,7 @@ bool HanishikiBackend::captureRealTweetPage(const QString &tweetUrl,
                         "<!-- source: %1 -->\n"
                         "<!-- captured: %2 -->\n")
                         .arg(tweetUrl.toHtmlEscaped(),
-                             QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+                             Common::jstNow().toString(Qt::ISODate));
                     int headEnd = out.indexOf("</head>", 0, Qt::CaseInsensitive);
                     if (headEnd > 0) out.insert(headEnd, metaTag);
                     else out.prepend(metaTag);
@@ -7692,6 +8431,26 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                             window.scrollTo(0, document.body.scrollHeight);
                             await sleep(500);
                         }
+                        // 3b) 그리지 않고도 지연 그림 — 화면이 꺼진 맥(덮개 닫힘 · 화면 잠듦)은 그리기를 멈춰 IntersectionObserver 가
+                        //   울리지 않는다(밤의 内閣会 캡처에서 그림이 빠졌다 — 시험 io.html 0/6). 문서가 열릴 때 심어 둔 기록
+                        //   (RealChromeCrawler 의 __hkFireIO)으로 아직 못 들은 '그림' 대상에만 '보인다' 를 알리고, loading=lazy 는
+                        //   eager 로, 빈 자리의 data-src 류는 src 로 옮긴 뒤 그림이 다 올 때까지(최대 15초) 기다린다.
+                        //   화면이 켜져 있으면 위의 스크롤이 이미 다 불러 두어 바뀌는 것이 없다.
+                        try {
+                            if (typeof window.__hkFireIO === 'function') window.__hkFireIO();
+                            document.querySelectorAll('img[loading="lazy"], iframe[loading="lazy"]').forEach(e => { try { e.loading = 'eager'; } catch (x) {} });
+                            const blank = v => !v || /^data:,?$/i.test(v) || /^data:image\/(gif|png|svg\+xml)[;,].{0,400}$/i.test(v)
+                                || /\/(blank|spacer|pixel|transparent|placeholder)[^\/]*\.(gif|png|svg)(\?|$)/i.test(v);
+                            document.querySelectorAll('img[data-src], img[data-lazy-src], img[data-original], img[data-srcset], source[data-srcset]').forEach(e => {
+                                const d = e.getAttribute('data-src') || e.getAttribute('data-lazy-src') || e.getAttribute('data-original');
+                                if (d && e.tagName === 'IMG' && blank(e.getAttribute('src'))) e.setAttribute('src', d);
+                                const ds = e.getAttribute('data-srcset') || e.getAttribute('data-lazy-srcset');
+                                if (ds && !e.getAttribute('srcset')) e.setAttribute('srcset', ds);
+                            });
+                            const until = performance.now() + 15000;
+                            while (performance.now() < until
+                                   && Array.from(document.images).some(i => i.getAttribute('src') && !i.complete)) await sleep(250);
+                        } catch (e) {}
                         // 4) 페이지 맨 위 (캡쳐 상태 정상화)
                         window.scrollTo(0, 0);
                         await sleep(500);
@@ -8101,6 +8860,11 @@ QList<QNetworkCookie> HanishikiBackend::cookiesForCapture(const QString &platfor
 // ═════════════════════════════════════════════════════════════════════════
 // captureRealPageCDPLoginAware — 로그인 페이지 감지 + 사용자 GUI 확인 대기 후 캡쳐
 // ═════════════════════════════════════════════════════════════════════════
+bool HanishikiBackend::realCaptureFinished(const QString &saveDir, const QString &filename) const
+{
+    return !saveDir.isEmpty() && !filename.isEmpty() && isFinishedRealCapture(saveDir + "/" + filename + ".html");
+}
+
 bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
                                                 const QString &saveDir,
                                                 const QString &filename,
@@ -8626,7 +9390,7 @@ void HanishikiBackend::runWebCrawlCollection(const QJsonObject &config)
                                             row["reply_url"].toString(),
                                             row["author"].toString(),
                                             row["text"].toString(),
-                                            row["date"].toString(),
+                                            Common::jstText(row["date"].toString(), "yyyy/MM/dd HH:mm"),   // 페이지의 값은 UTC
                                             row["likes"].toString(),
                                             row["parent_tweet"].toString()
                                         });
@@ -9255,7 +10019,7 @@ void HanishikiBackend::runRealChromeCollection(const QJsonObject &config)
                                     QJsonArray urls = QJsonDocument::fromJson(v.toString().toUtf8()).array();
                                     if (urls.isEmpty()) {
                                         log("미디어 URL 없음", "warning", platformCopy);
-                                        updateStats(0, 0, "Done", platformCopy);
+                                        updateStats(0, 0, "완료", platformCopy);   // 'Done' 은 판 끝 정리가 보낸다 — 둘이면 일괄이 대상을 건너뛴다
                                         done->release();
                                         return;
                                     }
@@ -9289,7 +10053,7 @@ void HanishikiBackend::runRealChromeCollection(const QJsonObject &config)
                                         }
                                     }
                                     log(QString("✅ 실제 Chrome 완료: 미디어 %1개").arg(dl), "success", platformCopy);
-                                    updateStats(dl, urls.size(), "Done", platformCopy);
+                                    updateStats(dl, urls.size(), "완료", platformCopy);   // 'Done' 은 판 끝 정리가 보낸다 — 둘이면 일괄이 대상을 건너뛴다
                                     done->release();
                                 });
                             });
@@ -9861,7 +10625,7 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
         QString ts = msg["timestamp"].toString();
         QDateTime dt = QDateTime::fromString(ts, Qt::ISODate);
         // 업로드 순서 prefix (KST 기준)
-        QString prefix = FileHelper::uploadOrderPrefix(dt.isValid() ? dt.toUTC().addSecs(9*3600) : QDateTime());
+        QString prefix = FileHelper::uploadOrderPrefix(dt);
 
         QString ext = QFileInfo(origFilename).suffix();
         QString baseName = QFileInfo(origFilename).completeBaseName();
@@ -10204,12 +10968,12 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
                                   case 8: ts="Boost"; break; case 19: ts="Reply"; break; default: ts=QString("Type %1").arg(mt); }
                     tmpWriter.writeRow(tmpRow++, {
                         tmpMsg["id"].toString(), tmpMsgUrl,
-                        tmpMsg["timestamp"].toString().left(19).replace("T", " "), ts,
+                        Common::jstText(tmpMsg["timestamp"].toString(), "yyyy-MM-dd HH:mm:ss"), ts,
                         tmpMsg["author"].toObject()["username"].toString(),
                         tmpMsg["author"].toObject()["id"].toString(),
                         tmpMsg["content"].toString().left(500),
                         tmpAtts.join(", "), "", tmpReactions.join(", "),
-                        "", tmpMsg["edited_timestamp"].isNull() ? "" : tmpMsg["edited_timestamp"].toString().left(19).replace("T", " "),
+                        "", tmpMsg["edited_timestamp"].isNull() ? "" : Common::jstText(tmpMsg["edited_timestamp"].toString(), "yyyy-MM-dd HH:mm:ss"),
                         "", ""
                     });
                 }
@@ -10282,11 +11046,11 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
             for (const auto &s : msg["sticker_items"].toArray()) stickerNames << s.toObject()["name"].toString();
             return {
                 msg["id"].toString(), msgUrl,
-                msg["timestamp"].toString().left(19).replace("T", " "), typeStr,
+                Common::jstText(msg["timestamp"].toString(), "yyyy-MM-dd HH:mm:ss"), typeStr,
                 msg["author"].toObject()["username"].toString(), msg["author"].toObject()["id"].toString(),
                 msg["content"].toString().left(500), atts.join(", "), embedDescs.join(", "),
                 reactions.join(", "), replyTo,
-                msg["edited_timestamp"].isNull() ? "" : msg["edited_timestamp"].toString().left(19).replace("T", " "),
+                msg["edited_timestamp"].isNull() ? "" : Common::jstText(msg["edited_timestamp"].toString(), "yyyy-MM-dd HH:mm:ss"),
                 stickerNames.join(", "), msg["thread"].toObject()["name"].toString()
             };
         };
@@ -10333,7 +11097,7 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
         int row = 2;
         for (const auto &r : newRows) writer.writeRow(row++, r);
         if (!newRows.isEmpty() && !oldRows.isEmpty()) {
-            writer.writeRow(row++, {QString("═══ %1 新規 %2件 ═══").arg(QDateTime::currentDateTime().toString("yyyy/MM/dd HH:mm")).arg(newRows.size())});
+            writer.writeRow(row++, {QString("═══ %1 新規 %2件 ═══").arg(Common::jstNow().toString("yyyy/MM/dd HH:mm")).arg(newRows.size())});
         }
         for (const auto &r : oldRows) writer.writeRow(row++, r);
         writer.autoFitColumns(hdrs);
@@ -10346,7 +11110,7 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
     if (downloadProfiles && !uniqueUsers.isEmpty() && platformRunning("discord")) {
         log(QString("사용자 프로필 다운로드... (%1명)").arg(uniqueUsers.size()), "info", "discord");
         QString profilesBaseDir = channelDir + "/profiles";
-        QString dateStr = QDate::currentDate().toString("yyyy-MM-dd");
+        QString dateStr = Common::jstToday().toString("yyyy-MM-dd");
 
         int profileDone = 0;
         int profileNew = 0, profileUpdated = 0, profileSkipped = 0;
@@ -10447,7 +11211,7 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
         index["total_messages"] = allMessages.count();
         index["total_media"] = mediaCount;
         index["unique_users"] = uniqueUsers.size();
-        index["collected_at"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+        index["collected_at"] = Common::jstNow().toString(Qt::ISODate);
 
         // Date range
         if (allMessages.count() > 0) {
@@ -10459,8 +11223,8 @@ void HanishikiBackend::runDiscordCollection(const QJsonObject &config)
                 if (firstDate.isEmpty() || ts < firstDate) firstDate = ts;
                 if (lastDate.isEmpty() || ts > lastDate) lastDate = ts;
             }
-            index["date_from"] = firstDate.left(19).replace("T", " ");
-            index["date_to"] = lastDate.left(19).replace("T", " ");
+            index["date_from"] = Common::jstText(firstDate, "yyyy-MM-dd HH:mm:ss");
+            index["date_to"] = Common::jstText(lastDate, "yyyy-MM-dd HH:mm:ss");
         }
 
         // User list
@@ -10509,6 +11273,26 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     QString savePath = config["path"].toString();
     if (savePath.startsWith(QLatin1Char('~'))) savePath.replace(0, 1, QDir::homePath());
     int maxCount = config["count"].toInt(0); // 0 = all
+    // ★ 화면의 '기간 지정' — 일본 시간의 하루 단위(시작 날 00:00 ~ 끝 날 23:59:59). 예전엔 화면이 보내기만 하고
+    //   아무도 읽지 않아 기간을 골라도 전부 받았다(검토). 트위터와 같은 규칙이다.
+    const bool igPeriodOn = config["mode"].toString() == QLatin1String("period")
+                            && (!config["since"].toString().isEmpty() || !config["until"].toString().isEmpty());
+    const QDateTime igSince = config["since"].toString().isEmpty() ? QDateTime()
+        : QDateTime::fromString(config["since"].toString() + "T00:00:00+09:00", Qt::ISODate);
+    const QDateTime igUntil = config["until"].toString().isEmpty() ? QDateTime()
+        : QDateTime::fromString(config["until"].toString() + "T23:59:59+09:00", Qt::ISODate);
+    // 0 = 기간 안, 1 = 기간보다 새것, -1 = 기간보다 옛것(시각을 모르면 기간 안으로 본다)
+    const auto igPeriodSide = [&](qint64 ts) -> int {
+        if (!igPeriodOn || ts <= 0) return 0;
+        const QDateTime t = QDateTime::fromSecsSinceEpoch(ts, QTimeZone::utc());
+        if (igUntil.isValid() && t > igUntil) return 1;
+        if (igSince.isValid() && t < igSince) return -1;
+        return 0;
+    };
+    if (igPeriodOn)
+        log(QString("기간: %1 ~ %2 (일본 시간의 하루 단위)").arg(config["since"].toString(), config["until"].toString()), "info", "instagram");
+    int igPeriodOlder = 0;            // 게시물 — 기간보다 옛것이 이어진 수(셋에서 멈춘다 · 첫 쪽 맨 위 셋은 고정 글일 수 있어 세지 않는다)
+    bool igPeriodReachedStart = false;
     // ★ 다 받은 곳에서 일찍 멈추기(사용자 2026-10-24) — 이미 받은 게시물 · 릴스가 이만큼 이어지면 그 종류를 끝낸다(0 = 끝까지)
     const int igStopAfterKnown = qMax(0, config["stopAfterKnown"].toInt(0));
     int igFresh = 0, igKnownStop = 0;   // 대상 목록에 남길 이번 판 결과 — 새로 받은 게시물 · 릴스 수, 일찍 멈춘 연속 수
@@ -10929,8 +11713,8 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
 
     // ── 프로필 다운로드 (아바타, 설명, 프로필 정보) — 날짜별 보관 ──
     {
-        QString dateTag = QDateTime::currentDateTime().toString("yyyyMMdd");
-        QString profileDir = userDir + "/profiles/" + QDate::currentDate().toString("yyyy-MM-dd");
+        QString dateTag = Common::jstNow().toString("yyyyMMdd");
+        QString profileDir = userDir + "/profiles/" + Common::jstToday().toString("yyyy-MM-dd");
         QDir().mkpath(profileDir);
 
         // 프로필 사진 (HD)
@@ -10962,7 +11746,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                     Common::addExifMetadata(avatarPath, "@" + username, fullName + " - " + biography.left(100),
                         "Instagram @" + username, "https://instagram.com/" + username, "");
                     log(QString("📸 프로필 사진 저장: profiles/%1/avatar_%2.%3")
-                        .arg(QDate::currentDate().toString("yyyy-MM-dd"), dateTag, ext), "success", "instagram");
+                        .arg(Common::jstToday().toString("yyyy-MM-dd"), dateTag, ext), "success", "instagram");
                 }
             }
         }
@@ -10982,7 +11766,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
         profileData["profile_pic_url"] = profilePicUrl;
         profileData["category_name"] = userData["category_name"].toString();
         profileData["pronouns"] = QString::fromUtf8(QJsonDocument(userData["pronouns"].toArray()).toJson(QJsonDocument::Compact));
-        profileData["fetched_at"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+        profileData["fetched_at"] = Common::jstNow().toString(Qt::ISODate);
 
         // 날짜별 profile.json
         QString profileJsonPath = profileDir + "/profile.json";
@@ -11022,12 +11806,16 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     QString prevCursor;
     int igPostPage = 0, igPostStreak = 0;
     // ★ 지난번에 게시물을 끊김 없이 다 본 적이 있어야 일찍 멈춘다(끊긴 판 뒤에는 한 번 끝까지 보아 사이를 메운다 — 검토)
-    const bool igPostsArmed = igWantPosts && Common::takeCleanWalkMark(userDir, "ig_posts");
+    //   진짜 페이지 캡처를 받는 판 · 안 받는 판은 표시를 따로 — 캡처를 끈 판의 표시로 켠 판이 일찍 멈추면 옛 게시물은 캡처를 영영 안 받았다
+    const QString igPostKind = QString("ig_posts_c%1").arg(config["realCapture"].toBool(true) ? 1 : 0);
+    const bool igPostsArmed = igWantPosts && Common::takeCleanWalkMarks(userDir, "ig_posts").contains(igPostKind);
     const int igPostN = igPostsArmed ? igStopAfterKnown : 0;
     bool igPostsClean = false, igPostsBroken = false;   // 끊김 없이 끝났나 · 받지 못한 게시물이 있었나
     // 받지 못한 게시물 — 두 판 잇따라 같은 게시물이 실패하면 영영 안 되는 것으로 보아 표시를 더는 막지 않는다
-    const QSet<QString> igPrevPostFailed = igWantPosts ? Common::takeWalkFailures(userDir, "ig_posts") : QSet<QString>();
+    const QSet<QString> igPrevPostFailed = igWantPosts ? Common::takeWalkFailures(userDir, igPostKind) : QSet<QString>();
     QSet<QString> igPostFailed, igPostSeen;
+    QSet<QString> igCapFailed;   // 캡처를 못 받은 게시물 — 판 끝에 받지 못한 것에 더한다(캡처 길이 통째로 막힌 판은 빼고)
+    int igCapDone = 0;           // 이번에 새로 받은 캡처 수
     if (!igWantPosts) hasMore = false;   // 게시물을 고르지 않았으면 한 쪽도 훑지 않는다
     while (hasMore && platformRunning("instagram")) {
         QJsonObject conn;
@@ -11083,11 +11871,20 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
 
             int mediaType = node["media_type"].toInt();
             QString code = node["code"].toString();
-            if (!code.isEmpty()) igPostSeen.insert(code);
             // Timestamp for file metadata
             qint64 takenAt = node["taken_at"].toVariant().toLongLong();
             if (takenAt == 0) takenAt = node["taken_at_timestamp"].toVariant().toLongLong();
             QDateTime postDt = takenAt > 0 ? QDateTime::fromSecsSinceEpoch(takenAt, QTimeZone::utc()) : QDateTime();
+            if (const int side = igPeriodSide(takenAt); side != 0) {
+                // 첫 쪽 맨 위 셋은 고정 글(옛 글)일 수 있어 세지 않는다 — 고정 글은 셋까지라, 셋이 모두 기간보다 옛것이면
+                //   그것만으로 셋이 차 한 장도 받지 않고 멈췄다(검토). 아래 '일찍 멈추기' 와 같은 규칙.
+                if (side < 0 && !(igPostPage == 0 && igItemIdx < 3) && ++igPeriodOlder >= 3) { igPeriodReachedStart = true; break; }
+                continue;   // 기간 밖 — 받지 않는다
+            }
+            igPeriodOlder = 0;
+            // 이번 판에 '본' 게시물 — 기간 밖으로 건너뛴 것은 넣지 않는다. 넣으면 지난 판의 실패 기록이 다시 받아 보지도 않은 채
+            //   지워져, 다음 판이 그 실패를 새 실패로 보고 끝까지 보기를 한 번 더 했다(검토 · 릴스 · 트위터 · 블루스카이와 같다)
+            if (!code.isEmpty()) igPostSeen.insert(code);
             QString postDateStr = postDt.isValid() ? postDt.toString(Qt::ISODate) : "";
             // Caption for EXIF
             QString caption;
@@ -11165,7 +11962,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                 title.replace('\n', ' ');
                 title = sanitizeFilename(title, 40);
                 if (title.isEmpty()) title = username;
-                QString prefix = FileHelper::uploadOrderPrefix(postDt.isValid() ? postDt.toUTC().addSecs(9*3600) : QDateTime());
+                QString prefix = FileHelper::uploadOrderPrefix(postDt);
                 QString name = prefix + title + " (" + code;
                 if (idx >= 0) name += "_" + QString::number(idx);
                 name += ")." + ext;
@@ -11322,9 +12119,15 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                         return !!document.querySelector('input[name="username"]');
                     })()
                 )JS";
-                captureRealPageCDPLoginAware(postUrl, capturesDir,
-                    FileHelper::uploadOrderPrefix(postDt) + code,
-                    igLoginCheck2, "instagram", 8000, ckList, config);
+                // 캡처를 못 받은 게시물도 받지 못한 것이다 — 다음 판이 끝까지 보며 다시 해 본다(두 판 잇따르면 넘어간다)
+                const QString igCapName = FileHelper::captureNameCompat(capturesDir, postDt, code);
+                const bool igCapHad = realCaptureFinished(capturesDir, igCapName);
+                if (captureRealPageCDPLoginAware(postUrl, capturesDir, igCapName,
+                        igLoginCheck2, "instagram", 8000, ckList, config)) {
+                    if (!igCapHad) ++igCapDone;
+                } else if (platformRunning("instagram") && !code.isEmpty()) {
+                    igCapFailed.insert(code);
+                }
             }
 
             // Excel: 다운로드 성공 또는 이미 존재하는 항목만 포함
@@ -11354,8 +12157,12 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             if (maxCount > 0 && allMedia.count() >= maxCount) { hasMore = false; break; }
         }
         ++igPostPage;
-        // 마지막 쪽까지 끊김 없이 봤다(최대 수 · 중지로 멈춘 것은 아님)
-        if (!hasMore && !(maxCount > 0 && allMedia.count() >= maxCount) && platformRunning("instagram")) igPostsClean = true;
+        if (igPeriodReachedStart) {
+            log("기간의 시작 날보다 옛 게시물에 닿아 여기서 멈춥니다.", "info", "instagram");
+            hasMore = false;
+        }
+        // 마지막 쪽까지 끊김 없이 봤다(최대 수 · 중지로 멈춘 것은 아님 · 기간 판은 목록 전체를 본 것이 아니다)
+        if (!hasMore && !(maxCount > 0 && allMedia.count() >= maxCount) && platformRunning("instagram") && !igPeriodOn) igPostsClean = true;
 
         // Detailed batch log with date — use last item's date
         QDateTime batchDt;
@@ -11396,7 +12203,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                 if (ts == 0) ts = nd["taken_at"].toVariant().toLongLong();
                 tmpWriter.writeRow(tmpRow++, {
                     sc,
-                    ts > 0 ? QDateTime::fromSecsSinceEpoch(ts).toString("yyyy-MM-dd HH:mm:ss") : "",
+                    ts > 0 ? Common::jstTime(QDateTime::fromSecsSinceEpoch(ts)).toString("yyyy-MM-dd HH:mm:ss") : "",   // 일본 시간(예전엔 맥의 현지 시각)
                     nd["is_video"].toBool() || nd["media_type"].toInt() == 2 ? "Video" : "Photo",
                     QString::number(nd["edge_liked_by"].toObject()["count"].toInt() + nd["like_count"].toInt()),
                     QString::number(nd["edge_media_to_comment"].toObject()["count"].toInt() + nd["comment_count"].toInt()),
@@ -11431,6 +12238,8 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     // ── Reels 수집 ──
     // 받아 둔 릴스 — 파일 이름 'username (<code>_yyyyMMdd_HHmm_reel).mp4' 의 코드(코드에 _ 가 들 수 있어 날짜 앞에서 자른다)
     if (igWantPosts) {
+        if (Common::captureFailuresCount(igCapDone, int(igCapFailed.size()))) igPostFailed += igCapFailed;
+        else if (igStopAfterKnown > 0) log(QString("캡처가 하나도 되지 않았습니다(%1개 실패) — 캡처 길이 막힌 듯해 이 판의 캡처 실패로는 일찍 멈춤을 막지 않습니다(4~5주마다 끝까지 볼 때 다시 해 봅니다). 캡처 브라우저의 로그인을 확인하십시오").arg(igCapFailed.size()), "warning", "instagram");
         const QSet<QString> igNewFails = igPostFailed - igPrevPostFailed;
         if (!igNewFails.isEmpty()) {
             igPostsBroken = true;
@@ -11439,10 +12248,10 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
         }
         if (const int gaveUp = igStopAfterKnown > 0 ? int((igPostFailed & igPrevPostFailed).size()) : 0)
             log(QString("두 판 잇따라 받지 못한 게시물 %1개는 일찍 멈춤을 더는 막지 않습니다(지워졌거나 막힌 듯 — 4~5주마다 끝까지 볼 때 다시 받아 봅니다)").arg(gaveUp), "info", "instagram");
-        Common::putWalkFailures(userDir, "ig_posts", igPostFailed + (igPrevPostFailed - igPostSeen));
+        Common::putWalkFailures(userDir, igPostKind, igPostFailed + (igPrevPostFailed - igPostSeen));
     }
-    if (igPostsClean && !igPostsBroken) Common::putCleanWalkMark(userDir, "ig_posts");
-    QSet<QString> igKnownReels;
+    if (igPostsClean && !igPostsBroken) Common::putCleanWalkMark(userDir, igPostKind);
+    QHash<QString, qint64> igKnownReels;   // 받아 둔 릴스의 코드 → 파일 이름의 찍은 시각(초, 이름에 없으면 0)
     int igReelStreak = 0;
     // 릴스 단계가 정말 돌 때만 그 표시 · 실패 기록을 건드린다 — 게시물 단계에서 중지하면 릴스는 보지 않았다(지우면 지난 기록을 잃었다 — 검토)
     const bool igReelsRun = effectiveConfig["reels"].toBool(false) && platformRunning("instagram");
@@ -11451,11 +12260,15 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
     bool igReelsClean = false;
     const QSet<QString> igPrevReelFailed = igReelsRun ? Common::takeWalkFailures(userDir, "ig_reels") : QSet<QString>();
     QSet<QString> igReelFailed, igReelSeen;   // 영상 주소 · 영상을 못 받은 릴스 — 두 판 잇따르면 넘어간다
-    if (igReelN > 0) {
-        static const QRegularExpression reReel(R"(\((.+?)(?:_\d{8}_\d{4})?_reel\)\.mp4$)");
+    // 기간 판도 읽는다 — 릴스 탭은 찍은 날짜를 주지 않아(아래 실측), 받아 둔 릴스는 파일 이름의 날짜(일본 시간)로 기간을 가린다
+    if (igReelN > 0 || igPeriodOn) {
+        static const QRegularExpression reReel(R"(\((.+?)(?:_(\d{8}_\d{4}))?_reel\)\.mp4$)");
         for (const QString &f : QDir(reelsDir).entryList(QDir::Files)) {
             const auto mm = reReel.match(f);
-            if (mm.hasMatch()) igKnownReels.insert(mm.captured(1));
+            if (!mm.hasMatch()) continue;
+            const QDateTime fdt(QDate::fromString(mm.captured(2).left(8), "yyyyMMdd"),
+                                QTime::fromString(mm.captured(2).mid(9, 4), "HHmm"), QTimeZone(9 * 3600));
+            igKnownReels.insert(mm.captured(1), fdt.isValid() ? fdt.toSecsSinceEpoch() : 0);
         }
     }
     if (igReelsRun) {
@@ -11468,6 +12281,8 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
         int reelsAnonFail = 0;      // 그중 코드가 없어 두 판을 가릴 수 없는 것 — 늘 표시를 막는다
         QString reelsMaxId, prevReelsCursor;
         int reelsPages = 0;
+        int igReelPeriodOlder = 0;  // 기간 판 — 기간보다 옛 릴스가 이어진 수(셋이면 기간의 시작을 지났다)
+        bool reelsPastStart = false;
 
         while (platformRunning("instagram")) {
             if (++reelsPages > 200) { log("릴스가 200쪽을 넘었습니다 — 여기서 멈춥니다.", "warning", "instagram"); break; }
@@ -11514,28 +12329,44 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             int igReelIdx = -1;
             for (const auto &item : items) {
                 if (maxCount > 0 && reelsSeen >= maxCount) { reelsEnough = true; break; }
-                reelsSeen++;
                 ++igReelIdx;
                 QJsonObject media = item.toObject()["media"].toObject();
-                if (igReelN > 0) {
-                    const QString rc = media["code"].toString();
-                    if (!rc.isEmpty() && igKnownReels.contains(rc)) {
-                        // 첫 쪽 맨 위 셋은 고정 릴스(옛 것)일 수 있어 세지 않는다
-                        if (!(reelsPages == 1 && igReelIdx < 3) && ++igReelStreak >= igReelN) {
-                            igKnownStop = qMax(igKnownStop, igReelStreak);
-                            log(QString("이미 받은 릴스가 %1개 이어져 여기서 멈춥니다").arg(igReelStreak), "info", "instagram");
-                            igReelsClean = true;
-                            reelsEnough = true;
-                            break;
-                        }
-                        continue;   // 받아 둔 릴스(파일이 있다) — 낱장 정보를 다시 묻지 않는다
+                const QString rc = media["code"].toString();
+                const bool reelMaybePinned = (reelsPages == 1 && igReelIdx < 3);   // 첫 쪽 맨 위 셋은 고정 릴스(옛 것)일 수 있다
+                // ★ 기간 판 — 기간 밖 릴스는 받지도 '개수' 에 세지도 않는다(예전엔 세고 나서 걸러, 개수가 기간 밖 릴스로 다 찼다 — 검토).
+                //   릴스 탭은 찍은 날짜를 주지 않으므로(아래 실측) 받아 둔 릴스는 파일 이름의 날짜로, 나머지는 낱장 정보를 받은 뒤에
+                //   가린다(예전엔 탭의 빈 날짜로만 보아 기간 밖 릴스도 받았다). 기간보다 옛 릴스가 셋 이어지면(고정 릴스는 빼고)
+                //   기간의 시작을 지난 것이다 — 게시물과 같은 규칙. 시각을 끝내 모르면 기간 안으로 본다.
+                auto reelOutOfPeriod = [&](qint64 ts) -> bool {   // true = 건너뛴다(reelsPastStart 가 서면 릴스를 끝낸다)
+                    const int side = igPeriodSide(ts);
+                    if (side == 0) { if (ts > 0) igReelPeriodOlder = 0; return false; }
+                    if (side < 0 && !reelMaybePinned && ++igReelPeriodOlder >= 3) reelsPastStart = true;
+                    return true;
+                };
+                qint64 reelTs = media["taken_at"].toVariant().toLongLong();
+                if (reelTs <= 0 && igPeriodOn && !rc.isEmpty()) reelTs = igKnownReels.value(rc, 0);
+                if (igPeriodOn && reelTs > 0 && reelOutOfPeriod(reelTs)) {
+                    if (reelsPastStart) { reelsEnough = true; break; }
+                    continue;
+                }
+                if (igReelN > 0 && !rc.isEmpty() && igKnownReels.contains(rc)) {
+                    reelsSeen++;   // 받아 둔 릴스도 '개수' 에 든다(예전과 같다)
+                    // 첫 쪽 맨 위 셋은 고정 릴스(옛 것)일 수 있어 세지 않는다
+                    if (!reelMaybePinned && ++igReelStreak >= igReelN) {
+                        igKnownStop = qMax(igKnownStop, igReelStreak);
+                        log(QString("이미 받은 릴스가 %1개 이어져 여기서 멈춥니다").arg(igReelStreak), "info", "instagram");
+                        igReelsClean = true;
+                        reelsEnough = true;
+                        break;
                     }
+                    continue;   // 받아 둔 릴스(파일이 있다) — 낱장 정보를 다시 묻지 않는다
                 }
                 // ★ 릴스 탭 질의는 영상 주소도 찍은 날짜도 주지 않는다
                 //   (실측 2026-09-24: code·pk·썸네일만 온다).
                 //   그래서 예전에는 릴스가 한 장도 받아지지 않았고, 그런데도 '릴스: 0개' 라고만 적혀
                 //   왜 빈손인지 알 길이 없었다. 낱장 정보를 한 번 더 물어 채운다 — 이 끝점은 옵 REST 인데 살아 있다.
-                if (media["video_versions"].toArray().isEmpty()) {
+                //   기간 판은 찍은 날짜가 없을 때도 묻는다(영상 주소만 오는 날이 와도 기간 밖을 받지 않게).
+                if (media["video_versions"].toArray().isEmpty() || (igPeriodOn && reelTs <= 0)) {
                     const QString reelPk = media["pk"].toVariant().toString();
                     if (!reelPk.isEmpty()) {
                         HttpResponse mi = http.get("https://www.instagram.com/api/v1/media/" + reelPk + "/info/", baseHeaders);
@@ -11551,6 +12382,12 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                         QThread::msleep(static_cast<unsigned long>(igDelay * 1000));
                     }
                 }
+                // 낱장 정보로 찍은 날짜를 알게 된 뒤에 기간을 가린다
+                if (igPeriodOn && reelTs <= 0 && reelOutOfPeriod(media["taken_at"].toVariant().toLongLong())) {
+                    if (reelsPastStart) { reelsEnough = true; break; }
+                    continue;
+                }
+                reelsSeen++;
                 QString videoUrl;
                 QJsonArray videoVersions = media["video_versions"].toArray();
                 if (!videoVersions.isEmpty()) {
@@ -11602,11 +12439,15 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                 allMedia.append(media);
             }
 
-            if (!reelsMore && !reelsEnough && platformRunning("instagram")) igReelsClean = true;   // 마지막 쪽까지 봤다
+            // 마지막 쪽까지 봤다 — 기간 판은 기간 밖을 받지 않았으므로 목록 전체를 본 것이 아니다(표시를 남기면 다음 판이
+            //   기간 판에 받은 릴스에서 멈춰 그보다 옛 릴스를 4~5주 동안 받지 않았다 — 검토. 게시물 · 블루스카이와 같다)
+            if (!reelsMore && !reelsEnough && platformRunning("instagram") && !igPeriodOn) igReelsClean = true;
             if (reelsEnough || !reelsMore) break;
             updateStats(allMedia.count(), mediaDownloaded, "수집 중", "instagram");
             igConsecutiveOk++; if (igConsecutiveOk > 5) { igDelay = qMax(igDelay * 0.9, igBaseDelay); igRateLimitHits = 0; } QThread::msleep(static_cast<unsigned long>(igDelay * 1000));
         }
+        if (reelsPastStart)
+            log("기간의 시작 날보다 옛 릴스에 닿아 릴스는 여기서 멈춥니다.", "info", "instagram");
         const QSet<QString> igNewReelFails = igReelFailed - igPrevReelFailed;
         Common::putWalkFailures(userDir, "ig_reels", igReelFailed + (igPrevReelFailed - igReelSeen));
         // 영상 주소 · 영상을 처음 못 받은 릴스가 있으면 다음 판이 끝까지 보며 다시 받는다(두 판 잇따른 것은 넘어간다).
@@ -11647,11 +12488,12 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             for (const auto &iv : titems) {
                 if (!platformRunning("instagram")) break;
                 if (maxCount > 0 && tagSeen >= maxCount) { tagEnough = true; break; }
-                tagSeen++;
                 const QJsonObject it = iv.toObject();
                 const QString code = it["code"].toString();
                 if (code.isEmpty()) continue;
                 const qint64 ta = it["taken_at"].toVariant().toLongLong();
+                if (igPeriodSide(ta) != 0) continue;   // 기간 밖 — '개수' 에 세지 않는다(예전엔 센 뒤에 걸러 기간 밖에서 개수가 찼다 — 검토)
+                tagSeen++;
                 const QDateTime dt = ta > 0 ? QDateTime::fromSecsSinceEpoch(ta, QTimeZone::utc()) : QDateTime();
                 const QString stamp = dt.isValid() ? dt.toUTC().addSecs(9*3600).toString("yyyyMMdd_HHmm") : QString();
                 // 사진/영상 주소 모으기 — 캐러셀이면 여러 장
@@ -11659,6 +12501,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                 if (it.contains("carousel_media")) media = it["carousel_media"].toArray();
                 else media.append(it);
                 int idx = 0;
+                bool tagHasFile = false;   // 받았거나 이미 있던 파일이 하나라도 있으면 엑셀에 한 줄
                 for (const auto &mv : media) {
                     if (!platformRunning("instagram")) break;
                     const QJsonObject m = mv.toObject();
@@ -11683,7 +12526,15 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                         mediaDownloaded++;
                         tagCount++;
                     }
+                    if (QFile::exists(fp)) tagHasFile = true;
                 }
+                // ★ 엑셀에도 남긴다 — 예전엔 게시물 · 릴스만 담아 태그된 글은 받고도 엑셀에 없었다(사용자 2026-10-29 '엑셀에 빠진 항목')
+                if (tagHasFile)
+                    allMedia.append(QJsonObject{{"_key", code}, {"_kind", QStringLiteral("태그됨")},
+                                                {"_url", QStringLiteral("https://www.instagram.com/p/") + code},
+                                                {"taken_at", ta}, {"media_type", it["media_type"].toInt()},
+                                                {"caption", it["caption"].toObject()},
+                                                {"like_count", it["like_count"].toInt()}, {"comment_count", it["comment_count"].toInt()}});
                 QThread::msleep(static_cast<unsigned long>(igDelay * 1000));
             }
             if (tagEnough) break;
@@ -11713,6 +12564,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                 for (const auto &storyItem : storyItems) {
                     if (!platformRunning("instagram")) break;
                     QJsonObject story = storyItem.toObject();
+                    if (igPeriodSide(story["taken_at"].toVariant().toLongLong()) != 0) continue;   // 기간 밖
                     QString storyUrl;
                     if (story["media_type"].toInt() == 2) {
                         QJsonArray vv = story["video_versions"].toArray();
@@ -11746,6 +12598,13 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                             }
                             mediaDownloaded++;
                             storiesCount++;
+                        }
+                        // ★ 엑셀에도 남긴다(받았거나 이미 있던 것) — 예전엔 스토리는 받고도 엑셀에 없었다
+                        if (QFile::exists(filepath)) {
+                            const QString pk = story["pk"].toVariant().toString();
+                            allMedia.append(QJsonObject{{"_key", pk}, {"_kind", QStringLiteral("스토리")},
+                                                        {"_url", QString("https://www.instagram.com/stories/%1/%2/").arg(username, pk)},
+                                                        {"taken_at", storyTa}, {"media_type", story["media_type"].toInt()}});
                         }
                     }
                 }
@@ -11802,6 +12661,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                     for (const auto &hlItem : hlItems) {
                         if (!platformRunning("instagram")) break;
                         QJsonObject story = hlItem.toObject();
+                        if (igPeriodSide(story["taken_at"].toVariant().toLongLong()) != 0) continue;   // 기간 밖
                         QString storyUrl;
                         QString ext;
 
@@ -11844,6 +12704,11 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
                                 mediaDownloaded++;
                                 highlightsMediaCount++;
                             }
+                            // ★ 엑셀에도 남긴다(받았거나 이미 있던 것) — 예전엔 하이라이트는 받고도 엑셀에 없었다. 제목은 캡션 칸에
+                            if (QFile::exists(filepath))
+                                allMedia.append(QJsonObject{{"_key", QStringLiteral("hl_") + story["pk"].toVariant().toString()}, {"_kind", QStringLiteral("하이라이트")},   // 스토리와 같은 pk 다 — 스토리 줄에 묻히면 제목 · 오래가는 주소가 사라진다
+                                                            {"_url", hlPostUrl}, {"_title", highlightTitle},
+                                                            {"taken_at", hlTa}, {"media_type", story["media_type"].toInt()}});
                         }
                     }
                 }
@@ -11883,18 +12748,23 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
             QJsonArray capEdges = node["edge_media_to_caption"].toObject()["edges"].toArray();
             if (!capEdges.isEmpty()) caption = capEdges[0].toObject()["node"].toObject()["text"].toString().left(200);
             if (caption.isEmpty()) caption = node["caption"].toObject()["text"].toString().left(200);
-            QString sc = node["shortcode"].toString();
+            if (caption.isEmpty()) caption = node["_title"].toString();   // 하이라이트 제목
+            QString sc = node["_key"].toString();                        // 태그됨 · 스토리 · 하이라이트
+            if (sc.isEmpty()) sc = node["shortcode"].toString();
             if (sc.isEmpty()) sc = node["code"].toString();
             qint64 ts = node["taken_at_timestamp"].toVariant().toLongLong();
             if (ts == 0) ts = node["taken_at"].toVariant().toLongLong();
+            const QString media = node["is_video"].toBool() || node["media_type"].toInt() == 2 ? "Video" : "Photo";
+            const QString kind = node["_kind"].toString();
             return {
                 sc,
-                ts > 0 ? QDateTime::fromSecsSinceEpoch(ts).toString("yyyy-MM-dd HH:mm:ss") : "",
-                node["is_video"].toBool() || node["media_type"].toInt() == 2 ? "Video" : "Photo",
+                ts > 0 ? Common::jstTime(QDateTime::fromSecsSinceEpoch(ts)).toString("yyyy-MM-dd HH:mm:ss") : "",   // 일본 시간(예전엔 맥의 현지 시각)
+                kind.isEmpty() ? media : kind + " · " + media,
                 QString::number(node["edge_liked_by"].toObject()["count"].toInt() + node["like_count"].toInt()),
                 QString::number(node["edge_media_to_comment"].toObject()["count"].toInt() + node["comment_count"].toInt()),
                 caption,
-                sc.isEmpty() ? "" : "https://www.instagram.com/p/" + sc
+                !node["_url"].toString().isEmpty() ? node["_url"].toString()
+                    : (sc.isEmpty() ? QString() : "https://www.instagram.com/p/" + sc)
             };
         };
 
@@ -11918,9 +12788,11 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
         QList<QStringList> newRows;
         for (const auto &val : allMediaArray) {
             QJsonObject node = val.toObject();
-            QString sc = node["shortcode"].toString();
+            QString sc = node["_key"].toString();
+            if (sc.isEmpty()) sc = node["shortcode"].toString();
             if (sc.isEmpty()) sc = node["code"].toString();
-            if (!existingCodes.contains(sc)) {
+            if (!sc.isEmpty() && !existingCodes.contains(sc)) {
+                existingCodes.insert(sc);   // 같은 판에서 두 번 오면(쪽 겹침) 한 줄만
                 newRows.append(extractIgRow(node));
             }
         }
@@ -11933,7 +12805,7 @@ void HanishikiBackend::runInstagramCollection(const QJsonObject &config)
         int row = 2;
         for (const auto &r : newRows) writer.writeRow(row++, r);
         if (!newRows.isEmpty() && !oldRows.isEmpty()) {
-            writer.writeRow(row++, {QString("═══ %1 新規 %2件 ═══").arg(QDateTime::currentDateTime().toString("yyyy/MM/dd HH:mm")).arg(newRows.size())});
+            writer.writeRow(row++, {QString("═══ %1 新規 %2件 ═══").arg(Common::jstNow().toString("yyyy/MM/dd HH:mm")).arg(newRows.size())});
         }
         for (const auto &r : oldRows) writer.writeRow(row++, r);
         writer.autoFitColumns(hdrs);
@@ -11989,11 +12861,19 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     //     9 + 50 + 1 + 140 + 14(" [ID]") = 214바이트 — '.f251-drc.webm.part' · '.comments.txt' 가 붙어도 255 안쪽.
     //     잘린 두 제목이 같아도 ID 가 갈라 준다. 'channel' 의 이름은 예전 그대로 둔다.
     //   니코동 탭도 같은 칸을 보내고(niconico-save-layout), 内閣会의 니코동 감시는 그 탭에 저장된 값을 쓴다.
-    //   ★ 서식(꼬리)은 여기 한 곳에만 둔다 — 윈도우 .bat 도 이 꼬리를 longPathTemplate 로 감싸 쓴다.
+    //   ★ 서식(꼬리)은 여기 한 곳에만 둔다 — 윈도우 .bat 도 이 꼬리를 longPathTemplate 로 감싸 쓴다
+    //     (.bat 에서는 % 를 %% 로 바꾸므로 날짜 서식의 %Y%m%d 도 그대로 yt-dlp 에 닿는다).
+    //   ★ 이름의 날짜는 일본 시간 — yt-dlp 의 upload_date 는 시각(timestamp)이 있으면 UTC 로 만든 날짜라, 일본 시간 아침
+    //     9시 전에 올린 영상이 사이트에 보이는 날보다 하루 앞으로 적혔다(정리하기의 달 폴더도 그 날짜를 따른다).
+    //     시각이 없는 영상은 예전처럼 upload_date. 이미 받은 영상은 장부로 건너뛰므로 이름이 바뀌어도 다시 받지 않는다
+    //     (장부에 없는 것은 seedYtArchive 가 올린다).
     const bool flatLayout = config.value("saveLayout").toString() == QLatin1String("flat");
+    // ★ 끝나면 _complete 만 남기기(화면 youtube-complete-only · niconico-complete-only, 内閣会 니코동 감시는 그 탭 값) —
+    //   뒤처리가 _complete 사본과 엑셀을 만든 뒤 유형 폴더를 비운다(ytLeaveOnlyComplete). 예전에 받아 둔 영상도 같이.
+    const bool ytCompleteOnly = config.value("completeOnly").toBool(false);
     const QString ytOutTail = flatLayout
-        ? QStringLiteral("%(upload_date)s_%(channel,uploader).50B_%(title).140B [%(id)s].%(ext)s")
-        : QStringLiteral("%(channel,uploader)s/%(upload_date)s_%(title)s.%(ext)s");
+        ? QStringLiteral("%(timestamp+32400>%Y%m%d,upload_date)s_%(channel,uploader).50B_%(title).140B [%(id)s].%(ext)s")
+        : QStringLiteral("%(channel,uploader)s/%(timestamp+32400>%Y%m%d,upload_date)s_%(title)s.%(ext)s");
     const QString ytOutTemplate = ytTypeDir + "/" + ytOutTail;
 
     QStringList urls;
@@ -12009,12 +12889,24 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
 
     // Build yt-dlp arguments
     QString ytdlpPath = findBundledTool("yt-dlp");
+#ifdef Q_OS_WIN
     // ★ 없으면 .bat 을 만들어 띄워 봐야 콘솔만 깜빡이고 끝난다. 먼저 확인하고 말해 준다.
     if (!QFile::exists(ytdlpPath)) {
         log(QString("yt-dlp 를 찾지 못했습니다.\n"
                     "   찾아본 곳: 앱 폴더 · 앱 폴더/tools · %1\n"
                     "   설정 → 자가진단에서 도구를 다시 받아 주세요.")
                 .arg(QDir::toNativeSeparators(Common::userToolsDir())),
+#else
+    // ★ 없으면 .command 를 만들어 띄워 봐야 'command not found' 한 줄로 끝난다. 먼저 확인하고
+    //   말해 준다(윈도우와 같다). 맥의 findBundledTool 은 번들에 없으면 이름만 돌려주고
+    //   PATH 에 맡기므로, 그 경우는 PATH 와 스크립트가 PATH 에 더하는 곳(홈브루)에서도 찾아본다.
+    //   Finder 로 켠 앱의 PATH 에는 홈브루가 없다.
+    if (!QFileInfo(ytdlpPath).isFile() && QStandardPaths::findExecutable(ytdlpPath).isEmpty()
+        && QStandardPaths::findExecutable(ytdlpPath, {QStringLiteral("/opt/homebrew/bin"), QStringLiteral("/usr/local/bin")}).isEmpty()) {
+        log(QString("yt-dlp 를 찾지 못했습니다.\n"
+                    "   찾아본 곳: 앱 번들(Contents/MacOS · Resources/tools) · PATH\n"
+                    "   설정 → 자가진단에서 도구를 다시 받아 주세요."),
+#endif
             "error", platform);
         return;
     }
@@ -12099,33 +12991,38 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
         QString ea = "youtube:player_client=default,tv,web_safari";
         if (config["comments"].toBool()) ea += ";comment_sort=top;max_comments=300";
         baseArgs << "--extractor-args" << ea;
-#ifndef Q_OS_WIN
-        // 앱 폴더 youtube_cookies.txt(Netscape) 있으면 자동 사용 (--cookies-from-browser 는 Chrome v127+ 앱바운드 암호화로 불가)
-        QString ck = QCoreApplication::applicationDirPath() + "/youtube_cookies.txt";
-        if (QFile::exists(ck)) { baseArgs << "--cookies" << ck; log("youtube_cookies.txt 사용", "info", platform); }
-#endif
     }
-#ifdef Q_OS_WIN
-    // ★ 윈도우: Chrome/Edge/Brave 는 v127+ 앱-바운드 쿠키 암호화(yt-dlp #10927, "Failed to decrypt with DPAPI")
-    //   때문에 --cookies-from-browser 가 잘 안 된다. 그래서 exe 폴더의 <platform>_cookies.txt
-    //   (youtube_cookies.txt / niconico_cookies.txt — 브라우저 확장으로 내보낸 Netscape 형식)가 있으면 그것을 쓰고,
-    //   니코동 탭의 'Chrome 쿠키'(browserCookies)는 쿠키 파일이 없을 때만 시도한다.
+    // ★ 로그인 쿠키(Netscape 파일) — <플랫폼>_cookies.txt(youtube · niconico). 맥과 같은 규칙: 파일이 있으면 그것을 쓰고,
+    //   니코동 탭의 'Chrome 쿠키' 는 파일이 없을 때만.
+    //   ★ 윈도우: Chrome/Edge/Brave 는 v127+ 앱-바운드 쿠키 암호화(yt-dlp #10927, "Failed to decrypt with DPAPI")
+    //   때문에 --cookies-from-browser 가 잘 안 된다 — 그래서 파일(브라우저 확장으로 내보낸 Netscape 형식)이 먼저다.
+    //   맥은 자료 폴더를 먼저 본다 — 앱 폴더는 서명된 번들 안인데 yt-dlp 는 --cookies 파일을 끝에 다시 써서 봉인이 깨진다.
+    //   윈도우는 예전처럼 exe 폴더만 본다.
     {
-        const QString ck = appDir + "/" + platform + "_cookies.txt";
-        if (QFile::exists(ck)) {
+        const QString ckName = platform + QStringLiteral("_cookies.txt");
+        QString ck;
+#ifdef Q_OS_WIN
+        if (QFile::exists(appDir + "/" + ckName)) ck = appDir + "/" + ckName;
+#else
+        for (const QString &d : {QStandardPaths::writableLocation(QStandardPaths::AppDataLocation), QCoreApplication::applicationDirPath()}) {
+            if (QFile::exists(d + "/" + ckName)) { ck = d + "/" + ckName; break; }
+        }
+#endif
+        if (!ck.isEmpty()) {
+#ifdef Q_OS_WIN
             baseArgs << "--cookies" << QDir::toNativeSeparators(ck);
-            log(QString("%1_cookies.txt 사용").arg(platform), "info", platform);
+#else
+            baseArgs << "--cookies" << ck;
+#endif
+            log(QString("%1 사용").arg(ckName), "info", platform);
         } else if (config["browserCookies"].toBool()) {
             baseArgs << "--cookies-from-browser" << "chrome";
+#ifdef Q_OS_WIN
             log(QString("%1 쿠키: Chrome 에서 읽기 시도 — 안 되면 앱 폴더에 %2_cookies.txt 를 두세요")
                     .arg(plabel, platform), "info", platform);
+#endif
         }
     }
-#else
-    // 니코동 로그인 필요 영상 — 사용자 Chrome 쿠키 사용(옵션)
-    if (config["browserCookies"].toBool())
-        baseArgs << "--cookies-from-browser" << "chrome";
-#endif
 
     // ★ 핸드오프 F/G: 이어받기 + 봇차단 수렴 (전 플랫폼) — 완료 ID 기록/스킵, .part 이어받기, 간헐 오류 무시.
     //   봇 차단으로 일부가 실패해도 재실행 시 완료분은 건너뛰고 실패분만 재시도한다. 차단이 간헐적이라
@@ -12133,10 +13030,53 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     // ★ 장부를 형태마다 따로 둔다. 하나를 같이 쓰면 '오디오만' 으로 받은 영상이 장부에 올라,
     //   나중에 '동영상' 으로 받으려 해도 yt-dlp 가 "already been recorded in the archive" 로 건너뛴다
     //   (반대도 같다). 동영상은 예전 이름 그대로 — 이미 쌓인 장부와 内閣会(naikakukaiArchiveCount)가 본다.
-    //   '썸네일만'(--skip-download)은 yt-dlp 가 장부에 적지 않으므로 상관없다.
+    //   '썸네일만'(--skip-download)은 yt-dlp 가 장부에 적지 않는다. 동영상 장부에 올리면 나중에 그 영상을 못 받으므로
+    //   동영상 장부의 사본에 받아 둔 썸네일을 더해 넘긴다(판마다 새로 만든다).
+    QString ytArchive = (type == "audio") ? ytBaseDir + "/.yt_archive_audio.txt"
+                                          : ytBaseDir + "/.yt_archive.txt";
+    // 끝난 파일의 확장자(형태마다) — 장부에 올릴 때 · '_complete 만 남기기' 가 원본을 지울 때 같은 기준
+    const QStringList ytFinalExts = (type == "audio") ? QStringList{"mp3"}
+                                  : (type == "thumbnail") ? QStringList{"jpg", "png", "webp"}
+                                                          : QStringList{"mp4", "mkv", "webm", "mov"};
+    // ★ 정리 장부 — '_complete 만 남기기' 가 받은 폴더에서 지운 영상(yt-dlp 장부와 같은 '<extractor> <ID>' 줄). _complete 안에 두어
+    //   _complete 와 함께 다닌다. 받은 폴더를 비우면 seedYtArchive 가 장부를 되살릴 info.json 이 없다 — 숨은 yt-dlp 장부를 두고
+    //   _complete · excel 만 옮기면 다음 판이 채널 전체를 다시 받았다(검토). 그래서 판마다 이 장부를 yt-dlp 장부에 더한다.
+    //   썸네일 장부는 판마다 새로 만들므로(아래) 썸네일의 지운 것은 이 장부가 유일한 기록이다. 형태마다 따로 — 오디오로 정리한
+    //   영상이 동영상 받기를 막지 않게. 엑셀(형태별)도 이 장부로 '앱이 지워서 info.json 이 없는 영상' 을 알아본다.
+    const QString ytLedgerPath = ytCompleteDir + "/.yt_cleaned_" + type + ".txt";
+    QStringList ytLedgerLines;
+    QSet<QString> ytLedgerSet, ytLedgerIds;
+    // 장부를 알 수 있는가 — _complete 에 닿지 못하거나(빠진 디스크 · 끊긴 링크) 장부가 있는데 못 읽으면 모른다. 모르면 형태별 엑셀은
+    //   예전 줄을 다 남긴다(정리한 영상의 줄을 '사용자가 지운 것' 으로 보고 빼지 않게 — 검토).
+    bool ytLedgerKnown = !QFileInfo(ytCompleteDir).canonicalFilePath().isEmpty();
+    {
+        QFile lf(ytLedgerPath);
+        if (QFileInfo::exists(ytLedgerPath) && !lf.open(QIODevice::ReadOnly)) ytLedgerKnown = false;
+        if (lf.isOpen()) {
+            for (const QString &l : QString::fromUtf8(lf.readAll()).split(QLatin1Char('\n'))) {
+                const QString t = l.trimmed();
+                if (t.isEmpty() || ytLedgerSet.contains(t)) continue;
+                ytLedgerLines << t;
+                ytLedgerSet.insert(t);
+                ytLedgerIds.insert(t.section(QLatin1Char(' '), 1, -1));
+            }
+        }
+    }
+    if (type == "thumbnail") {
+        const QString thumbArchive = ytBaseDir + "/.yt_archive_thumbnail.txt";
+        QFile::remove(thumbArchive);
+        QFile::copy(ytArchive, thumbArchive);
+        seedYtArchive(ytTypeDir, thumbArchive, ytFinalExts);
+        ytArchiveAppend(thumbArchive, ytLedgerLines);
+        ytArchive = thumbArchive;
+        ytNoteArchivePrimed(platform, 0);
+    } else {
+        // 판을 시작하며 장부에 더한 줄 수(받은 폴더에서 되살린 것 + 정리 장부) — 内閣会는 장부 줄 수의 차이로 '새 영상' 을 센다.
+        //   이 줄들은 새로 받은 것이 아니다(_complete 만 옮긴 새 자리에서 정리 장부 300줄을 더하면 '새 영상 300개' 라고 알렸다 — 검토)
+        const int primed = seedYtArchive(ytTypeDir, ytArchive, ytFinalExts) + qMax(0, ytArchiveAppend(ytArchive, ytLedgerLines));
+        ytNoteArchivePrimed(platform, primed);
+    }
     // 장부는 yt-dlp(파이썬)가 직접 여는 파일이다 — 260자를 넘으면 못 연다(longPathArg).
-    const QString ytArchive = (type == "audio") ? ytBaseDir + "/.yt_archive_audio.txt"
-                                                : ytBaseDir + "/.yt_archive.txt";
     baseArgs << "--download-archive" << Common::longPathArg(QDir::toNativeSeparators(ytArchive));
     baseArgs << "--ignore-errors";   // 한 영상 실패가 전체 재생목록/채널 배치를 멈추지 않게
     // ★ 이어서 받기 보강 — 아카이브(ID 기록)만으론 그 전에 이미 받아둔 영상(기록 없음)을 못 거른다.
@@ -12151,7 +13091,20 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     //   경로 전체(폴더 포함)를 자른다(YoutubeDL._prepare_filename: no_ext[:trim_file_name]) — 그래서
     //   윈도우 이름만 저장 폴더 깊이에 따라 맥보다 짧아져 두 판의 파일 이름이 갈라졌다.
     //   260자는 아래 Common::longPathTemplate 의 \\?\ 접두어(폴더 몫)로 막는다.
+    // ★ 맥은 저장 폴더 이름에 윈도우 금지 글자가 있으면 이 옵션을 끈다(ytWindowsSafeDir). 윈도우에서는 그런 폴더가
+    //   애초에 없고, 그 판정은 드라이브 글자 'D:' 의 ':' 에 걸려 늘 거짓이 되므로 윈도우는 언제나 켠다.
+#ifdef Q_OS_WIN
     baseArgs << "--windows-filenames";
+#else
+    if (ytWindowsSafeDir(ytTypeDir)) {
+        baseArgs << "--windows-filenames";
+    } else {
+        log(QString("저장 폴더 이름에 윈도우가 못 쓰는 글자(: ? * \" < > | \\ 또는 끝의 공백 · 마침표)가 있어, "
+                    "파일 이름의 윈도우 호환을 이번에는 끕니다 — 켜면 yt-dlp 가 그 폴더 이름까지 바꿔 다른 폴더에 씁니다.\n"
+                    "   폴더: %1").arg(ytTypeDir),
+            "warning", platform);
+    }
+#endif
 
     // ★ 프록시 경유 — 지역 제한이 걸린 영상(니코동의 일본 전용 so… 등)은 실제 접속 IP 를
     //   본다. yt-dlp 의 --geo-bypass·--xff(헤더 위조)는 통하지 않는다: 니코동 추출기가
@@ -12248,7 +13201,9 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
     QString statusFile = tempDir + "/miyo_yt_status.txt";
     QString stopMarker = statusFile + ".stop";
     QFile::remove(statusFile);
-    QFile::remove(stopMarker);
+    // ★ 띄우기 전에 이미 중지를 눌렀으면 표식을 지우지 않는다(아래에서 띄우지도 않는다) — 지우면 스크립트가 중지를 영영 못 보고
+    //   아무도 지켜보지 않는 채로 목록 끝까지 받았다(검토)
+    if (platformRunning(platform)) QFile::remove(stopMarker);
 
 #ifdef Q_OS_WIN
     // Windows: generate .bat script
@@ -12402,7 +13357,9 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
         script += "  exit 0\nfi\n\n";
 
         script += QString("echo 'PROGRESS:%1:%2' > \"$STATUS\"\n").arg(i + 1).arg(urls.size());
-        script += QString("echo '[%1/%2] %3'\n").arg(i + 1).arg(urls.size()).arg(urls[i]);
+        // ★ 저장 경로 · 주소는 esc 로 — 작은따옴표 하나면 스크립트가 끝까지 짝이 안 맞아 마지막 줄(DONE)이 돌지 않았고,
+        //   화면은 '다운로드 중' 에 멈춰 엑셀 · 사본도 만들지 못했다(검토)
+        script += "echo " + esc(QString("[%1/%2] %3").arg(i + 1).arg(urls.size()).arg(urls[i])) + "\n";
         script += "echo '-----------------------------------------'\n";
 
         // Rate limit 자동 재시도 (최대 3회, 60초 대기)
@@ -12453,7 +13410,7 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
 
     script += "echo '========================================='\n";
     script += "echo \"  완료! 성공: $SUCCESS, 실패: $FAIL\"\n";
-    script += "echo '  저장 경로: " + ytBaseDir + "'\n";
+    script += "echo " + esc("  저장 경로: " + ytBaseDir) + "\n";
     script += "echo '========================================='\n";
     script += "echo \"DONE:$SUCCESS:$FAIL\" > \"$STATUS\"\n";
     script += "rm -f \"$STOP_MARKER\"\n";
@@ -12549,6 +13506,9 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
         const QString scriptPathCopy = scriptPath;
         const QString platformCopy = platform;
         auto launch = [this, scriptPathCopy, platformCopy]() {
+            // ★ 이 판을 띄우기 전에 중지를 눌렀으면 띄우지 않는다. 중지(stopYoutube · stopNiconico)도 이 메인 스레드에서 돌므로 엇갈리지
+            //   않는다. 예전엔 프록시 확인 · 장부 채우기 동안 누른 중지를 놓치고 그대로 띄워, 중지 단추가 닿지 않는 판이 몇 시간 돌았다(검토).
+            if (!platformRunning(platformCopy)) return;
             const QString key = m_terminalLogPaths.contains(platformCopy) ? platformCopy
                               : (m_terminalLogPaths.contains("naikakukai") ? QStringLiteral("naikakukai")
                                                                            : platformCopy);
@@ -12620,7 +13580,8 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
             // ★ 중지 버튼도 상태 파일에 DONE:0:0 을 쓴다(감시 루프를 바로 깨우려고). 그것을 '완료' 로
             //   알리면 멈춘 판에 "Complete! Success: 0" 이 찍혔다. 멈춘 판은 그렇게 말하고, 이미 받은
             //   것의 마무리(엑셀·메타데이터)만 이어 한다. 배지는 루프 뒤에서 '중지됨' 으로 적는다.
-            if (!platformRunning(platform)) {
+            const bool ytStoppedRun = !platformRunning(platform);   // 중지 단추가 쓴 DONE — 아래 '_complete 만 남기기' 는 하지 않는다
+            if (ytStoppedRun) {
                 log("중지됨 — 이미 받은 것까지 정리합니다", "warning", platform);
             } else {
                 log(QString("Complete! Success: %1, Failed: %2").arg(success).arg(fail), "success", platform);
@@ -12665,6 +13626,45 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
             // ── Post-processing: _complete 미러 + Excel 생성 ──
             QDirIterator it(ytTypeDir, {"*.info.json"}, QDir::Files, QDirIterator::Subdirectories);
             QJsonArray rows;
+            QHash<QString, int> ytRowAt;
+            QSet<QString> ytRowHasMedia;
+            // ★ 뒤처리를 마친 파일은 다시 만지지 않는다 — 예전엔 판마다(内閣会의 니코동 감시는 30분마다) 받아 둔 모든 영상에
+            //   EXIF 를 다시 써(파일을 통째로 다시 쓴다) Finder 메모를 두 번 달았다. 보관함 크기만큼 디스크에 쓰고, 큰 파일은
+            //   10초 제한에 끊겨 반쪽 임시 파일이 남았다(장기 지원 점검). 마친 파일의 크기 · 시각을 적어 두고, 같으면 건너뛴다.
+            //   엑셀 줄은 판마다 모두 다시 만든다(info.json 만 읽는다).
+            const QString ytDonePath = ytTypeDir + "/.yt_postprocessed.txt";
+            QHash<QString, QString> ytDone, ytDoneNow;
+            {
+                QFile df(ytDonePath);
+                if (df.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                    while (!df.atEnd()) {
+                        const QStringList kv = QString::fromUtf8(df.readLine()).trimmed().split(QLatin1Char('\t'));
+                        if (kv.size() == 2) ytDone.insert(kv[0], kv[1]);
+                    }
+                }
+            }
+            const auto ytSig = [](const QString &path) {
+                const QFileInfo fi(path);
+                return QString::number(fi.size()) + QLatin1Char(':') + QString::number(fi.lastModified().toSecsSinceEpoch());
+            };
+            // _complete 사본 자리 — 받은 쪽과 같은 모양(채널별 서브폴더 · 폴더 없이).
+            // ★ 미러 자리는 이번 설정이 아니라 '그 파일이 실제로 있는 모양' 으로 정한다. 후처리는 유형 폴더의 info.json 을
+            //   예전 것까지 모두 다시 도는데, 설정을 따르면 저장 방식을 바꾼 첫 판에 지난 영상 전부를 _complete 에
+            //   한 벌 더 복사했다(700개면 700개 — 리뷰에서 잡힘). 채널 폴더 안의 것은 _complete/<채널>/,
+            //   유형 폴더 바로 아래의 것은 _complete/ 로. (path 는 그 영상의 원본 또는 info.json — 놓인 자리만 본다)
+            const auto ytMirrorPathOf = [&](const QJsonObject &info, const QString &path, const QString &fileName) {
+                QString channelName = info["channel"].toString();
+                if (channelName.isEmpty()) channelName = info["uploader"].toString();
+                if (channelName.isEmpty()) channelName = "_unknown";
+                // 파일시스템 안전 문자로 치환
+                channelName.replace(QRegularExpression("[\\\\/:*?\"<>|]"), "_");
+                //   윈도우는 구분자가 \ 로 올 수도 있어 / · \ 둘 다 본다(인계 10-06 L3).
+                const QString rel = QDir(ytTypeDir).relativeFilePath(path);
+                const bool fileIsFlat = !rel.contains(QLatin1Char('/')) && !rel.contains(QLatin1Char('\\'));
+                return (fileIsFlat ? ytCompleteDir : ytCompleteDir + "/" + channelName) + "/" + fileName;
+            };
+            QList<YtCleanTask> ytClean;      // '_complete 만 남기기' 로 비울 것
+            int ytCleanNoId = 0;             // 장부 줄을 만들 수 없어(ID 없음) 남겨 둔 것
             while (it.hasNext()) {
                 QString infoPath = it.next();
                 QFile f(infoPath);
@@ -12678,6 +13678,18 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
                     dt = QDateTime::fromString(uploadDate, "yyyyMMdd");
                     dt.setTimeZone(QTimeZone::utc());
                 }
+                const QString ytDateAsGiven = uploadDate;     // yt-dlp 의 날짜(시각이 있으면 UTC 날짜)
+                const QDateTime ytDateTime = dt;              // 예전 판이 파일 시각으로 쓰던 값(그 날의 UTC 자정)
+                // ★ 시각이 있으면 파일 시각 · 엑셀 날짜를 그 시각으로(엑셀은 일본 시간의 날짜)
+                if (const qint64 ytTs = info["timestamp"].toVariant().toLongLong(); ytTs > 0) {
+                    dt = QDateTime::fromSecsSinceEpoch(ytTs, QTimeZone::utc());
+                    uploadDate = Common::jstTime(dt).toString("yyyyMMdd");
+                }
+                // 이 고리는 판마다 받아 둔 영상을 모두 다시 돈다 — 예전 판이 맞춰 둔 파일 시각은 그대로 둔다.
+                //   시각이 바뀌면 백업(rclone 은 크기 · 시각으로 가른다)이 영상을 모두 다시 올린다.
+                const auto ytFileTime = [&](const QString &path) {
+                    return (ytDateTime.isValid() && QFileInfo(path).lastModified().toSecsSinceEpoch() == ytDateTime.toSecsSinceEpoch()) ? ytDateTime : dt;
+                };
 
                 // 미디어 파일명 찾기 (info.json → .mp4/.mp3/.jpg 등)
                 QString base = infoPath;
@@ -12693,49 +13705,108 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
                 }
 
                 // 메타데이터 적용 + _complete 미러
-                if (!mediaPath.isEmpty()) {
+                const QString ytDoneKey = mediaPath.isEmpty() ? QString() : QDir(ytTypeDir).relativeFilePath(mediaPath);
+                const QString ytStored = mediaPath.isEmpty() ? QString() : ytDone.value(ytDoneKey);
+                const bool ytAlreadyDone = !mediaPath.isEmpty() && ytStored == ytSig(mediaPath);
+                const bool ytRetrying = !mediaPath.isEmpty() && ytStored == ytSig(mediaPath) + QStringLiteral("|retry");   // 지난번 EXIF 실패
+                if (ytAlreadyDone) ytDoneNow.insert(ytDoneKey, ytDone.value(ytDoneKey));
+                if (!mediaPath.isEmpty() && !ytAlreadyDone) {
+                    // ★ EXIF 를 적으면 파일 시각이 지금으로 바뀐다 — 예전 판의 시각인지는 그 전에 본다
+                    const QDateTime ytMediaTime = ytFileTime(mediaPath);
                     QString ytUrl = info["webpage_url"].toString();
                     QString uploader = info["uploader"].toString();
                     QString title = info["title"].toString().left(200);
                     QString descr = info["description"].toString();   // ★ 영상에 달린 설명
                     // EXIF: description 필드에 '영상 설명' 적용 (없으면 제목으로 폴백)
-                    Common::addExifMetadata(mediaPath,
+                    const int ytExif = Common::addExifMetadata(mediaPath,
                         uploader.isEmpty() ? "" : "@" + uploader,
                         descr.isEmpty() ? title : descr,
                         plabel + " @" + uploader, ytUrl,
-                        dt.isValid() ? dt.toString("yyyy:MM:dd HH:mm:ss") : "");
+                        dt.isValid() ? dt.toString(Qt::ISODate) : "");   // 시간대까지 넘긴다 — 없으면 UTC 시각을 맥의 현지 시각으로 읽는다
                     // Finder/Spotlight 코멘트 = URL + 제목 + 설명(앞부분) → Get Info/검색에서 보임.
                     //   (전체 설명은 yt-dlp --write-description 의 .description 사이드카에도 저장됨)
                     QString ytComment = ytUrl;
                     if (!title.isEmpty()) ytComment += "\n" + title;
                     if (!descr.isEmpty()) ytComment += "\n\n" + descr.left(1800);
                     FileHelper::setFinderComment(mediaPath, ytComment);
-                    FileHelper::applyPostMetadata(mediaPath, dt, ytUrl);
+                    FileHelper::applyPostMetadata(mediaPath, ytMediaTime, ytUrl);
                     // _complete 미러 — 받은 쪽과 같은 모양(채널별 서브폴더 · 폴더 없이)
-                    QString channelName = info["channel"].toString();
-                    if (channelName.isEmpty()) channelName = info["uploader"].toString();
-                    if (channelName.isEmpty()) channelName = "_unknown";
-                    // 파일시스템 안전 문자로 치환
-                    channelName.replace(QRegularExpression("[\\\\/:*?\"<>|]"), "_");
-                    // ★ 미러 자리는 이번 설정이 아니라 '그 파일이 실제로 있는 모양' 으로 정한다. 후처리는 유형 폴더의 info.json 을
-                    //   예전 것까지 모두 다시 도는데, 설정을 따르면 저장 방식을 바꾼 첫 판에 지난 영상 전부를 _complete 에
-                    //   한 벌 더 복사했다(700개면 700개 — 리뷰에서 잡힘). 채널 폴더 안의 것은 _complete/<채널>/,
-                    //   유형 폴더 바로 아래의 것은 _complete/ 로.
-                    //   윈도우는 구분자가 \ 로 올 수도 있어 / · \ 둘 다 본다(인계 10-06 L3).
-                    const QString mediaRel = QDir(ytTypeDir).relativeFilePath(mediaPath);
-                    const bool fileIsFlat = !mediaRel.contains(QLatin1Char('/')) && !mediaRel.contains(QLatin1Char('\\'));
-                    QString mirrorChannelDir = fileIsFlat ? ytCompleteDir : ytCompleteDir + "/" + channelName;
-                    QDir().mkpath(mirrorChannelDir);
-                    QString mirrorPath = mirrorChannelDir + "/" + QFileInfo(mediaPath).fileName();
-                    if (!QFile::exists(mirrorPath)) QFile::copy(mediaPath, mirrorPath);
-                    if (QFile::exists(mirrorPath)) {
+                    const QString mirrorPath = ytMirrorPathOf(info, mediaPath, QFileInfo(mediaPath).fileName());
+                    QDir().mkpath(QFileInfo(mirrorPath).absolutePath());
+                    // ★ 이번에 만든 사본이거나 원본과 같은 사본에만 이 영상의 메모 · 받은 곳을 단다. 같은 이름의 다른 영상의 사본(채널별
+                    //   폴더의 이름에는 번호가 없다)에 이 영상의 주소를 달면, 그 파일이 누구의 것인지 가릴 단서가 지워진다 —
+                    //   '_complete 만 남기기' 는 그 단서로 덮어도 되는 낡은 사본인지 다른 영상인지를 가른다(ytLeaveOnlyComplete).
+                    const bool ytMirrorNew = !QFile::exists(mirrorPath) && QFile::copy(mediaPath, mirrorPath);
+                    if (ytMirrorNew || (QFile::exists(mirrorPath) && ytSameBytes(mediaPath, mirrorPath))) {
                         FileHelper::setFinderComment(mirrorPath, ytComment);
-                        FileHelper::applyPostMetadata(mirrorPath, dt, ytUrl);
+                        FileHelper::applyPostMetadata(mirrorPath, ytFileTime(mirrorPath), ytUrl);
                     }
                     // 経済産業省 연계: 페이지 캡처
                     QString ytCapturesDir = ytBaseDir + "/captures";
-                    FileHelper::capturePageHtml(ytCapturesDir, ytUrl,
-                        FileHelper::uploadOrderPrefix(dt) + info["id"].toString());
+                    // 이름은 일본 시간의 날짜. 예전 이름(yt-dlp 의 날짜)으로 받아 둔 것이 있으면 그 이름 그대로 — 영상마다 한 벌씩 더 생기지 않게
+                    const QString ytOldCap = (ytDateAsGiven.size() == 8 ? ytDateAsGiven + QStringLiteral("_000000_") : QString()) + info["id"].toString();
+                    const QString ytNewCap = (uploadDate.size() == 8 ? uploadDate + QStringLiteral("_000000_") : QString()) + info["id"].toString();
+                    FileHelper::capturePageHtml(ytCapturesDir, ytUrl, QFile::exists(ytCapturesDir + "/" + ytOldCap + ".html") ? ytOldCap : ytNewCap);
+                    // 다 마쳤다 — 다음 판부터 건너뛴다. EXIF 를 못 적었으면(시간 초과 · 오류) 다음 판에 한 번만 더 해 본다.
+                    //   exiftool 을 띄우지 못한 판(-2)은 적지 않는다 — 고쳐진 뒤의 판이 다시 적게(그동안은 예전처럼 판마다 돈다)
+                    if (ytExif != -2)
+                        ytDoneNow.insert(ytDoneKey, ytSig(mediaPath) + ((ytExif < 0 && !ytRetrying) ? QStringLiteral("|retry") : QString()));
+                } else if (ytAlreadyDone) {
+                    // 마친 파일이라도 _complete 의 사본이 없어졌으면(사용자가 지움 · 백업 자리 바꿈) 다시 둔다
+                    const QString mirrorPath = ytMirrorPathOf(info, mediaPath, QFileInfo(mediaPath).fileName());
+                    if (!QFile::exists(mirrorPath)) {
+                        QDir().mkpath(QFileInfo(mirrorPath).absolutePath());
+                        if (QFile::copy(mediaPath, mirrorPath))
+                            FileHelper::applyPostMetadata(mirrorPath, QFileInfo(mediaPath).lastModified(), info["webpage_url"].toString());
+                    }
+                }
+
+                // '_complete 만 남기기' — 비울 것을 모아 두고, 엑셀까지 저장한 뒤에 비운다(아래 ytLeaveOnlyComplete).
+                //   끝난 파일(이 형태의 확장자)만: 동영상 판에 썸네일만 받히고 영상이 실패했으면 그 .jpg 가 mediaPath 가 되는데,
+                //   그것을 끝난 것으로 보고 장부에 올리면 그 영상을 영영 받지 않는다.
+                //   끝난 원본이 없고 info.json 만 남았으면 — 정리 장부에 있고(지난 정리가 원본을 지운 뒤 끊김) _complete 에 사본이 있을 때만
+                //   곁 파일을 마저 치운다. 장부에 없으면(사용자가 원본만 지움 · 같은 이름의 다른 영상의 사본) 손대지 않는다.
+                if (ytCompleteOnly) {
+                    const QString ie = info["extractor_key"].toString().toLower();
+                    const QString vid = info["id"].toString();
+                    const bool finished = !mediaPath.isEmpty() && ytFinalExts.contains(QFileInfo(mediaPath).suffix().toLower());
+                    QString leftMirror;
+                    // (끝난 파일이 없으면 — mediaPath 가 비었거나, 남은 썸네일 .jpg 처럼 이 형태의 끝난 확장자가 아닐 때)
+                    if (!finished && !ie.isEmpty() && !vid.isEmpty() && ytLedgerSet.contains(ie + " " + vid)) {
+                        // 이 영상의 사본 — 번호를 붙인 이름(정리가 따로 둔 것)을 먼저, 그냥 이름은 그 파일의 받은 곳이 이 영상일 때만
+                        //   (같은 이름의 다른 영상의 사본에 이 영상의 곁 파일을 붙이지 않게 — 검토)
+                        QString safeVid = vid;
+                        safeVid.replace(QRegularExpression(QStringLiteral("[\\\\/:*?\"<>|]")), QStringLiteral("_"));
+                        const QString bn = QFileInfo(base).fileName();
+                        for (const QString &ext : ytFinalExts) {
+                            for (int n = 1; n < 10 && leftMirror.isEmpty(); ++n) {
+                                const QString m = ytMirrorPathOf(info, infoPath, bn + " [" + safeVid + "]"
+                                                                 + (n > 1 ? QString(" (%1)").arg(n) : QString()) + "." + ext);
+                                if (QFileInfo::exists(m)) leftMirror = m;
+                            }
+                            if (!leftMirror.isEmpty()) break;
+                        }
+                        for (const QString &ext : ytFinalExts) {
+                            if (!leftMirror.isEmpty()) break;
+                            const QString m = ytMirrorPathOf(info, infoPath, bn + "." + ext);
+                            if (QFileInfo::exists(m) && ytFileIsFromUrl(m, info["webpage_url"].toString())) leftMirror = m;
+                        }
+                    }
+                    if (finished && (ie.isEmpty() || vid.isEmpty())) {
+                        ++ytCleanNoId;
+                    } else if (finished || !leftMirror.isEmpty()) {
+                        YtCleanTask t;
+                        t.base = base;
+                        t.mediaPath = finished ? mediaPath : QString();
+                        t.mirrorPath = finished ? ytMirrorPathOf(info, mediaPath, QFileInfo(mediaPath).fileName()) : leftMirror;
+                        t.archiveLine = ie + " " + vid;
+                        t.vid = vid;
+                        t.url = info["webpage_url"].toString();
+                        const QString ttl = info["title"].toString().left(200), dsc = info["description"].toString();
+                        t.comment = t.url + (ttl.isEmpty() ? QString() : "\n" + ttl) + (dsc.isEmpty() ? QString() : "\n\n" + dsc.left(1800));
+                        t.doneKey = ytDoneKey;
+                        ytClean.append(t);
+                    }
                 }
 
                 // ★ 댓글 → 읽기 좋은 <base>.comments.txt (info.json 의 comments[] 변환)
@@ -12743,7 +13814,10 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
                 //   맥과 같은 모양 · 같은 바이트로 적는다 — Text 모드를 쓰지 않으므로 윈도우에서도 줄 끝이 LF 다.
                 {
                     const QJsonArray comments = JsonShape::pickArray(info, {"comments", "comment_list"});
-                    if (!comments.isEmpty()) {
+                    // 이미 만든 것은 info.json 이 새로 받혔을 때만 다시 만든다(판마다 모든 영상의 댓글 파일을 다시 쓰고 줄을 찍던 것)
+                    const QFileInfo ytCommentsFi(base + ".comments.txt");
+                    if (!comments.isEmpty()
+                        && (!ytCommentsFi.exists() || QFileInfo(infoPath).lastModified() > ytCommentsFi.lastModified())) {
                         QString txt;
                         txt += QString("# %1\n# %2\n# 댓글 %3개 (yt-dlp 수집)\n\n")
                                    .arg(JsonShape::pickString(info, {"title", "fulltitle"}),
@@ -12794,37 +13868,183 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
                 row["tag_str"] = tagList.join(", ");
                 row["webpage_url"] = info["webpage_url"].toString();
                 row["description"] = info["description"].toString().left(500);
-                rows.append(row);
+                // 한 영상은 한 줄 — 이름의 날짜가 바뀌기 전에 끊긴 판의 info.json 이 남아 있으면 같은 ID 가 둘이다. 파일이 있는 쪽을 쓴다
+                const QString rowId = info["id"].toString();
+                const int rowAt = rowId.isEmpty() ? -1 : ytRowAt.value(rowId, -1);
+                if (rowAt < 0) {
+                    if (!rowId.isEmpty()) ytRowAt.insert(rowId, rows.size());
+                    rows.append(row);
+                } else if (!mediaPath.isEmpty() && !ytRowHasMedia.contains(rowId)) {
+                    rows[rowAt] = row;
+                }
+                if (!mediaPath.isEmpty()) ytRowHasMedia.insert(rowId);
             }
 
+            const auto ytWriteDone = [&]() {
+                QStringList lines;
+                for (auto dit = ytDoneNow.constBegin(); dit != ytDoneNow.constEnd(); ++dit)
+                    lines << dit.key() + QLatin1Char('\t') + dit.value();
+                Common::writeFileAtomic(ytDonePath, (lines.join(QLatin1Char('\n')) + QLatin1Char('\n')).toUtf8());
+            };
+            ytWriteDone();
+
             // Excel 쓰기: type별 + complete
-            QStringList hdrs = {"ID", "Title", "Uploader", "Upload Date", "Duration",
-                                 "Views", "Likes", "Channel", "Tags", "URL", "Description"};
-            auto writeExcel = [&](const QString &excelPath) {
+            // ★ 있던 줄을 잇는다. 예전엔 판마다 유형 폴더의 info.json 으로만 새로 만들어, '_complete 만 남기기' 가 info.json 을
+            //   지우면 다음 판의 엑셀에서 그 영상들이 사라졌다(옵션을 끈 뒤에도). 이번 판이 다시 본 영상은 새 값으로, 처음 보는 영상은 끝에.
+            //   · 형태별 엑셀(youtube_video.xlsx 등)은 예전처럼 '받은 폴더에 있는 것' + '앱이 정리해서 info.json 이 없는 것'(정리 장부)만
+            //     남긴다 — 사용자가 손으로 지운 영상의 줄은 예전처럼 빠진다(옵션을 안 쓰는 사람의 엑셀은 r50 과 같다).
+            //   · complete 엑셀은 쌓는다 — 동영상 · 오디오 · 썸네일 판이 함께 쓰는 '모두' 의 기록이다(예전엔 마지막에 돈 형태의 줄만 남았다).
+            //   있는 파일을 읽지 못하거나 앱이 쓴 표('ID' 머리줄이 있는 시트)를 찾지 못하면 덮어쓰지 않는다(트위터와 같은 규칙 — QXlsx 는
+            //   못 읽어도 빈 시트를 주고, 늘 첫 시트를 본다: 사용자가 차트 시트를 앞에 넣으면 그것을 읽어 예전 줄을 0개로 보았다).
+            const QStringList hdrs = {"ID", "Title", "Uploader", "Upload Date", "Duration",
+                                      "Views", "Likes", "Channel", "Tags", "URL", "Description"};
+            QList<QStringList> ytNewCells;
+            for (const auto &v : rows) {
+                const QJsonObject o = v.toObject();
+                ytNewCells << QStringList{
+                    o["id"].toString(), o["title"].toString(), o["uploader"].toString(),
+                    o["upload_date"].toString(),
+                    QString::number(o["duration"].toDouble(), 'f', 0),
+                    QString::number(o["view_count"].toDouble(), 'f', 0),
+                    QString::number(o["like_count"].toDouble(), 'f', 0),
+                    o["channel"].toString(),
+                    o["tag_str"].toString(),
+                    o["webpage_url"].toString(),
+                    o["description"].toString()
+                };
+            }
+            // 쓰면 true. keepAll 이 아니면 이번 판이 보지 않은 예전 줄은 정리 장부에 있는 것만 남긴다. kept = 그렇게 남긴 줄 수
+            auto writeExcel = [&](const QString &excelPath, bool keepAll, int *kept) -> bool {
+                QList<QStringList> merged;
+                QHash<QString, int> at;
+                // 예전 파일이 보탤 줄이 없으면(형태별 엑셀 · 정리 장부가 빔 — 옵션을 안 쓰는 사람) 읽지 못해도 예전처럼 새로 만든다.
+                //   이번 판이 못 본 예전 줄은 어차피 빠지므로 잃는 것이 없다(r50 과 같다 — 검토). 보탤 수 있으면 아래처럼 덮지 않는다.
+                const bool oldMatters = keepAll || !ytLedgerIds.isEmpty();
+                if (QFileInfo::exists(excelPath)) {
+                    QXlsx::Document old(excelPath);
+                    if (!old.isLoadPackage() && !oldMatters) {
+                        log(QString("엑셀을 읽지 못해 받은 폴더의 정보로 새로 만듭니다: %1").arg(QFileInfo(excelPath).fileName()), "warning", platform);
+                    } else if (!old.isLoadPackage()) {
+                        log(QString("엑셀을 읽지 못해 덮어쓰지 않습니다: %1 — 이 파일에만 있는 줄(정리해서 info.json 이 없는 영상)이 있을 수 있습니다. "
+                                    "엑셀로 열어 다시 저장해 보시고, 안 되면 다른 이름으로 옮기십시오(다음 판이 새로 만들고, 옮긴 파일의 줄은 그 파일에 남습니다)")
+                                .arg(excelPath), "error", platform);
+                        return false;
+                    }
+                    // 앱이 쓴 표를 찾는다 — 머리줄(1행)에 'ID' · 'Title' · 'URL' 이 있는 일반 시트(차트 시트는 currentWorksheet 가 없다).
+                    //   그런 시트가 여럿이면(사용자가 앞에 넣은 즐겨찾기 시트 등) 모두 잇는다 — 큰 시트부터, 같은 ID 는 먼저 본 것.
+                    //   첫 시트 하나만 보면 앞에 끼운 작은 시트를 '예전 표 전부' 로 읽어 나머지 줄을 잃었다(검토).
+                    struct AppSheet { QString name; int lastRow; QVector<int> cols; };
+                    QList<AppSheet> appSheets;
+                    bool anyContent = false;
+                    for (const QString &sn : old.sheetNames()) {
+                        if (!old.selectSheet(sn) || !old.currentWorksheet()) continue;
+                        const auto dim = old.dimension();
+                        if (dim.lastRow() >= 1) anyContent = true;
+                        QVector<int> cols(hdrs.size(), -1);
+                        for (int c = 1; c <= qMax(dim.lastColumn(), int(hdrs.size())); ++c) {
+                            const int k = hdrs.indexOf(old.read(1, c).toString().trimmed());
+                            if (k >= 0 && cols[k] < 0) cols[k] = c;
+                        }
+                        if (cols[0] < 0 || cols[hdrs.indexOf(QStringLiteral("Title"))] < 0 || cols[hdrs.indexOf(QStringLiteral("URL"))] < 0) continue;
+                        appSheets.append({sn, dim.lastRow(), cols});
+                    }
+                    if (appSheets.isEmpty() && anyContent && oldMatters) {
+                        log(QString("엑셀에서 앱이 쓴 표(1행에 ID · Title · URL 이 있는 시트)를 찾지 못해 덮어쓰지 않습니다: %1 — 머리줄을 되돌리시거나 "
+                                    "다른 이름으로 옮기십시오").arg(excelPath), "error", platform);
+                        return false;
+                    }
+                    std::stable_sort(appSheets.begin(), appSheets.end(), [](const AppSheet &x, const AppSheet &y) { return x.lastRow > y.lastRow; });
+                    for (const AppSheet &sh : std::as_const(appSheets)) {
+                        if (!old.selectSheet(sh.name)) continue;
+                        for (int r = 2; r <= sh.lastRow; ++r) {
+                            QStringList cells;
+                            for (int k = 0; k < hdrs.size(); ++k) cells << (sh.cols[k] > 0 ? old.read(r, sh.cols[k]).toString() : QString());
+                            const QString id = cells[0].trimmed();
+                            if (id.isEmpty() || at.contains(id)) continue;
+                            at.insert(id, merged.size());
+                            merged << cells;
+                        }
+                    }
+                }
+                QSet<QString> seen;
+                for (const QStringList &cells : std::as_const(ytNewCells)) {
+                    const QString id = cells[0].trimmed();
+                    if (!id.isEmpty()) seen.insert(id);
+                    const int i = id.isEmpty() ? -1 : at.value(id, -1);
+                    if (i >= 0) { merged[i] = cells; continue; }
+                    if (!id.isEmpty()) at.insert(id, merged.size());
+                    merged << cells;
+                }
+                int keptOld = 0;
+                QList<QStringList> out;
+                out.reserve(merged.size());
+                for (const QStringList &cells : std::as_const(merged)) {
+                    const QString id = cells[0].trimmed();
+                    if (!id.isEmpty() && !seen.contains(id)) {
+                        if (!keepAll && !ytLedgerIds.contains(id)) continue;   // 사용자가 지운 영상 — 예전처럼 뺀다
+                        ++keptOld;
+                    }
+                    out << cells;
+                }
+                if (kept) *kept = keptOld;
                 ExcelWriter writer;
                 writer.writeHeader(hdrs, QColor("#FF0000"));
                 int r = 2;
-                for (const auto &v : rows) {
-                    QJsonObject o = v.toObject();
-                    writer.writeRow(r++, {
-                        o["id"].toString(), o["title"].toString(), o["uploader"].toString(),
-                        o["upload_date"].toString(),
-                        QString::number(o["duration"].toDouble(), 'f', 0),
-                        QString::number(o["view_count"].toDouble(), 'f', 0),
-                        QString::number(o["like_count"].toDouble(), 'f', 0),
-                        o["channel"].toString(),
-                        o["tag_str"].toString(),
-                        o["webpage_url"].toString(),
-                        o["description"].toString()
-                    });
-                }
+                for (const QStringList &cells : std::as_const(out)) writer.writeRow(r++, cells);
                 writer.autoFitColumns(hdrs);
-                writer.save(excelPath);
+                if (writer.save(excelPath)) return true;
+                // 까닭(디스크 · 자리)은 저장 실패 훅이 '설정' 기록에 적는다 — 이 판의 기록에도 남긴다(직접 받는 판은 거기를 본다)
+                log(QString("❌ 엑셀을 저장하지 못했습니다: %1 — 디스크 공간 · 저장 위치를 확인하십시오. 기존 파일은 그대로입니다")
+                        .arg(QFileInfo(excelPath).fileName()), "error", platform);
+                return false;
             };
+            bool ytExcelOk = true;
             if (!rows.isEmpty()) {
-                writeExcel(FileHelper::typeExcelPath(ytExcelDir, platform, type));
-                writeExcel(FileHelper::typeExcelPath(ytExcelDir, platform, "complete"));
-                log(QString("📊 Excel 저장: %1개 항목").arg(rows.size()), "success", platform);
+                int kept = 0;
+                const bool typeOk = writeExcel(FileHelper::typeExcelPath(ytExcelDir, platform, type), !ytLedgerKnown, &kept);
+                const bool completeOk = writeExcel(FileHelper::typeExcelPath(ytExcelDir, platform, "complete"), true, nullptr);
+                ytExcelOk = typeOk && completeOk;
+                if (typeOk)
+                    log(QString("📊 Excel 저장: %1개 항목").arg(rows.size())
+                            + (kept <= 0 ? QString()
+                               : ytLedgerKnown ? QString(" + 정리한 영상 %1개의 줄 그대로").arg(kept)
+                                               : QString(" + 정리 장부(_complete)를 확인하지 못해 예전 줄 %1개를 그대로 둠").arg(kept)),
+                        "success", platform);
+            }
+
+            // ── '_complete 만 남기기' — 엑셀까지 저장한 뒤에만(info.json 의 정보가 엑셀에 남기 전에 지우지 않는다) ──
+            //   중지한 판은 하지 않는다: 중지 단추는 DONE 을 바로 써 이 고리를 깨우는데, 스크립트가 yt-dlp 를 끝내는 것은 1초쯤 뒤다 —
+            //   그 사이 yt-dlp 가 쓰던 파일(표지를 넣는 .temp.mp4 등)을 지울 수 있다. 다음 판이 예전 것까지 정리한다.
+            if (ytCompleteOnly && (ytStoppedRun || !platformRunning(platform))) {   // DONE 뒤 마무리 중에 누른 중지도
+                if (!ytClean.isEmpty())
+                    log("중지한 판이라 받은 폴더 정리('_complete 만 남기기')는 다음 판에 합니다", "info", platform);
+            } else if (ytCompleteOnly) {
+                if (!ytClean.isEmpty() && !ytExcelOk) {
+                    log("엑셀을 저장하지 못해 이번에는 받은 폴더를 비우지 않습니다 — 영상 정보(info.json)가 엑셀에 남기 전에 지우지 않으려고",
+                        "warning", platform);
+                } else if (!ytClean.isEmpty()) {
+                    const YtCleanResult cr = ytLeaveOnlyComplete(ytClean, ytTypeDir, ytCompleteDir, type, ytLedgerPath,
+                                                                 type == "thumbnail" ? QString() : ytArchive,
+                                                                 [this, platform]() { return platformRunning(platform); });
+                    for (const QString &k : cr.doneKeys) ytDoneNow.remove(k);
+                    if (!cr.doneKeys.isEmpty()) ytWriteDone();
+                    const QString freed = cr.freed >= (1LL << 30) ? QString::number(cr.freed / 1073741824.0, 'f', 2) + " GB"
+                                                                  : QString::number(cr.freed / 1048576.0, 'f', 1) + " MB";
+                    QString msg = cr.aborted ? QString("🧹 _complete 만 남기기: 하지 않음")
+                                             : QString("🧹 _complete 만 남기기: %1개 정리 — 받은 폴더에서 %2 비움").arg(cr.cleaned).arg(freed);
+                    if (cr.moved) msg += QString(" · 자막 · 댓글 · 설명 · 썸네일 %1개는 _complete 로 옮김").arg(cr.moved);
+                    if (cr.recopied) msg += QString(" · 없던 _complete 사본 %1개를 새로 둠").arg(cr.recopied);
+                    if (cr.renamed) msg += QString(" · _complete 에 같은 이름의 다른 파일이 있어 %1개는 이름 끝에 '[번호]' 를 붙여 둠").arg(cr.renamed);
+                    if (cr.sidecarRenamed) msg += QString(" · 곁 파일 %1개도 같은 이름의 다른 파일이 있어 '[번호]' 로 둠").arg(cr.sidecarRenamed);
+                    if (cr.kept && !cr.aborted) msg += QString(" · %1개는 남겨 둠").arg(cr.kept);
+                    if (cr.stoppedEarly) msg += QString(" — 중지되어 나머지는 다음 판에");
+                    log(msg, cr.kept ? "warning" : "success", platform);
+                    for (int i = 0; i < qMin<int>(5, cr.problems.size()); ++i) log("   " + cr.problems[i], "warning", platform);
+                    if (cr.problems.size() > 5) log(QString("   … 외 %1개").arg(cr.problems.size() - 5), "warning", platform);
+                }
+                if (ytCleanNoId)
+                    log(QString("영상 번호를 알 수 없는 %1개는 받은 폴더에 남겨 둡니다 — 지우면 다음 판이 다시 받을 수 있어서").arg(ytCleanNoId),
+                        "warning", platform);
             }
             break;
         } else if (status.startsWith("PROGRESS:")) {
@@ -13049,7 +14269,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
 
         // 프로필 폴더
         QDir().mkpath(userSaveDir);
-        QString dateTag = QDateTime::currentDateTime().toString("yyyyMMdd");
+        QString dateTag = Common::jstNow().toString("yyyyMMdd");
 
         // 아바타 다운로드
         if (!imageBig.isEmpty()) {
@@ -13093,7 +14313,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
         // social 링크
         QJsonObject social = profBody["social"].toObject();
         if (!social.isEmpty()) profileData["social"] = social;
-        profileData["fetched_at"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+        profileData["fetched_at"] = Common::jstNow().toString(Qt::ISODate);
 
         QFile pf(profileJsonPath);
         if (pf.open(QIODevice::WriteOnly)) {
@@ -13128,6 +14348,9 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
     //   다 받은 곳에서 일찍 멈추기의 '끊김 없이 다 봄' 판정이 읽는다: 빠진 쪽이 있는 판은 표시를 적지 않아, 다음 판이 끝까지 보며
     //   그 쪽을 다시 받는다(예전엔 표시가 적혀 다음 판이 그 위에서 멈추고 그 쪽은 영영 안 받았다 — 검토)
     bool pxIllustPartial = false;
+    bool pxIllustCapFail = false;    // 그 작품의 진짜 캡처를 못 받았다(받은 것과 따로 센다 — 캡처 길이 통째로 막힌 판은 빼려고)
+    int pxCapDone = 0;               // 이번 걸음에 새로 받은 캡처 수
+    bool pxIllustWasOnDisk = false;  // 받기 전에 그 작품의 파일이 이미 작가 폴더에 있었나(작품 하나 받기가 작가 목록 표시를 지울지)
     QString pxLastAuthorId;   // 마지막으로 받은 작품의 작가
 
     // Download a single illustration (single, manga, ugoira)
@@ -13220,6 +14443,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
             userSaveDir = userBaseDir + "/illusts";
         }
         QDir().mkpath(userSaveDir);
+        pxIllustWasOnDisk = !QDir(userSaveDir).entryList({QString("*(%1).*").arg(iid), QString("*(%1_*).*").arg(iid)}, QDir::Files).isEmpty();
 
         log(QString("[%1] %2 (type:%3, pages:%4)").arg(iid, title).arg(illustType).arg(pageCount), "info", "pixiv");
 
@@ -13348,9 +14572,16 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                                 return !!document.querySelector('input[name="pixiv_id"], input[autocomplete="username"]');
                             })()
                         )JS";
-                        captureRealPageCDPLoginAware(pxUrl, capturesDir,
-                            FileHelper::uploadOrderPrefix(dt) + iid,
-                            pxLoginCheck, "pixiv", 8000, pxCookies, config);
+                        {   // 캡처를 못 받은 작품도 덜 받은 것이다(두 판 잇따르면 넘어간다 · 캡처 길이 통째로 막힌 판은 빼고)
+                            const QString pxCapName = FileHelper::captureNameCompat(capturesDir, dt, iid);
+                            const bool pxCapHad = realCaptureFinished(capturesDir, pxCapName);
+                            if (captureRealPageCDPLoginAware(pxUrl, capturesDir, pxCapName,
+                                    pxLoginCheck, "pixiv", 8000, pxCookies, config)) {
+                                if (!pxCapHad) ++pxCapDone;
+                            } else if (platformRunning("pixiv")) {
+                                pxIllustCapFail = true;
+                            }
+                        }
                     }
                 } else {
                     // Fallback: keep ZIP
@@ -13396,9 +14627,16 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                         (location.hostname.indexOf('accounts.pixiv.net') === 0
                          || !!document.querySelector('input[name="pixiv_id"], input[autocomplete="username"]'))
                     )JS";
-                    captureRealPageCDPLoginAware(pxUrl, capturesDir,
-                        FileHelper::uploadOrderPrefix(dt) + iid,
-                        pxLoginCheck2, "pixiv", 8000, pxCookies, config);
+                    {   // 캡처를 못 받은 작품도 덜 받은 것이다(두 판 잇따르면 넘어간다 · 캡처 길이 통째로 막힌 판은 빼고)
+                        const QString pxCapName = FileHelper::captureNameCompat(capturesDir, dt, iid);
+                        const bool pxCapHad = realCaptureFinished(capturesDir, pxCapName);
+                        if (captureRealPageCDPLoginAware(pxUrl, capturesDir, pxCapName,
+                                pxLoginCheck2, "pixiv", 8000, pxCookies, config)) {
+                            if (!pxCapHad) ++pxCapDone;
+                        } else if (platformRunning("pixiv")) {
+                            pxIllustCapFail = true;
+                        }
+                    }
                 }
             }
             return true;
@@ -13490,9 +14728,16 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                         return !!document.querySelector('input[name="pixiv_id"], input[autocomplete="username"]');
                     })()
                 )JS";
-                captureRealPageCDPLoginAware(pxUrl, capturesDir,
-                    FileHelper::uploadOrderPrefix(dt) + iid,
-                    pxLoginCheck3, "pixiv", 8000, pxCookies, config);
+                {   // 캡처를 못 받은 작품도 덜 받은 것이다(두 판 잇따르면 넘어간다 · 캡처 길이 통째로 막힌 판은 빼고)
+                    const QString pxCapName = FileHelper::captureNameCompat(capturesDir, dt, iid);
+                    const bool pxCapHad = realCaptureFinished(capturesDir, pxCapName);
+                    if (captureRealPageCDPLoginAware(pxUrl, capturesDir, pxCapName,
+                            pxLoginCheck3, "pixiv", 8000, pxCookies, config)) {
+                        if (!pxCapHad) ++pxCapDone;
+                    } else if (platformRunning("pixiv")) {
+                        pxIllustCapFail = true;
+                    }
+                }
             }
             return true;
         }
@@ -13799,7 +15044,10 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
         totalIllusts = 1;
         // ★ 작품 하나 받기도 그 작가 폴더(작가 목록 걸음의 '받아 둔 것')에 넣는다 — 그 작가 목록의 표시를 지운다. 새 글 위쪽 몇 개를
         //   하나씩 받아 두면 다음 작가 걸음이 그 위에서 멈춰 아래쪽 새 작품을 영영 놓쳤다(검토)
-        if (!pxLastAuthorId.isEmpty()) Common::takeCleanWalkMarks(savePath + "/pixiv", "px_" + pxLastAuthorId + "_user_g");   // 그 작가의 북마크 목록은 다른 엑셀이다
+        //   이미 있던 작품을 다시 본 것뿐이면 그 작가의 '받아 둔 것' 은 그대로다 — 지우지 않는다(지우면 작가 줄과 작품 줄을 함께 둔 목록에서
+        //   작가의 일찍 멈춤이 영영 켜지지 않았다 — 검토). 지울 때는 drop — 그 작가를 지금 걷고 있는 판의 기록을 망가뜨리지 않는다
+        if (!pxLastAuthorId.isEmpty() && !pxIllustWasOnDisk)
+            Common::dropCleanWalkMarks(savePath + "/pixiv", "px_" + pxLastAuthorId + "_user_g");   // 그 작가의 북마크 목록은 다른 엑셀이다
     } else if (type == "novel") {
         // Single novel URL 직접 다운로드
         log(QString("📖 단일 소설 다운로드: %1").arg(singleNovelId), "info", "pixiv");
@@ -14020,11 +15268,13 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
             // ★ 지난번에 이 작가(이 종류)의 목록을 끊김 없이 다 받은 적이 있어야 일찍 멈춘다 — 끊긴 판 뒤에는 한 번 끝까지 본다(검토)
             //   우고이라를 GIF 로 받는 판 · ZIP 으로 두는 판은 표시를 따로 — ZIP 판의 표시로 GIF 판이 일찍 멈추면 옛 우고이라는 GIF 가 영영 안 생겼다(검토)
             const QString pxWalkPrefix = "px_" + userId + "_" + type + "_g";
-            const QString pxWalkKind = pxWalkPrefix + (ugoiraGif ? "1" : "0");
+            //   진짜 페이지 캡처를 받는 판 · 안 받는 판도 따로(_c) — 캡처를 끈 판의 표시로 켠 판이 일찍 멈추면 옛 작품은 캡처를 영영 안 받았다
+            const QString pxWalkKind = pxWalkPrefix + (ugoiraGif ? "1" : "0") + (config["realCapture"].toBool(true) ? "_c1" : "_c0");
             const int pxN = Common::takeCleanWalkMarks(savePath + "/pixiv", pxWalkPrefix).contains(pxWalkKind) ? pxStopAfterKnown : 0;
             // 받지 못한 작품 — 두 판 잇따라 같은 작품이 실패하면(지워진 쪽 · 늘 실패하는 변환) 영영 안 되는 것으로 보아 표시를 더는 막지 않는다
             const QSet<QString> pxPrevFailed = Common::takeWalkFailures(savePath + "/pixiv", pxWalkKind);
-            QSet<QString> pxFailed, pxSeen;
+            QSet<QString> pxFailed, pxSeen, pxCapFailed;
+            pxCapDone = 0;
             bool pxWalkBroken = false;   // 중지 · 최대 수 · 받지 못한 작품이 있었나
             totalIllusts = illustIds.size();
             if (maxCount > 0 && totalIllusts > maxCount) {
@@ -14048,10 +15298,12 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                 //   건너뛰면 영영 채우지 못했다(검토). 일찍 멈춤은 받아 둔 작품이 이어지는 것만 센다.
                 const bool wasKnown = pxKnown.contains(iid);
                 pxIllustPartial = false;
+                pxIllustCapFail = false;
                 pxSeen.insert(iid);
                 if (downloadIllust(iid)) {
                     totalDownloaded++;
                     if (pxIllustPartial && platformRunning("pixiv")) pxFailed.insert(iid);   // 쪽 일부를 못 받았다 — 다음 판이 끝까지 보며 다시 받는다
+                    if (pxIllustCapFail) pxCapFailed.insert(iid);
                     if (!wasKnown) { ++pxFresh; pxStreak = 0; }
                     else if (pxN > 0 && ++pxStreak >= pxN) {
                         pxKnownStop = qMax(pxKnownStop, pxStreak);
@@ -14068,6 +15320,8 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
                 }
             }
             // 끊김 없이 끝났다(끝까지 · 일찍 멈춤 — 중지 · 최대 수 · 받지 못한 작품 · 덜 받은 목록 없이) — 다음 판이 일찍 멈출 수 있게
+            if (Common::captureFailuresCount(pxCapDone, int(pxCapFailed.size()))) pxFailed += pxCapFailed;
+            else if (pxStopAfterKnown > 0) log(QString("캡처가 하나도 되지 않았습니다(%1개 실패) — 캡처 길이 막힌 듯해 이 판의 캡처 실패로는 일찍 멈춤을 막지 않습니다(4~5주마다 끝까지 볼 때 다시 해 봅니다). 캡처 브라우저의 로그인을 확인하십시오").arg(pxCapFailed.size()), "warning", "pixiv");
             const QSet<QString> pxNewFails = pxFailed - pxPrevFailed;
             if (pxStopAfterKnown > 0 && !pxNewFails.isEmpty())   // 일찍 멈춤을 쓸 때만 안내한다
                 log(QString("받지 못한 작품 %1개 — 다음 판은 끝까지 보며 다시 받습니다").arg(pxNewFails.size()), "warning", "pixiv");
@@ -14177,7 +15431,7 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
             // 구분선
             if (!newRows.isEmpty() && !oldRows.isEmpty()) {
                 QString sep = QString("═══ %1 新規 %2件 ═══")
-                    .arg(QDateTime::currentDateTime().toString("yyyy/MM/dd HH:mm"))
+                    .arg(Common::jstNow().toString("yyyy/MM/dd HH:mm"))
                     .arg(newRows.size());
                 excel.writeRow(row++, {sep});
             }
@@ -14492,7 +15746,7 @@ void HanishikiBackend::startTrad(const QString &configJson)
             manifest["platform"] = QSysInfo::prettyProductName();
             manifest["kernel"] = QSysInfo::kernelType() + " " + QSysInfo::kernelVersion();
             manifest["arch"] = QSysInfo::currentCpuArchitecture();
-            manifest["created_at"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+            manifest["created_at"] = Common::jstNow().toString(Qt::ISODate);
             manifest["created_unix"] = QDateTime::currentSecsSinceEpoch();
             manifest["file_count"] = static_cast<int>(filePaths.size());
             manifest["total_size"] = static_cast<qint64>(totalInputSize);
@@ -16439,12 +17693,20 @@ void HanishikiBackend::updateModules()
             return;
         }
 
-        // First install pip if needed
+        // First install pip if needed — pip 가 이미 있으면(늘 그렇다) 번들에 아무것도 쓰지 않는다
+        bool pipInstalled = false;
         {
-            QProcess proc;
-            proc.setProcessEnvironment(env);
-            proc.start(python, {"-m", "ensurepip", "--default-pip"});
-            proc.waitForFinished(60000);
+            QProcess chk;
+            chk.setProcessEnvironment(env);
+            chk.start(python, {"-m", "pip", "--version"});
+            chk.waitForFinished(20000);
+            if (chk.exitStatus() != QProcess::NormalExit || chk.exitCode() != 0) {
+                QProcess proc;
+                proc.setProcessEnvironment(env);
+                proc.start(python, {"-m", "ensurepip", "--default-pip"});
+                proc.waitForFinished(60000);
+                pipInstalled = true;
+            }
         }
 
         // ★ 목록을 코드에 박아 두면 requirements.txt 와 갈라진다. 실제로 갈라져 있었다 —
@@ -16460,45 +17722,42 @@ void HanishikiBackend::updateModules()
         //   (환경을 '다시 만드는' 쪽은 고정본 그대로 쓴다 — 재현성이 거기선 목적이다)
         QStringList packages = Common::bundledRequirements(/*stripPins=*/true);
 
+        // ★ 번들이 아니라 덧씌우기 폴더(pypkgs)에 올린다 — 켤 때의 자동 갱신과 같은 길이다. 예전엔 번들에 깔아 서명 봉인이
+        //   깨졌고, 다시 서명해야 했다(인증서가 만료되면 그 서명은 ad-hoc 이 되어 macOS 권한이 초기화되고, iCloud 의
+        //   문서 폴더에서는 Finder 정보 때문에 실패했다). 꾸러미마다 실제로 되는지 보고, 안 되면 걷어 번들의 판으로 돌아간다.
+        const QString overlay = Common::userPyOverlayDir();
+        QDir().mkpath(overlay);
         int updated = 0;
         int failed = 0;
         for (const QString &pkg : packages) {
+            // yt-dlp-ejs 는 최신이 아니라 yt-dlp 가 고정한 판이어야 한다 — 고리 뒤의 syncYtDlpEjs 가 맞춘다
+            if (pkg.section(QLatin1Char('['), 0, 0).compare(QLatin1String("yt-dlp-ejs"), Qt::CaseInsensitive) == 0) continue;
             log(QString("  업데이트 중: %1...").arg(pkg), "info", "settings");
-
-            QProcess proc;
-            proc.setProcessEnvironment(env);
-            proc.start(python, {"-m", "pip", "install", "--upgrade", "--no-input", pkg});
-            proc.waitForFinished(120000);
-
-            QString output = QString::fromUtf8(proc.readAllStandardOutput());
-            QString err = QString::fromUtf8(proc.readAllStandardError());
-
-            if (proc.exitCode() == 0) {
-                if (output.contains("Successfully installed")) {
-                    log(QString("  ✅ %1 업데이트됨").arg(pkg), "success", "settings");
-                    updated++;
-                    // ★ 덧씌운 폴더(pypkgs)는 PYTHONPATH 앞에 있어 번들을 가린다.
-                    //   방금 번들에 최신을 깔아도, 자동 갱신이 며칠 전에 덧씌워 둔
-                    //   옛 판이 그대로 이긴다 — 버튼을 눌러도 아무 일이 없는 것처럼 보인다.
-                    //   양쪽 다 '최신으로' 올리는 자리이므로 방금 깐 번들 판이 최소한
-                    //   덧씌움과 같거나 더 새롭다. 그러니 가림막만 걷어 낸다.
-                    if (SelfRepair::removeOnePackageFromOverlay(
-                            python, Common::userPyOverlayDir(), pkg)) {
-                        log(QString("     (덧씌워 둔 옛 %1 을 걷어 냈습니다)").arg(pkg),
-                            "info", "settings");
-                    }
-                } else {
-                    log(QString("  ✅ %1 최신").arg(pkg), "info", "settings");
-                }
+            QString out;
+            const int r = SelfRepair::updateOneOverlayPackage(python, overlay, pkg, out);
+            const QString detail = out.trimmed().replace(QStringLiteral("[UPD]  "), QString());
+            if (r > 0) {
+                log("  ✅ " + detail, "success", "settings");
+                updated++;
+            } else if (r == 0) {
+                log(QString("  ✅ %1 최신").arg(pkg), "info", "settings");
             } else {
-                log(QString("  ❌ %1 실패: %2").arg(pkg, err.left(100)), "error", "settings");
+                log(r == -1 ? "  ❌ " + detail : QString("  ❌ %1 을 받지 못했습니다(네트워크 · pip)").arg(pkg), "error", "settings");
                 failed++;
             }
         }
 
+        {
+            QString ejs;
+            const int er = SelfRepair::syncYtDlpEjs(python, overlay, ejs);   // 올린 yt-dlp 가 원하는 JS 풀이 판으로
+            if (!ejs.isEmpty()) log("  " + ejs.trimmed().replace(QStringLiteral("[UPD]  "), QString()), er > 0 ? "success" : "warning", "settings");
+            if (er > 0) updated++;
+        }
         log(QString("모듈 업데이트 완료 (업데이트: %1, 실패: %2)").arg(updated).arg(failed),
             failed > 0 ? "warning" : "success", "settings");
-        if (updated > 0) resealBundleAfterInstall("모듈 업데이트");   // 앱 내부 설치 → 서명 복구
+        if (updated > 0)
+            log("  새 판은 다음에 시작하는 수집부터 쓰입니다(돌고 있는 수집은 끝난 뒤).", "info", "settings");
+        if (pipInstalled) resealBundleAfterInstall("pip 설치");   // 번들에 pip 를 깔았을 때만 — 서명 복구
         runJs("setModuleUpdating(false)");
 
         // Refresh system info
@@ -17075,7 +18334,7 @@ QString HanishikiBackend::problemsDigest(qint64 withinMs) const
     for (const Finding &f : fs.mid(0, 8))
         lines << QStringLiteral("- %1: %2 (%3회, 마지막 %4) — 기록: %5")
                      .arg(platformDisplayName(f.platform), f.cause)
-                     .arg(f.count).arg(QDateTime::fromMSecsSinceEpoch(f.last).toString("HH:mm"))
+                     .arg(f.count).arg(Common::jstTime(QDateTime::fromMSecsSinceEpoch(f.last)).toString("HH:mm"))
                      .arg(f.sample.left(140));
     return lines.join('\n');
 }
@@ -17184,7 +18443,7 @@ void HanishikiBackend::llmChat(const QString &historyJson)
                     for (const Finding &f : fs.mid(0, 6)) {
                         msg << QStringLiteral("• %1 — %2 (%3회, 마지막 %4)")
                                    .arg(platformDisplayName(f.platform), f.cause)
-                                   .arg(f.count).arg(QDateTime::fromMSecsSinceEpoch(f.last).toString("HH:mm"));
+                                   .arg(f.count).arg(Common::jstTime(QDateTime::fromMSecsSinceEpoch(f.last)).toString("HH:mm"));
                         msg << QStringLiteral("   └ \"%1\"").arg(f.sample.left(110));
                         msg << QStringLiteral("   → %1").arg(f.advice);
                         if (!f.action.isEmpty()) actions.insert(f.action);
@@ -17298,8 +18557,8 @@ void HanishikiBackend::llmChat(const QString &historyJson)
                     {"content", QString("아래는 방금 웹에서 찾은 참고 자료다(읽기전용 검색 결과). 관련 있으면 활용해 "
                                         "답하고 출처 URL 을 자연스럽게 곁들여도 좋아. 무관하면 무시해.\n\n%1").arg(web)}});
         }
-        QJsonObject body{{"model", llmOnlineModel().isEmpty() ? QStringLiteral("default") : llmOnlineModel()},
-                         {"messages", messages}, {"temperature", 0.7}, {"max_tokens", 600}};
+        QJsonObject body{{"model", llmOnlineModel().isEmpty() ? QStringLiteral("default") : llmOnlineModel()}, {"messages", messages}, {"temperature", 0.7}, {"max_tokens", 600}};
+
         HttpClient http;
         HttpResponse r = http.postJson(llmBase() + "/v1/chat/completions", body, llmHeaders());
         QString reply;
@@ -17651,6 +18910,15 @@ bool HanishikiBackend::applyScriptPatchImpl(const QString &name, const QString &
     else             QFile::copy(Common::activeToolScriptPath(name), bak);
     // 쓰기
     { QString werr; if (!Common::writeFileAtomic(ov, newContent.toUtf8(), &werr)) { err = "override 쓰기 실패: " + werr; return false; } }
+    // 어느 원본을 고친 것인지 적어 둔다 — 앱이 새 판으로 바뀌어 원본이 달라지면 이 사본은 쓰지 않는다
+    {
+        QString bundled;
+        for (const QString &sub : { QString(), QStringLiteral("/archive") }) {
+            const QString p = Common::bundledToolsDir() + sub + "/" + name;
+            if (QFileInfo::exists(p)) { bundled = p; break; }
+        }
+        if (!bundled.isEmpty()) Common::writeFileAtomic(ov + ".base", Common::fileSha256Hex(bundled).toLatin1());
+    }
     // 문법 검증 — ast.parse 는 __pycache__ 를 만들지 않는다(py_compile 은 만들어 서명 봉인을 깬다).
     QProcess proc;
     proc.setProcessEnvironment(Common::bundledProcessEnv());
@@ -17667,7 +18935,7 @@ bool HanishikiBackend::applyScriptPatchImpl(const QString &name, const QString &
         //     번들 내용에 고정된 사본이라, 앱을 갱신해도 그 옛 스크립트가 계속
         //     덮어쓴다. 조용히 옛 코드를 붙잡는 고장이 된다.
         if (hadOverride && QFile::exists(bak)) { QFile::remove(ov); QFile::copy(bak, ov); }
-        else { QFile::remove(ov); QFile::remove(bak); }
+        else { QFile::remove(ov); QFile::remove(bak); QFile::remove(ov + ".base"); }
         return false;
     }
     return true;
@@ -17688,7 +18956,7 @@ void HanishikiBackend::revertScript(const QString &name)
     if (!kEditableScripts.contains(name)) return;
     const QString ov = Common::scriptOverrideDir() + "/" + name;
     const bool had = QFile::exists(ov);
-    QFile::remove(ov); QFile::remove(ov + ".bak");
+    QFile::remove(ov); QFile::remove(ov + ".bak"); QFile::remove(ov + ".base");
     log(had ? QString("↺ %1 을(를) 번들 원본으로 초기화했습니다.").arg(name)
             : QString("%1 은(는) 이미 원본입니다.").arg(name), "info", "settings");
     getScriptSource(name);
@@ -18154,7 +19422,7 @@ void HanishikiBackend::autoRepair()
         QJsonObject body{{"model", llmOnlineModel().isEmpty() ? QStringLiteral("default") : llmOnlineModel()}, {"messages", messages}, {"temperature", 0.1}, {"max_tokens", 300}};
 
         HttpClient http;
-        HttpResponse r = http.postJson(base + "/v1/chat/completions", body);
+        HttpResponse r = http.postJson(base + "/v1/chat/completions", body, llmHeaders());
         QString content;
         if (r.isOk())
             content = r.json().value("choices").toArray().first().toObject()
@@ -18289,8 +19557,14 @@ void HanishikiBackend::upgradePython()
         QString pythonDir = Common::activePythonEnvDir();
 
 #ifdef Q_OS_MACOS
+        // 지난번 교체가 한가운데서 끊겼으면(앱이 꺼짐) 옛 환경부터 제자리로
+        Common::recoverInterruptedPythonSwap();
+        pythonDir = Common::activePythonEnvDir();
         // 번들에 쓸 수 없으면(권한 없는 위치 등) 조용히 다른 곳으로 새지 않고 분명히 알린다.
-        if (!QFileInfo(pythonDir).isWritable()) {
+        //   ★ 폴더가 통째로 없을 수 있다(그때 고치러 왔다) — 없으면 그 윗 폴더를 본다. 없는 폴더는 isWritable 이 늘 거짓이라
+        //     '앱을 옮기라' 는 엉뚱한 말로 멈췄다(검토).
+        const QFileInfo pyDirInfo(pythonDir);
+        if (!(pyDirInfo.exists() ? pyDirInfo.isWritable() : QFileInfo(pyDirInfo.absolutePath()).isWritable())) {
             log(QString("⚠️ 앱 내부에 쓸 수 없어 업그레이드를 중단합니다: %1 — "
                         "앱을 응용 프로그램 폴더처럼 쓰기 가능한 위치로 옮긴 뒤 다시 시도해 주십시오.")
                     .arg(pythonDir), "error", "settings");
@@ -18322,7 +19596,7 @@ void HanishikiBackend::upgradePython()
             QProcess vp;
             vp.setProcessEnvironment(Common::bundledProcessEnv());
             vp.start(python, {"-c", "import sys;print('%d.%d.%d'%sys.version_info[:3])"});
-            vp.waitForFinished(10000);
+            vp.waitForFinished(30000);
             const QStringList cp = QString::fromUtf8(vp.readAllStandardOutput()).trimmed().split('.');
             if (cp.size() == 3) { curMajor = cp[0].toInt(); curMinor = cp[1].toInt(); curPatch = cp[2].toInt(); }
         }
@@ -18353,42 +19627,41 @@ void HanishikiBackend::upgradePython()
         arch = "x86_64-unknown-linux-gnu";
 #endif
 
+        // (시험) 받은 것처럼 쓸 꾸러미 — 네트워크 없이 아래 교체 길을 돌려 본다(akashi/tests/python_swap.py). 평소엔 비어 있다.
+        QString tarball = qEnvironmentVariable("HANISHIKI_TEST_PY_TARBALL");
+        if (tarball.isEmpty()) {
         // curl로 최신 릴리스 검색
         QProcess curlProc;
-        curlProc.start("curl", {"-sL", "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest"});
+        curlProc.start("curl", {"-sL", "-w", "\n%{http_code}",
+                                "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest"});
         curlProc.waitForFinished(30000);
         QString releaseJson = QString::fromUtf8(curlProc.readAllStandardOutput());
+        // 맨 끝 줄은 HTTP 상태 — GitHub 은 로그인 없는 조회를 한 시간에 60번으로 막는다(403 · 429). 그때는 네트워크 탓이 아니다
+        int releaseHttp = 0;
+        if (const int nl = releaseJson.lastIndexOf(QLatin1Char('\n')); nl >= 0) {
+            releaseHttp = releaseJson.mid(nl + 1).trimmed().toInt();
+            releaseJson.truncate(nl);
+        }
 
         QString downloadUrl;
         QString newVersion;
-        // install_only 타입의 URL 전부 수집 → 안정 버전 중 최신 선택
-        QRegularExpression urlRe(
-            // ★ 버전 뒤 '\+' 강제 — 안정판(cpython-3.14.3+날짜)만. 베타/rc(3.15.0b4+)는 뒤가 'b'라 제외.
-            QString("\"browser_download_url\"\\s*:\\s*\"(https://[^\"]*cpython-(\\d+\\.\\d+\\.\\d+)\\+[^\"]*%1-install_only\\.tar\\.gz)\"")
-                .arg(QRegularExpression::escape(arch)));
-        auto it = urlRe.globalMatch(releaseJson);
-        int bestMajor = 0, bestMinor = 0, bestPatch = 0;
-        while (it.hasNext()) {
-            auto m = it.next();
-            QString url = m.captured(1);
-            QString ver = m.captured(2);
-            // 알파/베타/rc 건너뛰기 (freethreaded도 제외 — 이미 패턴에서 제외됨)
-            if (url.contains("freethreaded")) continue;
-            QStringList parts = ver.split('.');
-            int major = parts[0].toInt(), minor = parts[1].toInt(), patch = parts[2].toInt();
-            // 최신 안정 버전 선택 (major.minor.patch 비교)
-            if (major > bestMajor || (major == bestMajor && minor > bestMinor) ||
-                (major == bestMajor && minor == bestMinor && patch > bestPatch)) {
-                bestMajor = major; bestMinor = minor; bestPatch = patch;
-                downloadUrl = url;
-                newVersion = ver;
-            }
-        }
+        // ★ 지금 환경과 같은 major.minor 안에서만 고른다(환경이 돌지 않으면 이 판의 파이썬). 모듈 고정(requirements.txt)은 이 판의
+        //   파이썬으로 확인한 것이고, pypkgs 덧씌움의 컴파일된 모듈도 그 판 전용이다. 릴리스의 가장 높은 판(다음 minor)으로 올리면
+        //   덧씌움이 새 파이썬을 가려 수집이 멈추거나, 그 판의 휠이 없는 모듈 때문에 되돌리기만 되풀이한다. minor 는 앱 판에서 올린다.
+        const int wantMajor = curMajor ? curMajor : Common::kBundledPythonMajor;
+        const int wantMinor = curMajor ? curMinor : Common::kBundledPythonMinor;
+        Common::pickPythonRelease(releaseJson, arch, wantMajor, wantMinor, &downloadUrl, &newVersion);
+        const QStringList newVerParts = newVersion.split('.');
+        const int bestMajor = wantMajor, bestMinor = wantMinor, bestPatch = newVerParts.size() == 3 ? newVerParts[2].toInt() : 0;
 
         if (downloadUrl.isEmpty()) {
-            // ★ repairPython 재큐 금지 — repair 가 python_missing 이면 다시 upgrade 를 부르므로
-            //   오프라인/레이트리밋에서 둘이 서로를 무한 재큐하는 루프가 됐었다. 종료가 정답.
-            log("  ❌ 최신 Python 릴리스를 찾을 수 없습니다. 네트워크 확인 후 다시 시도하세요. (기존 환경은 그대로 유지됩니다)", "error", "settings");
+            // ★ repairPython 재큐 금지 — repair 가 python_missing 이면 다시 upgrade 를 불러
+            //   오프라인/레이트리밋에서 둘이 무한 재큐하던 루프. 종료가 정답(기존 env 유지).
+            if (releaseHttp == 403 || releaseHttp == 429)
+                log("  ❌ GitHub 이 잠시 조회를 막았습니다(로그인 없는 조회는 한 시간에 60번) — 한 시간쯤 뒤에 다시 시도하세요. (기존 환경은 그대로 유지)", "error", "settings");
+            else
+                log(QString("  ❌ Python %1.%2 안정판 릴리스를 찾을 수 없습니다(HTTP %3). 네트워크 확인 후 다시 시도하세요. (기존 환경은 그대로 유지)")
+                        .arg(wantMajor).arg(wantMinor).arg(releaseHttp), "error", "settings");
             m_pythonBusy = false;
             runJs("setPythonEnvBusy(false, '실패')");
             return;
@@ -18410,7 +19683,7 @@ void HanishikiBackend::upgradePython()
 
         log(QString("  다운로드: Python %1").arg(newVersion), "info", "settings");
 
-        QString tarball = tarballDir + "/cpython-latest-" + arch + ".tar.gz";
+        tarball = tarballDir + "/cpython-latest-" + arch + ".tar.gz";
         QProcess dlProc;
         dlProc.start("curl", {"-L", "-o", tarball, downloadUrl});
         dlProc.waitForFinished(300000);  // 5분
@@ -18420,98 +19693,90 @@ void HanishikiBackend::upgradePython()
             runJs("setPythonEnvBusy(false, '다운로드 실패')");
             return;
         }
+        }   // (시험 꾸러미가 없을 때)
 
-        // ★ 무중단 교체 — 기존 환경은 새 환경이 "실제로 동작하는 것"을 확인한 뒤에만 버린다.
+        // ★ 무중단 교체 — 기존 환경은 새 환경이 "실제로 동작하는 것"을 확인한 뒤에만 비킨다.
         //   예전 코드는 압축 해제 전에 python_env 를 지워서, tar 가 없거나(구형 Windows)
         //   tarball 이 깨졌거나 권한이 없으면 파이썬이 통째로 사라져 전 수집 기능이 멈췄다.
-        //   지금은 staging 에 풀고 → 검증 → 성공했을 때만 교체(실패 시 원본 그대로 유지).
+        //   지금은 곁(staging)에 풀고 → 돌려 보고 → 이름만 바꾼다(실패 시 원본 그대로 유지).
+#ifdef Q_OS_WIN
+        const QString pyRelPath = QStringLiteral("/python.exe");
+#else
+        const QString pyRelPath = QStringLiteral("/bin/python3");
+#endif
         const QString stageDir = pythonDir + ".new";
         const QString backupDir = pythonDir + ".old";
+        if (QFile::exists(backupDir + pyRelPath)) {   // 맨 앞의 되살리기가 치우지 못한 것 — 하나뿐인 환경일 수 있으니 지우지 않는다
+            log(QString("  ❌ 지난 교체의 흔적을 치우지 못했습니다 — 기존 환경은 %1 에 있습니다")
+                    .arg(QDir::toNativeSeparators(backupDir)), "error", "settings");
+            m_pythonBusy = false;
+            runJs("setPythonEnvBusy(false, '교체 실패 (기존 유지)')");
+            return;
+        }
         QDir(stageDir).removeRecursively();
         QDir(backupDir).removeRecursively();
         QDir().mkpath(stageDir);
 
-        // 4. 압축 해제 (staging)
+        // 4. 압축 해제 (곁에)
         log("  압축 해제 중...", "info", "settings");
         QProcess tarProc;
         tarProc.start("tar", {"xzf", tarball, "-C", stageDir, "--strip-components=1"});
-        if (!tarProc.waitForFinished(120000) || tarProc.exitStatus() != QProcess::NormalExit
-            || tarProc.exitCode() != 0) {
+        if (!tarProc.waitForFinished(120000) || tarProc.exitStatus() != QProcess::NormalExit || tarProc.exitCode() != 0) {
             const QString errTxt = QString::fromUtf8(tarProc.readAllStandardError()).trimmed();
             log(QString("  ❌ 압축 해제 실패 — 기존 Python 은 그대로 둡니다%1")
-                    .arg(errTxt.isEmpty() ? QString() : " (" + errTxt.left(200) + ")"),
-                "error", "settings");
+                    .arg(errTxt.isEmpty() ? QString() : " (" + errTxt.left(200) + ")"), "error", "settings");
             QDir(stageDir).removeRecursively();
             m_pythonBusy = false;
             runJs("setPythonEnvBusy(false, '압축 해제 실패')");
             return;
         }
 
-        // 교체 전 검증 — staging 안의 python 이 실제로 실행되는지 직접 돌려본다.
-#ifdef Q_OS_WIN
-        const QString stagedPy = stageDir + "/python.exe";
-#else
-        const QString stagedPy = stageDir + "/bin/python3";
-#endif
+        // 교체 전 검증 — 새 파이썬이 실제로 실행되는지 돌려 본다
+        const QString stagedPy = stageDir + pyRelPath;
         bool stagedOk = QFile::exists(stagedPy);
         if (stagedOk) {
             QProcess chk;
             chk.start(stagedPy, {"-c", "import sys; print(sys.version)"});
-            stagedOk = chk.waitForFinished(15000) && chk.exitStatus() == QProcess::NormalExit
-                       && chk.exitCode() == 0;
+            stagedOk = chk.waitForFinished(15000) && chk.exitStatus() == QProcess::NormalExit && chk.exitCode() == 0;
         }
         if (!stagedOk) {
-            log("  ❌ 새 Python 이 실행되지 않습니다 — 기존 환경을 그대로 유지합니다",
-                "error", "settings");
+            log("  ❌ 새 Python 이 실행되지 않습니다 — 기존 환경을 그대로 유지합니다", "error", "settings");
             QDir(stageDir).removeRecursively();
             m_pythonBusy = false;
             runJs("setPythonEnvBusy(false, '설치 실패 (기존 유지)')");
             return;
         }
 
-        // 검증 통과 → 원자적에 가깝게 교체. 실패하면 즉시 원상복구.
+        // 검증 통과 → 이름만 바꾼다. 지우고 진행하지 않는다 — 하나라도 실패하면 아무것도 부수지 않고 물러난다.
+        //   (윈도우: 수집 중이라 python.exe/DLL 핸들이 열려 있거나 백신·인덱서가 잡고 있으면 rename 이 막히기 쉽다.
+        //    예전엔 그때 removeRecursively() 로 지우다 잠긴 파일 때문에 부분 삭제로 끝나 파이썬을 통째로 잃었다.)
         log("  기존 Python 환경 교체 중...", "info", "settings");
-        // ★ 절대로 '지우고 진행' 하지 않는다. 예전 코드는 rename 이 막히면(수집 중이라
-        //   python.exe/DLL 핸들이 열려 있거나 백신·인덱서가 잡고 있으면 흔하다)
-        //   기존 환경을 removeRecursively() 로 지워버렸는데, 잠긴 파일이 남아 부분 삭제로
-        //   끝나면 다음 rename 도 실패하고 → 검증까지 끝난 새 환경마저 지운 채
-        //   "기존 환경을 되돌렸습니다" 라고 보고했다. 결과는 파이썬이 통째로 사라진 상태.
-        //   지금은 이름 변경만 쓰고, 하나라도 실패하면 아무것도 파괴하지 않고 물러난다.
-        const bool hadOld = QDir(pythonDir).exists();
-        if (hadOld && !QDir().rename(pythonDir, backupDir)) {
-            log("  ❌ 기존 환경이 사용 중이라 교체할 수 없습니다 — 그대로 둡니다.", "error", "settings");
-            log(QString("     수집을 모두 멈춘 뒤 다시 시도해 주세요. 받아 둔 새 환경: %1")
-                    .arg(QDir::toNativeSeparators(stageDir)), "info", "settings");
-            m_pythonBusy = false;
-            runJs("setPythonEnvBusy(false, '사용 중 — 기존 유지')");
-            return;   // stageDir 는 남겨 둔다 → 다음 시도에서 재사용/이어감
-        }
-        if (!QDir().rename(stageDir, pythonDir)) {
-            // 새 환경을 제자리에 못 넣었으면 반드시 기존 환경을 되돌린다.
-            if (hadOld && !QDir().rename(backupDir, pythonDir)) {
-                log(QString("  ❌ 교체 실패 + 복원 실패 — 기존 환경은 %1 에 있습니다. "
-                            "수동으로 python_env 로 이름을 바꿔 주세요.")
-                        .arg(QDir::toNativeSeparators(backupDir)), "error", "settings");
-            } else {
-                log("  ❌ 교체 실패 — 기존 환경을 되돌렸습니다", "error", "settings");
-            }
-            m_pythonBusy = false;
-            runJs("setPythonEnvBusy(false, '교체 실패 (기존 복원)')");
-            return;   // stageDir 도 남겨 둔다 — 검증까지 끝난 자산을 버리지 않는다
-        }
-        QDir(backupDir).removeRecursively();
-
+        const bool hadOldEnv = QDir(pythonDir).exists();
+        // ★ 파일이 있는 것으로는 모른다 — 판을 말한 환경만 되돌릴 값이 있다. 돌지 않는 옛 환경으로 되돌리면 파이썬을 잃는다
+        const bool oldEnvWorks = curMajor != 0;
+        if (hadOldEnv && !QDir().rename(pythonDir, backupDir)) {
+            log("  ❌ 기존 환경을 비킬 수 없습니다 — 그대로 둡니다.", "error", "settings");
 #ifdef Q_OS_WIN
-        python = pythonDir + "/python.exe";
-#else
-        python = pythonDir + "/bin/python3";
+            log("     기존 환경이 사용 중일 수 있습니다 — 수집을 모두 멈춘 뒤 다시 시도해 주세요.", "info", "settings");
 #endif
-        if (!QFile::exists(python)) {
-            log("  ❌ Python 바이너리를 찾을 수 없습니다", "error", "settings");
+            QDir(stageDir).removeRecursively();
             m_pythonBusy = false;
-            runJs("setPythonEnvBusy(false, '설치 실패')");
+            runJs("setPythonEnvBusy(false, '교체 실패 (기존 유지)')");
             return;
         }
+        if (!QDir().rename(stageDir, pythonDir)) {
+            if (hadOldEnv && !QDir().rename(backupDir, pythonDir))
+                log(QString("  ❌ 교체 실패 + 복원 실패 — 기존 환경은 %1 에 있습니다. 수동으로 python_env 로 이름을 바꿔 주세요.")
+                        .arg(QDir::toNativeSeparators(backupDir)), "error", "settings");
+            else
+                log("  ❌ 교체 실패 — 기존 환경을 되돌렸습니다", "error", "settings");
+            QDir(stageDir).removeRecursively();
+            m_pythonBusy = false;
+            runJs("setPythonEnvBusy(false, '교체 실패 (기존 복원)')");
+            return;
+        }
+
+        python = pythonDir + pyRelPath;
 
         // 버전 확인
         QProcess verProc;
@@ -18523,8 +19788,16 @@ void HanishikiBackend::upgradePython()
 
         // 5. pip 초기화
         log("  pip 초기화 중...", "info", "settings");
+        // ★ 모듈은 새 환경 안에 깐다 — pypkgs 덧씌움이 PYTHONPATH 에 있으면 pip 가 거기 든 것을 보고 'already satisfied' 로 건너뛴다
+        QProcessEnvironment pipEnv = Common::bundledProcessEnv();
+        {
+            // 구분자는 QDir::listSeparator() — 윈도우 파이썬은 PYTHONPATH 를 ';' 로 나눈다(':' 는 'C:/…' 의 콜론과 섞인다)
+            QStringList pyPaths = pipEnv.value("PYTHONPATH").split(QDir::listSeparator(), Qt::SkipEmptyParts);
+            pyPaths.removeAll(Common::userPyOverlayDir());
+            pipEnv.insert("PYTHONPATH", pyPaths.join(QDir::listSeparator()));
+        }
         QProcess pipInit;
-        pipInit.setProcessEnvironment(Common::bundledProcessEnv());
+        pipInit.setProcessEnvironment(pipEnv);
         pipInit.start(python, {"-m", "ensurepip", "--default-pip"});
         pipInit.waitForFinished(60000);
 
@@ -18538,19 +19811,47 @@ void HanishikiBackend::upgradePython()
 
         log(QString("  패키지 %1개 설치 중...").arg(packages.size()), "info", "settings");
         int installed = 0, failed = 0;
+        QStringList pyProblems;
         for (const QString &pkg : packages) {
             QProcess inst;
-            inst.setProcessEnvironment(Common::bundledProcessEnv());
+            inst.setProcessEnvironment(pipEnv);
             inst.start(python, {"-m", "pip", "install", "--no-cache-dir", "--no-input", pkg});
-            inst.waitForFinished(120000);
-            if (inst.exitCode() == 0) {
+            // ★ 끝나기 전에 시간이 다 되면 실패다. 예전엔 exitCode 만 보아(그때는 0) 큰 모듈을 2분에 끊고도 설치됐다고 셌다
+            const bool instDone = inst.waitForFinished(600000);
+            if (!instDone) inst.kill();
+            if (instDone && inst.exitStatus() == QProcess::NormalExit && inst.exitCode() == 0) {
                 installed++;
             } else {
-                QString err = QString::fromUtf8(inst.readAllStandardError()).left(80);
+                QString err = QString::fromUtf8(inst.readAllStandardError()).trimmed().right(200);   // 원인은 pip 출력의 끝에 있다
                 log(QString("  ❌ %1 실패: %2").arg(pkg, err), "error", "settings");
                 failed++;
+                pyProblems << pkg;
             }
         }
+        // ★ 깔렸다고 끝이 아니다 — 수집에 실제로 쓰는 환경으로(덧씌움까지 그대로) 불러 본다. 옛 환경을 지우기 전에.
+        if (failed == 0) pyProblems = diagnosePythonEnv(python);
+
+        // ★ 모듈을 하나라도 못 깔거나 부르지 못하면(네트워크 끊김 등) 옛 환경으로 되돌린다 — 모듈이 빠진 파이썬으로는 그 수집이 멈춘다.
+        //   옛 환경이 아예 없던 판이면 되돌릴 것이 없으니 그대로 두고 '환경 복구' 로 잇는다.
+        if (!pyProblems.isEmpty() && oldEnvWorks) {
+            QDir().rename(pythonDir, stageDir);
+            if (QDir().rename(backupDir, pythonDir)) {
+                QDir(stageDir).removeRecursively();
+                log(QString("  ❌ 기존 Python 환경으로 되돌렸습니다(그대로 쓸 수 있습니다) — 문제: %1. 네트워크가 끊겼다면 연결한 뒤 다시 시도해 주십시오")
+                        .arg(pyProblems.join(", ")), "error", "settings");
+            } else {
+                QDir().rename(stageDir, pythonDir);
+                log(QString("  ❌ 패키지 설치 실패 + 되돌리기 실패 — 기존 환경은 %1 에 있습니다").arg(backupDir), "error", "settings");
+            }
+            m_pythonBusy = false;
+            runJs("setPythonEnvBusy(false, '설치 실패 (기존 복원)')");
+            return;
+        }
+        // 서명 복구 전에 — 번들 안에 남기지 않는다. .old 는 '교체가 끊겼다' 는 표시이므로, 지우다 끊겨 반쪽이 된 것을 되살리지 않게 이름부터 바꾼다
+        QDir(pythonDir + ".dead").removeRecursively();
+        QDir().rename(backupDir, pythonDir + ".dead");
+        QDir(pythonDir + ".dead").removeRecursively();
+        QDir(backupDir).removeRecursively();
 
         // 7. 정리 — 불필요한 디렉토리/캐시 제거 (Qt 네이티브 — bash/find/rm 의존 없음 → 크로스플랫폼)
         log("  정리 중...", "info", "settings");
@@ -18573,7 +19874,7 @@ void HanishikiBackend::upgradePython()
         // marker
         QFile marker(pythonDir + "/.bundled_ok");
         if (marker.open(QIODevice::WriteOnly)) {
-            marker.write(QString("upgraded python %1 %2\n").arg(installedVer, QDateTime::currentDateTime().toString()).toUtf8());
+            marker.write(QString("upgraded python %1 %2\n").arg(installedVer, Common::jstNow().toString()).toUtf8());
             marker.close();
         }
 
@@ -18587,9 +19888,9 @@ void HanishikiBackend::upgradePython()
 
         log(QString("✅ Python 업그레이드 완료! %1, 패키지 %2개 설치, 크기: %3")
             .arg(installedVer).arg(installed).arg(size),
-            failed > 0 ? "warning" : "success", "settings");
-        if (failed > 0)
-            log(QString("  ⚠️ %1개 패키지 실패 — '환경 복구' 버튼으로 재시도하세요").arg(failed), "warning", "settings");
+            pyProblems.isEmpty() ? "success" : "warning", "settings");
+        if (!pyProblems.isEmpty())   // 되돌릴 옛 환경이 없어 새 환경을 두었다 — 무엇이 빠졌는지 적는다
+            log(QString("  ⚠️ 문제가 남았습니다: %1 — '환경 복구' 버튼으로 재시도하세요").arg(pyProblems.join(", ")), "warning", "settings");
 
         resealBundleAfterInstall("Python 업그레이드");   // 앱 내부 설치 → 서명 복구
         m_pythonBusy = false;
@@ -18610,6 +19911,7 @@ void HanishikiBackend::repairPython()
     runJs("setPythonEnvBusy(true, '복구 중...')");
 
     QThread *thread = QThread::create([this]() {
+        Common::recoverInterruptedPythonSwap();   // 지난번 교체가 한가운데서 끊겼으면 옛 환경부터 제자리로
         QString python = Common::bundledPythonPath();
         // ★ 쓰기가능 외부 python_env (번들 codesign seal 보호 — 번들엔 절대 쓰지 않음).
         QString pythonDir = Common::activePythonEnvDir();
@@ -18636,24 +19938,12 @@ void HanishikiBackend::repairPython()
         //    하지 않는 죽은 동작이었다. 앱 내부가 깨진 것은 여기서 고칠 수 없으므로
         //    무엇을 해야 하는지 분명히 알린다.
         if (problems.contains("python_missing")) {
-#ifdef Q_OS_WIN
-            // ★ 윈도우: 앱이 직접 다시 받는다 — upgradePython() 의 다운로드+설치 경로 재사용
-            //   (bash/bundle_python.sh 가 없고, 파이썬이 통째로 없는 사용자는 업그레이드 단추를 찾기 어렵다).
-            //   upgradePython 이 m_pythonBusy 를 다시 획득하므로 여기서 먼저 해제한다.
-            log("  Python 바이너리가 없습니다. 전체 재설치...", "warning", "settings");
-            QFile::remove(pythonDir + "/.bundled_ok");  // marker 삭제 → 강제 재빌드
-            log("  Windows: 다운로드 기반 재설치로 전환합니다...", "info", "settings");
+            // ★ 앱이 직접 다시 받는다(윈도우와 같다) — upgradePython 의 다운로드 · 설치 · 서명 복구 길을 쓴다.
+            //   파이썬이 통째로 없는 사람에게 다른 단추를 찾아 누르라고 하지 않는다. 그 함수가 깃발을 다시 쥐므로 먼저 놓는다.
+            log("  앱 내부 Python 이 없습니다 — 새로 받아 설치합니다...", "warning", "settings");
             m_pythonBusy = false;
             QMetaObject::invokeMethod(this, "upgradePython", Qt::QueuedConnection);
             return;
-#else
-            log("  앱 내부 Python 이 없습니다.", "error", "settings");
-            log("  → 'Python 업그레이드' 로 새로 받거나, 앱을 다시 설치해 주십시오.",
-                "info", "settings");
-            m_pythonBusy = false;
-            runJs("setPythonEnvBusy(false, '복구 실패')");
-            return;
-#endif
         }
 
         // 3. pip 복구
@@ -18703,8 +19993,9 @@ void HanishikiBackend::repairPython()
                 QProcess inst;
                 inst.setProcessEnvironment(Common::bundledProcessEnv());
                 inst.start(python, {"-m", "pip", "install", "--no-cache-dir", "--no-input", pkg});
-                inst.waitForFinished(120000);
-                if (inst.exitCode() == 0) {
+                const bool instDone = inst.waitForFinished(600000);   // 시간이 다 된 것도 실패다(업그레이드와 같다)
+                if (!instDone) inst.kill();
+                if (instDone && inst.exitStatus() == QProcess::NormalExit && inst.exitCode() == 0) {
                     log(QString("    ✅ %1 설치됨").arg(pkg), "success", "settings");
                     fixed++;
                 } else {
@@ -19876,7 +21167,7 @@ void HanishikiBackend::writeStartupLog()
     QTextStream ts(&f);
     ts << "═══════════════════════════════════\n";
     ts << "  " APP_NAME_DISPLAY " System Log\n";
-    ts << "  " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n";
+    ts << "  " << Common::jstNow().toString("yyyy-MM-dd HH:mm:ss") << "\n";
     ts << "═══════════════════════════════════\n\n";
 
     ts << "App Dir: " << QCoreApplication::applicationDirPath() << "\n";
@@ -20030,7 +21321,7 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
     {
         QString tumblrProfileDir = savePath + "/tumblr/" + sanitizeFilename(blogName, 100);
         QDir().mkpath(tumblrProfileDir);
-        QString dateTag = QDate::currentDate().toString("yyyyMMdd");
+        QString dateTag = Common::jstToday().toString("yyyyMMdd");
         // 아바타
         QString avatarUrl = blogInfo["avatar"].toArray().isEmpty() ? QString()
             : blogInfo["avatar"].toArray().first().toObject()["url"].toString();
@@ -20052,7 +21343,7 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
         profileData["total_posts"] = totalPosts;
         profileData["url"] = blogInfo["url"].toString();
         profileData["updated"] = blogInfo["updated"].toVariant().toLongLong();
-        profileData["fetched_at"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        profileData["fetched_at"] = Common::jstNow().toString(Qt::ISODate);
         QString profileJsonPath = tumblrProfileDir + "/profile.json";
         QFile pf(profileJsonPath);
         if (pf.open(QIODevice::WriteOnly)) {
@@ -20091,13 +21382,27 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
     //   지난번에 끊김 없이 다 본 적이 있어야 켠다(끊긴 판 뒤에는 한 번 끝까지 보아 사이를 메운다).
     //   표시는 미디어를 받는 판 · 안 받는 판 따로 — 미디어를 끈 판도 엑셀에 글을 모두 담아, 그 판의 표시로 미디어를 켠 판이
     //   일찍 멈추면 미디어를 영영 안 받았다(검토). 어느 쪽 판이든 시작할 때 두 표시를 다 지운다(같은 엑셀을 쓴다).
-    const QString tbWalkKind = QString("tb_posts_m%1").arg(downloadMediaFlag ? 1 : 0);
+    //   진짜 페이지 캡처를 받는 판 · 안 받는 판도 따로 — 캡처를 끈 판의 표시로 켠 판이 일찍 멈추면 옛 글은 캡처를 영영 안 받았다
+    // ★ 포스트 유형 — 화면의 유형을 실제로 쓴다(예전엔 읽지 않아 무엇을 골라도 전체를 받았다 — 두 판 다).
+    //   API 가 아는 유형만 주소에 넣는다. 좋아요 · 초안 · 대기열 등은 이 경로에 없어 그렇다고 알리고 전체를 받는다(예전과 같다).
+    const QString tbType = config["type"].toString();
+    static const QSet<QString> kTbApiTypes = {"text", "quote", "link", "answer", "video", "audio", "photo", "chat"};
+    const QString tbTypeSeg = kTbApiTypes.contains(tbType) ? QStringLiteral("/") + tbType : QString();
+    if (!tbTypeSeg.isEmpty())
+        log(QString("포스트 유형: %1").arg(tbType), "info", "tumblr");
+    else if (!tbType.isEmpty() && tbType != QLatin1String("all") && tbType != QLatin1String("tweets"))   // tweets = 内閣会의 기본값
+        log(QString("유형 '%1' 은 아직 지원하지 않아 전체 포스트를 받습니다").arg(tbType), "warning", "tumblr");
+    // 유형으로 거른 걸음은 목록의 일부만 본다 — 표시도 유형마다 따로(같은 엑셀을 쓰니 시작할 때 모두 지운다)
+    const QString tbWalkKind = QString("tb_posts_m%1_c%2").arg(downloadMediaFlag ? 1 : 0).arg(Common::captureKindCode(config))
+                               + (tbTypeSeg.isEmpty() ? QString() : QStringLiteral("_t") + tbType);
     const int tbStopAfterKnown = Common::takeCleanWalkMarks(blogDir, "tb_posts").contains(tbWalkKind) ? qMax(0, config["stopAfterKnown"].toInt(0)) : 0;
     bool tbWalkBroken = false, tbClean = false;   // 받지 못한 파일이 있었나 · 끊김 없이 끝났나
     bool tbCapped = false;                        // 최대 수에 닿아 쪽 가운데서 멈췄나 — 그 쪽의 남은 글을 보지 않았다
     // 받지 못한 글 — 두 판 잇따라 같은 글이 실패하면(지워진 리블로그 미디어 · 404) 영영 안 되는 것으로 보아 표시를 더는 막지 않는다
     const QSet<QString> tbPrevFailed = Common::takeWalkFailures(blogDir, tbWalkKind);
     QSet<QString> tbFailed, tbSeen;
+    QSet<QString> tbCapFailed;   // 캡처를 못 받은 글 — 판 끝에 받지 못한 것에 더한다(캡처 길이 통째로 막힌 판은 빼고)
+    int tbCapDone = 0;
     // 걷는 사이 글 수가 줄었나 — 지워진 글만큼 쪽이 위로 당겨져 그 사이 글을 건너뛰었을 수 있다(늘어난 것은 끝을 밀어 따라간다)
     bool tbShrunk = false;
     int tbTotalSeen = -1;
@@ -20123,8 +21428,8 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
     int limit = 20;
 
     while (platformRunning("tumblr")) {
-        QString postsUrl = QString("https://api.tumblr.com/v2/blog/%1/posts?api_key=%2&offset=%3&limit=%4&npf=true")
-            .arg(blogId, apiKey).arg(offset).arg(limit);
+        QString postsUrl = QString("https://api.tumblr.com/v2/blog/%1/posts%2?api_key=%3&offset=%4&limit=%5&npf=true")
+            .arg(blogId, tbTypeSeg, apiKey).arg(offset).arg(limit);
 
         HttpResponse postsResp = http.get(postsUrl);
         if (!postsResp.isOk()) {
@@ -20155,7 +21460,8 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
             const int tNow = tumblrResp["total_posts"].toInt();
             if (tbTotalSeen >= 0 && tNow < tbTotalSeen) tbShrunk = true;
             tbTotalSeen = tNow;
-            if (tNow > totalPosts) totalPosts = tNow;
+            if (!tbTypeSeg.isEmpty()) totalPosts = tNow;   // 유형으로 거르면 이 요청의 수가 곧 끝이다(블로그 전체 수가 아니다)
+            else if (tNow > totalPosts) totalPosts = tNow;
         }
         QJsonArray posts = JsonShape::pickArray(tumblrResp, {"posts", "items", "entries"});
         if (posts.isEmpty()) {
@@ -20164,6 +21470,12 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
             if (!posts.isEmpty())
                 log(QString("Tumblr 응답 모양이 바뀐 듯합니다 — '%1' 에서 %2개를 찾았습니다.")
                         .arg(foundAt).arg(posts.size()), "warning", "tumblr");
+        }
+        if (posts.isEmpty() && offset == 0 && !tbTypeSeg.isEmpty() && tbTotalSeen == 0) {
+            // 유형으로 거른 요청이 0개라고 답했다 — 그 유형의 글이 없는 블로그다. 오류가 아니다(다중 수집의 '오류 난 것만 다시' 에 끼지 않게)
+            log(QString("이 블로그에는 '%1' 유형의 글이 없습니다").arg(tbType), "info", "tumblr");
+            tbClean = true;
+            break;
         }
         if (posts.isEmpty()) {
             if (offset == 0) {
@@ -20210,6 +21522,12 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
                     QString typePath = typeDir + "/" + fname;
                     QString completePath = completeDir + "/" + fname;
                     if (QFile::exists(typePath)) return;
+                    // 예전 판은 이 앞자리를 맥의 현지 시각으로 적었다(일본 · 한국의 맥은 같은 이름) — 다른 시간대의 맥에서 또 받지 않는다
+                    if (ts > 0) {
+                        const QString oldFname = sanitizeFilename(QString("%1%2 (%3_%4%5).%6")
+                            .arg(QDateTime::fromSecsSinceEpoch(ts).toString("yyyyMMdd_HHmmss_"), cleanSummary, postId).arg(tag).arg(idx).arg(ext), 200);
+                        if (QFile::exists(typeDir + "/" + oldFname)) return;
+                    }
                     if (!http.downloadFile(url, typePath)) {   // 처음 실패한 것은 다음 판이 끝까지 보며 다시 받는다(중지로 끊긴 것은 실패가 아니다)
                         if (platformRunning("tumblr")) tbFailed.insert(postId);
                         return;
@@ -20277,8 +21595,21 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
                 }
 
                 // 経済産業省 연계: SingleFile CDP 캡쳐
-                // ★ 미디어 유무 무관 — 모든 포스트 캡쳐
-                if (!postUrl.isEmpty() && config["realCapture"].toBool(true)) {
+                // ★ 화면의 선택을 따른다 — '전체' 는 미디어 유무와 무관하게, '미디어만' 은 미디어 있는 글만
+                //   (예전엔 '미디어만' 을 읽지 않아 모든 글을 캡처했다)
+                bool tbHasMedia = !post["photos"].toArray().isEmpty() || !post["video_url"].toString().isEmpty();
+                const auto tbBlocksHaveMedia = [](const QJsonArray &blocks) {
+                    for (const auto &bv : blocks) {
+                        const QString bt = bv.toObject()["type"].toString();
+                        if (bt == QLatin1String("image") || bt == QLatin1String("video") || bt == QLatin1String("audio")) return true;
+                    }
+                    return false;
+                };
+                if (tbBlocksHaveMedia(post["content"].toArray())) tbHasMedia = true;
+                for (const auto &tr : post["trail"].toArray())   // 리블로그의 미디어는 원글 쪽(trail)에 있을 수 있다 — 캡처를 놓치는 쪽보다 하는 쪽으로
+                    if (tbBlocksHaveMedia(tr.toObject()["content"].toArray())) { tbHasMedia = true; break; }
+                if (!postUrl.isEmpty() && config["realCapture"].toBool(true)
+                    && (tbHasMedia || config["realCaptureMode"].toString() != QLatin1String("media"))) {
                     QString capturesDir = blogDir + "/captures";
                     static const QString tumblrLoginCheck = R"JS(
                         (function(){
@@ -20302,8 +21633,15 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
                             tumblrCookies << c;
                         }
                     }
-                    captureRealPageCDPLoginAware(postUrl, capturesDir, orderPrefix + postId,
-                        tumblrLoginCheck, "tumblr", 8000, tumblrCookies, config);
+                    // 캡처를 못 받은 글도 받지 못한 것이다(두 판 잇따르면 넘어간다)
+                    const QString tbCapName = FileHelper::captureNameCompat(capturesDir, ts > 0 ? QDateTime::fromSecsSinceEpoch(ts) : QDateTime(), postId);
+                    const bool tbCapHad = realCaptureFinished(capturesDir, tbCapName);
+                    if (captureRealPageCDPLoginAware(postUrl, capturesDir, tbCapName,
+                            tumblrLoginCheck, "tumblr", 8000, tumblrCookies, config)) {
+                        if (!tbCapHad) ++tbCapDone;
+                    } else if (platformRunning("tumblr")) {
+                        tbCapFailed.insert(postId);
+                    }
                 }
             }
 
@@ -20328,6 +21666,8 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
 
     // 끊김 없이 끝났다(마지막 글까지 · 일찍 멈춤 — 중지 · 최대 수 · 받지 못한 파일 없이) — 다음 판이 일찍 멈출 수 있게
     {
+        if (Common::captureFailuresCount(tbCapDone, int(tbCapFailed.size()))) tbFailed += tbCapFailed;
+        else if (config["stopAfterKnown"].toInt(0) > 0) log(QString("캡처가 하나도 되지 않았습니다(%1개 실패) — 캡처 길이 막힌 듯해 이 판의 캡처 실패로는 일찍 멈춤을 막지 않습니다(4~5주마다 끝까지 볼 때 다시 해 봅니다). 캡처 브라우저의 로그인을 확인하십시오").arg(tbCapFailed.size()), "warning", "tumblr");
         const QSet<QString> tbNewFails = tbFailed - tbPrevFailed;
         const bool tbAnnounce = config["stopAfterKnown"].toInt(0) > 0;   // 일찍 멈춤을 쓸 때만 안내한다
         if (!tbNewFails.isEmpty()) {
@@ -20363,7 +21703,7 @@ void HanishikiBackend::runTumblrCollection(const QJsonObject &config)
                 for (const auto &t : p["tags"].toArray()) tags << t.toString();
                 writer.writeRow(row++, {
                     QString::number(p["id"].toVariant().toLongLong()),
-                    ts > 0 ? QDateTime::fromSecsSinceEpoch(ts).toString("yyyy-MM-dd HH:mm:ss") : "",
+                    ts > 0 ? Common::jstTime(QDateTime::fromSecsSinceEpoch(ts)).toString("yyyy-MM-dd HH:mm:ss") : "",   // 일본 시간(예전엔 맥의 현지 시각)
                     p["type"].toString(),
                     p["slug"].toString(),
                     p["summary"].toString().left(200),
@@ -20536,7 +21876,7 @@ void HanishikiBackend::runSpinSpinCollection(const QJsonObject &config)
             QString ext = QFileInfo(QUrl(url).path()).suffix();
             if (ext.isEmpty()) ext = "jpg";
             // date-tagged filename: profile_20260412.jpg
-            QString dateTag = QDateTime::currentDateTime().toString("yyyyMMdd");
+            QString dateTag = Common::jstNow().toString("yyyyMMdd");
             QString fname = QString("%1_%2.%3").arg(baseName, dateTag, ext);
             QString path = profileDir + "/" + fname;
             if (!QFile::exists(path) && http.downloadFile(url, path, headers)) {
@@ -21776,7 +23116,7 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
             if (m_window) m_window->releaseAwake();
             return;
         }
-        QString crawlDir = savePath + "/crawl_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+        QString crawlDir = savePath + "/crawl_" + Common::jstNow().toString("yyyyMMdd_HHmmss");
         QString capturesDir = crawlDir + "/captures";
         QDir().mkpath(record ? crawlDir : capturesDir);
         log(QString("%1: %2개 URL").arg(record ? QStringLiteral("끝까지 기록 시작") : QStringLiteral("실제 Chrome 크롤 시작"))

@@ -527,16 +527,32 @@ async def main():
     except Exception as _pe:
         print(json.dumps({"info": f"twikit 우회 실패(수집은 계속 시도): {_pe}"}), flush=True)
 
-    # ★ (윈도우) 프록시(VPN) — 계정마다 다른 출구로 나가게 한다. 앱이 계정에 붙은
-    #   프로필을 URL 한 줄(init_args['proxy'])로 만들어 넘겨준다.
+    # ★ 프록시(VPN) — 계정마다 다른 출구로 나가게 한다. 앱이 계정에 붙은 프로필을
+    #   URL 한 줄(init_args['proxy'])로 만들어 넘겨준다(윈도우와 같다).
     #   x_session.Client 는 AsyncClient(transport=...) 로 전송기를 직접 넣으므로 httpx 가
-    #   ALL_PROXY 같은 환경 변수를 보지 않는다(_mounts 가 빈다). 환경만 믿으면 프록시를
-    #   켜도 직접 나간다 — 그래서 출구를 생성자에 직접 준다.
+    #   ALL_PROXY 같은 환경 변수를 보지 않는다(_mounts 가 빈다). 예전엔 환경만 믿어서,
+    #   계정에 프록시를 걸어도 트위터 API 요청은 이 컴퓨터의 회선으로 바로 나갔다
+    #   (닫힌 길 127.0.0.1:9 도 먹지 않았다). 그래서 출구를 생성자에 직접 준다.
     _proxy = init_args.get("proxy") or ""
+    # ★ 브라우저 흉내 — 앱이 설치된 Chrome 의 판으로 만든 UA 와 클라이언트 힌트를 넘겨 준다(Common::browserUserAgent).
+    #   예전엔 늘 '윈도우 Chrome 153' 고정값으로 나갔다. 맥 Chrome 156 의 쿠키로 윈도우 153 이라 말하는 셈이라
+    #   그 자체가 자동화 신호였고, 판이 갈수록 벌어졌다. 같은 계정의 캡처 Chrome 은 이미 맥 Chrome 으로 나간다.
+    _ua = init_args.get("user_agent") or None
+    _hints = {k: v for k, v in (init_args.get("client_hints") or {}).items()
+              if k in ("sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform")}
     if USING_SHIM:
-        client = Client(language="ja", proxy=(_proxy or None))
+        client = Client(language="ja", proxy=(_proxy or None), user_agent=_ua, client_hints=_hints)
     else:
-        client = Client(language="ja")
+        try:
+            client = Client(language="ja", user_agent=_ua) if _ua else Client(language="ja")
+        except TypeError:
+            client = Client(language="ja")
+    if not _hints and USING_SHIM:
+        _hints = dict(getattr(client, "_client_hints", {}) or {})
+    _ua_major = re.search(r"Chrome/(\d+)", client._user_agent or "")
+    print(json.dumps({"info": "브라우저 흉내: %s Chrome %s" % (
+        "맥" if "Macintosh" in (client._user_agent or "") else "윈도우" if "Windows" in (client._user_agent or "") else "?",
+        _ua_major.group(1) if _ua_major else "?")}), flush=True)
     client.set_cookies({
         "auth_token": auth_token,
         "ct0": ct0,
@@ -561,7 +577,7 @@ async def main():
         #       'HTTPTransport' object has no attribute 'handle_async_request'
         #     twikit 시절에는 이 대입이 그쪽 구조 때문에 효력이 없어 드러나지 않았을
         #     뿐이고, 애초에 틀린 줄이었다. 비동기 것으로 바로잡는다.
-        #   (윈도우) transport 를 통째로 바꾸므로 프록시 출구도 여기서 같이 준다.
+        #   transport 를 통째로 바꾸므로 프록시 출구도 여기서 같이 준다.
         if not USING_SHIM:
             client.http._transport = (_httpx.AsyncHTTPTransport(retries=3, proxy=_proxy) if _proxy
                                       else _httpx.AsyncHTTPTransport(retries=3))
@@ -601,6 +617,7 @@ async def main():
         'Cache-Control': 'no-cache',
         'Referer': 'https://x.com',
         'User-Agent': client._user_agent,
+        **_hints,
     }
 
     # ★ x_session 은 초기화를 스스로 한다 — 이관 페이지 처리, ondemand.s 청크 찾기,
@@ -717,11 +734,8 @@ async def main():
                       "tid_reason": str(getattr(client.client_transaction, "reason", "")),
                       "_st_url": Endpoint.SEARCH_TIMELINE[-40:]}), flush=True)
 
-    # ★ twikit 서명기를 다시 세우는 데 성공했을 때 부른다.
-    #   위에서 처음 초기화가 실패하면 twikit 의 ClientTransaction 에 빈 서명 람다·ready=False·reason 을
-    #   붙여 둔다. twikit 의 init() 은 성공해도 None 만 돌려줄 뿐 그 셋을 걷어내지 않으므로,
-    #   재초기화가 '성공' 해도 계속 빈 서명으로 보내고 no_tid 로 읽혔다. 성공한 뒤에 여기서 걷어낸다.
-    #   x_session 은 init() 이 ready/reason 을 스스로 맞추므로 건드리지 않는다.
+    # 재초기화가 성공하면 위에서 건 '서명 없이 보내기' 를 걷는다(twikit 으로 물러섰을 때만 — 윈도우와 같다).
+    #   안 그러면 '성공' 이라 찍고도 그 뒤 요청이 계속 서명 없이 나가 SearchTimeline 404 가 이어졌다.
     def _tid_reinit_ok():
         if USING_SHIM:
             return
@@ -806,6 +820,7 @@ async def main():
                             'Cache-Control': 'no-cache',
                             'Referer': 'https://x.com',
                             'User-Agent': client._user_agent,
+                            **_hints,
                         }
                         if await client.client_transaction.init(client.http, ct_headers) is not False:
                             _tid_reinit_ok()
@@ -872,6 +887,7 @@ async def main():
                                 'Cache-Control': 'no-cache',
                                 'Referer': 'https://x.com',
                                 'User-Agent': client._user_agent,
+                                **_hints,
                             }
                             if await client.client_transaction.init(client.http, ct_headers) is not False:
                                 _tid_reinit_ok()

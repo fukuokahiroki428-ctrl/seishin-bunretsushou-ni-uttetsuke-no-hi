@@ -579,7 +579,7 @@ class Recorder:
             f.write(data)
         with open(os.path.join(self.api_dir, '_index.tsv'), 'a', encoding='utf-8') as f:
             # 쿼리는 적지 않는다 — 어떤 API 는 열쇠 · 토큰을 주소에 싣는다
-            f.write('%s\t%s\t%s\n' % (name, dt.datetime.now().isoformat(timespec='seconds'), url.split('?')[0]))
+            f.write('%s\t%s\t%s\n' % (name, dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).isoformat(timespec='seconds'), url.split('?')[0]))
         try:
             doc = json.loads(data)
         except ValueError:
@@ -857,7 +857,7 @@ class Recorder:
         # 이 페이지의 주인 — 글이 가장 많은 쓴이가 30% 를 넘으면 그 사람으로 본다(미스키 옆 위젯 · X 추천의 남의 글을 가린다)
         top = max(authors.items(), key=lambda x: x[1]) if authors else ('', 0)
         self.owner = top[0] if top[0] and top[1] >= 0.3 * len(items) else ''
-        report = {'url': self.url, 'recorded_at': dt.datetime.now().isoformat(timespec='seconds'),
+        report = {'url': self.url, 'recorded_at': dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).isoformat(timespec='seconds'),
                   'seconds': int(time.time() - self.t0), 'stop': self.stop_reason, 'scroller': self.scroller,
                   'items': len(items), 'json_responses': self.n_json, 'more_clicks': self.clicks,
                   'media_found': len(self.media) if not dl.get('fallback') else len(self.page_media),
@@ -880,7 +880,7 @@ class Recorder:
 
         def when(iso: str) -> str:
             try:   # 이 맥의 시간대로 보여 준다(items.jsonl 은 UTC 그대로)
-                return dt.datetime.fromisoformat(iso).astimezone().strftime('%Y-%m-%d %H:%M')
+                return dt.datetime.fromisoformat(iso).astimezone(dt.timezone(dt.timedelta(hours=9))).strftime('%Y-%m-%d %H:%M')
             except ValueError:
                 return iso[:16]
 

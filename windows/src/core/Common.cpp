@@ -12,6 +12,7 @@
 #include <QProcess>
 #include <QUrl>
 #include <QCryptographicHash>
+#include <QSettings>
 #include <QProcessEnvironment>
 #include <QTimeZone>
 #include <QLocale>
@@ -25,6 +26,7 @@
 #include <QDateTime>
 #include <QStorageInfo>
 #include <QDebug>
+#include <QRegularExpression>
 #include <QCoreApplication>
 #include <QFileInfo>
 #include <QStandardPaths>
@@ -50,6 +52,12 @@
 #else
 #include <sys/stat.h>
 #include <utime.h>
+#include <cstring>
+#ifdef Q_OS_MACOS
+#include <sys/attr.h>
+#include <unistd.h>
+#include <time.h>
+#endif
 #endif
 
 namespace Common {
@@ -60,6 +68,23 @@ static const QStringList weekdays = {
 
 // English locale for parsing Twitter/Bluesky date strings (Mon, Jan, etc.)
 static QLocale enLocale(QLocale::English, QLocale::UnitedStates);
+
+QDateTime jstTime(const QDateTime &dt)
+{
+    static const QTimeZone jst = QTimeZone::fromSecondsAheadOfUtc(9 * 3600);
+    return dt.toTimeZone(jst);
+}
+
+QDateTime jstNow() { return jstTime(QDateTime::currentDateTimeUtc()); }
+
+QString jstText(const QString &raw, const QString &format)
+{
+    if (raw.isEmpty()) return raw;
+    const QDateTime dt = parseISODate(raw);
+    return dt.isValid() ? jstTime(dt).toString(format) : raw;
+}
+
+QDate jstToday() { return jstNow().date(); }
 
 QString formatDateJapanese(const QDateTime &dt)
 {
@@ -165,9 +190,6 @@ void setFileTimes(const QString &filePath, const QDateTime &timestamp)
         return;
     }
 
-    // Use JST for file timestamps displayed in Finder/Explorer
-    QDateTime dtLocal = timestamp.toUTC().addSecs(9 * 3600);  // UTC+9 (JST)
-
     // utime uses UTC epoch
     qint64 epoch = timestamp.toSecsSinceEpoch();
 
@@ -211,12 +233,21 @@ void setFileTimes(const QString &filePath, const QDateTime &timestamp)
         qWarning() << "[setFileTimes] utime failed for:" << filePath;
     }
 
-    // macOS: SetFile for creation date
+    // macOS: 만든 날짜도 글의 시각으로(윈도우의 SetFileTime 과 같다)
+    //   ★ 예전엔 파일마다 SetFile 을 띄웠다. 개발자 도구가 있어야 하는 옛 공구이고, UTC+9 로 만든 글자를 그 맥의 현지 시각으로
+    //     읽어 일본 · 한국 밖의 맥에서는 시간대만큼 틀렸다. 시스템 호출은 초(epoch)를 그대로 받는다.
+    //     지원하지 않는 디스크(일부 NAS)면 조용히 넘어간다 — 수정 날짜는 위에서 이미 맞췄다.
 #ifdef Q_OS_MACOS
-    QString dateStr = dtLocal.toString("MM/dd/yyyy HH:mm:ss");
-    QProcess proc;
-    proc.start("SetFile", {"-d", dateStr, filePath});
-    proc.waitForFinished(5000);
+    {
+        struct attrlist al;
+        memset(&al, 0, sizeof(al));
+        al.bitmapcount = ATTR_BIT_MAP_COUNT;
+        al.commonattr = ATTR_CMN_CRTIME;
+        struct timespec crt;
+        crt.tv_sec = static_cast<time_t>(epoch);
+        crt.tv_nsec = 0;
+        setattrlist(filePath.toUtf8().constData(), &al, &crt, sizeof(crt), 0);
+    }
 #endif
 #endif  // Q_OS_WIN
 }
@@ -501,7 +532,7 @@ QString exiftoolProgram(QStringList *leadingArgs)
     return way.program;
 }
 
-void addExifMetadata(const QString &imagePath, const QString &artist,
+int addExifMetadata(const QString &imagePath, const QString &artist,
                      const QString &description, const QString &copyright,
                      const QString &comment, const QString &dateStr)
 {
@@ -509,13 +540,16 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
     QString lower = imagePath.toLower();
     bool isImage = lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") ||
                    lower.endsWith(".tiff") || lower.endsWith(".webp");
-    bool isVideo = lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".webm") ||
-                   lower.endsWith(".avi") || lower.endsWith(".mkv");
-    if (!isImage && !isVideo) return;
+    // ★ exiftool 은 WebM · MKV · AVI 에 쓰지 못한다(13.59 -listwf 실측 — 읽기만). 예전엔 넘겨서 늘 오류(-1)였고, 유튜브 뒤처리가
+    //   그것을 '실패' 로 보아 그런 영상마다 한 판을 더 돌렸다(검토). 쓸 수 없는 형식은 '해당 없음'(0)이다.
+    bool isVideo = lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".m4v");
+    if (!isImage && !isVideo) return 0;
 
     // Check exiftool availability (only once)
     static int exiftoolAvailable = -1;
-    if (exiftoolAvailable == 0) return;
+    // ★ exiftool 을 띄우지 못하는 것은 '해당 없음' 이 아니다 — 유튜브 뒤처리가 그것을 '마침' 으로 적으면 번들이 고쳐진 뒤에도
+    //   그 영상들의 EXIF 를 영영 적지 않았다(검토). 따로 알린다(-2).
+    if (exiftoolAvailable == 0) return -2;
 
     // Parse date → JST EXIF format
     QDateTime dt = parseISODate(dateStr);
@@ -580,7 +614,7 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
         argFile.setAutoRemove(true);
         if (!argFile.open()) {
             qWarning() << "[Common] exiftool argfile 을 만들지 못했습니다 — EXIF 기록을 건너뜁니다";
-            return;
+            return -1;
         }
         {
             QTextStream ts(&argFile);
@@ -634,13 +668,25 @@ void addExifMetadata(const QString &imagePath, const QString &artist,
                        << "error:" << proc.errorString();
             exiftoolAvailable = 0;
         }
-        return;
+        return -2;
     }
     exiftoolAvailable = 1;
-    proc.waitForFinished(10000);
-    if (proc.exitCode() != 0) {
-        qWarning() << "[Common] exiftool error:" << proc.readAllStandardError().trimmed();
+    // ★ 큰 영상은 exiftool 이 파일을 통째로 다시 쓰므로 10초로는 모자랐다 — 끊기면 <파일>_exiftool_tmp 반쪽이 남는다
+    //   (원본은 그대로). 크기에 맞춰 기다리고(100MB 당 10초, 최대 10분), 그래도 끝나지 않으면 끊고 반쪽을 치운다.
+    const qint64 sizeMB = QFileInfo(imagePath).size() / (1024 * 1024);
+    const int waitMs = int(std::min<qint64>(600000, 10000 + sizeMB * 100));   // 100MB 당 10초, 최대 10분
+    if (!proc.waitForFinished(waitMs)) {
+        proc.kill();
+        proc.waitForFinished(5000);
+        QFile::remove(imagePath + "_exiftool_tmp");
+        qWarning().noquote() << "[Common] exiftool 시간 초과 — 끊고 반쪽 임시 파일을 치웠습니다:" << QFileInfo(imagePath).fileName();
+        return -1;
     }
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
+        qWarning() << "[Common] exiftool error:" << proc.readAllStandardError().trimmed();
+        return -1;
+    }
+    return 1;
 }
 
 // ─── Cross-platform path helpers ───
@@ -729,31 +775,31 @@ static QString detectChromeMajor()
 
 QString browserUserAgent()
 {
-    static QString cached;
-    if (!cached.isEmpty()) return cached;
+    // ★ 함수 안 정적 변수의 초기화 — C++ 이 한 번만, 스레드에 안전하게 한다. 예전엔 평범한 정적 QString 을 나중에 채워,
+    //   병렬 수집의 첫 요청들이 동시에 쓰고 읽으면 깨질 수 있었다(UA 를 주지 않은 요청도 이제 이리로 온다 — 검토).
+    static const QString ua = []() {
+        // 탈출구 — 특정 판이 필요하면 환경변수로 갈아끼운다.
+        //   (기준 영상과 같은 이유다. 박아 둔 값은 언젠가 틀린다.)
+        //   (윈도우에만 있는 탈출구다. 이름은 앱 이름을 따르고, 옛 이름도 아직 받는다.)
+        QString forced = qEnvironmentVariable("HANISHIKI_USER_AGENT");
+        if (forced.isEmpty()) forced = qEnvironmentVariable("PREDORMITION_USER_AGENT");   // 윈도우 옛 이름
+        if (!forced.isEmpty()) return forced;
 
-    // 탈출구 — 특정 판이 필요하면 환경변수로 갈아끼운다.
-    //   (기준 영상과 같은 이유다. 박아 둔 값은 언젠가 틀린다.)
-    //   (윈도우에만 있는 탈출구다. 이름은 앱 이름을 따르고, 옛 이름도 아직 받는다.)
-    QString forced = qEnvironmentVariable("HANISHIKI_USER_AGENT");
-    if (forced.isEmpty()) forced = qEnvironmentVariable("PREDORMITION_USER_AGENT");   // 윈도우 옛 이름
-    if (!forced.isEmpty()) { cached = forced; return cached; }
-
-    QString major = detectChromeMajor();
-    if (major.isEmpty()) major = QStringLiteral("140");   // 아무것도 못 읽었을 때의 보수적 기본값
-
+        QString major = detectChromeMajor();
+        if (major.isEmpty()) major = QStringLiteral("140");   // 아무것도 못 읽었을 때의 보수적 기본값
+        qInfo().noquote() << "[UA] 요청에 쓸 User-Agent — Chrome" << major;
 #ifdef Q_OS_WIN
-    cached = QStringLiteral(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/%1.0.0.0 Safari/537.36").arg(major);
+        return QStringLiteral(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/%1.0.0.0 Safari/537.36").arg(major);
 #else
-    // Chrome 은 macOS 판을 10_15_7 로 고정해 보낸다(UA 고정 정책). 그대로 맞춘다.
-    cached = QStringLiteral(
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/%1.0.0.0 Safari/537.36").arg(major);
+        // Chrome 은 macOS 판을 10_15_7 로 고정해 보낸다(UA 고정 정책). 그대로 맞춘다.
+        return QStringLiteral(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/%1.0.0.0 Safari/537.36").arg(major);
 #endif
-    qInfo().noquote() << "[UA] 요청에 쓸 User-Agent — Chrome" << major;
-    return cached;
+    }();
+    return ua;
 }
 
 // ★ 진짜 Chrome 은 UA 와 함께 늘 이 힌트들을 보낸다. 우리는 UA 만 흉내 내고 이것들을 빼먹었다.
@@ -936,6 +982,58 @@ QString activePythonEnvDir()
 #endif
 }
 
+bool pickPythonRelease(const QString &releaseJson, const QString &arch, int wantMajor, int wantMinor,
+                       QString *url, QString *version)
+{
+    // install_only 타입의 URL 전부 수집 → 안정 버전 중 최신 선택.
+    // ★ 버전 뒤 '\+' 강제 — python-build-standalone 안정판은 'cpython-3.14.3+20250612-...' 형식이라
+    //   버전 바로 뒤가 '+'. 베타/rc(예: 'cpython-3.15.0b4+...')는 뒤가 'b4'라 제외됨.
+    //   (이전 정규식은 '3.15.0b4' 에서 '3.15.0' 을 뽑아 베타를 안정판으로 오인·설치 → env 손상 원인)
+    QRegularExpression urlRe(
+        QString("\"browser_download_url\"\\s*:\\s*\"(https://[^\"]*cpython-(\\d+\\.\\d+\\.\\d+)\\+[^\"]*%1-install_only\\.tar\\.gz)\"")
+            .arg(QRegularExpression::escape(arch)));
+    auto it = urlRe.globalMatch(releaseJson);
+    int bestPatch = -1;
+    while (it.hasNext()) {
+        const auto m = it.next();
+        const QString u = m.captured(1);
+        if (u.contains("freethreaded")) continue;
+        const QStringList parts = m.captured(2).split('.');
+        if (parts[0].toInt() != wantMajor || parts[1].toInt() != wantMinor) continue;
+        if (parts[2].toInt() > bestPatch) {
+            bestPatch = parts[2].toInt();
+            *url = u;
+            *version = m.captured(2);
+        }
+    }
+    return bestPatch >= 0;
+}
+
+void recoverInterruptedPythonSwap()
+{
+#ifdef Q_OS_MACOS
+    // python_env.old 는 교체가 다 끝나기 전에만 있다 — 있으면 끊긴 것이다.
+    //   지금 python_env 는 모듈이 덜 깔린 새 환경이거나 비어 있으므로 비키고, 옛 환경을 되돌린다.
+    for (const QString &name : {QStringLiteral("python_env" KAMERA_PY_ARCH), QStringLiteral("python_env")}) {
+        const QString dir = bundledResourcesDir() + "/" + name;
+        const QString dead = dir + ".dead";
+        if (QFileInfo::exists(dir + ".new")) QDir(dir + ".new").removeRecursively();
+        if (QFileInfo::exists(dead)) QDir(dead).removeRecursively();
+        if (!QFileInfo::exists(dir + ".old/bin/python3")) {   // 파이썬이 없는 .old 는 되살릴 것이 아니다 — 번들 안에 남기지 않는다
+            if (QFileInfo::exists(dir + ".old")) QDir(dir + ".old").removeRecursively();
+            continue;
+        }
+        if (QFileInfo::exists(dir) && !QDir().rename(dir, dead)) continue;
+        if (QDir().rename(dir + ".old", dir)) {
+            QDir(dead).removeRecursively();
+            qWarning().noquote() << "[python] 끊긴 교체를 되돌렸습니다:" << name;
+        } else if (QFileInfo::exists(dead)) {
+            QDir().rename(dead, dir);
+        }
+    }
+#endif
+}
+
 QString bundledPythonPath()
 {
 #ifdef Q_OS_WIN
@@ -957,6 +1055,65 @@ QString scriptOverrideDir()
 {
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/script_overrides";
 }
+QString fileSha256Hex(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return QString();
+    QCryptographicHash h(QCryptographicHash::Sha256);
+    h.addData(&f);
+    return QString::fromLatin1(h.result().toHex());
+}
+
+QString appBuildVersion()
+{
+    static const QString v = []() {
+        const QString app = appBundlePath();
+        if (!app.isEmpty()) {
+            const QSettings plist(app + "/Contents/Info.plist", QSettings::NativeFormat);
+            const QString bv = plist.value(QStringLiteral("CFBundleVersion")).toString().trimmed();
+            if (!bv.isEmpty()) return bv;
+        }
+        return QStringLiteral(PREDORMITION_VERSION_STR);
+    }();
+    return v;
+}
+
+bool scriptOverrideStillValid(const QString &overridePath, const QString &bundledPath)
+{
+    if (!QFileInfo::exists(bundledPath)) return true;           // 비교할 원본이 없다
+    QFile base(overridePath + ".base");
+    if (base.open(QIODevice::ReadOnly))                          // 고칠 때의 원본 sha256
+        return QString::fromLatin1(base.readAll()).trimmed() == fileSha256Hex(bundledPath);
+    // .base 가 없는 옛 사본 — 원본보다 나중에 만든 것만(새 판을 깔면 원본이 더 새것이 된다)
+    return QFileInfo(overridePath).lastModified() > QFileInfo(bundledPath).lastModified();
+}
+
+static QString bundledToolPathFor(const QString &name)
+{
+    const QString tools = bundledToolsDir();
+    for (const QString &sub : { QString(), QStringLiteral("/archive") }) {
+        const QString p = tools + sub + "/" + name;
+        if (QFileInfo::exists(p)) return p;
+    }
+    return QString();
+}
+
+void retireStaleScriptOverrides()
+{
+    const QDir d(scriptOverrideDir());
+    if (!d.exists()) return;
+    for (const QFileInfo &fi : d.entryInfoList({QStringLiteral("*.py")}, QDir::Files)) {
+        const QString bundled = bundledToolPathFor(fi.fileName());
+        if (bundled.isEmpty() || scriptOverrideStillValid(fi.absoluteFilePath(), bundled)) continue;
+        const QString aside = fi.absoluteFilePath() + ".stale";
+        QFile::remove(aside);
+        if (QFile::rename(fi.absoluteFilePath(), aside)) {
+            QFile::rename(fi.absoluteFilePath() + ".base", aside + ".base");
+            qWarning().noquote() << "[자가수리] 앱이 새 판이라 옛 사본을 쓰지 않습니다(옆으로 비킴):" << fi.fileName();
+        }
+    }
+}
+
 QString activeToolScriptPath(const QString &name)
 {
     // 쓰는 순서: 서명이 맞은 고침 꾸러미 > 이 맥의 자가수리가 고친 것 > 번들 원본
@@ -965,7 +1122,7 @@ QString activeToolScriptPath(const QString &name)
         if (QFileInfo::exists(hf)) return hf;
     }
     const QString ov = scriptOverrideDir() + "/" + name;
-    if (QFileInfo::exists(ov)) return ov;
+    if (QFileInfo::exists(ov) && scriptOverrideStillValid(ov, bundledToolPathFor(name))) return ov;
 
     // 번들 원본 찾기.
     //   tools/ 바로 밑에만 있는 게 아니다 — CMake 는 보관함 스크립트를
@@ -1753,7 +1910,8 @@ bool resealAppBundle(QString *err)
         // 스크립트가 실패 사유를 표준출력에도 적는다(개별 서명 실패 목록 등).
         const QString out = QString::fromUtf8(cs.readAllStandardOutput()).right(400);
         const QString e   = QString::fromUtf8(cs.readAllStandardError()).left(300);
-        if (err) *err = (e.isEmpty() ? out : e);
+        // 표준 오류에 잡음이 있어도 스크립트가 표준 출력에 적은 까닭(인증서 없음 등)을 잃지 않게 둘 다 넘긴다
+        if (err) *err = e.isEmpty() ? out : (e + QLatin1Char('\n') + out);
         return false;
     }
 
@@ -1986,6 +2144,8 @@ void killProcessByPid(qint64 pid)
     // /T 는 자식까지. 파이썬 데몬이 또 무언가를 띄웠을 수 있다.
     QProcess::execute("taskkill", {"/PID", QString::number(pid), "/F", "/T"});
 #else
+    // 맥도 자식까지 — 데몬이 띄운 ffmpeg 가 고아로 남아 중지한 뒤에도 영상을 끝까지 받았다(검토)
+    QProcess::execute("/usr/bin/pkill", {"-TERM", "-P", QString::number(pid)});
     ::kill(static_cast<pid_t>(pid), SIGKILL);
 #endif
 }
@@ -2247,9 +2407,30 @@ qint64 freeSpace(const QString &path)
     return si.bytesAvailable();
 }
 
-// 판을 시작할 때 읽은 표시의 '끝까지 본 때' — 일찍 멈춘 판이 다시 적을 때 물려준다(경로 → 때). 끝까지 본 판은 지금으로 적는다.
-static QHash<QString, QDateTime> s_walkFullAt;
+// 판을 시작할 때 읽은(믿을 만한) 표시 — 일찍 멈춘 판이 다시 적을 때 '끝까지 본 때' 를 물려주고, 끊긴 판은 그대로 되돌린다.
+//   끝까지 본 판(표시 없이 시작한 판)은 지금으로 적는다.
+//   ★ 걸음(스레드)마다 따로 든다. 한 대상을 옵션만 달리 두 줄로 두면 두 걸음이 함께 도는데, 기록을 같이 쓰면 뒤에 시작한 걸음이
+//     앞 걸음의 기록을 지웠다. 그러면 앞 걸음이 '끝까지 본 때' 를 지금으로 적어(일찍 멈췄는데도) 4~5주마다 끝까지 보기가 밀리고,
+//     막혀 있던(dropped) 걸음이 표시를 적어 다음 판이 끊어진 조각 위에서 멈출 수 있었다(검토).
+//   ★ 파일 조작까지 자물쇠 안에서 한다 — 읽고 지우기 · 적기와 dropCleanWalkMarks 가 엇갈리면 지운 표시가 되살아났다(검토).
+//     표시는 판의 처음과 끝에만 만지므로 다른 걸음을 오래 막지 않는다.
+struct WalkTaken { QJsonObject mark; bool dropped = false; qint64 atMs = 0; };
+static QHash<QString, WalkTaken> s_walkTaken;   // "경로\n스레드" → 그 걸음이 읽은 표시
 static QMutex s_walkFullMu;
+
+static QString walkOwnerTail()
+{
+    return QLatin1Char('\n') + QString::number(reinterpret_cast<quintptr>(QThread::currentThreadId()));
+}
+
+// 끊긴 판이 남긴 기록이 쌓이지 않게(1년 켜 두는 앱이다) — 일주일 넘은 것은 버린다. 자물쇠 안에서 부른다.
+static void sweepWalkTakenLocked()
+{
+    if (s_walkTaken.size() < 512) return;
+    const qint64 cut = QDateTime::currentMSecsSinceEpoch() - 7LL * 24 * 3600 * 1000;
+    for (auto it = s_walkTaken.begin(); it != s_walkTaken.end();)
+        it = it->atMs < cut ? s_walkTaken.erase(it) : std::next(it);
+}
 
 static QString walkMarkPath(const QString &dir, const QString &kind)
 {
@@ -2267,10 +2448,11 @@ static int walkFullPeriodDays(const QString &path)
 // 읽고 지운다. 믿을 만하면(형식이 같고 끝까지 본 지 오래지 않으면) true — 그 때를 put 에 넘겨 둔다
 static bool takeWalkMarkFile(const QString &path)
 {
+    QMutexLocker lk(&s_walkFullMu);
+    const QString key = path + walkOwnerTail();
     QFile f(path);
-    if (!f.exists()) {   // 없으면 지난 판이 남긴 기록도 버린다 — 표시 없이 시작한 판은 끝까지 본 판이다(지금으로 적는다)
-        QMutexLocker lk(&s_walkFullMu);
-        s_walkFullAt.remove(path);
+    if (!f.exists()) {   // 없으면 이 걸음의 지난 기록도 버린다 — 표시 없이 시작한 판은 끝까지 본 판이다(지금으로 적는다)
+        s_walkTaken.remove(key);
         return false;
     }
     QJsonObject o;
@@ -2280,8 +2462,12 @@ static bool takeWalkMarkFile(const QString &path)
     const QDateTime now = QDateTime::currentDateTime();
     const bool ok = o.value("v").toInt(0) == kWalkMarkFormat && full.isValid() && full <= now.addSecs(3600)
                     && full.daysTo(now) < walkFullPeriodDays(path);
-    QMutexLocker lk(&s_walkFullMu);
-    if (ok) s_walkFullAt.insert(path, full); else s_walkFullAt.remove(path);
+    if (ok) {
+        sweepWalkTakenLocked();
+        s_walkTaken.insert(key, WalkTaken{o, false, QDateTime::currentMSecsSinceEpoch()});
+    } else {
+        s_walkTaken.remove(key);
+    }
     return ok;
 }
 
@@ -2291,24 +2477,48 @@ bool takeCleanWalkMark(const QString &dir, const QString &kind)
     return takeWalkMarkFile(walkMarkPath(dir, kind));
 }
 
-void putCleanWalkMark(const QString &dir, const QString &kind)
+static void writeWalkMark(const QString &path, const QJsonObject &o)
+{
+    QSaveFile f(path);
+    if (f.open(QIODevice::WriteOnly)) {
+        f.write(QJsonDocument(o).toJson(QJsonDocument::Compact));
+        f.commit();
+    }
+}
+
+void putCleanWalkMark(const QString &dir, const QString &kind, const QJsonObject &extra)
 {
     if (dir.isEmpty() || !QDir(dir).exists()) return;
     const QString path = walkMarkPath(dir, kind);
     const QDateTime now = QDateTime::currentDateTime();
-    QDateTime full;
-    {
-        QMutexLocker lk(&s_walkFullMu);
-        full = s_walkFullAt.take(path);   // 믿을 만한 표시로 시작한 판(일찍 멈췄을 수 있다) — 앞 표시의 때를 물려받는다
-    }
+    QMutexLocker lk(&s_walkFullMu);
+    const WalkTaken taken = s_walkTaken.take(path + walkOwnerTail());
+    if (taken.dropped) return;   // 걷는 사이 다른 걸음이 '받아 둔 것' 을 바꿨다 — 다음 판이 끝까지 본다
+    // 믿을 만한 표시로 시작한 판(일찍 멈췄을 수 있다) — 앞 표시의 때를 물려받는다
+    QDateTime full = QDateTime::fromString(taken.mark.value("full").toString(), Qt::ISODate);
     if (!full.isValid()) full = now;      // 표시 없이 시작한 판 = 끝까지 본 판
-    QSaveFile f(path);
-    if (f.open(QIODevice::WriteOnly)) {
-        f.write(QJsonDocument(QJsonObject{{"at", now.toString(Qt::ISODate)},
-                                          {"full", full.toString(Qt::ISODate)},
-                                          {"v", kWalkMarkFormat}}).toJson(QJsonDocument::Compact));
-        f.commit();
-    }
+    QJsonObject o = extra;
+    o["at"] = now.toString(Qt::ISODate);
+    o["full"] = full.toString(Qt::ISODate);
+    o["v"] = kWalkMarkFormat;
+    writeWalkMark(path, o);
+}
+
+QJsonObject takenWalkMark(const QString &dir, const QString &kind)
+{
+    QMutexLocker lk(&s_walkFullMu);
+    return s_walkTaken.value(walkMarkPath(dir, kind) + walkOwnerTail()).mark;
+}
+
+bool restoreWalkMark(const QString &dir, const QString &kind)
+{
+    if (dir.isEmpty() || !QDir(dir).exists()) return false;
+    const QString path = walkMarkPath(dir, kind);
+    QMutexLocker lk(&s_walkFullMu);
+    const WalkTaken o = s_walkTaken.take(path + walkOwnerTail());
+    if (o.mark.isEmpty() || o.dropped) return false;
+    writeWalkMark(path, o.mark);   // 읽은 그대로 — 끝까지 본 때도 top 도 물려준다
+    return true;
 }
 
 QStringList takeCleanWalkMarks(const QString &dir, const QString &prefix)
@@ -2316,11 +2526,12 @@ QStringList takeCleanWalkMarks(const QString &dir, const QString &prefix)
     QStringList kinds;
     if (dir.isEmpty() || prefix.isEmpty()) return kinds;
     static const QString head = QStringLiteral(".hanishiki_walk_");
-    {   // 이 접두의 지난 기록부터 비운다 — 없는 파일은 아래 고리에 닿지 않아, 멈춘 판이 남긴 옛 때를 다음 판이 물려받았다(검토)
+    {   // 이 걸음의, 이 접두의 지난 기록부터 비운다 — 없는 파일은 아래 고리에 닿지 않아, 멈춘 판이 남긴 옛 때를 다음 판이 물려받았다(검토)
         const QString keyHead = dir + QLatin1Char('/') + head + prefix;
+        const QString tail = walkOwnerTail();
         QMutexLocker lk(&s_walkFullMu);
-        for (auto it = s_walkFullAt.begin(); it != s_walkFullAt.end();)
-            it = it.key().startsWith(keyHead) ? s_walkFullAt.erase(it) : std::next(it);
+        for (auto it = s_walkTaken.begin(); it != s_walkTaken.end();)
+            it = (it.key().startsWith(keyHead) && it.key().endsWith(tail)) ? s_walkTaken.erase(it) : std::next(it);
     }
     const QStringList names = QDir(dir).entryList({head + prefix + QStringLiteral("*.json")}, QDir::Files | QDir::Hidden);
     for (const QString &n : names) {
@@ -2328,6 +2539,18 @@ QStringList takeCleanWalkMarks(const QString &dir, const QString &prefix)
             kinds << n.mid(head.size(), n.size() - head.size() - 5);   // ".json" 앞까지
     }
     return kinds;
+}
+
+void dropCleanWalkMarks(const QString &dir, const QString &prefix)
+{
+    if (dir.isEmpty() || prefix.isEmpty()) return;
+    static const QString head = QStringLiteral(".hanishiki_walk_");
+    const QString keyHead = dir + QLatin1Char('/') + head + prefix;
+    QMutexLocker lk(&s_walkFullMu);
+    for (auto it = s_walkTaken.begin(); it != s_walkTaken.end(); ++it)
+        if (it.key().startsWith(keyHead)) it->dropped = true;   // 도는 걸음 모두(누구의 것이든)
+    for (const QString &n : QDir(dir).entryList({head + prefix + QStringLiteral("*.json")}, QDir::Files | QDir::Hidden))
+        QFile::remove(dir + QLatin1Char('/') + n);
 }
 
 QSet<QString> takeWalkFailures(const QString &dir, const QString &kind)
@@ -2437,7 +2660,12 @@ QString checkFileIntegrity(const QString &filePath)
                 magicOk = head.startsWith("II*") || head.startsWith("MM");
             else
                 magicOk = true;   // 판단 근거가 없으면 손상이라 부르지 않는다
-            if (!magicOk) return QString("%1 헤더가 아님 (손상)").arg(ext.toUpper());
+            if (!magicOk) {
+                // 이름만 .avif 이고 내용은 JPEG · PNG 인 파일(서버가 Accept 에 따라 다른 형식을 준다)은 멀쩡하다 — 내용으로 읽어 본다
+                QImage byContent;
+                if (byContent.load(filePath) && !byContent.isNull()) return QString();
+                return QString("%1 헤더가 아님 (손상)").arg(ext.toUpper());
+            }
             return QString();     // 더 볼 수단이 없다 — 정상으로 둔다
         }
 

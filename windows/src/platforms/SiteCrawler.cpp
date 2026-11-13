@@ -37,6 +37,7 @@ SiteCrawler::SiteCrawler(HanishikiBackend *backend, QWebEngineProfile *sharedPro
         m_ownsProfile = false;
     } else {
         m_profile = new QWebEngineProfile(this);
+        // 설치된 Chrome 판을 따른다(윈도우와 같다). 예전엔 Chrome 131 을 박아 두었다.
         m_profile->setHttpUserAgent(Common::browserUserAgent());
         m_ownsProfile = true;
     }
@@ -95,7 +96,7 @@ void SiteCrawler::crawl(const QJsonObject &config)
     // - {path}/{domain}/{session}/index.html 실제 크롤 콘텐츠
     QString domainDir = m_baseDomain;
     domainDir.replace(QRegularExpression("[^a-zA-Z0-9._-]"), "_");
-    QString sessionStamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+    QString sessionStamp = Common::jstNow().toString("yyyyMMdd_HHmmss");
     m_parentDir = m_saveDir;                              // {path}
     m_domainDir = m_saveDir + "/" + domainDir;            // {path}/{domain}
     m_saveDir   = m_domainDir + "/" + sessionStamp;       // {path}/{domain}/{session}
@@ -1345,7 +1346,7 @@ void SiteCrawler::collectApiCalls(std::function<void(const QJsonArray &)> callba
                     wrapped["method"] = r["method"];
                     wrapped["status"] = r["status"];
                     wrapped["contentType"] = r["contentType"];
-                    wrapped["capturedAt"] = QDateTime::fromMSecsSinceEpoch(r["ts"].toVariant().toLongLong())
+                    wrapped["capturedAt"] = Common::jstTime(QDateTime::fromMSecsSinceEpoch(r["ts"].toVariant().toLongLong()))
                         .toString(Qt::ISODate);
                     QJsonDocument bodyDoc = QJsonDocument::fromJson(body.toUtf8());
                     if (bodyDoc.isObject() || bodyDoc.isArray()) {
@@ -1376,7 +1377,7 @@ void SiteCrawler::saveSecurityReport()
 
     QJsonObject report;
     report["domain"] = m_baseDomain;
-    report["date"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+    report["date"] = Common::jstNow().toString(Qt::ISODate);
     report["totalScanned"] = m_scanCount;
     report["quarantined"] = m_quarantineCount;
     report["findings"] = m_securityFindings;

@@ -73,6 +73,7 @@ public:
     // 현재 네트워크 요청을 100ms 이내에 abort 하여 상위 루프가 즉시 빠져나가게 함.
     // 플래그 소유자가 포인터 수명을 관리해야 함(일반적으로 수집 스레드 스택).
     void setRunFlag(const std::atomic<bool> *flag) { m_runFlag = flag; }
+    const std::atomic<bool> *runFlag() const { return m_runFlag; }
 
 private:
     QNetworkAccessManager *m_nam;
