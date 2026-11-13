@@ -1597,6 +1597,8 @@
                                         <label class="option-item"><input type="checkbox" id="youtube-sponsor"> SponsorBlock</label>
                                         <label class="option-item"><input type="checkbox" id="youtube-comments"> 댓글 (상위 300)</label>
                                         <label class="option-item" title="영상 페이지를 보이는 그대로 HTML 한 장으로 저장합니다(제목·설명 서식·화면의 댓글·추천 영상). 영상이 내려가도 화면은 남습니다. 다운로드가 끝난 뒤에 진행합니다."><input type="checkbox" id="youtube-real-capture"> 진짜 페이지 캡쳐</label>
+                                        <!-- ★ 끝나면 _complete 만 남기기 — 백엔드 runYoutubeDownload 의 completeOnly(ytLeaveOnlyComplete) -->
+                                        <label class="option-item" title="다운로드가 끝나 _complete 사본과 엑셀을 만든 뒤, 받은 폴더(video · audio · thumbnail)를 비웁니다. 지우는 것: 원본(_complete 사본과 같은지 확인한 뒤) · info.json · 받다 남은 조각(.part · .ytdl · .f137.mp4 등). 자막 · 댓글(.comments.txt) · 설명(.description) · 썸네일 그림은 _complete 로 옮깁니다. _complete 에 같은 이름의 파일이 있는데 원본과 다르면 그 파일은 덮지 않고 이 영상을 이름 끝에 [영상 번호] 를 붙여 따로 둡니다. 엑셀 · 페이지 캡쳐 · 받은 기록(다시 받지 않게 하는 장부)은 그대로 둡니다. 예전에 받아 둔 영상도 같이 정리합니다. 중지한 판은 다음 판에 정리합니다."><input type="checkbox" id="youtube-complete-only" onchange="confirmCompleteOnly(this)"> 끝나면 _complete 만 남기기</label>
                                     </div>
                                 </div>
                             </div>
@@ -1676,6 +1678,7 @@
                                         <label class="option-item"><input type="checkbox" id="niconico-thumb"> 썸네일</label>
                                         <label class="option-item"><input type="checkbox" id="niconico-comments"> 댓글</label>
                                         <label class="option-item" title="영상 페이지를 보이는 그대로 HTML 한 장으로 저장합니다. 영상이 내려가도 화면은 남습니다. 다운로드가 끝난 뒤에 진행합니다."><input type="checkbox" id="niconico-real-capture"> 진짜 페이지 캡쳐</label>
+                                        <label class="option-item" title="다운로드가 끝나 _complete 사본과 엑셀을 만든 뒤, 받은 폴더(video · audio · thumbnail)를 비웁니다. 지우는 것: 원본(_complete 사본과 같은지 확인한 뒤) · info.json · 받다 남은 조각(.part · .ytdl · .f137.mp4 등). 자막 · 댓글(.comments.txt) · 설명(.description) · 썸네일 그림은 _complete 로 옮깁니다. _complete 에 같은 이름의 파일이 있는데 원본과 다르면 그 파일은 덮지 않고 이 영상을 이름 끝에 [영상 번호] 를 붙여 따로 둡니다. 엑셀 · 페이지 캡쳐 · 받은 기록(다시 받지 않게 하는 장부)은 그대로 둡니다. 예전에 받아 둔 영상도 같이 정리합니다. 중지한 판은 다음 판에 정리합니다. 内閣会 감시도 이 값을 따릅니다(内閣会 → 받을 때 옵션에서 정했으면 그 값)."><input type="checkbox" id="niconico-complete-only" onchange="confirmCompleteOnly(this)"> 끝나면 _complete 만 남기기</label>
                                         <label class="option-item"><input type="checkbox" id="niconico-cookies"> Chrome 쿠키 (로그인 필요 영상)</label>
                                     </div>
                                     <div class="input-row" style="margin-top:8px;">
@@ -6120,7 +6123,9 @@
                 // ★ 영상 사이 대기(빠름/보통/안전) — 백엔드 runYoutubeDownload 가 yt-dlp --sleep-* 값으로 바꾼다
                 ytPace:(document.getElementById('youtube-pace')||{}).value || 'normal',
                 // ★ 저장 방식 — 'channel'(채널별 폴더) · 'flat'(폴더 없이 바로)
-                saveLayout:(document.getElementById('youtube-save-layout')||{}).value || 'channel'
+                saveLayout:(document.getElementById('youtube-save-layout')||{}).value || 'channel',
+                // ★ 끝나면 _complete 만 남기기 — 받은 폴더의 원본 · info.json · 조각을 지우고 자막 · 댓글은 _complete 로
+                completeOnly:!!(document.getElementById('youtube-complete-only')||{}).checked
             };
             setRunning('youtube', true);
             clearLog('youtube'); setYoutubeProgress(0);
@@ -6129,6 +6134,19 @@
             backend.startYoutube(JSON.stringify(config));
         }
         function stopYoutube() { if(backend){ backend.stopYoutube(); appendLog('중지 중...','warning','youtube'); } }
+        // '끝나면 _complete 만 남기기' 를 켤 때 한 번 묻는다 — 지우는 옵션이고, 예전에 받아 둔 영상까지 정리한다
+        function confirmCompleteOnly(el) {
+            if (!el || !el.checked) return;
+            if (!askCompleteOnly()) el.checked = false;
+        }
+        // 켤 때 묻는 글 — 탭의 칸과 内閣会 옵션(받을 때 옵션 · 감시 대상마다)이 같이 쓴다
+        function askCompleteOnly() {
+            return confirm('끝나면 _complete 만 남기기\n\n다음 다운로드가 끝날 때부터 받은 폴더(video · audio · thumbnail)를 비웁니다 — 예전에 받아 둔 영상도 함께.\n\n'
+                + '· 원본: _complete 사본과 같은지 확인한 뒤 지웁니다(같은 이름의 다른 파일이 있으면 덮지 않고 [영상 번호] 를 붙여 따로 둡니다)\n'
+                + '· info.json · 받다 남은 조각: 지웁니다\n'
+                + '· 자막 · 댓글 · 설명 · 썸네일 그림: _complete 로 옮깁니다\n'
+                + '· 엑셀 · 페이지 캡쳐 · 받은 기록: 그대로 둡니다(지운 영상을 다시 받지 않습니다)\n\n켤까요?');
+        }
 
         // ── 니코니코동화 (니코동) — yt-dlp 파이프라인 재사용 ──
         function startNiconico() {
@@ -6147,7 +6165,8 @@
                 realCapture:!!(document.getElementById('niconico-real-capture')||{}).checked,
                 proxy:((document.getElementById('niconico-proxy')||{}).value || ''),
                 // ★ 저장 방식 — 유튜브와 같다('channel' 채널별 폴더 · 'flat' 폴더 없이 바로)
-                saveLayout:(document.getElementById('niconico-save-layout')||{}).value || 'channel'
+                saveLayout:(document.getElementById('niconico-save-layout')||{}).value || 'channel',
+                completeOnly:!!(document.getElementById('niconico-complete-only')||{}).checked
             };
             setRunning('niconico', true);
             clearLog('niconico');
@@ -7505,7 +7524,8 @@
                 { k: 'saveLayout', t: 'select', dom: 'niconico-save-layout', label: '저장 방식' },
                 { k: 'metadata', t: 'check', label: '메타데이터' },
                 { k: 'thumb', t: 'check', label: '썸네일' },
-                { k: 'comments', t: 'check', label: '댓글' }
+                { k: 'comments', t: 'check', label: '댓글' },
+                { k: 'completeOnly', t: 'check', label: '_complete 만 남기기', hint: '켜면 받은 폴더의 원본 · info.json · 조각을 지우고 자막 · 댓글 · 설명 · 썸네일은 _complete 로 옮깁니다(니코동 탭의 칸보다 앞섭니다)' }
             ]
         };
         const _NK_PLAT = { twitter: 'Twitter', bluesky: 'Bluesky', tumblr: 'Tumblr', niconico: 'ニコニコ' };
@@ -7546,8 +7566,13 @@
         }
         // 칸이 바뀌면 vals 에 적거나(정함) 지운다('지금처럼' · '기본 따름')
         function _nkBind(root, vals, onChange) {
+            root.querySelectorAll('.nk-ctl').forEach(el => { el.dataset.prev = el.value; });   // '아니오' 때 되돌릴 값
             root.querySelectorAll('.nk-ctl').forEach(el => el.addEventListener('change', function () {
-                const k = this.getAttribute('data-k'), t = this.getAttribute('data-t'), v = this.value;
+                const k = this.getAttribute('data-k'), t = this.getAttribute('data-t');
+                // '_complete 만 남기기' 를 켜는 것은 지우는 옵션 — 탭의 칸처럼 한 번 묻고, '아니오' 면 고르기 전 값으로 되돌린다
+                if (k === 'completeOnly' && this.value === '1' && !askCompleteOnly()) { this.value = this.dataset.prev || ''; return; }
+                this.dataset.prev = this.value;
+                const v = this.value;
                 if (v === '') delete vals[k];
                 else vals[k] = t === 'check' ? v === '1' : t === 'number' ? Math.max(0, parseInt(v, 10) || 0) : v;
                 onChange();
@@ -9280,10 +9305,10 @@
             'bsky-target','bsky-path','bsky-type','bsky-mode','bsky-since','bsky-until',
             'bsky-query','bsky-count','bsky-media','bsky-excel','bsky-replies','bsky-reposts','bsky-comments','bsky-real-capture',
             'bsky-method','bsky-ratelimit-mins','bsky-ratelimit-wait','bsky-cookie',
-            'youtube-path','youtube-quality','youtube-type','youtube-subs','youtube-thumb','youtube-metadata','youtube-playlist','youtube-sponsor','youtube-comments','youtube-pace','youtube-save-layout','youtube-real-capture',
+            'youtube-path','youtube-quality','youtube-type','youtube-subs','youtube-thumb','youtube-metadata','youtube-playlist','youtube-sponsor','youtube-comments','youtube-pace','youtube-save-layout','youtube-real-capture','youtube-complete-only',
             // ★ 니코동이 통째로 빠져 있었다 — 바꿔도 다시 켜면 기본값으로 돌아갔고, 内閣会 니코동
             //   감시도 늘 기본 화질 · 기본 경로로 돌았다(윈도우는 1bf9056 에서 먼저 고쳤다).
-            'niconico-path','niconico-quality','niconico-type','niconico-thumb','niconico-metadata','niconico-comments','niconico-cookies','niconico-real-capture','niconico-proxy','niconico-save-layout',
+            'niconico-path','niconico-quality','niconico-type','niconico-thumb','niconico-metadata','niconico-comments','niconico-cookies','niconico-real-capture','niconico-proxy','niconico-save-layout','niconico-complete-only',
             'discord-server','discord-channel','discord-type','discord-count','discord-delay','discord-media','discord-excel','discord-profiles','discord-path',
             'discord-method',
             'instagram-target','instagram-count','instagram-delay',

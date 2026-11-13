@@ -609,6 +609,22 @@ public:
     void runDiscordCollection(const QJsonObject &config);
     void runInstagramCollection(const QJsonObject &config);
     void runYoutubeDownload(const QJsonObject &config);
+    // ★ 같은 플랫폼(youtube · niconico)의 yt-dlp 판은 하나만 — 두 판이 같은 상태 파일(abiwa_<플랫폼>/miyo_yt_status.txt)을
+    //   써서 먼저 끝난 쪽의 DONE 이 다른 판의 뒤처리('_complete 만 남기기' 의 정리까지)를 그 판의 yt-dlp 가 아직 쓰는 중에 돌렸다.
+    //   깃발(platformRunning)이 아니라 일꾼이 살아 있는지로 본다 — 중지한 판도 뒤처리가 끝날 때까지 산다.
+    bool ytWorkerBegin(const QString &platform);
+    void ytWorkerEnd(const QString &platform);
+    bool ytWorkerBusy(const QString &platform) const;
+    //   중지한 판의 bash · yt-dlp 가 아직 살아 있는가(메인 스레드에서만) — 일꾼은 DONE 을 보면 바로 끝나지만 스크립트는 1초마다 중지
+    //   표식을 보고 그 뒤에 yt-dlp 를 끝낸다. 그 사이 새 판이 표식을 지우면 옛 yt-dlp 가 멈추지 않고 같은 상태 파일을 썼다(검토).
+    bool ytBatchAlive(const QString &platform) const;
+    void ytRefuseStart(const QString &platform, const QString &why);   // 막은 시작 — 기록하고, 필요하면 탭을 되돌린다
+    //   판을 시작하며 장부에 더한 줄 수(内閣会가 '새 영상' 을 셀 때 뺀다)
+    void ytNoteArchivePrimed(const QString &platform, int lines);
+    int ytTakeArchivePrimed(const QString &platform);
+    mutable QMutex m_ytWorkerMutex;
+    QSet<QString> m_ytWorkerActive;
+    QHash<QString, int> m_ytArchivePrimed;
     void runPixivCollection(const QJsonObject &config);
     void runWebCrawlCollection(const QJsonObject &config);  // 웹 크롤 모드 (API 대체)
 
