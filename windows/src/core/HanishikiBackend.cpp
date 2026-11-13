@@ -24,6 +24,7 @@
 using FileHelper::sanitizeFilename;
 
 #include <QApplication>
+#include <QSystemTrayIcon>
 #include <QClipboard>
 #include <QFileDialog>
 #include <QJsonDocument>
@@ -3967,7 +3968,7 @@ void HanishikiBackend::naikakukaiPoll(const QJsonObject &watch)
         struct ProxyScope { ~ProxyScope() { Common::clearThreadProxy(); } } _proxyScope;
 
         // 이 수집은 감시가 돌린 것이다 — 로그를 内閣会 창에도 같이 흘린다.
-        m_naikakukaiMirroring = true;
+        ++m_naikakukaiMirroring;
         if (!missingProxy.isEmpty())
             log(QString("内閣会: %1 계정이 고른 프록시 '%2' 이 목록에 없어 이번 폴링을 건너뜁니다 — "
                         "'프록시 (VPN)' 탭에서 다시 등록하거나 계정의 출구를 다시 고르십시오")
@@ -3976,7 +3977,7 @@ void HanishikiBackend::naikakukaiPoll(const QJsonObject &watch)
         else if (p == "bluesky") runBlueskyCollection(runConfig);
         else if (p == "tumblr") runTumblrCollection(runConfig);
         else if (p == "niconico") runYoutubeDownload(runConfig);
-        m_naikakukaiMirroring = false;
+        --m_naikakukaiMirroring;
         const int nicoPrimed = (p == "niconico") ? ytTakeArchivePrimed("niconico") : 0;   // 판을 시작하며 장부에 더한 줄 — 새로 받은 것이 아니다
         setPlatformRunning(p, false);
         if (p == "niconico") ytWorkerEnd("niconico");   // 자리는 띄우기 전에(메인 스레드) 잡았다 — 깃발을 내린 뒤에 놓는다(프록시가 없어 건너뛴 때도)
@@ -4327,7 +4328,7 @@ void HanishikiBackend::writeTerminalLog(const QString &message, const QString &p
     //   한 창에서 이어서 읽을 수 있어야 한다. 플랫폼별 창은 그대로 둔다.
     //   内閣会 니코동 폴링은 창 없이 로그만 열어(openTerminalLog 의 showWindow=false) 그 줄이 여기로 흘러든다.
     //   창 맵은 메인 스레드 전용이라 内閣会 창이 있는지는 아래 람다 안에서 본다.
-    const bool mirror = m_naikakukaiMirroring.load() && key != "naikakukai";
+    const bool mirror = m_naikakukaiMirroring.load() > 0 && key != "naikakukai";
     QMetaObject::invokeMethod(this, [this, key, clean, mirror]() {
         if (TerminalWindow *w = m_terminalWindows.value(key)) w->appendLine(clean);
         if (mirror) {
@@ -7665,9 +7666,12 @@ void HanishikiBackend::showSystemNotification(const QString &title, const QStrin
     ).arg(safeBody, safeTitle);
     QProcess::startDetached("osascript", {"-e", script});
 #elif defined(Q_OS_WIN)
-    // Windows: PowerShell BurntToast 또는 systray balloon — 간단히 systray 활용
-    Q_UNUSED(title); Q_UNUSED(body);
-    // (구현 미정 — Windows 사용자용 fallback은 GUI 로그로 충분)
+    // Windows: 알림 영역 아이콘의 풍선(토스트)으로 — 아이콘은 MainWindow 가 갖고 있다. 메인 스레드에서 띄운다.
+    QMetaObject::invokeMethod(qApp, [title, body]() {
+        for (QWidget *w : QApplication::topLevelWidgets())
+            for (QSystemTrayIcon *t : w->findChildren<QSystemTrayIcon *>())
+                if (t->isVisible()) { t->showMessage(title, body, QSystemTrayIcon::Information, 8000); return; }
+    }, Qt::QueuedConnection);
 #endif
 }
 

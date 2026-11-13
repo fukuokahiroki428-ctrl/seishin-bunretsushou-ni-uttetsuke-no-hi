@@ -18,7 +18,7 @@ stdout 에 JSON 하나만 찍는다:
   {"PolarisProfilePostsQuery": {"doc_id": "…", "providers": ["__relay_internal__pv__…", …]}, …}
 찾지 못하면 빈 객체({})를 찍는다 — 앱은 그것을 '못 떴다' 로 읽는다.
 """
-import json, re, select, sys, time
+import json, os, re, select, sys, threading, time
 
 WANT = ("PolarisProfilePostsQuery", "PolarisProfilePageContentQuery", "PolarisProfileReelsTabContentQuery")
 REELS = "PolarisProfileReelsTabContentQuery"
@@ -36,10 +36,20 @@ def read_session():
     try:
         if sys.stdin is None or sys.stdin.isatty():
             return {}
-        ready, _, _ = select.select([sys.stdin], [], [], 0.5)
-        if not ready:
-            return {}
-        line = sys.stdin.readline()
+        if os.name == "nt":
+            # 윈도우 파이프에는 select 가 안 된다(OSError). 읽기를 다른 실에 맡기고 0.5초만 기다린다.
+            box = []
+            th = threading.Thread(target=lambda: box.append(sys.stdin.readline()), daemon=True)
+            th.start()
+            th.join(0.5)
+            if not box:
+                return {}
+            line = box[0]
+        else:
+            ready, _, _ = select.select([sys.stdin], [], [], 0.5)
+            if not ready:
+                return {}
+            line = sys.stdin.readline()
         d = json.loads(line) if line.strip() else {}
         return d if isinstance(d, dict) else {}
     except Exception:

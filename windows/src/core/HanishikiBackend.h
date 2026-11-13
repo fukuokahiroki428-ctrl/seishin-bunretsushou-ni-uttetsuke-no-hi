@@ -557,7 +557,7 @@ public:
     //   m_runningMutex 로 보호한다.
     QStringList m_naikakukaiActivePlatforms;   // 플랫폼이 다르면 함께 돈다
     // 감시가 돌려놓은 수집인가 — 맞으면 그 수집 로그를 内閣会 창에도 같이 보여 준다.
-    std::atomic<bool> m_naikakukaiMirroring{false};
+    std::atomic<int> m_naikakukaiMirroring{0};   // 内閣会가 돌린 수집 수 — 여러 플랫폼이 함께 돌 수 있어 깃발이 아니라 셈
 
     // NAS 백업 워커 — 큐 + 진행률 + 2-thread 병렬
     // ★ 메모리 큐 X — 사용자 임시 디스크에 append-only 텍스트 큐 파일 사용.

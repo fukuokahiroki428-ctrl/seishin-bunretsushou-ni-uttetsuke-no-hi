@@ -1031,6 +1031,24 @@ void recoverInterruptedPythonSwap()
             QDir().rename(dead, dir);
         }
     }
+#elif defined(Q_OS_WIN)
+    // 윈도우는 앱 폴더 안과 사용자 사본 두 곳에 환경이 있을 수 있다. 맥과 같은 규칙으로 되살린다.
+    for (const QString &dir : {bundledResourcesDir() + "/python_env", userPythonEnvDir()}) {
+        const QString dead = dir + ".dead";
+        if (QFileInfo::exists(dir + ".new")) QDir(dir + ".new").removeRecursively();
+        if (QFileInfo::exists(dead)) QDir(dead).removeRecursively();
+        if (!QFileInfo::exists(dir + ".old/python.exe")) {
+            if (QFileInfo::exists(dir + ".old")) QDir(dir + ".old").removeRecursively();
+            continue;
+        }
+        if (QFileInfo::exists(dir) && !QDir().rename(dir, dead)) continue;
+        if (QDir().rename(dir + ".old", dir)) {
+            QDir(dead).removeRecursively();
+            qWarning().noquote() << "[python] 끊긴 교체를 되돌렸습니다:" << dir;
+        } else if (QFileInfo::exists(dead)) {
+            QDir().rename(dead, dir);
+        }
+    }
 #endif
 }
 
