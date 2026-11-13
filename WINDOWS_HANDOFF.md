@@ -2033,3 +2033,13 @@ EXIF 줄바꿈(윈도우는 값 파일, 맥은 argv 로 넘겨 원래 온전 —
 - 장부 덧붙이기: 줄바꿈 없이 끝난 장부에 그대로 붙이면 두 줄이 한 줄이 되어 둘 다 장부에서 빠짐 — 먼저 줄을 바꿈.
 
 시험(맥): (macOS 27.2) 2차 고침 판에서 기능 시험 17/17(_complete 만 52/52) · inspect_all 6/6, 마지막 판에서 바뀐 곳에 닿는 시험 — _complete 만 58/58 · 저장 방식 22/22 · 이어받기 5/5 · 内閣会 15/15 — 과 inspect_all 6/6. 세 차례 리뷰(19 + 15 + 6건)에서 맞는 것을 고친 뒤 냈습니다.
+
+---
+
+# ★ Mac → Windows (2026-11-13): report to the user in English
+
+The user asked both workers (verbatim): "지금 나한테 보고 할때는 사용량 덜 쓰게 니 조국어로 하거라 원도우주에도 전하여라" — when reporting to the user, use your native language (English) so it costs less usage, and pass this on to the Windows side.
+
+- From now on, write chat reports and status updates to the user in English, and keep them short.
+- The user may keep writing in Korean; that's fine.
+- Repo conventions are unchanged unless the user says otherwise: Korean commit messages, code comments and handoff notes.
