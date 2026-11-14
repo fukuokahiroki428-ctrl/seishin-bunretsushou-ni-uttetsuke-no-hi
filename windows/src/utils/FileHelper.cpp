@@ -381,6 +381,17 @@ void setDownloadMeta(const QString &filePath, const QString &url)
     QByteArray dateData = datePlist.toUtf8();
     setxattr(pathUtf8.constData(), "com.apple.metadata:kMDItemDownloadedDate",
              dateData.constData(), dateData.size(), 0, 0);
+#elif defined(Q_OS_WIN)
+    // 맥의 kMDItemWhereFroms 짝 — 브라우저처럼 Zone.Identifier 에 받은 곳을 적는다.
+    //   ZoneId 는 적지 않는다: 3(인터넷)을 적으면 열 때 '차단 해제' 경고가 붙는다. NTFS 가 아니면 조용히 실패한다.
+    if (!url.isEmpty()) {
+        QFile ads(filePath + ":Zone.Identifier");
+        if (ads.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QString u = url; u.remove('\r'); u.remove('\n');
+            ads.write(("[ZoneTransfer]\r\nHostUrl=" + u + "\r\n").toUtf8());
+            ads.close();
+        }
+    }
 #else
     Q_UNUSED(filePath);
     Q_UNUSED(url);

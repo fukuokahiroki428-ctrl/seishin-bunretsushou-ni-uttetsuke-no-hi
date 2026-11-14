@@ -31,6 +31,35 @@ from pathlib import Path
 #   붙이면 레지스트리(LongPathsEnabled)를 안 켜도 그대로 된다.
 #   맥에서는 아무 일도 일어나지 않는다(os.name != "nt") — 그래서 두 트리에 같은
 #   코드를 넣을 수 있고, 만들어지는 파일 이름·내용은 양쪽이 똑같이 유지된다.
+
+def _win_set_creation_time(path, ts):
+    """윈도우 파일의 만든 날짜를 맞춘다(C++ 쪽의 SetFileTime 과 같은 일). 실패해도 조용히 넘어간다."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        k32.CreateFileW.restype = wintypes.HANDLE
+        k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                    wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        k32.SetFileTime.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME),
+                                    ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME)]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        p = os.path.abspath(path)
+        if not p.startswith('\\\\'):
+            p = '\\\\?\\' + p
+        h = k32.CreateFileW(p, 0x0100, 7, None, 3, 0x02000000, None)   # FILE_WRITE_ATTRIBUTES · OPEN_EXISTING
+        if h is None or h == wintypes.HANDLE(-1).value:
+            return
+        try:
+            v = int(ts * 10000000) + 116444736000000000
+            ft = wintypes.FILETIME(v & 0xFFFFFFFF, v >> 32)
+            k32.SetFileTime(h, ctypes.byref(ft), None, None)
+        finally:
+            k32.CloseHandle(h)
+    except Exception:
+        pass
+
+
 def _lp(p, always=False):
     r"""윈도우에서 긴 경로에 \\?\ 를 붙인다. 그 외에는 그대로 둔다.
 
@@ -823,6 +852,8 @@ def main():
                         # 수정 날짜 · 맥의 만든 날짜를 함께 맞춘다 — 맥은 수정 날짜를 만든 날짜보다 앞으로 놓으면 만든 날짜도 따라온다(실측).
                         #   예전의 SetFile 은 일본 시간 글자를 그 맥의 현지 시각으로 읽어 다른 시간대에서 틀렸고, 파일마다 프로세스를 띄웠다.
                         os.utime(filepath, (ts, ts))
+                        if os.name == 'nt':
+                            _win_set_creation_time(filepath, ts)   # 윈도우는 수정 날짜를 바꿔도 만든 날짜가 따라오지 않는다
                     except Exception:
                         pass
                 # macOS xattr: kMDItemWhereFroms (소스 URL 메타데이터)

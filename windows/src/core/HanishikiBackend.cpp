@@ -5402,11 +5402,36 @@ void HanishikiBackend::setStorageMode(const QString &mode)
         paths << path;
         items << QString("%1 %2  (%3)").arg(isNet ? "🌐" : "💾", name, path);
     }
+#elif defined(Q_OS_WIN)
+    // listMountedVolumes 와 같은 열거 — 시스템 드라이브는 빼고, UNC · 네트워크 드라이브는 NAS 로 친다.
+    const QString sysRoot = QString::fromLocal8Bit(qgetenv("WINDIR")).left(2);
+    for (const QStorageInfo &si : QStorageInfo::mountedVolumes()) {
+        if (!si.isValid() || !si.isReady() || si.isReadOnly()) continue;
+        const QString root = si.rootPath();
+        const QString nativeRoot = QDir::toNativeSeparators(root);
+        if (nativeRoot.left(2).compare(sysRoot, Qt::CaseInsensitive) == 0) continue;
+        QString name = si.displayName();
+        if (name.trimmed().isEmpty()) name = nativeRoot;
+        const QString fsType = QString::fromUtf8(si.fileSystemType()).toLower();
+        bool isNet = nativeRoot.startsWith("\\\\")
+                     || fsType.contains("smb") || fsType.contains("nfs") || fsType.contains("webdav");
+        if (!isNet && nativeRoot.length() >= 2 && nativeRoot[1] == ':')
+            isNet = GetDriveTypeW(reinterpret_cast<LPCWSTR>(QString(nativeRoot.left(2) + "\\").utf16())) == DRIVE_REMOTE;
+        if (wantNetwork != isNet) continue;
+        paths << root;
+        items << QString("%1 %2  (%3)").arg(isNet ? "🌐" : "💾", name, nativeRoot);
+    }
 #endif
     if (items.isEmpty()) {
+#ifdef Q_OS_WIN
+        QString hint = wantNetwork
+            ? "NAS 를 네트워크 드라이브로 연결한 뒤 다시 시도"
+            : "외장 디스크 (USB/SSD) 연결 후 다시 시도";
+#else
         QString hint = wantNetwork
             ? "WebDAV → 'Finder에 마운트' 먼저 누르세요"
             : "외장 디스크 (USB/SSD) 연결 후 다시 시도";
+#endif
         log(QString("마운트된 %1 없음 — %2").arg(wantNetwork ? "NAS" : "외장", hint), "warning", "settings");
         runJs(QString("alert('마운트된 %1 없음.\\n\\n%2');"
                       "if(window.onStorageModeChanged) onStorageModeChanged('local','');")
@@ -7135,7 +7160,8 @@ void HanishikiBackend::testSftpConnection(const QString &url, const QString &use
 {
     QString rclone = QCoreApplication::applicationDirPath() + "/../Resources/tools/rclone";
 #ifdef Q_OS_WIN
-    rclone = QCoreApplication::applicationDirPath() + "/resources/tools/rclone.exe";
+    rclone = QCoreApplication::applicationDirPath() + "/rclone.exe";   // 패키지는 exe 옆에 둔다
+    if (!QFile::exists(rclone)) rclone = QCoreApplication::applicationDirPath() + "/resources/tools/rclone.exe";
 #endif
     if (!QFile::exists(rclone)) {
         log("❌ 번들 rclone 이 없어 SFTP 를 확인할 수 없습니다.", "error", "settings");
@@ -13239,8 +13265,10 @@ void HanishikiBackend::runYoutubeDownload(const QJsonObject &config)
         return esc(q);
     };
 
+    // 인자에는 yt-dlp 서식이 없고 경로(--download-archive · --cookies · --ffmpeg-location) · 프록시 주소가 있다 —
+    //   저장 폴더 이름에 % 가 있으면 배치가 변수로 읽어 장부가 엉뚱한 곳에 가므로 주소처럼 겹쳐 적는다.
     QString argsStr;
-    for (const QString &a : baseArgs) argsStr += esc(a) + " ";
+    for (const QString &a : baseArgs) argsStr += escUrl(a) + " ";
 
     QString script;
     // ★ enabledelayedexpansion — if/else 블록 안에서 !VAR! 로 런타임 값 읽기 필요
