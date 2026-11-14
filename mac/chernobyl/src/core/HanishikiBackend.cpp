@@ -8151,10 +8151,16 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                         //   (격리 사본 실측: 6장 중 2~3장만, 매번 다른 자리). 그리지 않으면 1.2초 뒤에 그냥 넘어간다.
                         const frame = () => Promise.race([
                             new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))), sleep(1200)]);
+                        // ★ 그리지 않는 창(최소화된 수집 창 · 화면이 꺼진 맥)에서는 '보일 때 불러오기' 가 판정되지 않는다 — 한 화면마다
+                        //   RealChromeCrawler 의 __hkTickIO 로 지금 화면에 든 대상을 재어 알린다(그리는 중이면 아무것도 하지 않는다).
+                        //   맨 위(본문 글 · 그림)부터 — 그 자리를 지나치기 전에.
+                        const tick = o => { try { if (typeof window.__hkTickIO === 'function') return window.__hkTickIO(o); } catch (e) {} return 0; };
+                        if (tick({carousel: true})) await sleep(600);
                         while (performance.now() < deadline) {
                             const y0 = window.scrollY;
                             window.scrollBy(0, Math.max(200, Math.floor(window.innerHeight * 0.8)));
                             await frame();
+                            if (tick({carousel: true})) await sleep(300);
                             await sleep(150);
                             if (window.scrollY === y0 || window.innerHeight + window.scrollY >= se.scrollHeight - 2) {
                                 await sleep(700);
@@ -8177,6 +8183,7 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                         for (let i = 0; i < 30; i++) {
                             window.scrollTo(0, document.body.scrollHeight);
                             await sleep(500);
+                            tick({carousel: true});
                         }
                         // 3b) 그리지 않고도 지연 그림 — 화면이 꺼진 맥(덮개 닫힘 · 화면 잠듦)은 그리기를 멈춰 IntersectionObserver 가
                         //   울리지 않는다(밤의 内閣会 캡처에서 그림이 빠졌다 — 시험 io.html 0/6). 문서가 열릴 때 심어 둔 기록
@@ -8184,7 +8191,19 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                         //   eager 로, 빈 자리의 data-src 류는 src 로 옮긴 뒤 그림이 다 올 때까지(최대 15초) 기다린다.
                         //   화면이 켜져 있으면 위의 스크롤이 이미 다 불러 두어 바뀌는 것이 없다.
                         try {
+                            // 가로로 넘기는 칸(여러 장 그림)은 넘겨야 보이는 그림까지 — 그리는 중이어도 한 번(캡처는 다 담는다)
+                            tick({carousel: true});
                             if (typeof window.__hkFireIO === 'function') window.__hkFireIO();
+                            // 알린 뒤 페이지가 그림을 붙이는 데 시간이 든다(X 는 받은 뒤에 붙인다) — 그림 수가 1.5초 동안 그대로일 때까지(최대 8초)
+                            {
+                                let last = -1, still = 0;
+                                const end = performance.now() + 8000;
+                                while (performance.now() < end) {
+                                    const n = document.images.length + document.querySelectorAll('[style*="background-image"]').length;
+                                    if (n === last) { if (++still >= 3) break; } else { still = 0; last = n; }
+                                    await sleep(500);
+                                }
+                            }
                             document.querySelectorAll('img[loading="lazy"], iframe[loading="lazy"]').forEach(e => { try { e.loading = 'eager'; } catch (x) {} });
                             const blank = v => !v || /^data:,?$/i.test(v) || /^data:image\/(gif|png|svg\+xml)[;,].{0,400}$/i.test(v)
                                 || /\/(blank|spacer|pixel|transparent|placeholder)[^\/]*\.(gif|png|svg)(\?|$)/i.test(v);
@@ -22605,16 +22624,17 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
                 log(QString("크롤 쿠키 %1개 (도메인: %2)").arg(crawlCookies.size()).arg(domain), "info", "crawl");
             }
         }
-        // ★ 끝까지 기록 — 저장된 계정 로그인을 호스트별로 미리 고른다(설정은 메인 스레드에서만 읽는다)
+        // ★ 저장된 계정 로그인을 호스트별로 미리 고른다(설정은 메인 스레드에서만 읽는다) — 끝까지 기록뿐 아니라 보통 캡처도.
+        //   로그인하지 않은 X 는 글 대신 로그인 화면만 주어, 크롤 탭으로 X 글을 캡처하면 로그인 화면이 저장됐다.
         QHash<QString, QList<QNetworkCookie>> recordLogins;
-        if (record) {
+        {
             for (const QString &u : urlList) {
                 const QString host = QUrl(u).host().toLower();
                 if (host.isEmpty() || recordLogins.contains(host)) continue;
                 QString label;
                 recordLogins.insert(host, savedLoginCookiesForHost(host, &label));
                 if (!label.isEmpty())
-                    log(QString("🔐 %1 — 저장된 %2 로그인으로 기록합니다").arg(host, label), "info", "crawl");
+                    log(QString("🔐 %1 — 저장된 %2 로그인으로 엽니다").arg(host, label), "info", "crawl");
             }
         }
         QThread *thread = QThread::create([this, urlList, capturesDir, crawlDir, loginCheckJs, crawlCookies, config, crawlRun,
@@ -22641,11 +22661,14 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
                                                .arg(sanitizeFilename(QString(host + qu.path()).replace(QLatin1Char('/'), QLatin1Char('_')), 60));
                     ok = runCrawlRecord(url, outDir, ck, config["waitLogin"].toBool(false), loginCheckJs,
                                         [this, crawlRun]() { return platformRunning("crawl", true) && crawlRun == s_crawlRun.load(); });
-                } else if (!loginCheckJs.isEmpty()) {
-                    ok = captureRealPageCDPLoginAware(url, capturesDir, filename,
-                                                       loginCheckJs, "crawl", 8000, crawlCookies, config);
                 } else {
-                    ok = captureRealPageCDP(url, capturesDir, filename, 8000, crawlCookies);
+                    // 저장된 계정 로그인(그 호스트) + 크롤 탭의 '캡쳐용 로그인 쿠키'(같은 이름이면 크롤 탭 것이 이긴다 — 뒤에 싣는다)
+                    QList<QNetworkCookie> ck = recordLogins.value(QUrl(url).host().toLower());
+                    ck.append(crawlCookies);
+                    if (!loginCheckJs.isEmpty())
+                        ok = captureRealPageCDPLoginAware(url, capturesDir, filename, loginCheckJs, "crawl", 8000, ck, config);
+                    else
+                        ok = captureRealPageCDP(url, capturesDir, filename, 8000, ck);
                 }
                 if (ok) saved++;
                 updateStats(saved, urlList.size(),

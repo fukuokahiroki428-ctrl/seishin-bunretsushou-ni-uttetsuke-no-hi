@@ -32,7 +32,7 @@ import _common as C  # noqa: E402
 import fixtures  # noqa: E402
 
 XORIGIN_CSP = "default-src 'self'; img-src *; connect-src 'self'; script-src 'unsafe-inline'"
-PAGES = ['index.html', 'gallery.html', 'io.html', 'io2.html', 'xorigin.html', 'csp.html']
+PAGES = ['index.html', 'gallery.html', 'io.html', 'io2.html', 'lazydiv.html', 'xorigin.html', 'csp.html']
 
 
 def main() -> int:
@@ -65,6 +65,20 @@ def main() -> int:
         '<script>var o=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){'
         'e.target.src=e.target.getAttribute("data-real");o.unobserve(e.target);}})},{root:document.getElementById("r")});'
         'document.querySelectorAll("img.io2").forEach(function(i){o.observe(i)});</script>', encoding='utf-8')
+    # 보일 때 붙이는 그림(X 와 같은 꼴) — 그림 자리가 <img> 가 아닌 빈 <div> 이고, 관찰자가 '보인다' 를 들어야 그 안에 그림을 붙인다:
+    #   프로필 칸 하나 + 가로로 넘기는 칸 넷(여러 장 그림). 넘겨야 보이는 칸(3 · 4)은 화면이 켜져 있어도 원래는 오지 않는다 — 앱이
+    #   캡처하며 넘김 칸을 '보인다' 로 알려야(__hkTickIO carousel) 다섯 장이 다 담긴다. 그리지 않는 창에서는 스크롤마다 자로 재어 알린다.
+    #   (사용자 보고 2026-11-15: X 의 4장 넘김 글 캡처에 그림이 한 장도 없었다)
+    (site / 'lazydiv.html').write_text(
+        '<!doctype html><meta charset="utf-8"><title>넘김 칸</title><style>.car{display:flex;overflow-x:auto;width:320px}'
+        '.slot{flex:0 0 320px;aspect-ratio:0.79/1;background:#eee}.av{width:48px;height:48px;background:#ddd}</style>'
+        '<h1>LAZYDIV</h1><div class="av" id="av"></div><div class="car">' +
+        ''.join('<div class="slot" data-n="%d"></div>' % n for n in range(1, 5)) + '</div><div style="height:2400px"></div>'
+        '<script>var c=["red","blue","green","lazy1","lazy2"];var io=new IntersectionObserver(function(es){es.forEach(function(e){'
+        'if(!e.isIntersecting||e.target.firstChild)return;var n=e.target.id==="av"?0:+e.target.dataset.n;var im=document.createElement("img");'
+        'im.width=60;im.height=60;im.src="/img/"+c[n]+".png?lazydiv="+n;e.target.appendChild(im);io.unobserve(e.target);});});'
+        'io.observe(document.getElementById("av"));document.querySelectorAll(".slot").forEach(function(s){io.observe(s)});</script>',
+        encoding='utf-8')
     (site / 'xorigin.html').write_text(
         '<!doctype html><meta charset="utf-8"><title>다른 출처 그림</title><h1>교차 출처</h1>'
         '<img src="http://127.0.0.1:%d/img/blue.png" width="60"><img src="http://127.0.0.1:%d/img/green.png" width="60">' % (b, b),
@@ -119,6 +133,9 @@ def main() -> int:
                     print('      ' + re.sub(r'(base64,)[A-Za-z0-9+/=]{20,}', r'\1…', tag)[:220])
             check('%s — SingleFile 결과 · 그림 %d개 중 data: %d개 · 빈 그림 %d · 바깥 주소 %d' % (Path(f).name, imgs, datas, empties, len(left)),
                   sf and not err and not left and empties == 0 and datas >= max(1, imgs - 1))
+            if 'LAZYDIV' in h:
+                check('보일 때 붙이는 그림(X 꼴 — 프로필 칸 + 넘김 칸 넷) — 다섯 장 모두 담겼다', datas >= 5 and imgs == 5,
+                      '그림 %d · data: %d' % (imgs, datas))
             if 'IO2' in h:
                 check('그리지 않아도 뜨는 그림(io2) — 3장 모두 담겼다(화면이 꺼진 맥의 밤 캡처와 같은 처지)', datas >= 3 and imgs == 3,
                       '그림 %d · data: %d' % (imgs, datas))

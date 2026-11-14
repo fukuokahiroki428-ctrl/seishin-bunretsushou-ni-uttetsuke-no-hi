@@ -449,37 +449,88 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
                 //   --disable-blink-features 플래그 대신 사용 (Chrome 보안 경고 회피)
                 {
                     QJsonObject p;
-                    // ★ IntersectionObserver 기록기 — 무엇을 관찰하는지만 적어 둔다(동작은 원래와 같다). 화면이 꺼진 맥(덮개 닫힘 ·
-                    //   화면 잠듦)은 그리기를 멈춰 IntersectionObserver 가 울리지 않아, 밤의 内閣会 캡처에서 지연 그림이 빠졌다
-                    //   (시험 io.html 0/6). 캡처 직전에 __hkFireIO() 가 아직 못 들은 '그림' 대상에만 '보인다' 를 직접 알린다
-                    //   (HanishikiBackend::captureRealPageCDP). 관찰자는 WeakRef 로 들고 있어 지운 것은 놓아준다.
-                    p["source"] =
+                    // ★ IntersectionObserver 기록기 — 무엇을 관찰하는지 적어 둔다(동작은 원래와 같다). 수집 창은 최소화돼 있고
+                    //   (화면이 꺼진 맥도 같다) 그런 창은 '가려진(hidden)' 쪽이라 그리지 않는다 — 실측(2026-11-15, macOS 27 · 이 Chrome):
+                    //   최소화하면 --disable-backgrounding-occluded-windows 가 있어도 visibilityState 'hidden' · requestAnimationFrame 0번.
+                    //   그리지 않으면 IntersectionObserver 가 판정하지 않아 '보일 때 불러오는' 것이 하나도 오지 않는다 — X 는 그림
+                    //   (프로필 · 여러 장 넘김 칸)을 그렇게 불러, 캡처에 그림이 한 장도 없었다(사용자 보고).
+                    //   · __hkTickIO(): 관찰 대상이 지금 화면(과 잘라 내는 조상 · root · rootMargin)에 실제로 들어 있는지 자로 재어,
+                    //     관찰자가 마지막으로 들은 것과 다를 때만 알린다. 그리는 중이면 원래 관찰자가 판정하므로 하지 않는다 —
+                    //     {carousel:true} 의 가로로 넘기는 칸(여러 장 그림)만은 그리는 중에도: 그 칸의 줄이 화면에 들면 가로 잘림
+                    //     (넘김 칸 · 창 너비)을 보지 않고 '보인다' 를 알린다 — 캡처는 넘겨야 보이는 그림까지 담는다(넘김 칸이 아닌 대상은
+                    //     그리는 중에 건드리지 않아 화면이 켜진 때의 캡처가 다른 데서 바뀌지 않는다). {force:true} 는 그리는 중에도 모두.
+                    //   · __hkFireIO(): (r50) 아직 못 들은 '그림' 대상에 '보인다' — 마지막 안전망.
+                    //   · requestAnimationFrame: 그리지 않는 동안엔 0.1초 뒤 타이머로도 부른다(그리면 원래대로 — 먼저 오는 쪽 한 번만).
+                    //   HANISHIKI_NO_VIS_EMU=1 이면 __hkTickIO · rAF 대체를 넣지 않는다(시험에서 앞뒤를 견줄 때만).
+                    const bool visEmu = !qEnvironmentVariableIsSet("HANISHIKI_NO_VIS_EMU");
+                    p["source"] = QString::fromUtf8(
                         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
                         "Object.defineProperty(navigator, 'languages', {get: () => ['ko-KR', 'ko', 'en-US', 'en']});"
                         "Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});"
                         "(() => { try {"
+                        " const VIS = %1;"
+                        " const nRAF = window.requestAnimationFrame.bind(window), nCAF = window.cancelAnimationFrame.bind(window);"
+                        " let lastFrame = 0; const beat = t => { lastFrame = performance.now(); nRAF(beat); }; nRAF(beat);"
+                        " const rendering = () => performance.now() - lastFrame < 400;"
+                        " if (VIS) {"
+                        "  let seq = 0; const live = new Map();"
+                        "  const raf = function requestAnimationFrame(cb) { const id = ++seq; let done = false, tm = 0, nid = 0;"
+                        "   const run = ts => { if (done) return; done = true; live.delete(id); if (tm) clearTimeout(tm); if (nid) nCAF(nid); cb(ts); };"
+                        "   nid = nRAF(run); if (!rendering()) tm = setTimeout(() => run(performance.now()), 100);"
+                        "   live.set(id, () => { done = true; if (tm) clearTimeout(tm); nCAF(nid); }); return id; };"
+                        "  const caf = function cancelAnimationFrame(id) { const c = live.get(id); if (c) { c(); live.delete(id); } };"
+                        "  Object.defineProperty(raf, 'toString', {value: () => 'function requestAnimationFrame() { [native code] }'});"
+                        "  Object.defineProperty(caf, 'toString', {value: () => 'function cancelAnimationFrame() { [native code] }'});"
+                        "  window.requestAnimationFrame = raf; window.cancelAnimationFrame = caf;"
+                        " }"
                         " const N = window.IntersectionObserver; if (!N || N.__hk || typeof WeakRef !== 'function') return;"
                         " const data = new WeakMap(), refs = new Set();"
                         " class IntersectionObserver extends N {"
-                        "  constructor(cb, opts) { super(cb, opts); data.set(this, {cb, targets: new Set()}); refs.add(new WeakRef(this)); }"
+                        "  constructor(cb, opts) { const d = {cb, opts: opts || {}, targets: new Set(), state: new WeakMap()};"
+                        "   super(function (ents, obs) { for (const e of ents) d.state.set(e.target, e.isIntersecting); return cb.call(this, ents, obs); }, opts);"
+                        "   data.set(this, d); refs.add(new WeakRef(this)); }"
                         "  observe(t) { const d = data.get(this); if (d && t) d.targets.add(t); return super.observe(t); }"
-                        "  unobserve(t) { const d = data.get(this); if (d) d.targets.delete(t); return super.unobserve(t); }"
+                        "  unobserve(t) { const d = data.get(this); if (d) { d.targets.delete(t); d.state.delete(t); } return super.unobserve(t); }"
                         "  disconnect() { const d = data.get(this); if (d) d.targets.clear(); return super.disconnect(); }"
                         " }"
                         " Object.defineProperty(IntersectionObserver, '__hk', {value: true});"
                         " Object.defineProperty(IntersectionObserver, 'toString', {value: () => N.toString()});"
                         " window.IntersectionObserver = IntersectionObserver;"
+                        " const each = f => { for (const w of Array.from(refs)) { const o = w.deref(); if (!o) { refs.delete(w); continue; }"
+                        "   const d = data.get(o); if (d) f(o, d); } };"
+                        " const deliver = (o, d, ents) => { if (!ents.length) return 0; try { d.cb.call(o, ents, o); } catch (e) {} return ents.length; };"
                         " const imgLike = t => t && t.isConnected && (t.tagName === 'IMG' || t.tagName === 'PICTURE'"
                         "   || t.hasAttribute('data-src') || t.hasAttribute('data-srcset') || t.hasAttribute('data-bg') || t.hasAttribute('data-background'));"
-                        " Object.defineProperty(window, '__hkFireIO', {value: () => { let n = 0;"
-                        "  for (const w of Array.from(refs)) { const o = w.deref(); if (!o) { refs.delete(w); continue; }"
-                        "   const d = data.get(o); if (!d) continue; const ents = [];"
-                        "   for (const t of Array.from(d.targets)) { if (!imgLike(t)) continue; const b = t.getBoundingClientRect();"
-                        "    ents.push({target: t, isIntersecting: true, isVisible: true, intersectionRatio: 1, boundingClientRect: b,"
-                        "      intersectionRect: b, rootBounds: new DOMRect(0, 0, innerWidth, innerHeight), time: performance.now()}); }"
-                        "   if (ents.length) { try { d.cb.call(o, ents, o); n += ents.length; } catch (e) {} } }"
-                        "  return n; }});"
-                        "} catch (e) {} })();";
+                        " const entry = (t, v, root) => { const b = t.getBoundingClientRect(); return {target: t, isIntersecting: v, isVisible: v,"
+                        "   intersectionRatio: v ? 1 : 0, boundingClientRect: b, intersectionRect: v ? b : new DOMRect(0, 0, 0, 0),"
+                        "   rootBounds: root ? root.getBoundingClientRect() : new DOMRect(0, 0, innerWidth, innerHeight), time: performance.now()}; };"
+                        " Object.defineProperty(window, '__hkFireIO', {value: () => { let n = 0; each((o, d) => { const ents = [];"
+                        "   for (const t of Array.from(d.targets)) { if (!imgLike(t) || d.state.get(t) === true) continue; d.state.set(t, true); ents.push(entry(t, true, null)); }"
+                        "   n += deliver(o, d, ents); }); return n; }});"
+                        " if (!VIS) return;"
+                        " const px = (v, size) => { v = String(v || '0px').trim(); const n = parseFloat(v) || 0; return v.endsWith('%') ? size * n / 100 : n; };"
+                        " const rc = el => { const x = el.getBoundingClientRect(); return {l: x.left, t: x.top, r: x.right, b: x.bottom}; };"
+                        " const seen = (t, root, rm, carousel) => { const r = rc(t); const zero = r.r - r.l <= 0 || r.b - r.t <= 0; let hs = false;"
+                        "  for (let a = t.parentElement; a && a !== root && a !== document.documentElement && a !== document.body; a = a.parentElement) {"
+                        "   const cs = getComputedStyle(a); const ox = cs.overflowX !== 'visible', oy = cs.overflowY !== 'visible';"
+                        "   if (!ox && !oy) continue; const ar = rc(a);"
+                        "   if (carousel && ox && a.scrollWidth > a.clientWidth + 1) hs = true;"
+                        "   if (ox && !hs) { r.l = Math.max(r.l, ar.l); r.r = Math.min(r.r, ar.r); }"
+                        "   if (oy) { r.t = Math.max(r.t, ar.t); r.b = Math.min(r.b, ar.b); } }"
+                        "  const rr = root ? rc(root) : {l: 0, t: 0, r: innerWidth, b: innerHeight}; const w = rr.r - rr.l, h = rr.b - rr.t;"
+                        "  const m = String(rm || '0px').trim().split(/\\s+/); const mt = px(m[0], h), mr = px(m[1] ?? m[0], w), mb = px(m[2] ?? m[0], h), ml = px(m[3] ?? m[1] ?? m[0], w);"
+                        "  const L = hs ? r.l : Math.max(r.l, rr.l - ml), R = hs ? r.r : Math.min(r.r, rr.r + mr);"
+                        "  const T = Math.max(r.t, rr.t - mt), B = Math.min(r.b, rr.b + mb);"
+                        "  return {v: zero ? (R >= L && B >= T) : (R > L && B > T), hs}; };"
+                        " Object.defineProperty(window, '__hkTickIO', {value: o => { const carousel = !!(o && o.carousel); const all = !!(o && o.force) || !rendering();"
+                        "  if (!all && !carousel) return 0;"
+                        "  let n = 0; each((ob, d) => { const root = d.opts.root && d.opts.root.nodeType === 1 ? d.opts.root : null;"
+                        "   if (root && !root.isConnected) return; const ents = [];"
+                        "   for (const t of Array.from(d.targets)) { if (!t.isConnected) continue; let s; try { s = seen(t, root, d.opts.rootMargin, carousel); } catch (e) { continue; }"
+                        "    if (!all && (!s.hs || !s.v)) continue;"
+                        "    const v = s.v, was = d.state.get(t); if (was === v) continue; d.state.set(t, v); if (was === undefined && !v) continue; ents.push(entry(t, v, root)); }"
+                        "   n += deliver(ob, d, ents); }); return n; }});"
+                        "} catch (e) {} })();").arg(visEmu ? QStringLiteral("true") : QStringLiteral("false"));
                     sendCommand("Page.enable", QJsonObject(), nullptr);
                     sendCommand("Page.addScriptToEvaluateOnNewDocument", p, nullptr);
                     // ★ SingleFile 은 페이지 안(main world)에서 fetch()·DOMParser 로 자원을 모은다.
