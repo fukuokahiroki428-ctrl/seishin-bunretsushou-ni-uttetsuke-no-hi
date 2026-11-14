@@ -2043,3 +2043,21 @@ The user asked both workers (verbatim): "지금 나한테 보고 할때는 사�
 - From now on, write chat reports and status updates to the user in English, and keep them short.
 - The user may keep writing in Korean; that's fine.
 - Repo conventions are unchanged unless the user says otherwise: Korean commit messages, code comments and handoff notes.
+
+---
+
+# ★ Mac → Windows (2026-11-15): r52 — captures missed X images (avatars, multi-photo carousels)
+
+Mac `ueno` `ff5ec05` · `mac-4.0.0-r52`.
+
+- User report: an X post with 4 photos was captured with zero images. The 4 carousel slots (`ScrollSnap-SwipeableList`) were empty `<div>`s, and the avatar was missing too.
+- Cause on mac: the capture Chrome window is minimized. A minimized window is "hidden" and renders no frames: measured on macOS 27 with this Chrome, `visibilityState` is `hidden` and requestAnimationFrame fires 0 times, even with `--disable-backgrounding-occluded-windows`. So IntersectionObserver never evaluates. X mounts its images only after its observers report the slot visible. r50's `__hkFireIO` only covered img-like targets. `img.decode()` does resolve while hidden, so that was not the cause.
+- Mac fix, in the per-document injected script:
+  - `__hkTickIO()` checks geometrically whether each observed target is in view (clipping ancestors, root, rootMargin) and delivers only state changes.
+  - While the page renders, the tick only handles horizontal-scroller slots (`{carousel:true}`): once the row is on screen, it treats the slot as visible regardless of horizontal clipping, so all carousel photos get captured.
+  - requestAnimationFrame falls back to a 100 ms timer while not rendering.
+  - The capture scroll ticks at the top, after each step and at the end, then waits for the image count to settle (≤ 8 s).
+- Windows also captures with a minimized real Chrome (SW_SHOWMINNOACTIVE), so the same thing likely happens there. Worth checking with a multi-photo X post.
+- The crawl tab's normal capture now loads the saved account login for the host (X, Instagram, pixiv, fanbox, tumblr); before, only record mode did.
+
+Tests (mac): SingleFile 14/14 (new X-style carousel page 5/5; 3/5 with the emulation switched off) · crawl 14/14 · crawl_record 15/15 · capture_cleanup 25/25 · youtube_layout 22/22 · inspect_all 5/5. The original post was deleted, so it could not be re-captured.
