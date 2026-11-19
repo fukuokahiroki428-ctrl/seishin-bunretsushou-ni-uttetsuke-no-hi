@@ -2061,3 +2061,49 @@ Mac `ueno` `ff5ec05` · `mac-4.0.0-r52`.
 - The crawl tab's normal capture now loads the saved account login for the host (X, Instagram, pixiv, fanbox, tumblr); before, only record mode did.
 
 Tests (mac): SingleFile 14/14 (new X-style carousel page 5/5; 3/5 with the emulation switched off) · crawl 14/14 · crawl_record 15/15 · capture_cleanup 25/25 · youtube_layout 22/22 · inspect_all 5/5. The original post was deleted, so it could not be re-captured.
+
+---
+
+# ★ Mac → Windows (2026-11-20): r53 + r54 — future OS / Chrome hardening, then a review of it
+
+Mac `ueno` `4a03040` (`mac-4.0.0-r53`) and `a871784` (`mac-4.0.0-r54`).
+- r53: the full suite first passed on macOS 27.2.1 with r52 (17/17, inspect 6/6). Then 729 OS-touching call sites were audited.
+- r54: a five-slice review of r53 (finders + adversarial verifiers); everything confirmed is fixed.
+
+Items that may matter for Windows:
+
+**Twitter daemon / collector — please check your copies**
+- **Cookie auto-refresh must only take the same X account.**
+  - The problem: on 401/403 the daemon took auth_token/ct0 from whichever Chrome profile was written last. If that login is another X account, account B's session goes out through account A's proxy, and B's data is saved as A's (bookmarks etc.). Reproduced with synthetic profiles.
+  - On the mac this path was dead until r53 (the libcommonCrypto dlopen failed). r53 revived it; r54 guards it. If Windows' DPAPI / v20 path ever returns cookies, the same risk applies.
+  - Mac rule now: accept a candidate only if its auth_token equals the current one (same login, only ct0 changed), or its `twid` uid equals `expected_uid`.
+  - `expected_uid` is recorded when Settings imports tokens from a browser: `twid` from the same cookie jar is saved as `accounts.twitter[0].uid`, plus `uid_tok` (first 16 hex of sha256(auth_token)). C++ passes it in the init args only when `uid_tok` matches the current token.
+  - No refresh on 403 codes 64 / 326 (suspended / locked). A 401 without `expected_uid` skips the keychain read entirely.
+  - Exact hosts only (`.x.com`, `x.com`, `.twitter.com`, `twitter.com`); `LIKE '%x.com'` also matched netflix.com. Skip expired and partitioned (`top_frame_site_key`) cookies. Pair auth_token / ct0 / twid from the same site.
+- **Daemon reply ids (`_rid`).**
+  - C++ `sendDaemonCommand` adds `"_rid"` to every command. The daemon echoes it in the final reply line (`_reply(obj, rid)`).
+  - C++ drops a final line whose `_rid` differs (logs "앞 명령(#n)의 늦은 답을 버렸습니다") and keeps waiting. Lines without `_rid` are accepted (old daemons, hotfix lag).
+  - Why: a reply that arrived after the 60 s budget (30 s for TweetDetail) — keychain prompt, hash repair — was read as the answer to the NEXT command. Windows' `sendDaemonCommand` has the same structure; please port.
+  - The test fake daemon echoes `_rid`. proxy_exit gained B7 (late reply dropped) and B8 (`expected_uid` only with a matching token).
+
+**Capture Chrome**
+- r53 added `IntensiveWakeUpThrottling` and `FreezingOnEnergySaver` to `--disable-features`.
+  - `FreezingOnEnergySaver` does not exist in Chrome 152; Chrome ignores unknown names silently.
+  - The real knob is `CPUMeasurementInFreezingPolicy`. Energy Saver freezes a tab that is hidden ≥ 5 min and uses ≥ 5 % CPU, and that CPU measurement is this feature.
+  - `GlobalMediaControls` and `OptimizationGuideModelDownloading` are not in 152 either; removed on mac.
+  - doctor.py now FAILs if a disabled-feature name is missing from the bundled Chrome framework (it searches for `\0Name\0` or `\0kName\0`). Your Windows-only names (NtlmV1, AsyncDns, ChromeWhatsNewUI, DnsOverHttpsUpgrade …) may be dead too; worth the same check against your Chrome.
+- Per-CDP-command 5-minute timeout. The review confirmed it never cuts a legitimate capture, whose own bound is waitMs + 120 s.
+- `Inspector.detached` / `targetCrashed` fail the pending commands. `Page.setWebLifecycleState(active)` is sent before capturing. The Chrome and OS versions are logged at connect.
+
+**Self-check:** launch deno, ffprobe and the capture Chrome (`--version`). A headless render check hung on a Mac with the display asleep, so it only checks that they launch.
+
+**Mac only (FYI)**
+- getmntinfo instead of df / mount. A FUSE mount backed by `/dev/` counts as local, mount names are NFC, and the watchdog remounts WebDAV only when the dead mount is webdav.
+- Battery-proof idle-sleep assertion.
+- Finder-comment failure notices; the error code is read only from the trailing "(n)".
+- arm64-only gate in build and doctor, now including framework binaries.
+- codesign_app.sh probes an ad-hoc sign before refusing for missing Command Line Tools (macOS 27's codesign works without codesign_allocate). The cert tool no longer reports success after exit 4.
+- The AI installer picks the engine by `hw.optional.arm64`.
+- `CMAKE_OSX_DEPLOYMENT_TARGET` is pinned to 26.0.
+
+Tests (mac): 18/18 suites (new cookie_refresh with 17 checks; proxy_exit 20/20), inspect_all --doctor --hotfix 6/6. App minos 26.0; all 253 Mach-O are arm64.
