@@ -239,79 +239,123 @@ async def auto_repair_hashes(client, Endpoint, auth_token=None, ct0=None):
 
 # ── Auto cookie refresh from Chrome ───────────────────────────────────────
 
+LAST_COOKIE_ERROR = ''
+
+
+def _cookie_error(msg):
+    """쿠키를 못 읽은 까닭 — 부르는 쪽이 오류 줄에 덧붙인다(예전엔 늘 'Failed to extract cookies' 뿐이라 까닭을 몰랐다)"""
+    global LAST_COOKIE_ERROR
+    LAST_COOKIE_ERROR = msg
+
+
+def _aes_cbc_decrypt(key, data):
+    """Chrome 쿠키 값(AES-128-CBC, IV=공백 16개, PKCS7) — 번들 파이썬의 cryptography(없으면 pycryptodomex)로. 실패하면 None"""
+    iv = b' ' * 16
+    try:
+        try:
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+            d = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+            out = d.update(data) + d.finalize()
+        except ImportError:
+            from Cryptodome.Cipher import AES
+            out = AES.new(key, AES.MODE_CBC, iv).decrypt(data)
+    except Exception:
+        return None
+    if not out:
+        return None
+    pad = out[-1]
+    if 1 <= pad <= 16 and out.endswith(bytes([pad]) * pad):
+        return out[:-pad]
+    return None
+
+
 def extract_chrome_twitter_cookies():
     """Extract auth_token and ct0 from Chrome's cookie database.
     Works on macOS and Windows. Returns (auth_token, ct0) or (None, None).
     """
     auth_token = None
     ct0 = None
+    _cookie_error('')
 
     try:
         if platform.system() == "Darwin":
-            # macOS: Chrome cookies are encrypted with Keychain key
-            import sqlite3, tempfile, shutil
-
-            # Get Chrome encryption key from Keychain
-            raw_key = subprocess.check_output([
-                'security', 'find-generic-password', '-w',
-                '-s', 'Chrome Safe Storage', '-a', 'Chrome'
-            ], stderr=subprocess.DEVNULL).strip()
-
-            # Derive AES key using PBKDF2
-            import hashlib
-            dk = hashlib.pbkdf2_hmac('sha1', raw_key, b'saltysalt', 1003, dklen=16)
-
-            # Copy cookie DB (Chrome locks it)
-            cookie_paths = [
-                os.path.expanduser("~/Library/Application Support/Google/Chrome/Default/Cookies"),
-                os.path.expanduser("~/Library/Application Support/Google/Chrome/Profile 1/Cookies"),
-            ]
-            db_path = None
-            for p in cookie_paths:
-                if os.path.exists(p):
-                    db_path = p
-                    break
-            if not db_path:
+            # macOS: 쿠키 값은 키체인의 'Chrome Safe Storage' 로 만든 키(PBKDF2)로 AES-CBC 암호화('v10').
+            #   ★ 앞으로의 Chrome · macOS 에 대비한다 —
+            #     (1) 쿠키 파일이 <프로필>/Network/Cookies 로 옮겨 갈 수 있다(윈도우 · 리눅스는 이미 그렇다) — 둘 다 · 모든 프로필을 본다
+            #     (2) 'v10' 이 아닌 방식(윈도우의 앱 묶음 암호화 'v20' 같은 것)이면 말없이 건너뛰지 않고 그렇다고 알린다
+            #     (3) 쿠키 DB 메타 판 24 부터 값 앞에 도메인의 SHA-256(32바이트)이 붙는다 — 맞으면 떼어 낸다(안 떼면 토큰이 깨진다)
+            #     (4) /usr/lib 의 dylib 경로를 직접 열지 않는다(그 파일은 이미 디스크에 없고 dyld 공유 캐시로만 풀린다) — 번들의 cryptography 로
+            import sqlite3, tempfile, shutil, glob, hashlib
+            try:
+                raw_key = subprocess.check_output(['security', 'find-generic-password', '-w',
+                                                   '-s', 'Chrome Safe Storage', '-a', 'Chrome'],
+                                                  stderr=subprocess.DEVNULL, timeout=60).strip()
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                _cookie_error('키체인에서 Chrome 쿠키 키를 읽지 못했습니다(Chrome 이 없거나 키체인 접근을 거부함)')
                 return None, None
-
-            tmp = tempfile.mktemp(suffix=".db")
-            shutil.copy2(db_path, tmp)
-
-            conn = sqlite3.connect(tmp)
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT name, encrypted_value FROM cookies "
-                "WHERE (host_key LIKE '%twitter.com' OR host_key LIKE '%x.com') "
-                "AND name IN ('auth_token', 'ct0')"
-            )
-
-            for name, enc_val in cursor.fetchall():
-                if not enc_val or len(enc_val) < 4:
-                    continue
+            dk = hashlib.pbkdf2_hmac('sha1', raw_key, b'saltysalt', 1003, dklen=16)
+            base = os.path.expanduser("~/Library/Application Support/Google/Chrome")
+            dbs = []
+            for pdir in [os.path.join(base, 'Default')] + sorted(glob.glob(os.path.join(base, 'Profile *'))):
+                for rel in ('Network/Cookies', 'Cookies'):
+                    cand = os.path.join(pdir, rel)
+                    if os.path.isfile(cand):
+                        dbs.append(cand)
+            dbs.sort(key=os.path.getmtime, reverse=True)   # 가장 최근에 쓴 프로필부터
+            if not dbs:
+                _cookie_error('Chrome 쿠키 파일을 찾지 못했습니다(~/Library/Application Support/Google/Chrome/<프로필>/(Network/)Cookies)')
+                return None, None
+            unknown = set()
+            for db_path in dbs:
+                rows, meta_ver = [], 0
+                fd, tmp = tempfile.mkstemp(suffix=".db")
+                os.close(fd)
                 try:
-                    # v10 prefix = Chrome encryption
-                    if enc_val[:3] == b'v10':
-                        from ctypes import cdll, c_buffer, c_int, byref
-                        # Use CommonCrypto for AES-CBC decryption
-                        lib = cdll.LoadLibrary('/usr/lib/libcommonCrypto.dylib')
-                        iv = b' ' * 16
-                        encrypted = enc_val[3:]
-                        out_buf = c_buffer(len(encrypted) + 16)
-                        out_len = c_int(0)
-                        # kCCDecrypt=1, kCCAlgorithmAES128=0, kCCOptionPKCS7Padding=1
-                        lib.CCCrypt(1, 0, 1, dk, len(dk), iv,
-                                    encrypted, len(encrypted),
-                                    out_buf, len(out_buf), byref(out_len))
-                        decrypted = out_buf.raw[:out_len.value].decode('utf-8', errors='ignore')
-                        if name == 'auth_token':
-                            auth_token = decrypted
-                        elif name == 'ct0':
-                            ct0 = decrypted
+                    shutil.copy2(db_path, tmp)   # Chrome 이 잠가 두므로 사본으로 읽는다
+                    conn = sqlite3.connect(tmp)
+                    try:
+                        try:
+                            row = conn.execute("SELECT value FROM meta WHERE key='version'").fetchone()
+                            meta_ver = int(row[0]) if row else 0
+                        except Exception:
+                            meta_ver = 0
+                        rows = conn.execute(
+                            "SELECT name, encrypted_value, host_key FROM cookies "
+                            "WHERE (host_key LIKE '%twitter.com' OR host_key LIKE '%x.com') "
+                            "AND name IN ('auth_token', 'ct0')").fetchall()
+                    finally:
+                        conn.close()
                 except Exception:
-                    continue
-
-            conn.close()
-            os.unlink(tmp)
+                    rows = []
+                finally:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                vals = {}
+                for name, enc_val, host in rows:
+                    if not enc_val or len(enc_val) < 4:
+                        continue
+                    if enc_val[:3] != b'v10':
+                        unknown.add(enc_val[:3].decode('latin-1', 'replace'))
+                        continue
+                    plain = _aes_cbc_decrypt(dk, enc_val[3:])
+                    if plain is None:
+                        continue
+                    if meta_ver >= 24 and len(plain) >= 32 and plain[:32] == hashlib.sha256((host or '').encode()).digest():
+                        plain = plain[32:]
+                    try:
+                        vals[name] = plain.decode('utf-8')
+                    except UnicodeDecodeError:
+                        continue
+                if vals.get('auth_token') and vals.get('ct0'):
+                    return vals['auth_token'], vals['ct0']
+            if unknown:
+                _cookie_error('Chrome 의 쿠키 암호 방식이 바뀌어(%s) 읽을 수 없습니다 — 트위터 계정의 auth_token · ct0 를 설정에 직접 넣어 주십시오'
+                              % ', '.join(sorted(unknown)))
+            else:
+                _cookie_error('Chrome 에 X(트위터) 로그인 쿠키가 없거나 풀지 못했습니다 — Chrome 에서 x.com 에 로그인한 뒤 다시 해 보십시오')
+            return None, None
 
         elif platform.system() == "Windows":
             # Windows: Chrome cookies encrypted with DPAPI
@@ -752,7 +796,8 @@ async def main():
                     print(json.dumps({"status": "ok", "info": "Cookies refreshed from Chrome",
                                       "auth_token_len": len(auth_token), "ct0_len": len(ct0)}), flush=True)
                 else:
-                    print(json.dumps({"status": "error", "error": "Failed to extract cookies from Chrome"}), flush=True)
+                    print(json.dumps({"status": "error", "error": "Failed to extract cookies from Chrome"
+                                      + (" — " + LAST_COOKIE_ERROR if LAST_COOKIE_ERROR else "")}), flush=True)
                 continue
 
             if action == "update_endpoints":
@@ -863,7 +908,8 @@ async def main():
                     # Retry the command with fresh cookies
                     result = await handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatten_params)
                 else:
-                    print(json.dumps({"info": "Cookie refresh failed or cookies unchanged"}), flush=True)
+                    print(json.dumps({"info": "Cookie refresh failed or cookies unchanged"
+                                      + (" — " + LAST_COOKIE_ERROR if LAST_COOKIE_ERROR else "")}), flush=True)
                 consecutive_404 = 0
             else:
                 consecutive_404 = 0  # Non-404 response resets counter

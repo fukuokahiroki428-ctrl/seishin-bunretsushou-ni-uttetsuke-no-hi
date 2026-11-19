@@ -19,7 +19,9 @@ mkdir -p "$TOOLS_DIR"
 cd "$TOOLS_DIR"
 echo "▶ 도구 배치 위치: $TOOLS_DIR"
 
-ARCH="$(uname -m)"   # arm64 / x86_64
+# ★ 애플 실리콘이면 arm64 — 로제타 아래에서 돈 셸은 uname -m 이 x86_64 라 Intel 판을 받아 넣었다(로제타가 빠지는 macOS 28 부터
+#   그 도구가 안 뜬다). hw.optional.arm64 는 로제타 아래에서도 1 이다.
+if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then ARCH=arm64; else ARCH="$(uname -m)"; fi   # arm64 / x86_64
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 dl() { curl -fL --retry 3 -s -o "$1" "$2"; }

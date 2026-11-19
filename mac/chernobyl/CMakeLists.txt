@@ -1,4 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
+# ★ 앱 자신의 최소 macOS 를 고정한다(project() 앞이어야 듣는다). 비워 두면 빌드하는 맥의 macOS 판이 그대로 바닥이 되어
+#   (macOS 27.2 맥에서 빌드한 r52 는 27.2 이상에서만 떴다) 빌드 맥을 올릴 때마다 옛 macOS 사용자가 말없이 떨어져 나갔다.
+#   번들의 Homebrew 라이브러리들이 요구하는 26.0 에 맞춘다 — 실제 바닥은 build.sh 가 번들 전체에서 실측해 Info.plist 에 적는다.
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Minimum macOS for the app's own code" FORCE)
+endif()
 # ★ 버전 단일 출처 — 레포 루트의 VERSION 파일 하나만 고치면 exe 버전 리소스,
 #   Info.plist, 설치본 버전이 전부 따라온다. 예전엔 .iss/.rc/CMake 가 제각각이라
 #   설치본은 1.0, exe 는 3.0, 릴리즈는 3.9 로 표시돼 어느 빌드인지 알 수 없었다.

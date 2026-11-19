@@ -17,6 +17,10 @@
 #include <QLocale>
 #include <QFile>
 #include <QDir>
+#ifdef Q_OS_MACOS
+#include <sys/param.h>
+#include <sys/mount.h>
+#endif
 #include <QDirIterator>
 #include <QJsonObject>
 #include <QJsonDocument>
@@ -1428,9 +1432,18 @@ bool resealAppBundle(QString *err)
 
     QProcess cs;
     cs.start("/bin/bash", {signer, app});
+    if (!cs.waitForStarted(30000)) {            // 시간 초과와 가른다 — 띄우지도 못한 것을 '시간 초과' 로 적었다
+        if (err) *err = "재서명 도구를 띄우지 못했습니다: " + cs.errorString();
+        return false;
+    }
     if (!cs.waitForFinished(1800000)) {         // 번들이 크면(모델 포함) 수 분 걸린다
         cs.kill(); cs.waitForFinished(3000);
         if (err) *err = "재서명 시간 초과";
+        return false;
+    }
+    if (cs.exitCode() == 4) {
+        // codesign_app.sh: Xcode 명령줄 도구가 없거나 깨졌다(큰 macOS 업데이트 뒤에 흔하다) — 서명할 수 없다. 까닭과 할 일을 그대로.
+        if (err) *err = QStringLiteral("Xcode 명령줄 도구가 없거나 macOS 업데이트로 깨졌습니다 — 터미널에서 'xcode-select --install' 을 한 뒤 다시 켜십시오");
         return false;
     }
     if (cs.exitCode() != 0) {
@@ -2173,6 +2186,43 @@ QString resolveTempBase(const QString &userConfigTempDir)
     QString fallback = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/temp";
     QDir().mkpath(fallback);
     return fallback;
+}
+
+
+QList<MountInfo> systemMounts()
+{
+    QList<MountInfo> out;
+#ifdef Q_OS_MACOS
+    struct statfs *mnt = nullptr;
+    const int n = getmntinfo(&mnt, MNT_NOWAIT);
+    for (int i = 0; i < n && mnt; ++i) {
+        MountInfo m;
+        m.from = QString::fromUtf8(mnt[i].f_mntfromname);
+        m.on = QString::fromUtf8(mnt[i].f_mntonname);
+        m.fstype = QString::fromUtf8(mnt[i].f_fstypename).toLower();
+        m.local = (mnt[i].f_flags & MNT_LOCAL) != 0;
+        m.readOnly = (mnt[i].f_flags & MNT_RDONLY) != 0;
+        out << m;
+    }
+#endif
+    return out;
+}
+
+bool isNetworkFs(const MountInfo &m)
+{
+    static const QStringList kNet = {"smbfs", "nfs", "nfs4", "webdav", "afpfs", "ftp", "cifs"};
+    if (kNet.contains(m.fstype) || m.fstype.contains(QLatin1String("fuse"))) return true;
+    if (m.fstype == QLatin1String("autofs") || m.fstype == QLatin1String("devfs")) return false;
+    return !m.local;
+}
+
+QSet<QString> networkVolumeNames()
+{
+    QSet<QString> names;
+    for (const MountInfo &m : systemMounts())
+        if (isNetworkFs(m) && m.on.startsWith(QLatin1String("/Volumes/")))
+            names.insert(m.on.mid(9));
+    return names;
 }
 
 } // namespace Common

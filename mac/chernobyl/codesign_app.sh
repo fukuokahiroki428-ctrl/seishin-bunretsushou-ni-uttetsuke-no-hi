@@ -13,6 +13,17 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENTITLEMENTS="${ENTITLEMENTS:-$SCRIPT_DIR/hanishiki.entitlements}"
 
+# ★ codesign 은 Xcode 명령줄 도구의 codesign_allocate 를 쓴다(/usr/bin 의 것은 그쪽으로 넘기는 껍데기다). 큰 macOS 업데이트 뒤엔
+#   명령줄 도구가 깨져 있기 일쑤고('invalid active developer path'), DMG 로 설치한 맥에는 아예 없을 수 있다 — 그러면 서명마다
+#   실패해 '왜' 를 알 수 없었고, 껍데기가 '도구 설치' 창을 띄우기도 했다. 먼저 본다(xcode-select -p 는 창을 띄우지 않는다).
+#   없으면 4 로 끝낸다 — 앱(resealAppBundle)이 이 값을 보고 알맞은 안내를 한다.
+_DEV="$(xcode-select -p 2>/dev/null || true)"
+if [ -z "$_DEV" ] || { [ ! -x "$_DEV/usr/bin/codesign_allocate" ] && [ ! -x "$_DEV/Toolchains/XcodeDefault.xctoolchain/usr/bin/codesign_allocate" ]; }; then
+    echo "✗ Xcode 명령줄 도구가 없거나 macOS 업데이트로 깨졌습니다 — 서명할 수 없습니다."
+    echo "   터미널에서:  xcode-select --install   (설치가 끝난 뒤 다시 하십시오)"
+    exit 4
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 서명 ID 선택 (우선순위)
 #   1) Developer ID Application — 배포+공증 가능(Gatekeeper 통과). 하드닝 런타임+entitlements 적용.

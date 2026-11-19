@@ -49,6 +49,7 @@
 #include <QNetworkRequest>
 #include <QPointer>
 #include <QProcess>
+#include <QTemporaryDir>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
@@ -1523,6 +1524,42 @@ inline QString runStartupMaintenance()
             }
         } else {
             report += QString("[OK]   %1 — %2 (%3)\n").arg(t, st.version, st.path);
+        }
+    }
+
+    // ★ 번들의 다른 실행 파일도 실제로 뜨는지 — 앞으로의 macOS 가 어떤 바이너리를 막거나(서명 · 정책) 못 띄우면(구조 · dyld ·
+    //   Rosetta 가 빠진 뒤의 Intel 전용) 그 기능이 말없이 줄어든다: deno 가 안 뜨면 유튜브 JS 풀이가 빠져 화질이 줄고(yt-dlp 의 점검은
+    //   JS 없이도 통과한다), Chrome 이 안 뜨면 캡처가 통째로 빈다. 가장 작은 진짜 일을 한 번씩.
+    {
+        struct Extra { const char *name; QString path; QStringList args; QString expect; int ms; const char *okText; };
+        const QString macos = appDir();
+        const QString chrome = QDir::cleanPath(macos + "/../Resources/chromium/Chromium.app/Contents/MacOS/Google Chrome for Testing");
+        const QList<Extra> extras = {
+            {"deno", macos + "/deno", {"eval", "console.log(6*7)"}, "42", 30000, "JS 실행 확인"},
+            {"ffprobe", macos + "/ffprobe", {"-version"}, "ffprobe version", 15000, nullptr},
+            // 뜨는지만 본다(--version) — 그려 보는 검사(헤드리스)는 화면이 잠든 맥에서 CVDisplayLink 를 못 만들어 끝나지 않았다(실측 2026-11-19)
+            {"Chrome(캡처)", chrome, {"--version"}, "Chrome", 30000, nullptr},
+        };
+        for (const Extra &e : extras) {
+            const QString name = QString::fromUtf8(e.name);
+            if (!QFileInfo(e.path).isExecutable()) {
+                report += QString("[실패] %1 — 번들에 없습니다(%2)\n").arg(name, e.path);
+                ++smokeBad; badNames << name;
+                continue;
+            }
+            QProcess pr;
+            pr.setProcessChannelMode(QProcess::MergedChannels);
+            pr.start(e.path, e.args);
+            const bool finished = pr.waitForFinished(e.ms);
+            if (!finished) { pr.kill(); pr.waitForFinished(2000); }
+            const QString out = QString::fromUtf8(pr.readAll());
+            if (finished && pr.exitStatus() == QProcess::NormalExit && out.contains(e.expect)) {
+                report += QString("[실행] %1 — %2\n").arg(name, e.okText ? QString::fromUtf8(e.okText) : out.section('\n', 0, 0).trimmed().left(80));
+            } else {
+                report += QString("[실패] %1 — 실행되지 않습니다(%2) — 앱을 새 판으로 다시 설치하십시오\n")
+                              .arg(name, !finished ? QStringLiteral("시간 초과") : out.simplified().left(160));
+                ++smokeBad; badNames << name;
+            }
         }
     }
 

@@ -62,9 +62,14 @@ ln -s /Applications "$STAGE/Applications"      # 끌어다 놓기용
 #   공증을 안 했으므로 받는 쪽에서 첫 실행이 막힌다. 매번 xattr 명령을 알려 주는
 #   대신 더블클릭용 .command 를 같이 넣는다. 그 스크립트는 이 앱 하나의 격리
 #   표시만 뗀다 — 시스템 Gatekeeper 는 절대 건드리지 않는다.
+# ★ 안내문의 '필요한 macOS' 는 빌드가 실측한 값(LSMinimumSystemVersion)으로 적는다 — 손으로 적은 26.0 은 실제 바닥(26.5)과 달랐고,
+#   빌드하는 맥 · Homebrew 가 바뀌면 또 어긋난다. 값을 못 읽으면 DMG 를 만들지 않는다.
+_minos="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist" 2>/dev/null || true)"
+if [ -z "$_minos" ]; then echo "❌ 앱의 LSMinimumSystemVersion 을 읽지 못했습니다 — build.sh 를 먼저"; exit 1; fi
 for _f in "$(dirname "$0")"/resources/dmg/*; do
     [ -e "$_f" ] || continue
     cp -p "$_f" "$STAGE/"
+    case "$_f" in *.txt) sed -i '' "s/@@MINOS@@/$_minos/g" "$STAGE/$(basename "$_f")" ;; esac
     case "$_f" in *.command) chmod +x "$STAGE/$(basename "$_f")" ;; esac
     echo "  동봉: $(basename "$_f")"
 done

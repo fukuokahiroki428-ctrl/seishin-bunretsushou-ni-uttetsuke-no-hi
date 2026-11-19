@@ -28,6 +28,7 @@
 #include <QDateTime>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QSysInfo>
 #include <QEventLoop>
 #include <QCryptographicHash>
 #include <QUrl>
@@ -292,7 +293,10 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
         //     · IsolateOrigins · site-per-process — 사이트 격리(보안)를 끈다. 아래 --site-per-process 와 정반대다.
         //     · WebRtcHideLocalIpsWithMdns · WebRTC — 내부 IP 를 감춰 주는 장치를 끈다(주석의 'IP 노출 방지' 와
         //       정반대). WebRTC 로 진짜 IP 가 새는 것은 --force-webrtc-ip-handling-policy 로 막는다.
+        // ★ 숨은 탭(최소화된 수집 창은 macOS 27 에서 'hidden' — 실측)에 거는 Chrome 의 절전도 끈다: 타이머를 1분에 한 번으로 묶는
+        //   IntensiveWakeUpThrottling, 절약 모드에서 숨은 탭을 얼리는 FreezingOnEnergySaver. 모르는 이름은 Chrome 이 그냥 넘긴다.
         QStringList disabledFeatures = {
+            QStringLiteral("IntensiveWakeUpThrottling"), QStringLiteral("FreezingOnEnergySaver"),
             QStringLiteral("Translate"), QStringLiteral("OptimizationHints"), QStringLiteral("MediaRouter"),
             QStringLiteral("GlobalMediaControls"),                       // 8GB Mac OOM 방지 — 쓰지 않는 기능
             QStringLiteral("AutofillServerCommunication"), QStringLiteral("OptimizationGuideModelDownloading")};
@@ -429,15 +433,7 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
                 m_ready = false;
                 // ★ Chrome process가 죽거나 ws 끊기면 m_pendingCmds 콜백이 영원히 hang.
                 //   모든 대기 중 콜백을 error로 호출 → 호출자(captureRealPageCDP 등)가 자연 종료.
-                QJsonObject errObj;
-                errObj["code"] = -32000;
-                errObj["message"] = "WebSocket disconnected (Chrome closed?)";
-                QJsonValue errVal(errObj);
-                auto pending = m_pendingCmds;
-                m_pendingCmds.clear();
-                for (auto cb : pending) {
-                    if (cb) cb(QJsonValue(), errVal);
-                }
+                failAllPending(QStringLiteral("WebSocket disconnected (Chrome closed?)"));
                 emit disconnected();
             });
 
@@ -533,6 +529,16 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
                         "} catch (e) {} })();").arg(visEmu ? QStringLiteral("true") : QStringLiteral("false"));
                     sendCommand("Page.enable", QJsonObject(), nullptr);
                     sendCommand("Page.addScriptToEvaluateOnNewDocument", p, nullptr);
+                    // ★ 탭이 버려지거나(메모리가 모자라면 Chrome 은 숨은 탭부터 버린다) 죽으면 알 수 있게 — 그때 기다리던 명령을 바로 실패시킨다
+                    sendCommand("Inspector.enable", QJsonObject(), nullptr);
+                    // 페이지가 '창이 앞에 있다' 고 여기게(포커스를 보고 멈추는 페이지가 있다) — 창의 실제 상태와 상관없이
+                    sendCommand("Emulation.setFocusEmulationEnabled", QJsonObject{{"enabled", true}}, nullptr);
+                    // ★ 어떤 Chrome · macOS 로 캡처했는지 남긴다 — 다음에 OS 가 동작을 바꾸면(r52 의 최소화 창처럼) 기록에서 바로 가린다
+                    sendCommand("Browser.getVersion", QJsonObject(), [this](const QJsonValue &r, const QJsonValue &) {
+                        if (m_backend)
+                            m_backend->log(QString("수집 Chrome %1 · macOS %2").arg(r.toObject().value("product").toString(),
+                                                                                 QSysInfo::productVersion()), "info", "crawl");
+                    });
                     // ★ SingleFile 은 페이지 안(main world)에서 fetch()·DOMParser 로 자원을 모은다.
                     //   페이지 CSP 의 connect-src 가 CDN 을 막으면 그림이 'data:,' 로 비고,
                     //   Trusted Types(require-trusted-types-for 'script' — 유튜브)면 DOMParser 가 막혀 getPageData 가 통째로 실패했다.
@@ -553,9 +559,10 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
                 //   윈도우는 CreateProcess 의 SW_SHOWMINNOACTIVE 로 처음부터 최소화로 띄운다.
                 //   맥은 그런 실행 옵션이 없어 CDP 가 붙자마자 내린다 (잠깐 보였다 내려간다).
                 //   직접 띄운 Chrome(m_chromeProc)만 — 이미 떠 있던 사용자 Chrome 에 붙은 경우는 그 창을 건드리지 않는다.
-                //   ※ 맥에서 최소화된 창은 '가려진(occluded)' 창으로 취급되고, --disable-backgrounding-occluded-windows
-                //     덕분에 페이지는 visible 로 남는다 — 스크롤·SingleFile 캡쳐는 그대로 돈다.
-                //     (그리기만 멈춰 rAF/IntersectionObserver 가 약 1초 간격으로 느려질 수 있다.)
+                //   ※ macOS 27(실측 2026-11-15): 최소화된 창의 페이지는 'hidden' 이고 그리지 않는다 — --disable-backgrounding-occluded-windows
+                //     가 있어도. 스크립트 · 타이머는 돌므로 스크롤 · SingleFile 은 되지만, 그리기에 기대는 것(rAF · IntersectionObserver)은
+                //     새 문서마다 심는 스크립트(__hkTickIO · rAF 대체)가 대신한다. 탭이 얼거나 버려지는 것은 명령마다의 시간 제한 ·
+                //     Inspector.detached 로 끝낸다. 예전 판의 '그래도 visible 로 남는다' 는 더는 맞지 않는다.
                 if (m_startMinimized && m_chromeProc) {
                     QPointer<QWindow> back = m_refocusAfterLaunch;
                     m_refocusAfterLaunch = nullptr;
@@ -772,13 +779,45 @@ int RealChromeCrawler::sendCommand(const QString &method, const QJsonObject &par
     cmd["id"] = id;
     cmd["method"] = method;
     cmd["params"] = params;
-    if (cb) m_pendingCmds.insert(id, cb);
+    if (cb) {
+        m_pendingCmds.insert(id, cb);
+        // ★ 답이 영영 오지 않는 명령을 끝낸다 — 숨은 탭을 Chrome 이 얼리면(절약 모드 · 메모리) 소켓은 그대로인 채
+        //   Runtime.evaluate(awaitPromise)가 끝나지 않아 캡처가 멈춰 있었다. 가장 긴 것(끝까지 스크롤 · SingleFile)도 5분 안이다.
+        QTimer::singleShot(300000, this, [this, id, method]() {
+            if (!m_pendingCmds.contains(id)) return;
+            auto pendingCb = m_pendingCmds.take(id);
+            if (m_backend) m_backend->log(QString("수집 Chrome 이 '%1' 에 5분 동안 답하지 않아 그 단계를 실패로 넘깁니다").arg(method), "warning", "crawl");
+            QJsonObject err{{"code", -32001}, {"message", "timeout"}};
+            if (pendingCb) pendingCb(QJsonValue(), err);
+        });
+    }
     m_ws->sendTextMessage(QString::fromUtf8(QJsonDocument(cmd).toJson(QJsonDocument::Compact)));
     return id;
 }
 
+void RealChromeCrawler::failAllPending(const QString &why)
+{
+    QJsonObject errObj;
+    errObj["code"] = -32000;
+    errObj["message"] = why;
+    const QJsonValue errVal(errObj);
+    auto pending = m_pendingCmds;
+    m_pendingCmds.clear();
+    for (auto cb : pending)
+        if (cb) cb(QJsonValue(), errVal);
+}
+
 void RealChromeCrawler::handleEvent(const QString &method, const QJsonObject &params)
 {
+    if (method == "Inspector.detached" || method == "Inspector.targetCrashed") {
+        // 탭이 버려졌거나(메모리 부족 · 숨은 탭) 죽었다 — 기다리던 명령을 바로 실패시키고 까닭을 남긴다(예전엔 'Chrome closed?' 로만 보였다)
+        const QString why = (method == "Inspector.targetCrashed")
+            ? QStringLiteral("수집 Chrome 탭이 죽었습니다(메모리 부족일 수 있습니다)")
+            : QString("수집 Chrome 탭이 떨어져 나갔습니다(%1)").arg(params.value("reason").toString());
+        if (m_backend) m_backend->log(why, "warning", "crawl");
+        failAllPending(why);
+        return;
+    }
     if (method == "Fetch.requestPaused") {   // setCorsRelax(true) 동안만 온다
         const QString rid = params["requestId"].toString();
         QJsonObject p;
@@ -920,6 +959,12 @@ void RealChromeCrawler::navigate(const QString &url, std::function<void(bool)> d
             m_backend->log(QString("navigate 실패 (%1): %2").arg(navErr, url), "warning", "crawl");
         if (done) done((err.isNull() || err.toObject().isEmpty()) && navErr.isEmpty());
     });
+}
+
+void RealChromeCrawler::ensureActive()
+{
+    if (!m_ready) return;
+    sendCommand("Page.setWebLifecycleState", QJsonObject{{"state", "active"}}, nullptr);
 }
 
 void RealChromeCrawler::evaluate(const QString &expr, std::function<void(const QJsonValue &)> done)

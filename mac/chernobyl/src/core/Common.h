@@ -204,6 +204,14 @@ bool pickPythonRelease(const QString &releaseJson, const QString &arch, int want
 QString jstText(const QString &raw, const QString &format);
 QDateTime jstTime(const QDateTime &dt);   // 같은 순간을 JST 로 표시하는 값(.toString · .date() 가 일본 시간)
 QDateTime jstNow();
+
+// ── 마운트 목록 — 커널에서 바로(getmntinfo, MNT_NOWAIT: 끊긴 NAS 에도 막히지 않는다) ──
+//   예전엔 df -T / mount 의 글자를 잘라 읽었다: 이름에 띄어쓰기가 든 볼륨('My NAS')은 마지막 칸만 잡혀 로컬로 보였고,
+//   새 파일시스템 이름(nfs4 · 앞으로의 SMB 후속 등)은 목록에 없어 놓쳤다. 이제 마운트 자리 · 종류 · '로컬' 표시를 그대로 받는다.
+struct MountInfo { QString from, on, fstype; bool local = true; bool readOnly = false; };
+QList<MountInfo> systemMounts();
+bool isNetworkFs(const MountInfo &m);          // 로컬이 아니거나(커널 표시) 알려진 네트워크 · FUSE 종류
+QSet<QString> networkVolumeNames();            // /Volumes/<이름> 가운데 네트워크 마운트의 이름
 QDate jstToday();
 // ★ UA 와 짝이 맞는 클라이언트 힌트(sec-ch-ua 계열). UA 만 Chrome 이라 적고 이것들이 없으면
 //   Meta 쪽이 XHR 로 보지 않아 JSON 대신 HTML 한 판을 준다(인스타 429 실측 2026-09-20).

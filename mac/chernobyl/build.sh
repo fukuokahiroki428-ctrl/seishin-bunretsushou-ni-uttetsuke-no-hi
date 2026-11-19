@@ -107,37 +107,7 @@ done < <(find "$APPDIR" -type l ! -exec test -e {} \; -print 2>/dev/null)
 echo "=== 자원 동기화(소스 → 번들) ==="
 bash "$(dirname "$0")/sync_resources.sh" "$APPDIR"
 
-# ★ 번들 도구의 아키텍처 확인.
-#   ffmpeg·deno·rclone 은 arm64 인데 ffprobe 만 x86_64 로 들어가 있었다.
-#   이 맥에는 로제타가 깔려 있어 그냥 돌아버리는 바람에 아무도 몰랐다. 로제타가
-#   없는 애플 실리콘 맥에서는 실행 자체가 안 된다("Bad CPU type in executable").
-#   조용히 지나가지 않게 빌드가 대신 봐 준다. 빌드를 세우지는 않는다 —
-#   로제타가 있으면 실제로 동작은 하므로, 크게 눈에 띄게 알리기만 한다.
-echo "=== 번들 도구 아키텍처 확인 (호스트: $(uname -m)) ==="
-HOST_ARCH="$(uname -m)"
-MISMATCH=0
-for T in "$APPDIR/Contents/MacOS/ffmpeg" \
-         "$APPDIR/Contents/MacOS/ffprobe" \
-         "$APPDIR/Contents/MacOS/deno" \
-         "$APPDIR/Contents/Resources/tools/rclone"; do
-    [ -f "$T" ] || continue
-    ARCHS="$(lipo -archs "$T" 2>/dev/null)" || continue
-    [ -z "$ARCHS" ] && continue
-    case " $ARCHS " in
-        *" $HOST_ARCH "*) ;;                       # 호스트 아키텍처 포함 → 정상
-        *)
-            echo "  ⚠ $(basename "$T"): $ARCHS — $HOST_ARCH 아님."
-            echo "     로제타 없는 맥에서 실행 불가. 같은 아키텍처 빌드로 교체하십시오:"
-            echo "     resources/tools/$(basename "$T")"
-            MISMATCH=$((MISMATCH + 1))
-            ;;
-    esac
-done
-if [ "$MISMATCH" -gt 0 ]; then
-    echo "  ⚠ 아키텍처가 어긋난 도구 $MISMATCH 개 — 위 안내를 보십시오."
-else
-    echo "  모든 번들 도구가 $HOST_ARCH 를 지원합니다."
-fi
+# ★ 번들 도구의 아키텍처 확인은 서명 직전으로 옮겼다(아래 '번들 안 모든 실행 파일이 arm64 인지') — perl 을 넣은 뒤에 · 전부를 본다.
 
 # ★ Info.plist 의 LSMinimumSystemVersion 을 '실제로 필요한 값' 으로 맞춘다.
 #   Info.plist.in 에는 12.0 이라고 손으로 적혀 있었는데, 실측하면 26.0 이 필요하다
@@ -216,6 +186,27 @@ if [ -n "$LAST_R" ]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUNDLE_VER}" "$APPDIR/Contents/Info.plist"
     echo "  판 번호    : ${BUNDLE_VER} (다음 릴리스 r$((LAST_R + 1)))"
 fi
+
+# ★ 번들 안 모든 실행 파일(Mach-O)이 arm64(또는 arm64e)를 품는지 — 서명 직전, perl 까지 넣은 뒤에 전부 본다.
+#   예전엔 네 개(ffmpeg · ffprobe · deno · rclone)만, 그것도 빌드하는 맥의 uname -m 과 견주어 '알리기만' 했다. 로제타는 macOS 27 을
+#   끝으로 빠진다(애플, WWDC 2025) — Intel 전용 파일이 하나라도 섞이면 다음 macOS 에서 그 기능이 'Bad CPU type' 으로 멈춘다.
+#   빌드를 세운다. (ffprobe 가 x86_64 로만 들어가 아무도 몰랐던 적이 있다 — 이 맥엔 로제타가 있어 그냥 돌았다)
+echo "=== 번들 안 모든 실행 파일이 arm64 인지 (로제타는 macOS 27 뒤 사라진다) ==="
+NOARM=0; NMACHO=0
+while IFS= read -r -d '' f; do
+    A="$(lipo -archs "$f" 2>/dev/null)" || continue
+    [ -z "$A" ] && continue
+    NMACHO=$((NMACHO + 1))
+    case " $A " in
+        *" arm64 "*|*" arm64e "*) ;;
+        *) echo "  ✗ ${f#"$APPDIR"/}: $A — arm64 판으로 바꾸십시오"; NOARM=$((NOARM + 1)) ;;
+    esac
+done < <(find "$APPDIR/Contents" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' \) -print0)
+if [ "$NOARM" -gt 0 ]; then
+    echo "✗ arm64 가 없는 실행 파일 $NOARM 개 — 빌드를 멈춥니다(로제타가 없는 macOS 에서 그 기능이 멈춘다)"
+    exit 1
+fi
+echo "  실행 파일 $NMACHO 개 모두 arm64"
 
 echo "=== Codesign (inside-out + --deep --strict verify) ==="
 # 단일 서명 경로로 위임 — 서명/검증 실패 시 codesign_app.sh 가 exit 1 → set -e 로 중단.

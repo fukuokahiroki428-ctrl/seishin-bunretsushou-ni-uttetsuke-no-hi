@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <functional>
 #include <QStringList>
 #include <QDateTime>
 #include <QJsonObject>
@@ -13,6 +14,9 @@ void setFileTimes(const QString &filePath, const QString &timestampStr);
 
 // Add macOS Finder comment
 void setFinderComment(const QString &filePath, const QString &comment);
+// Finder 메모를 못 달았을 때(자동화 허락 없음 등) 한 번 알릴 곳 — 앱이 켤 때 기록 함수를 건다
+std::function<void(const QString &)> &finderCommentFailureHook();
+void setFinderCommentFailureHook(std::function<void(const QString &)> hook);
 
 // Sanitize filename
 QString sanitizeFilename(const QString &name, int maxLength = 200);

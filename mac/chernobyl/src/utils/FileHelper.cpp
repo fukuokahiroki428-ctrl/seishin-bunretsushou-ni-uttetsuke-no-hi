@@ -1,4 +1,6 @@
 #include "FileHelper.h"
+#include <atomic>
+#include <functional>
 #include "core/Common.h"
 #include <QTimeZone>
 #include "HttpClient.h"
@@ -43,6 +45,17 @@ void setFileTimes(const QString &filePath, const QString &timestampStr)
     Common::setFileTimes(filePath, timestampStr);
 }
 
+std::function<void(const QString &)> &finderCommentFailureHook()
+{
+    static std::function<void(const QString &)> h;
+    return h;
+}
+
+void setFinderCommentFailureHook(std::function<void(const QString &)> hook)
+{
+    finderCommentFailureHook() = std::move(hook);
+}
+
 void setFinderComment(const QString &filePath, const QString &comment)
 {
 #ifdef Q_OS_MACOS
@@ -58,7 +71,21 @@ void setFinderComment(const QString &filePath, const QString &comment)
 
     QProcess proc;
     proc.start("/usr/bin/osascript", {"-e", script, filePath, comment});
-    proc.waitForFinished(5000);
+    const bool finished = proc.waitForFinished(5000);
+    // ★ 실패를 말없이 넘기지 않는다 — Finder 에 보내는 Apple Event 는 macOS 의 '자동화' 허락이 있어야 한다. 허락을 거절했거나
+    //   OS 업데이트 · 재서명으로 허락이 풀리면 모든 파일이 받은 곳 메모 없이 쌓였다(아무 말 없이). 한 번만 알린다(앱이 켜져 있는 동안).
+    //   받은 곳 주소는 파일의 '다운로드 출처'(kMDItemWhereFroms — 허락이 필요 없다)에도 남는다.
+    if (!finished || proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
+        if (!finished) { proc.kill(); proc.waitForFinished(1000); }
+        static std::atomic<bool> told{false};
+        if (!told.exchange(true) && finderCommentFailureHook()) {
+            const QString err = QString::fromUtf8(proc.readAllStandardError());
+            const bool denied = err.contains(QLatin1String("-1743")) || err.contains(QLatin1String("Not authorized"), Qt::CaseInsensitive);
+            finderCommentFailureHook()(denied
+                ? QStringLiteral("Finder 메모(받은 곳 · 제목)를 달지 못했습니다 — 시스템 설정 → 개인정보 보호 및 보안 → 자동화에서 이 앱의 'Finder' 를 켜십시오(받은 곳 주소는 파일의 '다운로드 출처' 에는 남습니다)")
+                : QStringLiteral("Finder 메모를 달지 못했습니다(%1) — 받은 곳 주소는 파일의 '다운로드 출처' 에는 남습니다").arg(finished ? err.simplified().left(120) : QStringLiteral("시간 초과")));
+        }
+    }
 #else
     Q_UNUSED(filePath);
     Q_UNUSED(comment);

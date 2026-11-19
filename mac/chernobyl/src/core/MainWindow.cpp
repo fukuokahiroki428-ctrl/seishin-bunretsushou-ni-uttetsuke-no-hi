@@ -924,6 +924,21 @@ void MainWindow::holdAwake(bool display)
         );
         if (result == kIOReturnSuccess) {
             m_sleepAssertionHeld = true;
+        } else if (!m_awakeFailTold && m_backend) {
+            m_awakeFailTold = true;
+            m_backend->log(QString("잠자기 막기(시스템)를 걸지 못했습니다(IOReturn 0x%1) — 수집 중에 맥이 잠들 수 있습니다").arg(uint(result), 0, 16), "warning", "settings");
+        }
+    }
+    // ★ 유휴 잠 막기도 이 프로세스가 직접 든다 — PreventSystemSleep 은 전원 어댑터에 꽂혔을 때만 듣는다(caffeinate(8): -s 는 AC 에서만).
+    //   배터리에서는 caffeinate -i 자식 하나에만 기대고 있었다(그것이 못 뜨거나 죽으면 말없이 잠들었다). 멤버에 두고 dropAwake 가 놓는다
+    //   (예전에 새던 것은 함수 안 static 에 받아 놓지 않았기 때문이다).
+    if (!m_idleAssertionHeld) {
+        IOReturn r2 = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep, kIOPMAssertionLevelOn,
+                                                  CFSTR("Hanishiki active — preventing idle sleep"), &m_idleAssertion);
+        if (r2 == kIOReturnSuccess) m_idleAssertionHeld = true;
+        else if (!m_awakeFailTold && m_backend) {
+            m_awakeFailTold = true;
+            m_backend->log(QString("유휴 잠 막기를 걸지 못했습니다(IOReturn 0x%1) — 배터리에서 맥이 잠들 수 있습니다").arg(uint(r2), 0, 16), "warning", "settings");
         }
     }
 
@@ -962,6 +977,10 @@ void MainWindow::startCaffeinate(bool display)
                      "-w", QString::number(QCoreApplication::applicationPid())};
     m_caffeinate->start("/usr/bin/caffeinate", args);
     if (!m_caffeinate->waitForStarted(3000)) {
+        if (!m_awakeFailTold && m_backend) {
+            m_awakeFailTold = true;
+            m_backend->log(QString("caffeinate 를 띄우지 못했습니다(%1) — 덮개를 닫으면 맥이 잠들 수 있습니다").arg(m_caffeinate->errorString()), "warning", "settings");
+        }
         delete m_caffeinate;
         m_caffeinate = nullptr;
         return;
@@ -1006,7 +1025,7 @@ void MainWindow::releaseAwake()
     //   없던 맥은 바로 잠에 들 수 있다. 화면은 지금 놓는다 — 수집이 끝났다.
     //   기다리는 사이 새 일이 붙들면(holdAwake) 거두고, 다 기다리면 그때의 상태를 다시 본다.
 #ifdef Q_OS_MACOS
-    if (!m_sleepAssertionHeld && !m_caffeinate) return;   // 붙든 것이 없다
+    if (!m_sleepAssertionHeld && !m_idleAssertionHeld && !m_caffeinate) return;   // 붙든 것이 없다
     if (m_caffeinate && m_awakeDisplay) startCaffeinate(false);
 #elif defined(Q_OS_WIN)
     if (!m_sleepAssertionHeld) return;
@@ -1035,6 +1054,11 @@ void MainWindow::dropAwake()
         IOPMAssertionRelease(m_sleepAssertion);
         m_sleepAssertion = 0;
         m_sleepAssertionHeld = false;
+    }
+    if (m_idleAssertionHeld) {
+        IOPMAssertionRelease(m_idleAssertion);
+        m_idleAssertion = 0;
+        m_idleAssertionHeld = false;
     }
     stopCaffeinate();
 #elif defined(Q_OS_WIN)

@@ -132,6 +132,9 @@ private:
 #ifdef Q_OS_MACOS
     IOPMAssertionID m_sleepAssertion = 0;
     bool m_sleepAssertionHeld = false;
+    IOPMAssertionID m_idleAssertion = 0;    // 유휴 잠 막기 — 배터리에서도 듣는다
+    bool m_idleAssertionHeld = false;
+    bool m_awakeFailTold = false;           // 잠 막기 실패는 한 번만 알린다
     QProcess *m_caffeinate = nullptr;  // caffeinate -dims / -ims: 덮개 닫아도 sleep 방지(AC)
     bool m_awakeDisplay = false;       // 지금 caffeinate 가 화면(-d)까지 붙드나
     void startCaffeinate(bool display);

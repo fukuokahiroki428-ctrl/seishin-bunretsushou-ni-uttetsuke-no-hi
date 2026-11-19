@@ -305,18 +305,11 @@ for URL in $MODELS; do
     fi
 done
 
-# ── 5) 재서명 (번들에 파일을 넣었으므로 봉인 복구) ─────────────────────────
-echo ""
-echo "▶ 앱 서명 복구 중... (용량이 커서 수 분 걸릴 수 있습니다)"
-SIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null | grep -m1 -oE "[0-9A-F]{40}" || true)
-[ -z "$SIGN_ID" ] && SIGN_ID="-"
-find "$APP/Contents/Resources" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null
-if codesign -f -s "$SIGN_ID" --deep "$APP" 2>/dev/null && \
-   codesign --verify --deep --strict "$APP" 2>/dev/null; then
-    echo "  ✔ 서명 복구 완료"
-else
-    echo "  ⚠ 서명 복구에 실패했습니다. 앱이 실행되지 않으면 다시 내려받아 설치해 주세요."
-fi
+# ── 5) 서명은 건드리지 않는다 ─────────────────────────────────────────────
+#   모델 · llama-server 는 앱 밖(자료 폴더)에 둔다 — 앱 번들은 바뀌지 않는다. 예전엔 여기서 첫 번째 인증서(없으면 임시 서명)로
+#   --deep 재서명했다: 인증서가 만료된 맥에서는 앱이 말없이 임시 서명으로 바뀌어 macOS 권한(전체 디스크 접근 · 자동화)이 풀렸고,
+#   --deep 은 macOS 13 부터 서명에 쓰지 말라는 옵션이다. 옛 판이 앱 안에 둔 AI 를 옮겨 왔다면(위 3번) 앱을 켤 때 스스로 봉인을
+#   고친다(인증서를 지문으로 골라 · 임시 서명으로 내려가지 않게 — 앱 안의 codesign_app.sh).
 
 echo ""
 echo "════════════════════════════════════════════"

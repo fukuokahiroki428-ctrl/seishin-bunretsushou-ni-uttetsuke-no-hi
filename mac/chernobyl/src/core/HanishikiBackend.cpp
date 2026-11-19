@@ -216,6 +216,11 @@ HanishikiBackend::HanishikiBackend(MainWindow *window, QObject *parent)
         log(msg, type, "settings");
     });
     // ★ 엑셀 저장 실패를 그 수집의 기록에 — 부르는 곳 대부분이 반환값을 보지 않아, 디스크가 차도 '저장' 으로만 보였다
+    // ★ Finder 메모 실패(자동화 허락 없음 · 풀림)를 한 번 알린다 — 예전엔 말없이 메모 없이 쌓였다
+    FileHelper::setFinderCommentFailureHook([this](const QString &msg) {
+        const QString tk = currentThreadTrackKey();
+        log(QStringLiteral("⚠ ") + msg, "warning", tk.isEmpty() ? QStringLiteral("settings") : tk.section(QLatin1Char('#'), 0, 0));
+    });
     ExcelWriter::setSaveFailureHook([this](const QString &path, const QString &why) {
         const QString tk = currentThreadTrackKey();
         log(QString("❌ 엑셀을 저장하지 못했습니다: %1 — %2. 기존 파일은 그대로입니다.")
@@ -871,18 +876,8 @@ void HanishikiBackend::pickBackupPath()
     // 1) /Volumes 의 마운트된 NAS / 외장
     QDir d("/Volumes");
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
-    QProcess df;
-    df.start("df", {"-T", "webdav,smbfs,afpfs,nfs,fuse"});
-    df.waitForFinished(5000);
-    QString dfOut = QString::fromUtf8(df.readAllStandardOutput());
-    QSet<QString> networkMounts;
-    for (const QString &line : dfOut.split('\n', Qt::SkipEmptyParts)) {
-        QStringList cols = line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
-        if (cols.size() >= 2) {
-            QString mp = cols.last();
-            if (mp.startsWith("/Volumes/")) networkMounts.insert(mp.mid(QString("/Volumes/").length()));
-        }
-    }
+    // 네트워크 마운트는 커널에게 묻는다(Common::networkVolumeNames — df 의 글자를 잘라 읽지 않는다)
+    const QSet<QString> networkMounts = Common::networkVolumeNames();
     for (const QString &name : entries) {
         QString path = "/Volumes/" + name;
         QFileInfo fi(path);
@@ -1003,23 +998,10 @@ void HanishikiBackend::testBackup()
 //     예전 워치독(/Volumes 접두사 검사)은 이 경우 한 번도 동작하지 않았다.
 QStringList HanishikiBackend::networkMountPoints() const
 {
+    // 커널의 마운트 목록에서 네트워크(로컬이 아닌 것 · 알려진 네트워크 · FUSE 종류)만 — 이름에 띄어쓰기가 있어도, 새 파일시스템이어도
     QStringList out;
-    QProcess p;
-    p.start("/sbin/mount", {});
-    if (!p.waitForFinished(5000)) { p.kill(); p.waitForFinished(1000); return out; }
-    const QString txt = QString::fromUtf8(p.readAllStandardOutput());
-    // "<source> on <mountpoint> (<fstype>, ...)" 형식
-    static const QRegularExpression re(R"(^.* on (.+) \(([a-z0-9]+)[,)])",
-                                       QRegularExpression::MultilineOption);
-    auto it = re.globalMatch(txt);
-    while (it.hasNext()) {
-        const auto m = it.next();
-        const QString mp = m.captured(1).trimmed();
-        const QString fs = m.captured(2);
-        // 네트워크 파일시스템만 — 로컬 디스크(apfs/hfs)는 끊길 일이 없다.
-        if (fs == "nfs" || fs == "smbfs" || fs == "webdav" || fs == "afpfs" || fs == "ftp")
-            out << mp;
-    }
+    for (const Common::MountInfo &m : Common::systemMounts())
+        if (Common::isNetworkFs(m)) out << m.on;
     return out;
 }
 
@@ -1562,25 +1544,15 @@ struct BackupMount { QString from, on, opts; };   // "<from> on <on> (<opts>)"
 }
 static BackupMount mountOfPath(const QString &path)
 {
+    // 그 경로를 품는 가장 깊은 마운트(커널 목록에서). opts 에는 종류와 원천을 담는다 — 아래에서 webdav · osxfuse · macfuse ·
+    //   mountainduck 을 글자로 찾는다(예전 mount 출력의 괄호 안 첫 낱말이 종류였다)
     BackupMount best;
-#ifdef Q_OS_MACOS
-    QProcess mc;
-    mc.start("/sbin/mount", QStringList());
-    if (!mc.waitForFinished(3000)) return best;
-    const QString out = QString::fromUtf8(mc.readAllStandardOutput());
-    for (const QString &line : out.split('\n')) {
-        const int onIdx = line.indexOf(" on ");
-        const int parenIdx = line.lastIndexOf(" (");   // 마운트 지점 이름에 " (" 가 들어 있을 수 있다
-        if (onIdx < 0 || parenIdx < onIdx) continue;
-        const QString mp = line.mid(onIdx + 4, parenIdx - onIdx - 4);
+    for (const Common::MountInfo &m : Common::systemMounts()) {
+        const QString &mp = m.on;
         const bool under = mp == "/" || path == mp || path.startsWith(mp + '/');
-        // 같은 자리에 겹쳐 걸린 마운트는 나중 줄(위에 덮인 것)이 이긴다
         if (!under || mp.length() < best.on.length()) continue;
-        best = {line.left(onIdx), mp, line.mid(parenIdx + 2)};
+        best = {m.from, mp, m.fstype + QStringLiteral(", ") + m.from + (m.readOnly ? QStringLiteral(", read-only") : QString())};
     }
-#else
-    Q_UNUSED(path);
-#endif
     return best;
 }
 
@@ -5119,18 +5091,8 @@ void HanishikiBackend::setAllPathsToNas()
 #ifdef Q_OS_MACOS
     QDir d("/Volumes");
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
-    QProcess df;
-    df.start("df", {"-T", "webdav,smbfs,afpfs,nfs,fuse"});
-    df.waitForFinished(5000);
-    QString dfOut = QString::fromUtf8(df.readAllStandardOutput());
-    QSet<QString> networkMounts;
-    for (const QString &line : dfOut.split('\n', Qt::SkipEmptyParts)) {
-        QStringList cols = line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
-        if (cols.size() >= 2) {
-            QString mp = cols.last();
-            if (mp.startsWith("/Volumes/")) networkMounts.insert(mp.mid(QString("/Volumes/").length()));
-        }
-    }
+    // 네트워크 마운트는 커널에게 묻는다(Common::networkVolumeNames — df 의 글자를 잘라 읽지 않는다)
+    const QSet<QString> networkMounts = Common::networkVolumeNames();
     for (const QString &name : entries) {
         QString path = "/Volumes/" + name;
         QFileInfo fi(path);
@@ -5228,18 +5190,8 @@ void HanishikiBackend::setStorageMode(const QString &mode)
 #ifdef Q_OS_MACOS
     QDir d("/Volumes");
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
-    QProcess df;
-    df.start("df", {"-T", "webdav,smbfs,afpfs,nfs,fuse"});
-    df.waitForFinished(5000);
-    QString dfOut = QString::fromUtf8(df.readAllStandardOutput());
-    QSet<QString> networkMounts;
-    for (const QString &line : dfOut.split('\n', Qt::SkipEmptyParts)) {
-        QStringList cols = line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
-        if (cols.size() >= 2) {
-            QString mp = cols.last();
-            if (mp.startsWith("/Volumes/")) networkMounts.insert(mp.mid(QString("/Volumes/").length()));
-        }
-    }
+    // 네트워크 마운트는 커널에게 묻는다(Common::networkVolumeNames — df 의 글자를 잘라 읽지 않는다)
+    const QSet<QString> networkMounts = Common::networkVolumeNames();
     for (const QString &name : entries) {
         QString path = "/Volumes/" + name;
         QFileInfo fi(path);
@@ -7264,23 +7216,8 @@ void HanishikiBackend::listMountedVolumes()
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
 
     // df로 네트워크/로컬 판정 — fstype 가 webdav, smbfs, afpfs, nfs 면 network
-    QProcess df;
-    df.start("df", {"-T", "webdav,smbfs,afpfs,nfs,fuse"});
-    df.waitForFinished(5000);
-    QString dfOut = QString::fromUtf8(df.readAllStandardOutput());
-
-    QSet<QString> networkMounts;
-    for (const QString &line : dfOut.split('\n', Qt::SkipEmptyParts)) {
-        // df 출력: Filesystem ... Mounted on
-        // 마운트 포인트는 보통 마지막 컬럼
-        QStringList cols = line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
-        if (cols.size() >= 2) {
-            QString mp = cols.last();
-            if (mp.startsWith("/Volumes/")) {
-                networkMounts.insert(mp.mid(QString("/Volumes/").length()));
-            }
-        }
-    }
+    // 네트워크 마운트는 커널에게 묻는다(Common::networkVolumeNames — df 의 글자를 잘라 읽지 않는다)
+    const QSet<QString> networkMounts = Common::networkVolumeNames();
 
     for (const QString &name : entries) {
         // 시스템 볼륨 제외 (Macintosh HD 같은 거)
@@ -7321,18 +7258,8 @@ void HanishikiBackend::pickMountedVolume(const QString &targetInputId)
     // 1) /Volumes 마운트 (Apple WebDAV / SMB / AFP / NFS / 외장)
     QDir d("/Volumes");
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
-    QProcess df;
-    df.start("df", {"-T", "webdav,smbfs,afpfs,nfs,fuse"});
-    df.waitForFinished(5000);
-    QString dfOut = QString::fromUtf8(df.readAllStandardOutput());
-    QSet<QString> networkMounts;
-    for (const QString &line : dfOut.split('\n', Qt::SkipEmptyParts)) {
-        QStringList cols = line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
-        if (cols.size() >= 2) {
-            QString mp = cols.last();
-            if (mp.startsWith("/Volumes/")) networkMounts.insert(mp.mid(QString("/Volumes/").length()));
-        }
-    }
+    // 네트워크 마운트는 커널에게 묻는다(Common::networkVolumeNames — df 의 글자를 잘라 읽지 않는다)
+    const QSet<QString> networkMounts = Common::networkVolumeNames();
     for (const QString &name : entries) {
         QString path = "/Volumes/" + name;
         QFileInfo fi(path);
@@ -8224,6 +8151,7 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                     })()
                 )JS";
                 if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
+                (*chromePtr)->ensureActive();   // 숨은 탭이 얼어 있으면 깨운다(Chrome 의 절약 모드 · 메모리 정리)
                 (*chromePtr)->evaluate(scrollJs, [this, chromePtr, filePath, url, libCode, done, resultOk, trackKey](const QJsonValue &v) {
                     log(QString("[캡쳐] virtualized 스크롤 완료 — article %1개 정적 DOM 재구성").arg(v.toInt()), "info", "twitter");
 

@@ -66,6 +66,8 @@ public:
 
     // 3) JS 평가 (returnByValue=true로 결과 받음)
     void evaluate(const QString &expr, std::function<void(const QJsonValue &)> done);
+    // 탭이 얼어 있으면(숨은 탭 · 절약 모드) 깨운다 — 캡처를 시작하기 직전에(이미 깨어 있으면 아무 일도 없다)
+    void ensureActive();
 
     // 4) 현재 페이지의 outerHTML
     void getRenderedHtml(std::function<void(const QString &)> done);
@@ -150,6 +152,7 @@ private:
     bool m_ready = false;
     int m_nextCmdId = 1;
     QMap<int, std::function<void(const QJsonValue &, const QJsonValue &)>> m_pendingCmds;
+    void failAllPending(const QString &why);   // 기다리던 CDP 명령을 모두 오류로 끝낸다(끊김 · 탭이 떨어짐 · 죽음)
 
     QString m_userDataDir;     // 임시 프로필 경로 (m_useUserProfile=false일 때)
     bool    m_proxyPinned = false;    // setProxyServer 로 출구를 정해 받았는가

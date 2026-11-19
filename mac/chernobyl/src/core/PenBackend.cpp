@@ -1509,21 +1509,8 @@ void PenBackend::listMountedVolumes()
     QDir d("/Volumes");
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
 
-    QProcess df;
-    df.start("df", {"-T", "webdav,smbfs,afpfs,nfs,fuse"});
-    df.waitForFinished(5000);
-    QString dfOut = QString::fromUtf8(df.readAllStandardOutput());
-
-    QSet<QString> networkMounts;
-    for (const QString &line : dfOut.split('\n', Qt::SkipEmptyParts)) {
-        QStringList cols = line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
-        if (cols.size() >= 2) {
-            QString mp = cols.last();
-            if (mp.startsWith("/Volumes/")) {
-                networkMounts.insert(mp.mid(QString("/Volumes/").length()));
-            }
-        }
-    }
+    // 네트워크 마운트는 커널에게 묻는다(Common::networkVolumeNames — df 의 글자를 잘라 읽지 않는다)
+    const QSet<QString> networkMounts = Common::networkVolumeNames();
 
     for (const QString &name : entries) {
         QString path = "/Volumes/" + name;
@@ -1550,18 +1537,8 @@ void PenBackend::pickMountedVolume(const QString &targetInputId)
 #ifdef Q_OS_MACOS
     QDir d("/Volumes");
     QStringList entries = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks);
-    QProcess df;
-    df.start("df", {"-T", "webdav,smbfs,afpfs,nfs,fuse"});
-    df.waitForFinished(5000);
-    QString dfOut = QString::fromUtf8(df.readAllStandardOutput());
-    QSet<QString> networkMounts;
-    for (const QString &line : dfOut.split('\n', Qt::SkipEmptyParts)) {
-        QStringList cols = line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
-        if (cols.size() >= 2) {
-            QString mp = cols.last();
-            if (mp.startsWith("/Volumes/")) networkMounts.insert(mp.mid(QString("/Volumes/").length()));
-        }
-    }
+    // 네트워크 마운트는 커널에게 묻는다(Common::networkVolumeNames — df 의 글자를 잘라 읽지 않는다)
+    const QSet<QString> networkMounts = Common::networkVolumeNames();
     for (const QString &name : entries) {
         QString path = "/Volumes/" + name;
         QFileInfo fi(path);

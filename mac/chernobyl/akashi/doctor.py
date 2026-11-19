@@ -118,21 +118,27 @@ def check_app(app: Path, rep: Report, quick: bool, is_build: bool) -> None:
         code, out = run([str(py), "-B", "-c", "import importlib,sys\nbad=[]\nfor m in sys.argv[1:]:\n  try: importlib.import_module(m)\n  except Exception as e: bad.append(m+':'+type(e).__name__)\nprint(','.join(bad))"] + mods, timeout=60)
         bad = [b for b in out.split(",") if b] if code == 0 else ["실행 실패"]
         rep.add("OK" if not bad else "FAIL", "번들 파이썬 모듈 %d개" % len(mods), "모두 import" if not bad else "안 되는 것: " + ", ".join(bad))
-    # 아키텍처
-    host = platform.machine()
-    cands = [p for d in (app / "Contents" / "MacOS", app / "Contents" / "Resources" / "tools") if d.is_dir()
-             for p in d.iterdir() if p.is_file() and os.access(p, os.X_OK) and is_macho(p)]
-    if perl.is_file():
-        cands.append(perl)
+    # 아키텍처 — 번들 안 모든 실행 파일(Mach-O)이 arm64(또는 arm64e)를 품어야 한다. 로제타는 macOS 27 을 끝으로 빠진다(애플,
+    #   WWDC 2025) — Intel 전용이 하나라도 있으면 다음 macOS 에서 그 기능이 멈추므로 FAIL. 빌드하는 맥의 uname 과 견주지 않는다.
+    cands = []
+    for root, _dirs, files in os.walk(app / "Contents"):
+        for fn in files:
+            p = Path(root) / fn
+            if (os.access(p, os.X_OK) or fn.endswith((".dylib", ".so"))) and p.is_file() and not p.is_symlink() and is_macho(p):
+                cands.append(p)
     lone = []
     for p in cands:
         code, out = run(["lipo", "-archs", str(p)], timeout=10)
         archs = out.split()
-        # arm64e(포인터 인증 ABI)도 애플 실리콘에서 제 속도로 돈다 — 번들 perl 이 x86_64+arm64e 다
-        if code == 0 and host not in archs and not (host == "arm64" and "arm64e" in archs):
-            lone.append("%s(%s)" % (p.name, out.strip()))
-    rep.add("OK" if not lone else "WARN", "아키텍처 %s — 실행 파일 %d개" % (host, len(cands)),
-            "모두 맞음" if not lone else "로제타가 있어야 도는 것: " + ", ".join(lone))
+        if code == 0 and not ({"arm64", "arm64e"} & set(archs)):
+            lone.append("%s(%s)" % (p.relative_to(app), out.strip()))
+    rep.add("OK" if not lone else "FAIL", "아키텍처 arm64 — 실행 파일 %d개" % len(cands),
+            "모두 arm64" if not lone else "arm64 가 없는 것(로제타가 빠지면 멈춤): " + ", ".join(lone[:6]))
+    # 캡처용 Chrome 이 뜨는가(앱의 자가진단과 같은 검사 — 뜨는지만)
+    chrome = app / "Contents" / "Resources" / "chromium" / "Chromium.app" / "Contents" / "MacOS" / "Google Chrome for Testing"
+    if chrome.is_file():
+        code, out = run([str(chrome), "--version"], timeout=30)
+        rep.add("OK" if code == 0 and "Chrome" in out else "FAIL", "캡처용 Chrome", out.strip()[:80] or "실행되지 않습니다")
     # 빌드본: 자원이 소스와 같은가
     if is_build:
         diff = []
