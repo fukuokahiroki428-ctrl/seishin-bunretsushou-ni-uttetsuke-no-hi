@@ -2197,8 +2197,10 @@ QList<MountInfo> systemMounts()
     const int n = getmntinfo(&mnt, MNT_NOWAIT);
     for (int i = 0; i < n && mnt; ++i) {
         MountInfo m;
-        m.from = QString::fromUtf8(mnt[i].f_mntfromname);
-        m.on = QString::fromUtf8(mnt[i].f_mntonname);
+        // ★ Qt 가 다른 모든 경로를 읽는 방식(QFile::decodeName — 맥에선 NFC)으로 읽는다. NetAuth 등이 NFD 로 만든 마운트 자리
+        //   (한글 · 가나 이름의 NAS)가 QDir::entryList · canonicalFilePath(NFC)와 어긋나 로컬로 보이던 것(검토, r54)
+        m.from = QFile::decodeName(mnt[i].f_mntfromname);
+        m.on = QFile::decodeName(mnt[i].f_mntonname);
         m.fstype = QString::fromUtf8(mnt[i].f_fstypename).toLower();
         m.local = (mnt[i].f_flags & MNT_LOCAL) != 0;
         m.readOnly = (mnt[i].f_flags & MNT_RDONLY) != 0;
@@ -2210,8 +2212,13 @@ QList<MountInfo> systemMounts()
 
 bool isNetworkFs(const MountInfo &m)
 {
+    // ★ 블록 장치에서 온 것은 로컬이다 — macFUSE 위의 NTFS-3G · ext4 외장 디스크(종류 이름에 fuse 가 든다)를 NAS 로 여겨
+    //   외장 모드에서 빠지고 NAS 감시가 붙던 것(검토, r54). 네트워크 FUSE(sshfs · rclone · 옛 Mountain Duck)는 원천이 /dev/ 가
+    //   아니고, '-o local' 로 걸지 않는 한 MNT_LOCAL 도 없다.
+    if (m.from.startsWith(QLatin1String("/dev/"))) return false;
     static const QStringList kNet = {"smbfs", "nfs", "nfs4", "webdav", "afpfs", "ftp", "cifs"};
-    if (kNet.contains(m.fstype) || m.fstype.contains(QLatin1String("fuse"))) return true;
+    if (kNet.contains(m.fstype)) return true;
+    if (m.fstype.contains(QLatin1String("fuse"))) return !m.local;
     if (m.fstype == QLatin1String("autofs") || m.fstype == QLatin1String("devfs")) return false;
     return !m.local;
 }

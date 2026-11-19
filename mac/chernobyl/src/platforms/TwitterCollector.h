@@ -140,6 +140,10 @@ private:
     QString m_authToken;
     QString m_ct0;
     QString m_csrfToken;
+    // ★ 이 계정의 X 사용자 번호(설정 → 계정 토큰 자동 추출 → Twitter 가 적어 둔 것)와 그 번호가 어느 토큰의 것인지(sha256 앞 16자).
+    //   데몬의 쿠키 자동 갱신은 이 번호와 같은 Chrome 로그인만 받는다 — 토큰과 짝이 맞을 때만 넘긴다(r54).
+    QString m_expectedUid;
+    QString m_expectedUidTok;
     // 수집 중 발견한 스페이스 카드 트윗의 status URL (전체수집 끝에 yt-dlp 로 일괄 다운로드)
     QSet<QString> m_spaceCardTweetUrls;
 
@@ -155,6 +159,7 @@ private:
     QMutex m_daemonMutex;
     bool m_daemonReady = false;
     int m_daemonRequestCount = 0;  // periodic restart for memory hygiene
+    quint64 m_daemonSeq = 0;       // 데몬 명령 번호(_rid) — 번호가 다른 답(앞 명령의 늦은 답)을 버린다(r54)
 
     // 새트윗 확인용
     QString m_newestTweetId;

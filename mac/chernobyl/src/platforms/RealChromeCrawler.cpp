@@ -293,13 +293,21 @@ void RealChromeCrawler::start(std::function<void(bool)> done)
         //     · IsolateOrigins · site-per-process — 사이트 격리(보안)를 끈다. 아래 --site-per-process 와 정반대다.
         //     · WebRtcHideLocalIpsWithMdns · WebRTC — 내부 IP 를 감춰 주는 장치를 끈다(주석의 'IP 노출 방지' 와
         //       정반대). WebRTC 로 진짜 IP 가 새는 것은 --force-webrtc-ip-handling-policy 로 막는다.
-        // ★ 숨은 탭(최소화된 수집 창은 macOS 27 에서 'hidden' — 실측)에 거는 Chrome 의 절전도 끈다: 타이머를 1분에 한 번으로 묶는
-        //   IntensiveWakeUpThrottling, 절약 모드에서 숨은 탭을 얼리는 FreezingOnEnergySaver. 모르는 이름은 Chrome 이 그냥 넘긴다.
+        // ★ 숨은 탭(최소화된 수집 창은 macOS 27 에서 'hidden' — 실측)에 거는 Chrome 의 절전도 끈다:
+        //   · IntensiveWakeUpThrottling — 숨은 탭의 타이머를 1분에 한 번으로 묶는다.
+        //   · CPUMeasurementInFreezingPolicy — Chrome 152 의 절약 모드(Energy Saver)는 5분 넘게 숨어 있으면서 CPU 를 5% 넘게 쓰는
+        //     탭을 얼린다(탭이 하나뿐이거나 DevTools 가 붙어 있어도). 그 판정에 쓰는 CPU 측정이 이 기능이라, 끄면 얼리지 못한다.
+        //     (r53 의 'FreezingOnEnergySaver' 는 Chrome 에 없는 이름이었다 — Chrome 은 모르는 이름을 말없이 넘긴다. 검토 r54)
+        // ★ 이름이 Chrome 에 실제로 있는지는 akashi/doctor.py 가 번들의 Chrome 에서 확인한다(없으면 FAIL) — Chrome 이 이름을 바꾸면
+        //   이 목록이 말없이 무력해지기 때문이다. 그래서 Chrome 152 에 없는 GlobalMediaControls · OptimizationGuideModelDownloading 은
+        //   뺐다(아무 일도 안 하던 것). 이 목록은 한 줄에 하나씩, 따옴표 안의 이름만 — doctor 가 읽는다.
         QStringList disabledFeatures = {
-            QStringLiteral("IntensiveWakeUpThrottling"), QStringLiteral("FreezingOnEnergySaver"),
-            QStringLiteral("Translate"), QStringLiteral("OptimizationHints"), QStringLiteral("MediaRouter"),
-            QStringLiteral("GlobalMediaControls"),                       // 8GB Mac OOM 방지 — 쓰지 않는 기능
-            QStringLiteral("AutofillServerCommunication"), QStringLiteral("OptimizationGuideModelDownloading")};
+            QStringLiteral("IntensiveWakeUpThrottling"),
+            QStringLiteral("CPUMeasurementInFreezingPolicy"),
+            QStringLiteral("Translate"),
+            QStringLiteral("OptimizationHints"),
+            QStringLiteral("MediaRouter"),
+            QStringLiteral("AutofillServerCommunication")};
         args << "--no-first-run"
              << "--no-default-browser-check"
              << "--disable-background-networking"

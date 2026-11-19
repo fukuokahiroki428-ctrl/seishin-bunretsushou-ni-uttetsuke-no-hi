@@ -1036,6 +1036,9 @@ void HanishikiBackend::nasWatchdogTick()
     if (m_nasProbeInProgress) return;        // 앞 확인이 아직 안 끝났으면 겹치지 않게
 
     QStringList targets = networkMountPoints();
+    // 마운트 자리 → 종류. 죽은 마운트를 되살릴 수 있는 것은 WebDAV 뿐이다(아래 silentRemountWebDav).
+    QHash<QString, QString> fsOf;
+    for (const Common::MountInfo &m : Common::systemMounts()) fsOf.insert(m.on, m.fstype);
     // 백업 경로가 네트워크 마운트가 아니어도(예: 로컬 외장) 사라짐은 감지한다.
     const QString bp = m_config->backupPath();
     if (bp.startsWith("/Volumes/")) {
@@ -1046,12 +1049,12 @@ void HanishikiBackend::nasWatchdogTick()
     if (targets.isEmpty()) return;
 
     m_nasProbeInProgress = true;
-    QThread *t = QThread::create([this, targets]() {
+    QThread *t = QThread::create([this, targets, fsOf]() {
         QStringList dead;
         for (const QString &mp : targets)
             if (!probeMountAlive(mp, 8000)) dead << mp;
 
-        QMetaObject::invokeMethod(this, [this, targets, dead]() {
+        QMetaObject::invokeMethod(this, [this, targets, dead, fsOf]() {
             m_nasProbeInProgress = false;
             for (const QString &mp : targets) {
                 if (!dead.contains(mp)) {
@@ -1071,6 +1074,15 @@ void HanishikiBackend::nasWatchdogTick()
                 if (mp.contains("Volumes.noindex") || mp.contains("io.mountainduck")) {
                     log("  → Mountain Duck 마운트입니다. 해당 앱이 재연결할 때까지 기다리거나 "
                         "메뉴막대에서 다시 연결해 주세요.", "info", "settings");
+                    continue;
+                }
+                // ★ 설정의 WebDAV 를 다시 거는 것으로는 WebDAV 마운트만 되살아난다. sshfs · rclone · SMB 같은 다른 마운트가
+                //   죽었을 때 엉뚱한 WebDAV 를 걸고 '재연결 성공' 이라 찍던 것(검토, r54) — 알리기만 한다.
+                //   목록에서 아예 사라진 마운트(종류를 모름)는 예전처럼 WebDAV 로 되살려 본다.
+                const QString fs = fsOf.value(mp);
+                if (!fs.isEmpty() && fs != QLatin1String("webdav")) {
+                    log(QString("  → %1 마운트는 앱이 되살릴 수 없습니다 — 그 마운트를 만든 앱(또는 Finder)에서 다시 연결해 주십시오")
+                            .arg(fs), "info", "settings");
                     continue;
                 }
                 if (!m_nasReconnectInProgress) silentRemountWebDav();
@@ -1544,14 +1556,16 @@ struct BackupMount { QString from, on, opts; };   // "<from> on <on> (<opts>)"
 }
 static BackupMount mountOfPath(const QString &path)
 {
-    // 그 경로를 품는 가장 깊은 마운트(커널 목록에서). opts 에는 종류와 원천을 담는다 — 아래에서 webdav · osxfuse · macfuse ·
-    //   mountainduck 을 글자로 찾는다(예전 mount 출력의 괄호 안 첫 낱말이 종류였다)
+    // 그 경로를 품는 가장 깊은 마운트(커널 목록에서). opts 에는 종류만 담는다 — 아래에서 webdav · osxfuse · macfuse ·
+    //   mountainduck 을 글자로 찾는다(예전 mount 출력의 괄호 안 첫 낱말이 종류였다).
+    //   ★ 원천(from)은 넣지 않는다 — 공유 이름 · 호스트 이름에 'webdav' 가 들면 SMB · NFS 백업이 Apple WebDAV 로 보여
+    //     워커가 4 → 1 로 줄고 엉뚱한 안내가 찍혔다(검토, r54). 원천은 best.from 에 따로 있다.
     BackupMount best;
     for (const Common::MountInfo &m : Common::systemMounts()) {
         const QString &mp = m.on;
         const bool under = mp == "/" || path == mp || path.startsWith(mp + '/');
         if (!under || mp.length() < best.on.length()) continue;
-        best = {m.from, mp, m.fstype + QStringLiteral(", ") + m.from + (m.readOnly ? QStringLiteral(", read-only") : QString())};
+        best = {m.from, mp, m.fstype + (m.readOnly ? QStringLiteral(", read-only") : QString())};
     }
     return best;
 }
@@ -17539,6 +17553,16 @@ void HanishikiBackend::startLocalLlm(const QString &modelHint)
     m_llmProc->setWorkingDirectory(dir);
     connect(m_llmProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this](int, QProcess::ExitStatus) { getLlmStatus(); });
+    // ★ 띄우지도 못하면(Intel 전용 엔진이 로제타 없는 맥에서 'Bad CPU type', 실행 권한 없음 등) stderr 가 비어
+    //   '시작하자마자 종료' 만 남았다 — 까닭과 할 일을 남긴다(검토 r54).
+    {
+        QProcess *proc = m_llmProc;
+        connect(proc, &QProcess::errorOccurred, this, [this, proc](QProcess::ProcessError e) {
+            if (e != QProcess::FailedToStart) return;
+            log(QString("❌ 로컬 AI 엔진을 띄우지 못했습니다(%1) — 'AI 설치' 를 다시 실행하면 이 맥에 맞는 엔진으로 바꿉니다")
+                    .arg(proc->errorString()), "error", "settings");
+        });
+    }
     m_llmProc->start();
 
     // 준비될 때까지(모델 로딩) 백그라운드 폴링 후 상태 통지
@@ -19474,9 +19498,13 @@ void HanishikiBackend::refreshTwitterTokens()
             "        for dom in ['x.com', 'twitter.com']:\n"
             "            try:\n"
             "                cj = fn(domain_name=dom)\n"
-            "                toks = {c.name: c.value for c in cj if c.name in ('auth_token', 'ct0')}\n"
+            "                toks = {c.name: c.value for c in cj if c.name in ('auth_token', 'ct0', 'twid')}\n"
             "                if toks.get('auth_token') and toks.get('ct0'):\n"
             "                    found = {'auth_token': toks['auth_token'], 'ct0': toks['ct0'], 'browser': fn_name}\n"
+            "                    from urllib.parse import unquote\n"
+            "                    _t = unquote(toks.get('twid') or '').strip().strip('\"')\n"
+            "                    _t = _t[2:] if _t.startswith('u=') else _t\n"
+            "                    if _t.isdigit(): found['uid'] = _t\n"
             "                    break\n"
             "            except Exception as e:\n"
             "                _m = str(e).lower()\n"
@@ -19499,8 +19527,15 @@ void HanishikiBackend::refreshTwitterTokens()
         QString authToken = result.contains("error") ? QString() : result["auth_token"].toString();
         QString ct0 = result.contains("error") ? QString() : result["ct0"].toString();
         QString error = result["error"].toString();
+        // ★ 그 로그인의 X 사용자 번호(twid)와, 그 번호가 이 토큰의 것이라는 표(sha256 앞 16자) — 데몬의 쿠키 자동 갱신이
+        //   '같은 X 계정' 의 Chrome 로그인만 받게 한다(r54). 숫자 · 16진수만 남긴다(아래 JS 문자열에 들어간다).
+        QString uid = result["uid"].toString();
+        static const QRegularExpression kDigits(QStringLiteral("^[0-9]{1,25}$"));
+        if (!kDigits.match(uid).hasMatch()) uid.clear();
+        const QString uidTok = uid.isEmpty() ? QString()
+            : QString::fromLatin1(QCryptographicHash::hash(authToken.toUtf8(), QCryptographicHash::Sha256).toHex().left(16));
 
-        QMetaObject::invokeMethod(this, [this, authToken, ct0, error]() {
+        QMetaObject::invokeMethod(this, [this, authToken, ct0, error, uid, uidTok]() {
             if (!error.isEmpty()) {
                 log("토큰 추출 실패: " + error, "error", "settings");
                 runJs("setTokenRefreshing(false)");
@@ -19527,9 +19562,11 @@ void HanishikiBackend::refreshTwitterTokens()
                 "  accounts.twitter.push({name:'Chrome', auth_token:'%1', ct0:'%2'});"
                 "  appendLog('✅ Chrome 계정 자동 추가됨', 'success', 'settings');"
                 "}"
+                "if ('%3') { accounts.twitter[0].uid = '%3'; accounts.twitter[0].uid_tok = '%4'; }"
+                "else { delete accounts.twitter[0].uid; delete accounts.twitter[0].uid_tok; }"
                 "renderAccounts('twitter'); saveConfig();"
                 "setTokenRefreshing(false);"
-            ).arg(authToken, ct0);
+            ).arg(authToken, ct0, uid, uidTok);
             runJs(js);
 
             // ★ Twitter 의 전체 cookie 도 capture cookie input (twitter-cookie) 에 채움

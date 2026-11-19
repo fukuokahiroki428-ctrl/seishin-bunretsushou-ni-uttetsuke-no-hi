@@ -227,20 +227,40 @@ def main():
             args = json.loads(line)
         except Exception:
             continue
+        # 진짜 데몬처럼 앱이 붙인 명령 번호(_rid)를 답에 돌려준다(r54)
+        rid = args.pop("_rid", None) if isinstance(args, dict) else None
+
+        def out(o):
+            if rid is not None and isinstance(o, dict):
+                o = dict(o, _rid=rid)
+            print(json.dumps(o, ensure_ascii=False), flush=True)
+
         a = args.get("action", "")
         if a == "quit":
-            print(json.dumps({"status": "bye"}), flush=True)
+            out({"status": "bye"})
             break
         if a == "ping":
-            print(json.dumps({"status": "pong"}), flush=True)
+            out({"status": "pong"})
             continue
+        # 늦은 답 흉내(state 의 stale_reply_once) — 앞 명령의 번호를 단 엉뚱한 답을 먼저 한 줄 낸다. 앱은 버려야 한다.
+        if rid is not None:
+            try:
+                st = state()
+                if st.pop("stale_reply_once", None):
+                    with open(STATE, "w", encoding="utf-8") as f:
+                        json.dump(st, f)
+                    logreq({"action": a, "stale_reply": True})
+                    print(json.dumps({"status": 200, "body": {"akashi_stale_reply": True},
+                                      "_rid": "akashi-stale-" + str(rid)}), flush=True)
+            except Exception:
+                pass
         if a == "update_endpoints":
-            print(json.dumps({"status": "ok"}), flush=True)
+            out({"status": "ok"})
             continue
         try:
-            print(json.dumps(handle(args), ensure_ascii=False), flush=True)
+            out(handle(args))
         except Exception as e:
-            print(json.dumps({"error": "fake: %r" % (e,)}), flush=True)
+            out({"error": "fake: %r" % (e,)})
 
 
 if __name__ == "__main__":

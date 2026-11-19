@@ -171,13 +171,15 @@ esac
 
 # ── 3) llama-server(추론 엔진) ─────────────────────────────────────────────
 SRV="$LLM_DIR/llama-server"
-if [ ! -x "$SRV" ]; then
+# ★ 아키텍처는 하드웨어에 묻는다 — 로제타 아래 터미널은 uname -m 이 x86_64 라 Intel 엔진을 받았고, 그 엔진은 로제타가 빠지는
+#   macOS 에서 'Bad CPU type' 으로 멈춘다(앱은 애플 실리콘 전용). 이미 깔린 엔진이 Intel 전용이면 arm64 판으로 바꾼다(검토 r54).
+#   lipo 는 개발자 도구의 껍데기라 도구 없는 맥에서 설치 창을 띄운다 — /usr/bin/file 로 본다.
+if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then PAT="macos-arm64"; else PAT="macos-x64"; fi
+srv_ok() { [ -x "$SRV" ] && { [ "$PAT" != "macos-arm64" ] || /usr/bin/file -b "$SRV" 2>/dev/null | grep -Eqw 'arm64e?'; }; }
+if ! srv_ok; then
     echo ""
+    [ -x "$SRV" ] && echo "   설치된 엔진이 Intel 전용이라 arm64 판으로 바꿉니다"
     echo "▶ 추론 엔진(llama-server) 설치 중..."
-    case "$(uname -m)" in
-        arm64) PAT="macos-arm64" ;;
-        *)     PAT="macos-x64"   ;;
-    esac
     # ★ 1순위 = 우리 엔진 보관본(ai-engines-v1). 모델과 같은 원칙이다.
     #   원 배포처(ggml-org)가 사라지거나 자산 이름 규칙이 바뀌어도 설치가 되게
     #   엔진 바이너리를 직접 들고 있는다. 보관본은 지금 모델과 맞물려 동작이
@@ -218,6 +220,7 @@ if [ ! -x "$SRV" ]; then
         esac
     fi
     if [ "$OK" = "1" ]; then
+        rm -f "$SRV" "$LLM_DIR"/*.dylib 2>/dev/null   # 옛 엔진 · 그 dylib 를 새것 옆에 남기지 않는다(모델 *.gguf 는 그대로)
         find "$TMP/x" -name "llama-server" -type f -exec cp {} "$LLM_DIR/" \; 2>/dev/null
         find "$TMP/x" -name "*.dylib" -exec cp {} "$LLM_DIR/" \; 2>/dev/null
         chmod +x "$SRV" 2>/dev/null

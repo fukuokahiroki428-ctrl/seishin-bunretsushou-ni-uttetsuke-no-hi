@@ -240,6 +240,40 @@ async def auto_repair_hashes(client, Endpoint, auth_token=None, ct0=None):
 # ── Auto cookie refresh from Chrome ───────────────────────────────────────
 
 LAST_COOKIE_ERROR = ''
+# ★ 키체인에서 한 번 읽은 Chrome 쿠키 키(PBKDF2 를 거친 것) — 데몬이 사는 동안 다시 묻지 않는다(401 마다 키체인 창이 뜨지 않게).
+#   풀리는 값이 하나도 없으면(키가 바뀜) 버리고 다음에 다시 읽는다.
+_CHROME_KEY = None
+# 키체인 창을 기다리는 시간 — 앱이 답을 기다리는 시간(보통 60초, 트윗 상세는 30초)보다 짧게. 사람이 맥 앞에 있으면
+#   「허용」을 누를 시간은 된다(「항상 허용」이면 다음부터 묻지 않는다). r53 의 60초는 앱의 기다림과 같아 답이 늘 늦었다.
+_KEYCHAIN_TIMEOUT = 25
+
+
+def _x_uid_from_twid(v):
+    """twid 쿠키 값('u%3D123' · '"u=123"')에서 X 사용자 번호만. 모르면 ''"""
+    try:
+        from urllib.parse import unquote
+        s = unquote(v or '').strip().strip('"')
+    except Exception:
+        return ''
+    if s.startswith('u='):
+        s = s[2:]
+    return s if s.isdigit() else ''
+
+
+def _x_error_codes(body):
+    """X 오류 응답 본문의 errors[].code 들(정수 집합). 못 읽으면 빈 집합"""
+    try:
+        data = json.loads(body) if isinstance(body, (str, bytes)) else body
+        out = set()
+        for e in (data or {}).get('errors') or []:
+            if isinstance(e, dict):
+                try:
+                    out.add(int(e.get('code')))
+                except (TypeError, ValueError):
+                    pass
+        return out
+    except Exception:
+        return set()
 
 
 def _cookie_error(msg):
@@ -269,13 +303,24 @@ def _aes_cbc_decrypt(key, data):
     return None
 
 
-def extract_chrome_twitter_cookies():
-    """Extract auth_token and ct0 from Chrome's cookie database.
-    Works on macOS and Windows. Returns (auth_token, ct0) or (None, None).
+def extract_chrome_twitter_cookies(current_auth=None, expected_uid=None):
+    """Chrome 의 쿠키 DB 에서 auth_token · ct0 를 꺼낸다. (auth_token, ct0) 또는 (None, None).
+
+    ★ 이 계정과 '같은 X 계정' 임이 확인된 로그인만 돌려준다(검토, r54):
+      (1) auth_token 이 지금 것(current_auth)과 같다 — 같은 로그인이고 ct0 만 바뀐 경우, 또는
+      (2) 그 로그인의 twid(사용자 번호)가 expected_uid 와 같다 — 앱이 Chrome 에서 이 계정의 토큰을 가져올 때 적어 둔 번호.
+      r53 은 Chrome 이 가장 최근에 쓴 프로필의 로그인을 아무것이나 받았다. 다른 계정이면 이 계정의 프록시로 남의 세션이
+      나가고(계정마다 출구를 가르는 앱의 규칙을 깬다) 수집물이 다른 계정의 것이 됐다(북마크 등). r52 까지는 맥에서 쿠키를
+      풀지 못해(/usr/lib/libcommonCrypto.dylib 가 디스크에 없다) 이 길이 한 번도 돌지 않았다.
     """
+    global _CHROME_KEY
     auth_token = None
     ct0 = None
     _cookie_error('')
+    exp_uid = str(expected_uid or '').strip()
+
+    def _same_account(a, uid):
+        return bool((current_auth and a == current_auth) or (exp_uid and uid == exp_uid))
 
     try:
         if platform.system() == "Darwin":
@@ -285,15 +330,18 @@ def extract_chrome_twitter_cookies():
             #     (2) 'v10' 이 아닌 방식(윈도우의 앱 묶음 암호화 'v20' 같은 것)이면 말없이 건너뛰지 않고 그렇다고 알린다
             #     (3) 쿠키 DB 메타 판 24 부터 값 앞에 도메인의 SHA-256(32바이트)이 붙는다 — 맞으면 떼어 낸다(안 떼면 토큰이 깨진다)
             #     (4) /usr/lib 의 dylib 경로를 직접 열지 않는다(그 파일은 이미 디스크에 없고 dyld 공유 캐시로만 풀린다) — 번들의 cryptography 로
+            #     (5) 같은 X 계정의 로그인만 받는다(위 설명) — auth_token · ct0 · twid 는 같은 사이트의 것끼리 묶는다
             import sqlite3, tempfile, shutil, glob, hashlib
+            # AES 라이브러리부터 — 없으면 'Chrome 에 로그인하라' 대신 그렇다고 알린다
             try:
-                raw_key = subprocess.check_output(['security', 'find-generic-password', '-w',
-                                                   '-s', 'Chrome Safe Storage', '-a', 'Chrome'],
-                                                  stderr=subprocess.DEVNULL, timeout=60).strip()
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                _cookie_error('키체인에서 Chrome 쿠키 키를 읽지 못했습니다(Chrome 이 없거나 키체인 접근을 거부함)')
-                return None, None
-            dk = hashlib.pbkdf2_hmac('sha1', raw_key, b'saltysalt', 1003, dklen=16)
+                import cryptography.hazmat.primitives.ciphers  # noqa: F401
+            except ImportError:
+                try:
+                    import Cryptodome.Cipher.AES  # noqa: F401
+                except ImportError:
+                    _cookie_error('이 파이썬(%s)에는 Chrome 쿠키를 풀 AES 라이브러리(cryptography · pycryptodomex)가 없습니다'
+                                  % sys.executable)
+                    return None, None
             base = os.path.expanduser("~/Library/Application Support/Google/Chrome")
             dbs = []
             for pdir in [os.path.join(base, 'Default')] + sorted(glob.glob(os.path.join(base, 'Profile *'))):
@@ -301,11 +349,34 @@ def extract_chrome_twitter_cookies():
                     cand = os.path.join(pdir, rel)
                     if os.path.isfile(cand):
                         dbs.append(cand)
-            dbs.sort(key=os.path.getmtime, reverse=True)   # 가장 최근에 쓴 프로필부터
+
+            def _mtime(path):
+                try:
+                    return os.path.getmtime(path)
+                except OSError:
+                    return 0
+            dbs.sort(key=_mtime, reverse=True)   # 가장 최근에 쓴 프로필부터
             if not dbs:
                 _cookie_error('Chrome 쿠키 파일을 찾지 못했습니다(~/Library/Application Support/Google/Chrome/<프로필>/(Network/)Cookies)')
                 return None, None
+            # 키체인은 쿠키 파일이 있을 때만 · 데몬이 사는 동안 한 번만 연다
+            if _CHROME_KEY is None:
+                try:
+                    raw_key = subprocess.check_output(['security', 'find-generic-password', '-w',
+                                                       '-s', 'Chrome Safe Storage', '-a', 'Chrome'],
+                                                      stderr=subprocess.DEVNULL, timeout=_KEYCHAIN_TIMEOUT).strip()
+                except subprocess.TimeoutExpired:
+                    _cookie_error('키체인 창에 %d초 안에 답이 없어 Chrome 쿠키 키를 읽지 못했습니다 — 키체인 창에서 「항상 허용」을 누르면 '
+                                  '다음부터는 묻지 않습니다' % _KEYCHAIN_TIMEOUT)
+                    return None, None
+                except subprocess.CalledProcessError:
+                    _cookie_error('키체인에서 Chrome 쿠키 키를 읽지 못했습니다(Chrome 이 없거나 키체인 접근을 거부함)')
+                    return None, None
+                _CHROME_KEY = hashlib.pbkdf2_hmac('sha1', raw_key, b'saltysalt', 1003, dklen=16)
+            dk = _CHROME_KEY
+            now_us = int((time.time() + 11644473600) * 1000000)   # Chrome 의 시각: 1601년부터의 마이크로초
             unknown = set()
+            read_errs, read_ok, dec_ok, dec_fail, others = [], 0, 0, 0, 0
             for db_path in dbs:
                 rows, meta_ver = [], 0
                 fd, tmp = tempfile.mkstemp(suffix=".db")
@@ -319,20 +390,33 @@ def extract_chrome_twitter_cookies():
                             meta_ver = int(row[0]) if row else 0
                         except Exception:
                             meta_ver = 0
-                        rows = conn.execute(
-                            "SELECT name, encrypted_value, host_key FROM cookies "
-                            "WHERE (host_key LIKE '%twitter.com' OR host_key LIKE '%x.com') "
-                            "AND name IN ('auth_token', 'ct0')").fetchall()
+                        cols = {c[1] for c in conn.execute("PRAGMA table_info(cookies)")}
+                        # ★ 도메인은 정확히 — LIKE '%x.com' 은 netflix.com · dropbox.com 의 auth_token 까지 잡았다(검토).
+                        #   지난 쿠키 · 다른 사이트에 묶인(분할, CHIPS) 쿠키는 빼고, 같은 이름이면 나중에 만든 것이 이긴다.
+                        where = ("host_key IN ('.x.com', 'x.com', '.twitter.com', 'twitter.com') "
+                                 "AND name IN ('auth_token', 'ct0', 'twid')")
+                        params = []
+                        if 'expires_utc' in cols and 'has_expires' in cols:
+                            where += " AND (has_expires = 0 OR expires_utc = 0 OR expires_utc > ?)"
+                            params.append(now_us)
+                        if 'top_frame_site_key' in cols:
+                            where += " AND top_frame_site_key = ''"
+                        order = " ORDER BY creation_utc" if 'creation_utc' in cols else ""
+                        rows = conn.execute("SELECT name, encrypted_value, host_key FROM cookies WHERE " + where + order,
+                                            params).fetchall()
+                        read_ok += 1
                     finally:
                         conn.close()
-                except Exception:
+                except Exception as e:
                     rows = []
+                    # 말없이 넘기지 않는다 — 다 실패하면 'Chrome 에 로그인하라' 대신 이 까닭을 알린다(검토)
+                    read_errs.append('%s: %s' % (os.path.relpath(db_path, base), e))
                 finally:
                     try:
                         os.unlink(tmp)
                     except OSError:
                         pass
-                vals = {}
+                by_site = {}
                 for name, enc_val, host in rows:
                     if not enc_val or len(enc_val) < 4:
                         continue
@@ -341,22 +425,39 @@ def extract_chrome_twitter_cookies():
                         continue
                     plain = _aes_cbc_decrypt(dk, enc_val[3:])
                     if plain is None:
+                        dec_fail += 1
                         continue
+                    dec_ok += 1
                     if meta_ver >= 24 and len(plain) >= 32 and plain[:32] == hashlib.sha256((host or '').encode()).digest():
                         plain = plain[32:]
                     try:
-                        vals[name] = plain.decode('utf-8')
+                        by_site.setdefault((host or '').lstrip('.'), {})[name] = plain.decode('utf-8')
                     except UnicodeDecodeError:
                         continue
-                if vals.get('auth_token') and vals.get('ct0'):
-                    return vals['auth_token'], vals['ct0']
-            if unknown:
+                for site in ('x.com', 'twitter.com'):
+                    s = by_site.get(site) or {}
+                    a, c = s.get('auth_token'), s.get('ct0')
+                    if not (a and c):
+                        continue
+                    if _same_account(a, _x_uid_from_twid(s.get('twid', ''))):
+                        return a, c
+                    others += 1
+            if dec_fail and not dec_ok:
+                _CHROME_KEY = None     # 키가 바뀌었을 수 있다 — 다음에는 키체인에서 다시 읽는다
+            detail = (' · 읽지 못한 쿠키 DB: ' + '; '.join(read_errs[:3])) if read_errs else ''
+            if others:
+                _cookie_error(('Chrome 의 X 로그인 %d개가 이 계정과 같은 계정인지 확인되지 않아 쓰지 않았습니다 — 설정 → 계정 토큰 자동 '
+                               '추출 → Twitter 로 이 계정의 토큰을 다시 넣어 주십시오') % others + detail)
+            elif unknown:
                 _cookie_error('Chrome 의 쿠키 암호 방식이 바뀌어(%s) 읽을 수 없습니다 — 트위터 계정의 auth_token · ct0 를 설정에 직접 넣어 주십시오'
-                              % ', '.join(sorted(unknown)))
+                              % ', '.join(sorted(unknown)) + detail)
+            elif read_errs and not read_ok:
+                _cookie_error('Chrome 쿠키 DB 를 읽지 못했습니다 — ' + '; '.join(read_errs[:3]))
+            elif dec_fail and not dec_ok:
+                _cookie_error('Chrome 쿠키를 풀지 못했습니다(키체인의 키가 바뀌었을 수 있습니다 — 다음에 다시 읽습니다)' + detail)
             else:
-                _cookie_error('Chrome 에 X(트위터) 로그인 쿠키가 없거나 풀지 못했습니다 — Chrome 에서 x.com 에 로그인한 뒤 다시 해 보십시오')
+                _cookie_error('Chrome 에 X(트위터) 로그인 쿠키가 없습니다 — Chrome 에서 x.com 에 로그인한 뒤 다시 해 보십시오' + detail)
             return None, None
-
         elif platform.system() == "Windows":
             # Windows: Chrome cookies encrypted with DPAPI
             import sqlite3, tempfile, shutil
@@ -426,10 +527,24 @@ def extract_chrome_twitter_cookies():
     except Exception as e:
         print(json.dumps({"info": f"Chrome cookie extraction failed: {e}"}), flush=True)
 
+    # 윈도우 가지(이 파일의 것은 맥 앱에서 돌지 않는다 — 윈도우 앱은 windows/ 의 데몬을 쓴다)도 같은 로그인만 받는다
+    if auth_token and ct0 and not _same_account(auth_token, ''):
+        _cookie_error('Chrome 의 X 로그인이 이 계정과 같은 계정인지 확인되지 않아 쓰지 않았습니다')
+        return None, None
     return auth_token, ct0
 
 
 # ── Main daemon ───────────────────────────────────────────────────────────
+
+def _reply(obj, rid=None):
+    """명령의 마지막 답 한 줄. 앱이 붙인 명령 번호(_rid)를 그대로 돌려준다 — 앱은 번호가 다른 답(앞 명령의 늦은 답)을 버린다.
+    ★ 키체인 창 · 해시 수리처럼 앱의 기다림(60초 · 트윗 상세 30초)보다 오래 걸린 명령의 답이 다음 명령의 답으로 읽혔다(검토, r54).
+      번호 없이 온 명령(옛 앱)에는 예전처럼 번호 없이 답한다."""
+    if rid is not None and isinstance(obj, dict):
+        obj = dict(obj)
+        obj["_rid"] = rid
+    print(json.dumps(obj), flush=True)
+
 
 def _read_init_line():
     """첫 줄만 원시 fd 에서 읽는다.
@@ -465,6 +580,9 @@ async def main():
     init_args = _load_init_args("Usage: twitter_daemon.py --stdin-args  (init JSON on first stdin line)")
     auth_token = init_args["auth_token"]
     ct0 = init_args["ct0"]
+    # ★ 이 계정의 X 사용자 번호 — 앱이 Chrome 에서 이 토큰을 가져올 때 적어 둔 것(토큰과 짝이 맞을 때만 온다).
+    #   쿠키 자동 갱신은 지금 로그인 그대로이거나 이 번호와 같은 로그인만 받는다(extract_chrome_twitter_cookies).
+    expected_uid = str(init_args.get("expected_uid") or "").strip()
     # 자격증명이 실제로 도착했는지 길이로만 알린다 — 값은 절대 찍지 않는다.
     #   전달 방식이 깨졌을 때 "X 가 막았다" 와 구별하려면 이 한 줄이 필요하다.
     print(json.dumps({"info": "자격증명 도착: auth_token %d자, ct0 %d자"
@@ -764,6 +882,7 @@ async def main():
             return await reader.readline()
 
     while True:
+        _rid = None          # 이 명령의 번호(앱이 붙였으면) — 앞 명령의 번호가 남지 않게 매번 비운다
         try:
             line = await _read_line()
             if not line:
@@ -773,31 +892,32 @@ async def main():
                 continue
 
             args = json.loads(line)
+            _rid = args.pop("_rid", None) if isinstance(args, dict) else None
             action = args.get("action", "")
 
             if action == "quit":
-                print(json.dumps({"status": "bye"}), flush=True)
+                _reply({"status": "bye"}, _rid)
                 break
 
             if action == "ping":
-                print(json.dumps({"status": "pong"}), flush=True)
+                _reply({"status": "pong"}, _rid)
                 continue
 
             if action == "refresh_cookies":
                 # Auto-refresh: extract fresh cookies from Chrome
                 print(json.dumps({"info": "Attempting to refresh cookies from Chrome..."}), flush=True)
-                new_auth, new_ct0 = extract_chrome_twitter_cookies()
+                new_auth, new_ct0 = extract_chrome_twitter_cookies(auth_token, expected_uid)
                 if new_auth and new_ct0:
                     auth_token = new_auth
                     ct0 = new_ct0
                     client.set_cookies({"auth_token": auth_token, "ct0": ct0})
                     deduplicate_cookies(client)
                     # 토큰은 앞자리도 내보내지 않는다(로그에 남는다) — 길이만
-                    print(json.dumps({"status": "ok", "info": "Cookies refreshed from Chrome",
-                                      "auth_token_len": len(auth_token), "ct0_len": len(ct0)}), flush=True)
+                    _reply({"status": "ok", "info": "Cookies refreshed from Chrome",
+                            "auth_token_len": len(auth_token), "ct0_len": len(ct0)}, _rid)
                 else:
-                    print(json.dumps({"status": "error", "error": "Failed to extract cookies from Chrome"
-                                      + (" — " + LAST_COOKIE_ERROR if LAST_COOKIE_ERROR else "")}), flush=True)
+                    _reply({"status": "error", "error": "Failed to extract cookies from Chrome"
+                            + (" — " + LAST_COOKIE_ERROR if LAST_COOKIE_ERROR else "")}, _rid)
                 continue
 
             if action == "update_endpoints":
@@ -807,7 +927,7 @@ async def main():
                     client, Endpoint, auth_token=auth_token, ct0=ct0
                 )
                 if err:
-                    print(json.dumps({"status": "error", "error": err}), flush=True)
+                    _reply({"status": "error", "error": err}, _rid)
                 else:
                     # Re-init TID after hash update
                     try:
@@ -826,7 +946,7 @@ async def main():
                     repair_count = 0
                     consecutive_404 = 0
                     last_repair_time = time.time()
-                    print(json.dumps({"status": "ok", "updated": updated or []}), flush=True)
+                    _reply({"status": "ok", "updated": updated or []}, _rid)
                 continue
 
             deduplicate_cookies(client)  # Clean before each API call
@@ -895,31 +1015,42 @@ async def main():
                         if result.get("status") == 200:
                             consecutive_404 = 0  # Success! Reset counter
             elif result.get("status") in (401, 403):
-                # Auth error — try auto-refreshing cookies from Chrome
-                print(json.dumps({"info": f"HTTP {result['status']} auth error, attempting cookie refresh from Chrome..."}), flush=True)
-                new_auth, new_ct0 = extract_chrome_twitter_cookies()
-                if new_auth and new_ct0 and (new_auth != auth_token or new_ct0 != ct0):
-                    auth_token = new_auth
-                    ct0 = new_ct0
-                    client.set_cookies({"auth_token": auth_token, "ct0": ct0})
-                    deduplicate_cookies(client)
-                    # 토큰 앞자리도 찍지 않는다 — 이 줄은 앱 로그로 그대로 흘러간다.
-                    print(json.dumps({"info": "Cookies refreshed! Retrying..."}), flush=True)
-                    # Retry the command with fresh cookies
-                    result = await handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatten_params)
+                # Auth error — Chrome 의 같은 계정 로그인으로 쿠키를 갈아 본다(같은 계정임이 확인될 때만, r54)
+                _st = result.get("status")
+                _codes = _x_error_codes(result.get("body"))
+                if _codes & {64, 326}:
+                    # 잠김(326) · 정지(64) — 쿠키를 바꿔도 소용없고, 다른 계정의 로그인으로 바꾸면 안 된다
+                    print(json.dumps({"info": "HTTP %d — 계정이 잠겼거나 정지됐습니다(오류 %s) — 쿠키 자동 갱신은 하지 않습니다"
+                                      % (_st, ', '.join(str(c) for c in sorted(_codes)))}), flush=True)
+                elif _st == 401 and not expected_uid:
+                    # 지금 로그인(같은 auth_token)은 방금 거절됐다 — 사용자 번호를 모르면 다른 로그인은 받을 수 없으니 키체인을 열 까닭이 없다
+                    print(json.dumps({"info": "HTTP 401 — 이 계정의 X 사용자 번호를 몰라 Chrome 쿠키 자동 갱신은 하지 않습니다"
+                                      "(설정 → 계정 토큰 자동 추출 → Twitter 로 넣은 계정만 됩니다)"}), flush=True)
                 else:
-                    print(json.dumps({"info": "Cookie refresh failed or cookies unchanged"
-                                      + (" — " + LAST_COOKIE_ERROR if LAST_COOKIE_ERROR else "")}), flush=True)
+                    print(json.dumps({"info": f"HTTP {_st} auth error, attempting cookie refresh from Chrome (same X account only)..."}), flush=True)
+                    new_auth, new_ct0 = extract_chrome_twitter_cookies(auth_token, expected_uid)
+                    if new_auth and new_ct0 and (new_auth != auth_token or new_ct0 != ct0):
+                        auth_token = new_auth
+                        ct0 = new_ct0
+                        client.set_cookies({"auth_token": auth_token, "ct0": ct0})
+                        deduplicate_cookies(client)
+                        # 토큰 앞자리도 찍지 않는다 — 이 줄은 앱 로그로 그대로 흘러간다.
+                        print(json.dumps({"info": "Cookies refreshed (same X account)! Retrying..."}), flush=True)
+                        # Retry the command with fresh cookies
+                        result = await handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatten_params)
+                    else:
+                        print(json.dumps({"info": "Cookie refresh failed or cookies unchanged"
+                                          + (" — " + LAST_COOKIE_ERROR if LAST_COOKIE_ERROR else "")}), flush=True)
                 consecutive_404 = 0
             else:
                 consecutive_404 = 0  # Non-404 response resets counter
 
-            print(json.dumps(result), flush=True)
+            _reply(result, _rid)
 
         except json.JSONDecodeError as e:
             print(json.dumps({"error": f"Invalid JSON: {str(e)}"}), flush=True)
         except Exception as e:
-            print(json.dumps({"error": f"Command error: {str(e)}"}), flush=True)
+            _reply({"error": f"Command error: {str(e)}"}, _rid)
 
 
 def _v1_to_graphql_search(v1_data):

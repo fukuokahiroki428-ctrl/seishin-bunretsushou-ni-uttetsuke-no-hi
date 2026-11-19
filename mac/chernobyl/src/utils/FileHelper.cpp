@@ -77,14 +77,31 @@ void setFinderComment(const QString &filePath, const QString &comment)
     //   받은 곳 주소는 파일의 '다운로드 출처'(kMDItemWhereFroms — 허락이 필요 없다)에도 남는다.
     if (!finished || proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
         if (!finished) { proc.kill(); proc.waitForFinished(1000); }
-        static std::atomic<bool> told{false};
-        if (!told.exchange(true) && finderCommentFailureHook()) {
-            const QString err = QString::fromUtf8(proc.readAllStandardError());
-            const bool denied = err.contains(QLatin1String("-1743")) || err.contains(QLatin1String("Not authorized"), Qt::CaseInsensitive);
-            finderCommentFailureHook()(denied
-                ? QStringLiteral("Finder 메모(받은 곳 · 제목)를 달지 못했습니다 — 시스템 설정 → 개인정보 보호 및 보안 → 자동화에서 이 앱의 'Finder' 를 켜십시오(받은 곳 주소는 파일의 '다운로드 출처' 에는 남습니다)")
-                : QStringLiteral("Finder 메모를 달지 못했습니다(%1) — 받은 곳 주소는 파일의 '다운로드 출처' 에는 남습니다").arg(finished ? err.simplified().left(120) : QStringLiteral("시간 초과")));
-        }
+        if (!finderCommentFailureHook()) return;
+        // ★ 오류 번호는 osascript 가 마지막 줄 끝에 붙이는 '(…)' 에서만 읽는다 — 그 앞에는 파일 경로 · 메모 글이 그대로 찍히므로
+        //   경로에 '-1743' 이 든 파일이 없어진 것(-1700)을 '자동화를 켜라' 로 잘못 알렸다(검토, r54). 영어 문구는 보지 않는다(이 맥은 한국어).
+        const QString err = finished ? QString::fromUtf8(proc.readAllStandardError()) : QString();
+        static const QRegularExpression kErrNum(QStringLiteral("\\((-?\\d+)\\)\\s*$"), QRegularExpression::MultilineOption);
+        int code = 0;
+        for (auto it = kErrNum.globalMatch(err); it.hasNext();) code = it.next().captured(1).toInt();   // 마지막 것 = 진짜 오류
+        const bool denied = finished && (code == -1743 || code == -1744);
+        // ★ 알림은 종류마다 한 번씩 — 하나로 묶으면 처음 난 시간 초과 · 다른 오류가 자동화 안내를 영영 막았다(검토, r54).
+        //   첫 Apple Event 는 macOS 가 '이 앱이 Finder 를 제어하려 합니다' 창을 띄우고 답을 기다린다 — 밤새 도는 수집이면 그 사이 5초가
+        //   지나 시간 초과로 끝난다. 그 안내도 따로 한 번.
+        static std::atomic<bool> toldDenied{false}, toldTimeout{false}, toldOther{false};
+        std::atomic<bool> &told = denied ? toldDenied : (!finished ? toldTimeout : toldOther);
+        if (told.exchange(true)) return;
+        QString msg;
+        if (denied)
+            msg = QStringLiteral("Finder 메모(받은 곳 · 제목)를 달지 못했습니다 — 시스템 설정 → 개인정보 보호 및 보안 → 자동화에서 이 앱의 'Finder' 를 켜십시오(받은 곳 주소는 파일의 '다운로드 출처' 에는 남습니다)");
+        else if (!finished)
+            msg = QStringLiteral("Finder 메모를 다는 데 Finder 가 5초 안에 답하지 않았습니다 — '이 앱이 Finder 를 제어하려 합니다' 창이 떠 있으면 「허용」을 누르십시오(시스템 설정 → 개인정보 보호 및 보안 → 자동화). 받은 곳 주소는 파일의 '다운로드 출처' 에는 남습니다");
+        else if (code == -1700 || code == -1728 || code == -43)
+            msg = QStringLiteral("Finder 메모를 달지 못했습니다 — 메모를 달기 전에 파일이 옮겨졌거나 지워졌습니다(오류 %1)").arg(code);
+        else
+            msg = QStringLiteral("Finder 메모를 달지 못했습니다(오류 %1: %2) — 받은 곳 주소는 파일의 '다운로드 출처' 에는 남습니다")
+                      .arg(code).arg(err.simplified().right(120));
+        finderCommentFailureHook()(msg);
     }
 #else
     Q_UNUSED(filePath);

@@ -70,9 +70,33 @@ def tool_path(app: Path, name: str):
 def is_macho(p: Path) -> bool:
     try:
         with open(p, "rb") as f:
-            return f.read(4) in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca")
+            return f.read(4) in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
+                                 b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca")   # 64비트 FAT 도
     except OSError:
         return False
+
+
+def disabled_chrome_features() -> list:
+    """수집 Chrome 에 넘기는 --disable-features 이름들(RealChromeCrawler.cpp 의 disabledFeatures 초기 목록 — 맥에 쓰는 것)"""
+    import re
+    src = paths.CHERNOBYL / "src" / "platforms" / "RealChromeCrawler.cpp"
+    try:
+        t = src.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    m = re.search(r"QStringList disabledFeatures = \{(.*?)\};", t, re.S)
+    return re.findall(r'QStringLiteral\("([^"]+)"\)', m.group(1)) if m else []
+
+
+def chrome_knows(framework: Path, names: list) -> list:
+    """번들 Chrome 이 모르는 기능 이름. 이름 문자열('\\0이름\\0')도, 새 BASE_FEATURE 의 'k이름'('\\0k이름\\0')도 없으면 없는 기능이다
+    (있다고 꼭 기능은 아니다 — 그래도 이름이 바뀌거나 빠진 것은 잡는다)"""
+    import mmap
+    try:
+        with open(framework, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+            return [n for n in names if m.find(b"\0" + n.encode() + b"\0") < 0 and m.find(b"\0k" + n.encode() + b"\0") < 0]
+    except (OSError, ValueError):
+        return names
 
 
 def check_app(app: Path, rep: Report, quick: bool, is_build: bool) -> None:
@@ -120,11 +144,12 @@ def check_app(app: Path, rep: Report, quick: bool, is_build: bool) -> None:
         rep.add("OK" if not bad else "FAIL", "번들 파이썬 모듈 %d개" % len(mods), "모두 import" if not bad else "안 되는 것: " + ", ".join(bad))
     # 아키텍처 — 번들 안 모든 실행 파일(Mach-O)이 arm64(또는 arm64e)를 품어야 한다. 로제타는 macOS 27 을 끝으로 빠진다(애플,
     #   WWDC 2025) — Intel 전용이 하나라도 있으면 다음 macOS 에서 그 기능이 멈추므로 FAIL. 빌드하는 맥의 uname 과 견주지 않는다.
+    #   ★ 실행 권한 · 확장자가 아니라 파일 머리(매직)로 고른다 — 프레임워크 본체(Qt 23개)는 0644 에 확장자도 없어 예전엔 빠졌다(검토 r54).
     cands = []
     for root, _dirs, files in os.walk(app / "Contents"):
         for fn in files:
             p = Path(root) / fn
-            if (os.access(p, os.X_OK) or fn.endswith((".dylib", ".so"))) and p.is_file() and not p.is_symlink() and is_macho(p):
+            if p.is_file() and not p.is_symlink() and is_macho(p):
                 cands.append(p)
     lone = []
     for p in cands:
@@ -137,8 +162,21 @@ def check_app(app: Path, rep: Report, quick: bool, is_build: bool) -> None:
     # 캡처용 Chrome 이 뜨는가(앱의 자가진단과 같은 검사 — 뜨는지만)
     chrome = app / "Contents" / "Resources" / "chromium" / "Chromium.app" / "Contents" / "MacOS" / "Google Chrome for Testing"
     if chrome.is_file():
-        code, out = run([str(chrome), "--version"], timeout=30)
-        rep.add("OK" if code == 0 and "Chrome" in out else "FAIL", "캡처용 Chrome", out.strip()[:80] or "실행되지 않습니다")
+        if quick:   # --quick 은 도구를 띄우지 않는다(다른 도구와 같게)
+            ok = os.access(chrome, os.X_OK)
+            rep.add("OK" if ok else "FAIL", "캡처용 Chrome", "있음" if ok else "실행 권한 없음")
+        else:
+            code, out = run([str(chrome), "--version"], timeout=30)
+            rep.add("OK" if code == 0 and "Chrome" in out else "FAIL", "캡처용 Chrome", out.strip()[:80] or "실행되지 않습니다")
+            # 수집 Chrome 에 끄라고 넘기는 기능 이름이 이 Chrome 에 실제로 있는가 — 모르는 이름은 Chrome 이 말없이 넘겨 그 장치가 무력해진다
+            #   (r53 의 FreezingOnEnergySaver 가 그랬다). Chrome 을 올렸을 때 이름이 바뀌면 여기서 드러난다.
+            names = disabled_chrome_features()
+            fws = sorted((app / "Contents" / "Resources" / "chromium" / "Chromium.app" / "Contents" / "Frameworks").glob(
+                "*Framework.framework/Versions/[0-9]*/*Framework"))
+            if names and fws:
+                unknown = chrome_knows(fws[-1], names)
+                rep.add("OK" if not unknown else "FAIL", "수집 Chrome 의 끄는 기능 %d개" % len(names),
+                        "모두 Chrome 에 있음" if not unknown else "Chrome 에 없는 이름(아무 일도 안 함): " + ", ".join(unknown))
     # 빌드본: 자원이 소스와 같은가
     if is_build:
         diff = []

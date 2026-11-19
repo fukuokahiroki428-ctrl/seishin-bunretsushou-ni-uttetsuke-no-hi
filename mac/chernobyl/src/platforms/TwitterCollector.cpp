@@ -23,6 +23,7 @@
 #include <QCoreApplication>
 #include <QStandardPaths>
 #include <QElapsedTimer>
+#include <QCryptographicHash>
 #include <QRegularExpression>
 #include <QSet>
 #include <QQueue>
@@ -349,6 +350,8 @@ void TwitterCollector::setupClientFor(const QJsonObject &account)
         adoptHttpToCurrentThread();
         if (m_http && runFlag) m_http->setRunFlag(runFlag);
     }
+    m_expectedUid = account["uid"].toString();
+    m_expectedUidTok = account["uid_tok"].toString();
     setupClient(account["auth_token"].toString(), account["ct0"].toString());
 }
 
@@ -389,6 +392,12 @@ bool TwitterCollector::startDaemon()
     QJsonObject initArgs;
     initArgs["auth_token"] = m_authToken;
     initArgs["ct0"] = m_ct0;
+    // ★ 쿠키 자동 갱신이 '같은 X 계정' 인지 가를 번호 — 그 번호를 적을 때의 토큰이 지금 토큰일 때만 넘긴다
+    //   (토큰을 손으로 바꿨는데 옛 번호가 남아 있으면 옛 계정의 로그인을 받게 된다).
+    if (!m_expectedUid.isEmpty() && !m_authToken.isEmpty()
+        && m_expectedUidTok == QString::fromLatin1(
+               QCryptographicHash::hash(m_authToken.toUtf8(), QCryptographicHash::Sha256).toHex().left(16)))
+        initArgs["expected_uid"] = m_expectedUid;
     // ★ 프록시(VPN) 출구를 데몬에 직접 준다(윈도우와 같다). 데몬의 세션 계층(x_session)은
     //   전송기를 직접 넣어 httpx 가 환경 변수의 프록시를 보지 않는다 — 환경만 믿으면
     //   계정에 프록시를 걸어도 트위터 API 요청이 이 컴퓨터의 회선으로 나갔다.
@@ -592,7 +601,13 @@ QJsonObject TwitterCollector::sendDaemonCommand(const QJsonObject &cmd, int time
     }
     m_daemonRequestCount++;
 
-    QByteArray cmdLine = QJsonDocument(cmd).toJson(QJsonDocument::Compact) + "\n";
+    // ★ 명령마다 번호(_rid)를 붙이고, 데몬이 돌려준 번호가 다른 답은 버린다(r54). 키체인 창 · 해시 수리처럼 이 기다림보다
+    //   오래 걸린 명령의 답이 늦게 오면, 예전엔 그 줄이 '다음 명령의 답' 으로 읽혔다(엉뚱한 401, 또는 앞 명령의 200 본문).
+    //   번호 없이 온 답(번호를 모르는 옛 데몬 · 고침 꾸러미의 시차)은 예전처럼 받는다.
+    const QString rid = QString::number(++m_daemonSeq);
+    QJsonObject cmdOut = cmd;
+    cmdOut["_rid"] = rid;
+    QByteArray cmdLine = QJsonDocument(cmdOut).toJson(QJsonDocument::Compact) + "\n";
     m_daemon->write(cmdLine);
 
     // Read complete JSON line — response can be very large (hundreds of KB)
@@ -656,6 +671,14 @@ QJsonObject TwitterCollector::sendDaemonCommand(const QJsonObject &cmd, int time
                 m_backend->log("Daemon: "+ obj["info"].toString(), "info", "twitter");
                 continue;
             }
+
+            // 앞 명령의 늦은 답 — 버리고 이 명령의 답을 계속 기다린다
+            if (obj.contains("_rid") && obj.value("_rid").toString() != rid) {
+                m_backend->log(QString("Daemon: 앞 명령(#%1)의 늦은 답을 버렸습니다").arg(obj.value("_rid").toString()),
+                               "info", "twitter");
+                continue;
+            }
+            obj.remove("_rid");
 
             // Actual response (has "status", "body", "error", etc.)
             result = obj;

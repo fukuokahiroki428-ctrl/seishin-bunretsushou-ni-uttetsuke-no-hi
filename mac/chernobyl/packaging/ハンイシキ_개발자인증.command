@@ -134,9 +134,16 @@ else
 fi
 echo
 
+# ★ 서명 스크립트가 4 로 끝났으면(명령줄 도구가 없음) 앱은 손대지 않은 채다 — 예전 서명이 그대로 맞아도 '끝났다' 고 하지 않는다(검토 r54).
+if [ "$RC" = 4 ]; then
+  err "서명하지 못했습니다 — Xcode 명령줄 도구가 없거나 깨졌습니다. 앱은 손대지 않았습니다(예전 서명 그대로)."
+  echo "     터미널에서 xcode-select --install 로 설치한 뒤 이 파일을 다시 실행하십시오."
+  bye 1
+fi
+
 # ── 6) 확인 ─────────────────────────────────────────────────────────────────────────────
 bold "▶ 5단계: 확인"
-if codesign --verify --deep --strict "$APP" 2>/dev/null; then
+if [ "$RC" = 0 ] && codesign --verify --deep --strict "$APP" 2>/dev/null; then
   ok "서명이 맞습니다"
   WHO="$(codesign -dvv "$APP" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
   [ -n "$WHO" ] && echo "     서명: $WHO" || echo "     서명: 임시 서명(ad-hoc)"

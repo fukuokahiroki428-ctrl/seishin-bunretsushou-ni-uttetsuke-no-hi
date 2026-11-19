@@ -16,6 +16,8 @@ B 앱(격리 사본 + 가짜 X) — 계정에 프록시 프로필을 붙여 수�
   5 (같은 판 입구) 저장 경로가 비면 시작하기 전에 멈추고 알린다 — 예전 맥은 끝까지 돌고 파일이 하나도 안 남았다(윈도우와 맞춤)
   6 계정이 돌았다가(429) 'all' 의 다음 갈래에서 0번으로 돌아와도 — 데몬을 띄울 때마다 그 계정의 출구로 나간다(A 의 쿠키가 B 의 IP 로 나가지 않는다)
     돌고 난 뒤의 미디어도 그 계정의 출구로(앱의 HTTP 객체는 만들 때의 출구에 묶인다 — 한 세션이 두 IP 가 되지 않게)
+  7 (r54) 앞 명령의 늦은 답(번호가 다른 줄)은 버리고 이 명령의 답을 기다린다 — 예전엔 그 줄이 다음 명령의 답이 됐다
+  8 (r54) 계정의 X 사용자 번호(uid)는 그 번호를 적을 때의 토큰(uid_tok = sha256 앞 16자)이 지금 토큰일 때만 init 에 싣는다
 
 ★ 왜 — 데몬의 세션 계층(x_session.Client)은 전송기를 직접 넣어(AsyncClient(transport=…)) httpx 가 환경 변수의
   프록시를 보지 않는다. 예전 맥은 데몬에 환경 변수로만 프록시를 주어, 계정에 프록시를 걸어도 트위터 API 요청은
@@ -337,6 +339,28 @@ def main() -> int:
         st, inits, logtxt = run(dict(TOKENS), path="")
         check("B5 저장 경로가 비면 시작 전에 멈추고 알린다(데몬도 띄우지 않는다)",
               "저장 경로가 비어 있습니다" in logtxt and not inits, (st, inits, logtxt[-200:]))
+        # 7 — 늦은 답 버리기. ★ B6 앞에서 한다 — B6 은 'all' 이라 첫 갈래가 '완료' 를 띄운 뒤에도 다음 갈래가 돌아,
+        #   그 뒤에 부른 수집은 '이미 수집 중' 으로 시작하지 못하고 B6 의 꼬리를 보게 된다(실측).
+        w.st.pop("rate_limit_once", None)
+        w.st["stale_reply_once"] = True
+        w.save()
+        reqlog = home / "fake_x" / "requests.jsonl"
+        nreq = len(reqlog.read_text(encoding="utf-8").splitlines()) if reqlog.exists() else 0
+        st, inits, logtxt = run(dict(TOKENS), path=str(C.ISO / "tmp" / "proxy-e2e-b7"))
+        newreq = [json.loads(l) for l in reqlog.read_text(encoding="utf-8").splitlines()[nreq:] if l.strip()] if reqlog.exists() else []
+        check("B7 가짜 X 가 늦은 답을 한 줄 냈다(시험이 그 길을 탔다)", any(r.get("stale_reply") for r in newreq), newreq[:4])
+        check("B7 이 판의 데몬이 돌았다(앞 판의 꼬리가 아니다 — 이 계정의 토큰)", bool(inits) and all(i.get("acct") == "n" for i in inits), inits)
+        check("B7 앱이 그 줄을 버렸다고 적었다 · 판은 끝났다",
+              "늦은 답을 버렸습니다" in logtxt and (st or {}).get("status") in ("완료", "Done"), (st, logtxt[-400:]))
+        # 8 — 사용자 번호는 토큰과 짝이 맞을 때만
+        import hashlib
+        tok = hashlib.sha256(TOKENS["auth_token"].encode()).hexdigest()[:16]
+        st, inits, logtxt = run(dict(TOKENS, uid="123456", uid_tok=tok), path=str(C.ISO / "tmp" / "proxy-e2e-b8"))
+        check("B8 토큰과 짝이 맞는 번호 → init 에 expected_uid", bool(inits) and all("expected_uid" in i.get("keys", []) for i in inits),
+              inits)
+        st, inits, logtxt = run(dict(TOKENS, uid="123456", uid_tok="0000000000000000"), path=str(C.ISO / "tmp" / "proxy-e2e-b8b"))
+        check("B8 짝이 안 맞는 번호(토큰을 손으로 바꾼 뒤) → 싣지 않는다",
+              bool(inits) and all("expected_uid" not in i.get("keys", []) for i in inits), inits)
         while not any(int(t["id"][-3:]) % 4 == 0 for t in w.st["own"]):   # 미디어 있는 글이 하나는 있게(가짜 X 는 ID 끝자리로 정한다)
             w.add_tweet(NOW - 2 * 24 * HOUR)
         w.st["rate_limit_once"] = "search"

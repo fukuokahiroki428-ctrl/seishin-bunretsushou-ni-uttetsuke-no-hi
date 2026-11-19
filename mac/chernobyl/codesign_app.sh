@@ -17,11 +17,19 @@ ENTITLEMENTS="${ENTITLEMENTS:-$SCRIPT_DIR/hanishiki.entitlements}"
 #   명령줄 도구가 깨져 있기 일쑤고('invalid active developer path'), DMG 로 설치한 맥에는 아예 없을 수 있다 — 그러면 서명마다
 #   실패해 '왜' 를 알 수 없었고, 껍데기가 '도구 설치' 창을 띄우기도 했다. 먼저 본다(xcode-select -p 는 창을 띄우지 않는다).
 #   없으면 4 로 끝낸다 — 앱(resealAppBundle)이 이 값을 보고 알맞은 안내를 한다.
+#   ★ 파일이 없다고 바로 그만두지 않는다 — macOS 27 의 codesign 은 codesign_allocate 없이도 서명한다(검토 r54: 개발자 도구 자리가
+#     깨진 맥에서 실측). r53 은 여기서 4 로 끝내 명령줄 도구가 없는 맥에서 앱의 서명 복구(resealAppBundle)를 막았다.
+#     파일 검사는 빠른 길로만 쓰고, 실패하면 임시 폴더의 작은 실행 파일을 임시 서명해 보고 그것도 안 될 때만 4 로 끝낸다.
 _DEV="$(xcode-select -p 2>/dev/null || true)"
 if [ -z "$_DEV" ] || { [ ! -x "$_DEV/usr/bin/codesign_allocate" ] && [ ! -x "$_DEV/Toolchains/XcodeDefault.xctoolchain/usr/bin/codesign_allocate" ]; }; then
-    echo "✗ Xcode 명령줄 도구가 없거나 macOS 업데이트로 깨졌습니다 — 서명할 수 없습니다."
-    echo "   터미널에서:  xcode-select --install   (설치가 끝난 뒤 다시 하십시오)"
-    exit 4
+    _PD="$(mktemp -d -t hanishiki_csprobe 2>/dev/null || true)"
+    if [ -z "$_PD" ] || ! { cp /usr/bin/true "$_PD/p" 2>/dev/null && codesign --force -s - "$_PD/p" >/dev/null 2>&1; }; then
+        [ -n "$_PD" ] && rm -rf "$_PD"
+        echo "✗ Xcode 명령줄 도구가 없거나 macOS 업데이트로 깨졌습니다 — 서명할 수 없습니다."
+        echo "   터미널에서:  xcode-select --install   (설치가 끝난 뒤 다시 하십시오)"
+        exit 4
+    fi
+    rm -rf "$_PD"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

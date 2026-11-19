@@ -201,7 +201,8 @@ while IFS= read -r -d '' f; do
         *" arm64 "*|*" arm64e "*) ;;
         *) echo "  ✗ ${f#"$APPDIR"/}: $A — arm64 판으로 바꾸십시오"; NOARM=$((NOARM + 1)) ;;
     esac
-done < <(find "$APPDIR/Contents" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' \) -print0)
+done < <(find "$APPDIR/Contents" -type f \( -perm -u+x -o -name '*.dylib' -o -name '*.so' \
+                -o \( -path '*.framework/Versions/*' ! -path '*.framework/Versions/*/*/*' \) \) -print0)   # 프레임워크 본체(0644 · 확장자 없음 — Qt 23개)도
 if [ "$NOARM" -gt 0 ]; then
     echo "✗ arm64 가 없는 실행 파일 $NOARM 개 — 빌드를 멈춥니다(로제타가 없는 macOS 에서 그 기능이 멈춘다)"
     exit 1
