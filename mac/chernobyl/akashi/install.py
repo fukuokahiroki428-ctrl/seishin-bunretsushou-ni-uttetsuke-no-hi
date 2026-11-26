@@ -6,6 +6,7 @@
     python3 akashi/install.py               # 한 단계씩 묻고
     python3 akashi/install.py --to /경로/앱.app --open
     python3 akashi/install.py --to ~/Applications/ハンイシキ.app   # 아직 없는 자리면 새로 놓는다(ditto)
+    python3 akashi/install.py --when-closed --open   # 수집 중이면 닫지 않고, 사람이 닫는 대로 덮고 연다(기본 180분까지)
 
 ★ 순서와 까닭
   1. 빌드본 서명 확인(codesign --verify --deep --strict) — 깨진 번들을 올리면 macOS 가 소리 없이 죽인다.
@@ -58,7 +59,12 @@ def running_pids(app: Path) -> list:
 def quit_gracefully(app: Path, wait: float = 30.0) -> bool:
     # 경로로 지목한다 — 같은 번들 식별자를 가진 빌드본·격리 사본이 떠 있어도 이 설치본만 닫힌다.
     script = 'tell application (POSIX file "%s" as text) to quit' % str(app).replace('"', '\\"')
-    subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=40)
+    try:
+        subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=40)
+    except subprocess.TimeoutExpired:
+        # ★ 수집 중이면 앱이 '수집이 진행 중입니다. 종료하시겠습니까?'(기본 '아니오')를 묻고, 답이 날 때까지 Apple 이벤트가
+        #   돌아오지 않는다(2026-11-27 — 예전엔 여기서 TimeoutExpired 로 죽었다). 창은 그대로 남는다 — 사람이 답한다.
+        print("앱이 40초 안에 답하지 않았습니다 — 앱에 '수집이 진행 중입니다. 종료하시겠습니까?' 창이 떠 있을 수 있습니다(앱에서 답하십시오)")
     end = time.time() + wait
     while time.time() < end:
         if not running_pids(app):
@@ -74,6 +80,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="무엇을 할지만 보인다")
     ap.add_argument("--yes", action="store_true", help="묻지 않고 한다(켜 둔 앱 닫기 포함 — 조심)")
     ap.add_argument("--open", action="store_true", help="다 되면 연다")
+    ap.add_argument("--when-closed", type=float, nargs="?", const=180.0, metavar="분",
+                    help="켜 둔 설치본을 닫지 않고, 사람이 닫을 때까지(기본 180분) 기다렸다가 덮는다 — 수집 중일 때")
     a = ap.parse_args()
 
     src = Path(a.build).resolve() if a.build else paths.find_build_app()
@@ -123,7 +131,8 @@ def main() -> int:
     if not ok:
         print("빌드본 서명이 틀려 올리지 않습니다 — ./build.sh 를 다시(또는 verify_or_resign.sh)")
         return 1
-    plan = (["켜 둔 설치본을 묻고 곱게 닫기(osascript)"] if pids else []) + \
+    plan = (["닫히기를 기다리기(%g분 · 닫지 않음)" % a.when_closed if a.when_closed else "켜 둔 설치본을 묻고 곱게 닫기(osascript)"]
+            if pids else []) + \
            ["ditto 빌드본 설치본(새로 놓기)" if fresh else "rsync -a --delete 빌드본/ 설치본/", "설치본 서명 확인"] + \
            (["열기"] if a.open else [])
     print("할 일: " + " → ".join(plan))
@@ -131,12 +140,30 @@ def main() -> int:
         print("--dry-run — 아무것도 하지 않았습니다")
         return 0
 
-    if pids:
+    if pids and a.when_closed:
+        # ★ 닫지 않는다 — 수집이 끝나 사람이 닫을 때까지 기다린다(r52~r54 는 앱이 도는 중이라 설치하지 못했다).
+        #   프로세스가 사라지면 앱의 마무리(aboutToQuit — 자식 정리 · 엑셀)도 끝난 것이다. 그 사이 다시 켜졌으면 덮지 않는다
+        #   (켠 채로 덮으면 SIGBUS 로 죽는다).
+        print("설치본이 켜져 있습니다 — 닫히기를 기다립니다(최대 %g분 · 닫지 않습니다)" % a.when_closed, flush=True)
+        end = time.time() + a.when_closed * 60
+        while running_pids(dst):
+            if time.time() > end:
+                print("%g분 안에 닫히지 않았습니다 — 설치하지 않았습니다" % a.when_closed)
+                return 1
+            time.sleep(5)
+        time.sleep(5)
+        if running_pids(dst):
+            print("닫힌 뒤 곧 다시 켜졌습니다 — 덮지 않았습니다(다시 하십시오)")
+            return 1
+        print("닫혔습니다", flush=True)
+        pids = []
+        print("%s 빌드본으로 덮습니다(--when-closed)" % paths.short(dst), flush=True)
+    elif pids:
         if not ask("켜 둔 한이시키(설치본)를 닫아도 됩니까? 하던 수집이 있으면 멈춥니다", a.yes):
             print("닫지 않았습니다 — 설치를 멈춥니다")
             return 1
         if not quit_gracefully(dst):
-            print("30초 안에 닫히지 않았습니다 — 강제로 끄지 않습니다. 앱에서 직접 닫은 뒤 다시")
+            print("30초 안에 닫히지 않았습니다 — 강제로 끄지 않습니다. 앱에서 직접 닫은 뒤 다시(--when-closed 면 닫히는 대로 덮습니다)")
             return 1
         print("닫았습니다")
     elif not ask("%s 빌드본으로 %s?" % (paths.short(dst), "새로 놓을까요" if fresh else "덮을까요"), a.yes):
