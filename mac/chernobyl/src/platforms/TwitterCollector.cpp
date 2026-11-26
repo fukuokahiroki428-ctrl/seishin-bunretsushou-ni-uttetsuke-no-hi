@@ -18,6 +18,9 @@
 #include <QUrlQuery>
 #include <QDateTime>
 #include <QTimeZone>
+#include <QSaveFile>
+#include <algorithm>
+#include <vector>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QCoreApplication>
@@ -1084,6 +1087,9 @@ QPair<QJsonArray, QString> TwitterCollector::searchTweets(const QString &query, 
     cmd["query"] = query;
     cmd["count"] = 40;
     if (!cursor.isEmpty()) cmd["cursor"] = cursor;
+    // ★ 이 쪽이 제 모양이었나(instructions 가 있고 errors 가 없나) — 검색도 다른 목록처럼 적는다. 예전엔 검색이 이 값을 건드리지 않아
+    //   앞선 타임라인 · 좋아요의 값이 남았다(r55 의 바닥 표시가 '모양 없는 빈 결과' 를 가려야 해서 필요해졌다)
+    m_lastPageShaped = false;
 
     QJsonObject resp = sendDaemonCommand(cmd);
     if (resp.contains("error")) {
@@ -1183,6 +1189,7 @@ QPair<QJsonArray, QString> TwitterCollector::searchTweets(const QString &query, 
         }
     }
 
+    m_lastPageShaped = !instructions.isEmpty() && data.value(QStringLiteral("errors")).toArray().isEmpty();
     return {results, nextCursor};
 }
 
@@ -2519,6 +2526,7 @@ void TwitterCollector::handleRateLimit(const QJsonArray &accounts, int &currentI
 
     auto switchToAccount = [&](int idx) {
         stopDaemon();
+        ++m_accountSwitchCount;
         int prevIdx = currentIdx;
         currentIdx = idx;
         QJsonObject account = accounts[idx].toObject();
@@ -5580,6 +5588,108 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         // 미디어는 processTweetBatch 내부 downloadTweetMedia 로 트윗별 자동 다운로드됨.
     }
 
+    // ── 과거로 되짚는 검색의 바닥 · 공백 건너기 (r55) ───────────────────────────────────────────────
+    //   바닥 = 트위터 시작일(2006-03-21)과 이 계정을 만든 날 중 늦은 것 — 그 전에는 글이 있을 수 없다.
+    //   ★ 예전엔 검색이 비면 7일씩 물리다 '빈 결과 10번(70일)' 이면 멈춰, 70일 넘게 쉰 계정은 그 공백 너머의 옛 글을 받지 못했다
+    //     ('전체(2006년부터)' 라고 해 놓고). 이제 바닥(계정을 만든 날)을 알고, 이 계정이 검색에 보인다는 증거가 있으면 — 이 걸음이
+    //     글을 하나라도 찾았거나, 받아 둔 글이 있는 이어받기 · 받아 둔 가장 새 글보다 위인 구간 — 빈 결과가 이어져도 바닥까지 간다.
+    //     증거가 없을 때(검색이 이 계정을 못 보는 때 — 타임라인 단계가 받는다)와 바닥을 모를 때만 예전처럼 10번에서 멈춘다.
+    //   ★ 비용 — 검색은 긴 공백을 한 번에 못 건너 7일씩 물린다(몇 년 공백이면 수백 번). 그래서 바닥까지 끊김 없이 7일씩 걸은
+    //     걸음은 표시(.hanishiki_floor_tw_<엑셀>_<목록>.json — 바닥 · 가장 오래된 날 · 그 걸음이 덮은 맨 위 날 · 그 아래 받아 둔 글 수)를
+    //     남기고, 1년(대상마다 330~400일) 동안 다음 걸음은
+    //     (1) 가장 오래된 날 아래로는 내려가지 않고(과거에 새 글이 생길 수는 없다 — 받아 둔 글이 그 아래 있어도: 지워졌거나 검색에 안 보이는 글),
+    //     (2) 그 걸음이 덮은 맨 위 날 아래의 공백은 받아 둔 옛 글(엑셀의 ID — 트윗 ID 에 시각이 들어 있다)의 날로 바로 건너뛴다.
+    //         맨 위 날보다 새 구간(그 뒤에 올라온 글)은 7일씩 걷는다 — 거기서 건너뛰면 그 뒤에 올라온 글을 놓친다(검토).
+    //     표시는 줄을 다 저장한 뒤에만, 옛 엑셀 · 저장 실패 · 계정이 바뀐 걸음 · 모양 없는 응답 · 건너뛴 걸음이면 남기지 않는다.
+    //     엑셀이 줄었으면(맨 위 날 아래 받아 둔 글이 표시보다 적으면) 표시를 믿지 않는다.
+    const QDate kTwitterEpoch(2006, 3, 21);
+    const QDate accountCreated = Common::parseISODate(userLegacy["created_at"].toString()).date();
+    const bool floorKnown = accountCreated.isValid() && accountCreated >= kTwitterEpoch && accountCreated <= QDate::currentDate();
+    const QDate walkFloor = floorKnown ? accountCreated : kTwitterEpoch;
+    static const qint64 kSfEpoch = 1288834974657LL;   // 트윗 ID 의 시각 기준(2010-11-04)
+    static const qulonglong kSfMin = 30000000000ULL;  // 이보다 작은 ID 는 스노플레이크 이전(시각이 없다)
+    std::vector<qulonglong> archIds;   // 이 판을 시작할 때 받아 둔 트윗 ID(오름차순)
+    archIds.reserve(static_cast<size_t>(collectedIds.size()));
+    for (const QString &id : std::as_const(collectedIds)) {
+        bool ok = false;
+        const qulonglong v = id.toULongLong(&ok);
+        if (ok) archIds.push_back(v);
+    }
+    std::sort(archIds.begin(), archIds.end());
+    // 그 날 0시(UTC) 보다 이른 트윗 ID 의 상한(스노플레이크 시대 전이면 0)
+    auto idBoundOf = [](const QDate &d) -> qulonglong {
+        const qint64 ms = QDateTime(d, QTime(0, 0), QTimeZone::UTC).toMSecsSinceEpoch();
+        return ms > kSfEpoch ? (static_cast<qulonglong>(ms - kSfEpoch) << 22) : 0ULL;
+    };
+    // 스노플레이크 이전(2010-11-04 전) 글은 ID 에 시각이 없다 — 표시가 그 걸음에서 본 그 시대의 가장 새 글의 날을 알면 그것을 쓴다(아래)
+    QDate preEpochNewest;
+    // before 보다 이른 날에 받아 둔 글 가운데 가장 새것의 날(없으면 무효).
+    auto archivedBefore = [&](const QDate &before) -> QDate {
+        if (!before.isValid()) return QDate();
+        const qulonglong bound = idBoundOf(before);
+        if (bound > 0) {
+            auto it = std::lower_bound(archIds.begin(), archIds.end(), bound);
+            if (it == archIds.begin()) return QDate();
+            const qulonglong id = *(--it);
+            if (id >= kSfMin) return QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(id >> 22) + kSfEpoch, QTimeZone::UTC).date();
+        }
+        // 아래에 남은 것은 스노플레이크 이전 글뿐(또는 before 가 그 시대) — 시각을 모른다
+        if (archIds.empty() || archIds.front() >= kSfMin) return QDate();
+        if (preEpochNewest.isValid() && preEpochNewest < before) return preEpochNewest;
+        return bound > 0 ? QDate(2010, 11, 3) : QDate();   // 그보다 이르다는 것만 안다
+    };
+    // 그 날까지(그 날 포함)의 트윗 ID 수 — ids 는 아무 순서(받아 둔 것 + 이번 판)
+    auto countUpTo = [&](const QDate &upto, const auto &ids) -> qint64 {
+        const qulonglong bound = idBoundOf(upto.addDays(1));
+        qint64 n = 0;
+        for (const auto &x : ids) {
+            bool ok = true;
+            qulonglong v;
+            if constexpr (std::is_same_v<std::decay_t<decltype(x)>, QString>) v = x.toULongLong(&ok); else v = x;
+            if (ok && (v < kSfMin || bound == 0 || v < bound)) ++n;
+        }
+        return n;
+    };
+    auto floorMarkPath = [&](const QString &list) {
+        return userDir + QStringLiteral("/.hanishiki_floor_tw_") + excelSuffix + QLatin1Char('_') + list + QStringLiteral(".json");
+    };
+    auto floorMarkDays = [](const QString &path) {   // 330~400일 — 같은 날 처음 받은 대상들이 한날에 다시 바닥까지 걷지 않게
+        quint32 h = 2166136261u;
+        for (const char ch : path.toUtf8()) { h ^= static_cast<quint8>(ch); h *= 16777619u; }
+        return 330 + static_cast<int>(h % 71u);
+    };
+    struct FloorMark { QDate oldest, top, pre; bool valid = false; };
+    auto readFloorMark = [&](const QString &list) -> FloorMark {
+        FloorMark m;
+        if (!floorKnown || legacyExcel) return m;
+        const QString path = floorMarkPath(list);
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly)) return m;
+        const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
+        if (o.value("v").toInt() != 2 || o.value("floor").toString() != walkFloor.toString(Qt::ISODate)) return m;
+        if (QDateTime::currentMSecsSinceEpoch() - o.value("at").toVariant().toLongLong() > qint64(floorMarkDays(path)) * 24 * 3600 * 1000) return m;
+        const QDate oldest = QDate::fromString(o.value("oldest").toString(), Qt::ISODate);
+        const QDate top = QDate::fromString(o.value("top").toString(), Qt::ISODate);
+        if (!oldest.isValid() || !top.isValid() || oldest > top) return m;
+        if (countUpTo(top, archIds) < o.value("n").toVariant().toLongLong()) return m;   // 엑셀이 줄었거나 바뀌었다 — 믿지 않는다
+        m.oldest = oldest; m.top = top; m.valid = true;
+        m.pre = QDate::fromString(o.value("pre").toString(), Qt::ISODate);   // 그 걸음이 본 2010-11-04 전 글의 가장 새 날(없으면 무효)
+        return m;
+    };
+    auto putFloorMark = [&](const QString &list, const QDate &oldest, const QDate &top, const QDate &pre) {
+        if (!floorKnown || legacyExcel || !oldest.isValid() || !top.isValid() || oldest > top) return;
+        if (collectedData.count() > 0) saveExcelStreaming(userDir, target, collectedData, excelSuffix);   // 줄을 다 저장한 뒤에만(putWalk 와 같다)
+        if (m_excelSaveFailed) return;
+        QJsonObject o{{"floor", walkFloor.toString(Qt::ISODate)}, {"oldest", oldest.toString(Qt::ISODate)},
+                      {"top", top.toString(Qt::ISODate)}, {"n", countUpTo(top, collectedIds)},
+                      {"at", QDateTime::currentMSecsSinceEpoch()}, {"v", 2}};
+        if (pre.isValid()) o["pre"] = pre.toString(Qt::ISODate);
+        QSaveFile f(floorMarkPath(list));
+        if (f.open(QIODevice::WriteOnly)) { f.write(QJsonDocument(o).toJson(QJsonDocument::Compact)); f.commit(); }
+    };
+    // 받아 둔 글 가운데 가장 새것의 날 — 그보다 위(그 뒤)의 구간이 비어도 이 계정이 검색에 보인다는 증거로 친다(이 걸음이 아무것도 못 찾았어도)
+    const QDate newestArch = archivedBefore(QDate::currentDate().addDays(2));
+
     if (isRunning && (type == "tweets"|| type == "media"|| type == "all" || (type == "tweets_api" && mode == "period")))
     {
         // Resume support
@@ -5596,8 +5706,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
         //   4) API 가 완전히 빈 결과를 반환하면 7일씩 강제 후퇴 (긴 공백 기간 돌파)
         //   5) 연속 빈 결과 MAX_EMPTY 회 또는 2006년 도달 시 종료
 
-        QDate scanStopDate = QDate(2006, 3, 21);  // Twitter 시작일
-        const int MAX_EMPTY = 10;  // 연속 빈 iteration 종료 조건
+        const QDate scanStopDate = walkFloor;  // 바닥 — 트위터 시작일 또는 계정을 만든 날(위 설명)
+        const int MAX_EMPTY = 10;  // 연속 빈 iteration 종료 조건 — 걸음이 아무것도 못 찾았거나 바닥을 모를 때만(위 설명)
 
         if (mode == "period") {
             // period 모드: since~until 사이만 검색
@@ -5629,6 +5739,22 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 m_backend->log(QString("기존 %1개 수집분 존재 → 중복 자동 스킵").arg(tweetCount), "info", "twitter");
             }
             m_backend->log(QString("Phase 1: 아니포 방식 검색 시작 (from:%1)").arg(target), "info", "twitter");
+            if (resumeMode != "future")
+                m_backend->log(floorKnown
+                                   ? QString("  ↳ 바닥: 계정을 만든 날 %1 — 이 계정이 검색에 보이면(글을 찾거나 받아 둔 글이 있으면) 그날까지 내려갑니다(긴 공백도 건너서)")
+                                         .arg(walkFloor.toString("yyyy-MM-dd"))
+                                   : QStringLiteral("  ↳ 계정을 만든 날을 몰라 2006-03-21 까지 · 빈 결과가 10번 이어지면 멈춥니다"),
+                               "info", "twitter");
+            const FloorMark p1Mark = readFloorMark(QStringLiteral("search"));   // 앞선 판이 바닥까지 끊김 없이 걸었으면(위 설명)
+            bool p1ReachedFloor = false;      // 바닥에 닿아 끝났다(표시를 적는다)
+            bool p1FloorByMark = false;       // 표시의 가장 오래된 날 아래라 멈췄다(표시는 그대로 — 1년 뒤엔 다시 바닥까지)
+            bool p1Jumped = false;            // 표시를 믿고 공백을 건너뛰었다 — 이 걸음은 사이를 밟지 않았으니 표시를 새로 적지 않는다
+            bool p1Unshaped = false;          // 모양 없는 응답(errors 만 든 200)을 빈 결과로 넘긴 적이 있다 — 표시를 적지 않는다
+            bool p1FirstEmpty = false;        // 첫 걸음(맨 위)이 비었다 — 그 7일은 확인하지 못했다
+            const int p1AccSwitchStart = m_accountSwitchCount;   // 비공개 계정은 보는 계정마다 보이는 것이 달라, 계정이 바뀐 걸음은 표시를 적지 않는다
+            const bool targetProtected = userLegacy["protected"].toBool();   // 공개 계정은 어느 계정으로 봐도 같다 — 계정이 돌아도 적는다
+            QDate p1PreNewest;                // 이 걸음이 본 2010-11-04 전 글의 가장 새 날(표시에 적는다 — 그 시대의 ID 에는 시각이 없다)
+            if (p1Mark.valid && p1Mark.pre.isValid()) preEpochNewest = p1Mark.pre;
 
             // ★★ "both" 모드 — Phase A (future): 새 트윗 1회 검색 후 Phase B (past) 진행
             //   resumeNewestDate / Id가 있을 때만 의미 있음 (없으면 첫 다운 → 일반 backtrack)
@@ -5702,8 +5828,31 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             // 맨 위에서 2006년까지 되짚는 걸음만 표시를 다룬다(과거 이어가기 · since: 는 목록의 한 조각이라 건드리지 않는다)
             const bool p1Walk = forwardScan && resumeMode != "future";
             beginStreak(p1Walk && takeWalk("search"), "search");
+            static const QRegularExpression kUntilRe(QStringLiteral(R"(until:(\d{4}-\d{2}-\d{2}))"));
+            auto untilOf = [](const QString &q) -> QDate {   // 질의의 until: 날(없으면 오늘)
+                const auto qm = kUntilRe.match(q);
+                const QDate d = qm.hasMatch() ? QDate::fromString(qm.captured(1), "yyyy-MM-dd") : QDate();
+                return d.isValid() ? d : QDate::currentDate();
+            };
+            // 이 걸음이 덮기 시작한 맨 위 날(표시에 적는다) — 맨 위부터면 오늘(UTC) 하루 전(색인이 늦게 붙는 글), 이어받기면 그 until: 의 전날
+            const QDate p1Top = kUntilRe.match(currentQuery).hasMatch() ? untilOf(currentQuery).addDays(-1)
+                                                                       : QDateTime::currentDateTimeUtc().date().addDays(-1);
+            // 이 계정이 검색에 보인다는 증거가 있으면 빈 결과가 이어져도 바닥까지 간다(위 설명).
+            //   ★ 증거는 검색에서 온 것만 — 이 걸음이 찾았거나, 앞선 판의 바닥 표시 · 검색 걸음 표시가 있다. 엑셀만으로는 안 된다:
+            //     검색에 안 보이는 계정(민감 글 · 검색 제한 · 팔로하지 않은 비공개)도 타임라인 단계가 엑셀을 채워, 판마다 수백 번 헛걸음했다(검토).
+            const bool searchSeenBefore = p1Mark.valid || listTop.value(QStringLiteral("search") + mScope) > 0;
+            const bool p1ResumeEvidence = !forwardScan && resumeMode != "future" && !archIds.empty() && searchSeenBefore;
+            const QDate p1WalkStart = untilOf(currentQuery);
+            auto throughEmpty = [&]() {
+                if (!floorKnown) return false;
+                if (targetProtected && m_accountSwitchCount != p1AccSwitchStart) return false;   // 다른 계정은 이 비공개 계정을 못 볼 수 있다
+                if (p1GotAny || p1ResumeEvidence) return true;
+                // 받아 둔 가장 새 글 근처까지는 내려가 본다(맨 위가 비는 쉬는 계정) — 검색이 본 적이 없으면 13주까지만
+                const QDate cur = untilOf(currentQuery);
+                return newestArch.isValid() && cur > newestArch.addDays(-7) && (searchSeenBefore || cur > p1WalkStart.addDays(-91));
+            };
 
-            while (isRunning && !stopNow() && consecutiveEmpty < MAX_EMPTY) {
+            while (isRunning && !stopNow() && (consecutiveEmpty < MAX_EMPTY || throughEmpty())) {
                 iteration++;
                 backtrackCount++;
                 m_backend->log(QString("[%1] %2").arg(iteration).arg(currentQuery), "info", "twitter");
@@ -5723,6 +5872,13 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                         if (searchErrorGiveUp()) break;
                         continue;
                     }
+                    // ★ 모양 없는 빈 쪽(errors 만 든 200 · 빈 몸)은 '공백' 이 아니라 오류다 — 같은 질의를 다시 묻는다(r55 검토).
+                    //   공백으로 치면 빈 결과가 이어져도 바닥까지 가는 걸음이 X 가 오류를 내는 동안 7일씩 넘어가며 그 구간을 '본 것' 으로
+                    //   진행 기록에 적었다. 5번 이어지면 검색 단계를 오류로 끝낸다(표시 · 진행 기록을 남기지 않는다 — 타임라인 단계가 받는다)
+                    if (tweets.isEmpty() && !m_lastPageShaped) {
+                        if (searchErrorGiveUp()) break;
+                        continue;
+                    }
                     searchErrStreak = 0;
                     if (tweets.isEmpty()) break;
 
@@ -5736,6 +5892,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                             QDate d = td.date();
                             if (!iterOldestDate.isValid() || d < iterOldestDate) iterOldestDate = d;
                             if (!oldestTweetDate.isValid() || td < oldestTweetDate) oldestTweetDate = td;
+                            if (d < QDate(2010, 11, 4) && (!p1PreNewest.isValid() || d > p1PreNewest)) p1PreNewest = d;
                         }
                     }
 
@@ -5750,6 +5907,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 if (searchErrored) break;   // 오류로 멈춘 판 — 날짜를 물리며 같은 오류를 되풀이하지 않는다
 
                 if (iteration == 1 && iterBatchCount == 0 && !knownAtStart.isEmpty()) p1TopEmpty = true;
+                if (iteration == 1 && iterBatchCount == 0) p1FirstEmpty = true;   // 표시의 맨 위 날을 낮춘다(처음 받는 계정도)
                 if (iterBatchCount > 0) {
                     consecutiveEmpty = 0;
                     p1GotAny = true;
@@ -5762,7 +5920,12 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                     }
                 } else {
                     consecutiveEmpty++;
-                    m_backend->log(QString("빈 결과 %1/%2").arg(consecutiveEmpty).arg(MAX_EMPTY), "info", "twitter");
+                    if (!m_lastPageShaped) p1Unshaped = true;
+                    if (!throughEmpty())
+                        m_backend->log(QString("빈 결과 %1/%2").arg(consecutiveEmpty).arg(MAX_EMPTY), "info", "twitter");
+                    else if (consecutiveEmpty == 1 || consecutiveEmpty % 10 == 0)
+                        m_backend->log(QString("빈 결과 — 공백을 지나는 중(%1번째) · 계정을 만든 날 %2 까지 봅니다")
+                                           .arg(consecutiveEmpty).arg(walkFloor.toString("yyyy-MM-dd")), "info", "twitter");
                 }
 
                 // ★ "현재 이어서" 모드는 한 iteration만 — backtrack 안 함
@@ -5811,10 +5974,32 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                     QDate curUntil = qm.hasMatch() ? QDate::fromString(qm.captured(1), "yyyy-MM-dd") : QDate::currentDate();
                     if (!curUntil.isValid()) curUntil = QDate::currentDate();
                     nextUntil = curUntil.addDays(-7);
+                    // ★ (2) 앞선 판이 바닥까지 걸은 구간(표시의 맨 위 날 아래)이면 받아 둔 옛 글의 날로 바로 건너뛴다 — 그 걸음이 사이를 다 밟았다.
+                    //   맨 위 날보다 새 구간 · 표시가 없을 때는 7일씩 걷는다(그 뒤에 올라온 글 · '기간' 판처럼 사이를 걷지 않고 들어온 글)
+                    if (p1Mark.valid && nextUntil <= p1Mark.top) {
+                        const QDate arch = archivedBefore(nextUntil);
+                        if (arch.isValid() && arch >= p1Mark.oldest && arch.addDays(1) < nextUntil) {
+                            nextUntil = arch.addDays(1);
+                            p1Jumped = true;
+                            m_backend->log(QString("공백 — 받아 둔 옛 글(%1)로 건너뜁니다").arg(arch.toString("yyyy-MM-dd")), "info", "twitter");
+                        }
+                    }
+                    // ★ (1) 표시의 가장 오래된 날 아래로는 내려가지 않는다(받아 둔 글이 그 아래 있어도 — 지워졌거나 검색에 안 보이는 글)
+                    if (p1Mark.valid && nextUntil < p1Mark.oldest) {
+                        m_backend->log(QString("앞선 판이 계정을 만든 날(%1)까지 확인한 구간입니다 — %2 아래는 다시 보지 않습니다")
+                                           .arg(walkFloor.toString("yyyy-MM-dd"), p1Mark.oldest.toString("yyyy-MM-dd")),
+                                       "success", "twitter");
+                        p1FloorByMark = true;
+                        break;
+                    }
                 }
 
                 if (!nextUntil.isValid() || nextUntil < scanStopDate) {
-                    m_backend->log("2006년 Twitter 시작일까지 스캔 완료!", "success", "twitter");
+                    m_backend->log(floorKnown
+                                       ? QString("계정을 만든 날(%1)까지 스캔 완료!").arg(walkFloor.toString("yyyy-MM-dd"))
+                                       : QStringLiteral("2006년 Twitter 시작일까지 스캔 완료!"),
+                                   "success", "twitter");
+                    p1ReachedFloor = true;
                     break;
                 }
 
@@ -5823,8 +6008,11 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                 for (int w = 3; w > 0 && isRunning; --w) QThread::sleep(1);
             }
 
-            if (consecutiveEmpty >= MAX_EMPTY) {
-                m_backend->log(QString("%1회 연속 빈 결과 → Phase 1 종료").arg(MAX_EMPTY), "info", "twitter");
+            if (!p1ReachedFloor && !p1FloorByMark && consecutiveEmpty >= MAX_EMPTY && isRunning && !stopNow()) {
+                m_backend->log(QString("%1회 연속 빈 결과 → Phase 1 종료(%2)").arg(MAX_EMPTY)
+                                   .arg(!floorKnown ? QStringLiteral("계정을 만든 날을 몰라서")
+                                                    : QStringLiteral("검색이 이 계정의 글을 돌려주지 않아서 — 타임라인 단계가 받습니다")),
+                               "info", "twitter");
             }
             // 끊김 없이 끝났다(2006년까지 · 빈 결과로 끝 · 일찍 멈춤 — 중지 · 최대 수 · 검색 오류 없이)
             //   전부 빈 걸음(검색이 이 계정을 못 찾는 때 · 검색 장애)은 다 본 것으로 치지 않는다 — 그 사이 타임라인 단계가 넣은
@@ -5833,6 +6021,11 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             //   맨 위에서 2006년까지 되짚지 않은 걸음(새 글만 · 과거 이어서 · 양방향)은 표시를 건드리지 않는다 — 끝에 읽은 그대로
             //   되돌린다. 그 걸음이 넣은 줄은 top 위면 다음 판이 세지 않고, top 아래면 이미 받아 둔 곳이다
             if (p1Walk && p1Clean && p1GotAny && !p1TopEmpty) putWalk("search");
+            // 바닥까지 끊김 없이(건너뛰지 않고 · 제 모양의 응답으로 · 비공개 계정이면 같은 계정으로) 내려갔으면 표시 — 다음 판부터 1년 동안(위 설명).
+            //   맨 위 걸음이 비었으면(p1TopEmpty) 그 7일만 확인하지 못했다 — 맨 위 날을 7일 낮춰 적는다
+            if (p1ReachedFloor && p1Clean && p1GotAny && !p1Jumped && !p1Unshaped
+                && (!targetProtected || m_accountSwitchCount == p1AccSwitchStart) && oldestTweetDate.isValid())
+                putFloorMark(QStringLiteral("search"), oldestTweetDate.date(), p1FirstEmpty ? p1Top.addDays(-7) : p1Top, p1PreNewest);
         }
 
         int phase1New = tweetCount - phase1Start;
@@ -5994,7 +6187,7 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
 
         // Step 2: 아니포 방식 백트래킹 (until:oldest_date 반복)
         {
-            QDate replyStopDate(2006, 3, 21);
+            const QDate replyStopDate = walkFloor;   // 계정을 만든 날 전에는 답글도 없다(답글은 1단계 from: 검색이 이미 함께 받는다 — 이 걸음은 보충)
             QDate replyLastOldest;  // 무한 루프 감지
             int replyConsecutiveEmpty = 0;
             const int REPLY_MAX_EMPTY = 10;
@@ -6012,6 +6205,8 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
             const bool replyStep1Stopped = knownStop;   // 1걸음이 받아 둔 곳에 닿았으면 2걸음(과거로 되짚기)은 하지 않는다
             beginStreak(p3Armed, "replies");
             if (replyStep1Stopped) knownStop = true;
+            // ★ 이 보충 걸음은 예전처럼 빈 결과 10번에서 멈춘다 — 공백 건너기는 1단계(from: 검색 — 답글도 함께 받는다)만 한다(r55).
+            //   '전체' 판은 답글을 하위 판(type=replies)으로 다시 부르므로, 여기서도 건너면 판마다 답글 역사를 처음부터 다시 걸었다(검토).
             while (isRunning && !stopNow() && !replyErr && replyConsecutiveEmpty < REPLY_MAX_EMPTY) {
                 QString rCursor;
                 int iterNew = 0;
@@ -6083,6 +6278,9 @@ void TwitterCollector::collect(const QJsonObject &config, const std::atomic<bool
                     .arg(target, nextUntil.toString("yyyy-MM-dd"));
                 for (int w = 3; w > 0 && isRunning; --w) QThread::sleep(1);
             }
+            if (replyConsecutiveEmpty >= REPLY_MAX_EMPTY && isRunning && !stopNow() && !replyErr)
+                m_backend->log(QStringLiteral("답글 검색: 빈 결과 10번 → 여기서 멈춥니다(더 오래된 답글은 '트윗' · '전체' 판의 from: 검색이 계정을 만든 날까지 받습니다)"),
+                               "info", "twitter");
         }
 
         if (replyNew > 0) {

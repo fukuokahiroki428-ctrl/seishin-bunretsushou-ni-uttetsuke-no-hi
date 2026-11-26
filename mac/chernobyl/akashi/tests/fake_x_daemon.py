@@ -20,7 +20,9 @@ state = {
   "end_mode": "shaped" | "errors",    # what UserTweets / likes return past the end
   "search_depth": 25,                 # a search query's cursor dries up after this many results (optional)
   "timeline_off": true,               # UserTweets returns nothing (optional)
-  "rate_limit_once": "search"         # the next request of this action answers 429, once (optional)
+  "rate_limit_once": "search",        # the next request of this action answers 429, once (optional)
+  "search_gap_days": 20,              # like the real X, an until: search cannot bridge a gap longer than this (optional)
+  "user": {..., "created_ms": ms}     # when the account was made (optional; null = unknown)
 }
 """
 import json, os, re, sys
@@ -50,7 +52,18 @@ def user_obj(st, sn=None):
     sn = sn or u["screen_name"]
     return {"rest_id": u["id"] if sn == u["screen_name"] else "9" + str(abs(hash(sn)) % 10**8),
             "legacy": {"screen_name": sn, "name": sn, "followers_count": 1, "friends_count": 1,
-                       "statuses_count": len(st["own"]), "description": "", "created_at": xdate(1600000000000)}}
+                       "statuses_count": len(st["own"]), "description": "",
+                       **({} if created_ms(st) is None else {"created_at": xdate(created_ms(st))})}}
+
+
+def created_ms(st):
+    """계정을 만든 때 — user.created_ms(None 이면 모름). 없으면 가장 오래된 제 글 이틀 전(글이 없으면 2020-09-13).
+    ★ 앱은 '전체' 걸음을 계정을 만든 날까지 내려간다(r55). 예전처럼 2020 으로 두면 최근 글만 둔 시험들이 몇 년치 빈 주를 걸었다."""
+    u = st["user"]
+    if "created_ms" in u:
+        return u["created_ms"]
+    own = [t["ms"] for t in st.get("own", [])]
+    return (min(own) - 2 * 24 * 3600 * 1000) if own else 1600000000000
 
 
 def tweet_obj(st, t, sn=None):
@@ -121,6 +134,19 @@ def do_search(st, args):
     if m:
         items = [t for t in items if int(t["id"]) > int(m.group(1))]
     items.sort(key=lambda t: int(t["id"]), reverse=True)
+    # 진짜 X 처럼 until: 검색은 긴 공백을 한 번에 건너지 못한다 — until 에서(또는 앞 글에서) 다음 글까지가 search_gap_days 보다
+    #   멀면 거기서 끊긴다(바로 아래 글이 멀면 빈 결과). 첫 글만 보면 날짜 경계에 걸친 묶음이 공백 너머의 글까지 한 쪽에 실었다.
+    gm = re.search(r"until:(\d{4}-\d{2}-\d{2})", q)
+    if st.get("search_gap_days") and gm and "since:" not in q:
+        prev = datetime.strptime(gm.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000
+        gap = st["search_gap_days"] * 24 * 3600 * 1000
+        kept = []
+        for t in items:
+            if prev - t["ms"] > gap:
+                break
+            kept.append(t)
+            prev = t["ms"]
+        items = kept
     if st.get("search_depth"):   # 진짜 X 처럼 한 질의의 커서가 이 깊이에서 마른다 — 날 한가운데서 끊긴다
         items = items[:st["search_depth"]]
     chunk, nxt, off = page_of(items, args.get("cursor", ""), page)

@@ -160,6 +160,7 @@ private:
     bool m_daemonReady = false;
     int m_daemonRequestCount = 0;  // periodic restart for memory hygiene
     quint64 m_daemonSeq = 0;       // 데몬 명령 번호(_rid) — 번호가 다른 답(앞 명령의 늦은 답)을 버린다(r54)
+    int m_accountSwitchCount = 0;  // 레이트 리밋으로 계정을 바꾼 횟수 — 바닥 표시는 계정이 바뀐 걸음에서 적지 않는다(r55)
 
     // 새트윗 확인용
     QString m_newestTweetId;
