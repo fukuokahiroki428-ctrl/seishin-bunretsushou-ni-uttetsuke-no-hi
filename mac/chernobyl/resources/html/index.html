@@ -6949,9 +6949,11 @@
             organizeConf = Object.assign(_orgBlank(), o);
             ['overrides', 'seen'].forEach(k => { const v = organizeConf[k]; if (!v || typeof v !== 'object' || Array.isArray(v)) organizeConf[k] = {}; });
             if (!Array.isArray(organizeConf.off)) organizeConf.off = [];
+            // ★ 옮기기 전 규칙(before)은 organizeRestore 가 손대기(별명 이름 비우기 · 빈 칸 채우기) 전의 것 그대로 — 검토 ORG-7
+            const raw = config && Array.isArray(config.organizeRules) ? JSON.parse(JSON.stringify(config.organizeRules)) : [];
             organizeRestore(config && Array.isArray(config.organizeRules) ? config.organizeRules : [], true);
             _orgHookStart();
-            if (_orgMainWindow() && _orgMigrate()) setTimeout(organizeSave, 0);
+            if (_orgMainWindow() && _orgMigrate(raw)) setTimeout(organizeSave, 0);
             _orgFillFrame();
             renderOrganizeRules();
             renderOrganizeAccounts();
@@ -6959,11 +6961,11 @@
         // ★ r42 의 규칙(대상마다 하나)을 틀로 옮긴다 — 한 번만. 가장 많이 쓴 정리할 곳이 공통 정리할 곳이 되고,
         //   대상 목록에 있는 대상의 규칙은 공통과 다른 것(정리할 곳 · 이름 · 받은 곳)만 '따로 정함' 으로 남는다.
         //   대상 목록에 없는 규칙은 '따로 추가한 규칙' 에 그대로. 옮기기 전 규칙은 organize.before 에 둔다.
-        function _orgMigrate() {
+        function _orgMigrate(raw) {
             if (organizeConf.migrated) return false;
             organizeConf.migrated = true;
             if (!organizeRules.length) return true;
-            organizeConf.before = JSON.parse(JSON.stringify(organizeRules));
+            organizeConf.before = JSON.parse(JSON.stringify(Array.isArray(raw) && raw.length ? raw : organizeRules));
             const accs = new Set(_orgAccounts().map(a => a.key));
             const ruleKey = r => { const h = _orgHandle(r.target); return h ? _orgKey(r.platform === 'bsky' ? 'bluesky' : r.platform, h) : ''; };
             // ★ 공통 정리할 곳은 대상 목록에 있는 계정의 규칙에서만 센다 — 유튜브 채널 같은 따로 남는 규칙까지 세면, 규칙이 없던
@@ -7108,8 +7110,9 @@
             if (_orgRunning && _orgRunIds.includes(id) && _orgStatus[id] === 'run') return ['정리 중', 'org-st-run', ''];
             if (!s) return ['아직', 'org-st-off', '아직 정리한 적이 없습니다'];
             const when = new Date(s.at).toLocaleString(undefined, {timeZone: 'Asia/Tokyo'});
-            if (s.errors) return ['✕ ' + _tlAgo(s.at), 'org-st-err', when + ' · 문제 ' + s.errors + '개 — 로그를 보십시오'];
-            if (s.missing) return ['받은 것 없음', 'org-st-off', when + ' · 받은 곳에 아직 파일이 없습니다'];
+            // ★ r56 — 까닭(why)을 풍선에. 예전엔 '로그를 보십시오' 뿐이라 앱을 다시 열면(로그가 사라져) 까닭을 알 길이 없었다
+            if (s.errors) return ['✕ ' + _tlAgo(s.at), 'org-st-err', when + ' · 문제 ' + s.errors + '개 — ' + (s.why || '로그를 보십시오')];
+            if (s.missing) return ['받은 것 없음', 'org-st-off', when + ' · ' + (s.why || '받은 곳에 아직 파일이 없습니다')];
             return [_tlAgo(s.at) + (s.copied ? ' · 새로 ' + s.copied : ''), '', when + ' · 새로 ' + (s.copied || 0) + ' · 중복 ' + (s.dup || 0)];
         }
         function _orgAccRow(a, i) {
@@ -7128,9 +7131,17 @@
                 + '<button class="btn btn-secondary btn-sm" onclick="organizeOpenAcc(' + i + ')">열기</button>'
                 + '</div>' + (open ? _orgAccMore(a) : '') + '</div>';
         }
+        // 자동으로 찾는 받은 곳의 모양 — 수집기마다 폴더 이름 규칙이 다르다(organize.py find_sources 와 같게)
+        function _orgAutoSrc(plat, h) {
+            const base = (_orgRoot(plat) || '저장 경로') + '/' + plat + '/';
+            if (plat === 'bluesky') return base + h.replace(/\.bsky\.social$/i, '');
+            if (plat === 'discord') { const c = h.split('/')[1]; return base + '<서버 이름>/' + (c ? '<채널 이름>_' + c : '<채널들>'); }
+            if (plat === 'pixiv' && /^\d+$/.test(h)) return base + h + '_<이름>';
+            return base + h;
+        }
         function _orgAccMore(a) {
             const o = _orgOv(a.key), dis = _orgRunning ? ' disabled' : '';
-            const autoSrc = '자동 — ' + (_orgRoot(a.plat) || '저장 경로') + '/' + a.plat + '/' + a.handle;
+            const autoSrc = '자동 — ' + _orgAutoSrc(a.plat, a.handle);
             return '<div class="org-acc-more">'
                 + '<div class="field"><label class="field-label">표시 이름</label><input class="input" id="org-ov-name" value="' + _orgEsc(o.name || '') + '" placeholder="자동(그 계정의 지금 이름)" onchange="organizeSetOv(\'name\',this.value)"' + dis + '></div>'
                 + '<div class="field"><label class="field-label">받은 곳</label><div class="input-row"><input class="input" id="org-ov-source" value="' + _orgEsc(o.source || '') + '" placeholder="' + _orgEsc(autoSrc) + '" onchange="organizeSetOv(\'source\',this.value)"' + dis + '><button class="btn btn-secondary btn-sm" onclick="organizeBrowseField(\'org-ov-source\')"' + dis + '>찾아보기</button></div></div>'
@@ -7308,7 +7319,8 @@
             appendLog(_orgEsc(why || '정리 시작') + ' — ' + ready.length + '개', 'info', 'organize');
             backend.organizeRun(JSON.stringify({
                 template: _orgTplSaved(),
-                rules: ready.map(r => Object.assign({}, r, { roots: _orgRoots(r.platform) })),
+                // primary — 그 탭의 저장 경로. 비어 있으면 roots 의 첫째가 보조 경로가 되어 '받은 것 없음' 판정이 엉뚱한 곳을 보았다
+                rules: ready.map(r => Object.assign({}, r, { roots: _orgRoots(r.platform), primary: _orgRoot(r.platform) })),
                 captures: !!document.getElementById('organize-captures')?.checked }));
             return true;
         }
@@ -7388,16 +7400,20 @@
                 if (akey) {
                     const prev = _orgSeen(akey) || {};
                     organizeConf.seen[akey] = { at: Date.now(), name: _orgNames[rid] || prev.name || '', copied: ev.copied || 0, dup: ev.dup || 0,
-                                                errors: ev.errors || 0, missing: ev.missing || 0 };
+                                                errors: ev.errors || 0, missing: ev.missing || 0, why: String(ev.why || '').slice(0, 300) };
                     if (!organizeConf.seen[akey].missing) delete organizeConf.seen[akey].missing;
+                    if (!organizeConf.seen[akey].why || !(ev.errors || ev.missing)) delete organizeConf.seen[akey].why;
                     delete _orgStatus[rid];
                     _orgPatchAcc(akey);
                     _orgSaveSoon();
+                } else if (rid && ev.why && (ev.errors || ev.missing)) {
+                    _orgStatus[rid] = (ev.missing ? '받은 것 없음 — ' : '문제 — ') + ev.why;   // 따로 추가한 규칙의 카드에도 까닭
+                    _orgPatchCard(rid);
                 }
                 // 틀로 만든 계정은 새로 둔 것 · 문제가 있을 때만 적는다(수백 개면 로그가 묻힌다)
                 if (!akey || ev.copied || ev.errors) {
                     const label = rule ? (rule.name || rule.target || '규칙') : akey ? ('@' + akey.split(':').slice(1).join(':') + (_orgNames[rid] ? ' (' + _orgNames[rid] + ')' : '')) : '규칙';
-                    appendLog(_orgEsc(label) + ' — 새로 ' + (ev.copied || 0) + '개 · 중복 ' + (ev.dup || 0) + '개' + (ev.errors ? ' · 문제 ' + ev.errors + '개' : ''), ev.errors ? 'warning' : 'success', 'organize');
+                    appendLog(_orgEsc(label) + ' — 새로 ' + (ev.copied || 0) + '개 · 중복 ' + (ev.dup || 0) + '개' + (ev.errors ? ' · 문제 ' + ev.errors + '개' + (ev.why ? ' — ' + _orgEsc(ev.why) : '') : ''), ev.errors ? 'warning' : 'success', 'organize');
                 }
             } else if (ev.ev === 'done') {
                 _orgSetRunning(false);

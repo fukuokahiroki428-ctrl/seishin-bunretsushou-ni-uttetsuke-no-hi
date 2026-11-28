@@ -23,12 +23,29 @@ state = {
   "rate_limit_once": "search",        # the next request of this action answers 429, once (optional)
   "search_gap_days": 20,              # like the real X, an until: search cannot bridge a gap longer than this (optional)
   "user": {..., "created_ms": ms}     # when the account was made (optional; null = unknown)
+  --- r56 (X API layer) ---
+  "replace_cursor": true,             # default true: like the real X, pages after the first carry cursor-bottom in a TimelineReplaceEntry
+  "search_gap_since": true,           # also apply search_gap_days to queries with since: (default off — old tests)
+  "suspended_tokens": ["tok", ...],   # accounts (auth_token) X treats as suspended: search is gated, account_status says suspended
+  "rl": {"limit": 50, "remaining": 49, "reset": 1800000000}   # sent back as "_rl" on every API reply (optional)
 }
+search operators: from: (own corpus), until: / since: (UTC dates), since_id:, max_id:, until_time: / since_time: (unix seconds),
+filter:replies, filter:nativeretweets / include:nativeretweets (native RTs = timeline_extra kind "rt"; plain from: never returns them,
+with filter:nativeretweets only RTs come back).
+r56 media fixtures (optional, all keys may be absent — then nothing changes):
+  own[i] may carry  "photos": [{"key": "k1", "alt": "..."}], "video": {"key": "v1", "hls_only": true},
+                    "card": {"title": "...", "url": "https://...", "img": "c1"}, "article": {"title", "text", "cover"},
+                    "quote": {"id", "ms", "text", "author", "photos": [...]}, "edit_ids": [...], "note": {"text", "urls": [...]}
+  timeline_extra rt may carry "orig_fx": {...the same keys...} for the retweeted original
+  "media_base": "http://127.0.0.1:PORT"    # media URLs point at the test's fake media server (serve_media below)
+  "followers" / "following": [{"id": "...", "sn": "..."}], "followers_fail_from_page": 3   # HTTP 500 from that page on
+  "conversations": {"<tweet id>": [own-like items with "author"]}                         # TweetDetail replies (Phase 4)
 """
 import json, os, re, sys
 from datetime import datetime, timezone
 
 HOME = os.path.expanduser("~/fake_x")
+TOKEN = ""   # 이 데몬이 받은 계정(가짜 auth_token) — 정지 계정 흉내(suspended_tokens)에 쓴다. 값은 어디에도 적지 않는다
 STATE = os.path.join(HOME, "state.json")
 REQLOG = os.path.join(HOME, "requests.jsonl")
 
@@ -73,15 +90,16 @@ def tweet_obj(st, t, sn=None):
            "possibly_sensitive": False, "conversation_id_str": t["id"], "source": '<a href="x">Twitter Web App</a>',
            "in_reply_to_screen_name": t.get("reply_to") or "",
            "entities": {"hashtags": [{"text": "tag%d" % (n % 3)}] if n % 3 == 0 else [], "urls": []}}
-    if n % 4 == 0:   # 미디어 있는 글(받지는 않는다 — 시험은 미디어 받기 끔)
-        leg["extended_entities"] = {"media": [{"type": "photo", "media_url_https": "https://pbs.twimg.com/media/fake%s.jpg" % t["id"]}]}
+    if n % 4 == 0:   # 미디어 있는 글(받지는 않는다 — 시험은 미디어 받기 끔. 받는 시험은 media_base 의 가짜 서버로)
+        leg["extended_entities"] = {"media": [{"type": "photo", "media_url_https": "%s/media/fake%s.jpg" % (media_base(st), t["id"])}]}
     if t.get("reply_to"):
         leg["in_reply_to_status_id_str"] = t.get("reply_to_id", "1")
-    return {"rest_id": t["id"], "core": {"user_results": {"result": user_obj(st, sn)}}, "legacy": leg}
+    return decorate(st, t, {"rest_id": t["id"], "core": {"user_results": {"result": user_obj(st, sn)}}, "legacy": leg})
 
 
 def rt_obj(st, rt, own_by_id):
-    orig = own_by_id.get(rt["orig_id"]) or {"id": rt["orig_id"], "ms": rt["ms"] - 3600000, "text": "orig " + rt["orig_id"]}
+    orig = own_by_id.get(rt["orig_id"]) or dict({"id": rt["orig_id"], "ms": rt["ms"] - 3600000, "text": "orig " + rt["orig_id"]},
+                                                **rt.get("orig_fx", {}))
     o = tweet_obj(st, {"id": rt["id"], "ms": rt["ms"], "text": "RT @other: " + orig.get("text", "")})
     o["legacy"]["retweeted_status_result"] = {"result": tweet_obj(st, orig, "other")}
     return o
@@ -120,6 +138,7 @@ def do_search(st, args):
     page = st.get("page", 20)
     hidden = set(st.get("search_hidden", []))
     items = [t for t in st["own"] if t["id"] not in hidden]
+    items = search_corpus_rts(st, q, items)   # r56: 리트윗은 filter:nativeretweets 일 때만(그때는 리트윗만)
     if "filter:replies" in q:
         items = [t for t in items if t.get("reply_to")]
     m = re.search(r"until:(\d{4}-\d{2}-\d{2})", q)
@@ -133,11 +152,12 @@ def do_search(st, args):
     m = re.search(r"since_id:(\d+)", q)
     if m:
         items = [t for t in items if int(t["id"]) > int(m.group(1))]
+    items = search_id_time_ops(q, items)      # r56: max_id: · until_time: · since_time:
     items.sort(key=lambda t: int(t["id"]), reverse=True)
     # 진짜 X 처럼 until: 검색은 긴 공백을 한 번에 건너지 못한다 — until 에서(또는 앞 글에서) 다음 글까지가 search_gap_days 보다
     #   멀면 거기서 끊긴다(바로 아래 글이 멀면 빈 결과). 첫 글만 보면 날짜 경계에 걸친 묶음이 공백 너머의 글까지 한 쪽에 실었다.
     gm = re.search(r"until:(\d{4}-\d{2}-\d{2})", q)
-    if st.get("search_gap_days") and gm and "since:" not in q:
+    if st.get("search_gap_days") and gm and ("since:" not in q or st.get("search_gap_since")):
         prev = datetime.strptime(gm.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000
         gap = st["search_gap_days"] * 24 * 3600 * 1000
         kept = []
@@ -150,11 +170,76 @@ def do_search(st, args):
     if st.get("search_depth"):   # 진짜 X 처럼 한 질의의 커서가 이 깊이에서 마른다 — 날 한가운데서 끊긴다
         items = items[:st["search_depth"]]
     chunk, nxt, off = page_of(items, args.get("cursor", ""), page)
-    entries = [entry(tweet_obj(st, t)) for t in chunk]
+    entries = [search_item_entry(st, t) for t in chunk]
     if nxt < len(items):
         entries.append(cursor_entry(str(nxt)))
-    logreq({"action": "search", "query": q, "off": off, "n": len(chunk)})
-    return {"status": 200, "body": timeline_body(entries, "search")}
+    logreq({"action": "search", "query": q, "off": off, "n": len(chunk), "acct": TOKEN[-1:]})
+    return {"status": 200, "body": search_replace_cursor(st, args, timeline_body(entries, "search"))}
+
+
+# ── r56: 검색 쪽 흉내(리트윗 · ID/시각 연산자 · ReplaceEntry 커서 · 정지 계정) ──
+def search_corpus_rts(st, q, items):
+    """진짜 X 처럼 from: 검색은 리트윗을 돌려주지 않는다. filter:nativeretweets(또는 include:nativeretweets)면 리트윗도 싣고,
+    filter:nativeretweets 면 리트윗만. 리트윗 = timeline_extra 의 kind 'rt'."""
+    if "filter:nativeretweets" not in q and "include:nativeretweets" not in q:
+        return items
+    rts = [dict(x, _rt=True) for x in st.get("timeline_extra", []) if x.get("kind") == "rt"]
+    return rts if "filter:nativeretweets" in q else items + rts
+
+
+def search_id_time_ops(q, items):
+    m = re.search(r"max_id:(\d+)", q)
+    if m:
+        items = [t for t in items if int(t["id"]) <= int(m.group(1))]
+    m = re.search(r"until_time:(\d+)", q)
+    if m:
+        items = [t for t in items if t["ms"] < int(m.group(1)) * 1000]
+    m = re.search(r"since_time:(\d+)", q)
+    if m:
+        items = [t for t in items if t["ms"] >= int(m.group(1)) * 1000]
+    return items
+
+
+def search_item_entry(st, t):
+    if t.get("_rt"):
+        own_by_id = {o["id"]: o for o in st["own"]}
+        return entry(rt_obj(st, t, own_by_id))
+    return entry(tweet_obj(st, t))
+
+
+def search_replace_cursor(st, args, body):
+    """진짜 X 는 검색의 2쪽부터 cursor-bottom 을 TimelineAddEntries 가 아니라 TimelineReplaceEntry 에 싣는다(twikit client.py 의 폴백).
+    replace_cursor=false 면 예전처럼 AddEntries 에."""
+    if not args.get("cursor") or not st.get("replace_cursor", True):
+        return body
+    ins = body["data"]["search_by_raw_query"]["search_timeline"]["timeline"]["instructions"]
+    add = ins[0]["entries"]
+    cur = [e for e in add if e["entryId"].startswith("cursor-bottom")]
+    for e in cur:
+        add.remove(e)
+        ins.append({"type": "TimelineReplaceEntry", "entry_id_to_replace": "cursor-bottom-0",
+                    "entry": {"entryId": e["entryId"], "content": {"entryType": "TimelineTimelineCursor",
+                                                                   "value": e["content"]["value"], "cursorType": "Bottom"}}})
+    return body
+
+
+def suspended(st):
+    return bool(TOKEN) and TOKEN in st.get("suspended_tokens", [])
+
+
+def suspended_search_reply(st, args):
+    gate = "LatestTabSrpDenySuspendedUsers"
+    logreq({"action": "search", "query": args.get("query", ""), "suspended": True, "acct": TOKEN[-1:]})
+    return {"status": 200, "_cause": "account_suspended", "_gate": gate,
+            "body": {"data": {"search_by_raw_query": {"search_timeline": {}}},
+                     "errors": [{"message": "InvalidArgument: ProductDisabled: Closed gate stopped execution of the pipeline (%s)" % gate,
+                                 "name": "InvalidArgument", "path": ["search_by_raw_query", "search_timeline", "timeline"]}]}}
+
+
+def account_status_reply(st):
+    logreq({"action": "account_status", "acct": TOKEN[-1:]})
+    return {"status": 200, "suspended": suspended(st), "protected": False, "needs_phone_verification": False,
+            "locked": False, "error_code": 0, "user_id": "77" + (TOKEN[-1:] if TOKEN[-1:].isdigit() else "0")}
 
 
 def end_page(st, cursor):
@@ -210,6 +295,159 @@ def do_bookmarks(st, args):
     return {"status": 200, "body": {"data": {"bookmark_timeline_v2": {"timeline": {"instructions": ins}}}}}
 
 
+# ── r56 미디어 · 글 갈래 흉내(대체 글 · 카드 · X 글 · HLS 만 있는 영상 · 리트윗한 인용 글 · 고친 이력 · 긴 글) ──
+def media_base(st):
+    return st.get("media_base") or "https://pbs.twimg.com"
+
+
+def decorate(st, t, o):
+    """state 의 글 항목에 붙은 r56 갈래를 X 모양으로 덧붙인다(없으면 o 그대로)."""
+    leg = o["legacy"]
+    base = media_base(st)
+    media = []
+    for p in t.get("photos", []):
+        m = {"type": "photo", "media_url_https": "%s/media/%s.jpg" % (base, p["key"])}
+        if p.get("alt"):
+            m["ext_alt_text"] = p["alt"]
+        media.append(m)
+    v = t.get("video")
+    if v:
+        k = v["key"]
+        variants = [{"content_type": "application/x-mpegURL", "url": "%s/vid/%s/pl/%s.m3u8" % (base, k, k)}]
+        if not v.get("hls_only"):
+            variants += [{"content_type": "video/mp4", "bitrate": 256000, "url": "%s/vid/%s/320x180/%s.mp4" % (base, k, k)},
+                         {"content_type": "video/mp4", "bitrate": 2176000, "url": "%s/vid/%s/1280x720/%s.mp4" % (base, k, k)}]
+        media.append({"type": "video", "media_url_https": "%s/media/%s_thumb.jpg" % (base, k), "video_info": {"variants": variants}})
+    if media:
+        leg["extended_entities"] = {"media": media}
+        leg["entities"]["media"] = media
+    c = t.get("card")
+    if c:
+        bv = [{"key": "title", "value": {"type": "STRING", "string_value": c.get("title", "")}},
+              {"key": "card_url", "value": {"type": "STRING", "string_value": c.get("url", "")}}]
+        if c.get("img"):
+            bv.append({"key": "thumbnail_image_original",
+                       "value": {"type": "IMAGE", "image_value": {"url": "%s/card_img/1/%s?format=jpg&name=orig" % (base, c["img"])}}})
+        o["card"] = {"rest_id": "card://" + t["id"], "legacy": {"name": "summary_large_image", "url": c.get("url", ""),
+                                                               "binding_values": bv}}
+    a = t.get("article")
+    if a:
+        r = {"rest_id": "a" + t["id"], "title": a.get("title", ""), "preview_text": (a.get("text") or "")[:50],
+             "plain_text": a.get("text", "")}
+        if a.get("cover"):
+            r["cover_media"] = {"media_info": {"original_img_url": "%s/media/%s.jpg" % (base, a["cover"])}}
+        o["article"] = {"article_results": {"result": r}}
+    q = t.get("quote")
+    if q:
+        o["quoted_status_result"] = {"result": tweet_obj(st, q, q.get("author", "other"))}
+        leg["is_quote_status"] = True
+    if t.get("edit_ids"):
+        o["edit_control"] = {"edit_tweet_ids": list(t["edit_ids"])}
+    n = t.get("note")
+    if n:
+        o["note_tweet"] = {"note_tweet_results": {"result": {"text": n.get("text", ""), "entity_set": {
+            "urls": [{"url": "https://t.co/n%d" % i, "expanded_url": u} for i, u in enumerate(n.get("urls", []))],
+            "hashtags": [{"text": h} for h in n.get("hashtags", [])]}}}}
+    return o
+
+
+def find_tweet(st, tid):
+    """TweetDetail 의 그 글 — 제 글 · 리트윗된 원글 · 인용된 글 · 대화 답글에서 찾는다."""
+    own_by_id = {t["id"]: t for t in st["own"]}
+    if tid in own_by_id:
+        return tweet_obj(st, own_by_id[tid])
+    for x in st.get("timeline_extra", []):
+        if x.get("kind") != "rt":
+            continue
+        if x["id"] == tid:
+            return rt_obj(st, x, own_by_id)
+        if x["orig_id"] == tid:
+            return rt_obj(st, x, own_by_id)["legacy"]["retweeted_status_result"]["result"]
+    for t in st["own"]:
+        if t.get("quote", {}).get("id") == tid:
+            return tweet_obj(st, t["quote"], t["quote"].get("author", "other"))
+    for items in st.get("conversations", {}).values():
+        for t in items:
+            if t["id"] == tid:
+                return tweet_obj(st, t, t.get("author", "friend"))
+    return None
+
+
+def do_tweet_detail(st, args):
+    tid = str(args.get("tweet_id", ""))
+    focal = find_tweet(st, tid)
+    entries = [entry(focal)] if focal else []
+    for t in st.get("conversations", {}).get(tid, []):
+        o = tweet_obj(st, t, t.get("author", "friend"))
+        entries.append({"entryId": "conversationthread-" + t["id"],
+                        "content": {"entryType": "TimelineTimelineModule",
+                                    "items": [{"entryId": "conversationthread-%s-tweet-%s" % (t["id"], t["id"]),
+                                               "item": {"itemContent": {"tweet_results": {"result": o}}}}]}})
+    logreq({"action": "tweet_detail", "tweet_id": tid, "found": bool(focal)})
+    return {"status": 200, "body": {"data": {"threaded_conversation_with_injections_v2": {
+        "instructions": [{"type": "TimelineAddEntries", "entries": entries}]}}}}
+
+
+def do_follow_list(st, args, a):
+    page = st.get("page", 20)
+    users = st.get(a, [])
+    off = int(args["cursor"]) if str(args.get("cursor", "")).isdigit() else 0
+    pno = off // page + 1
+    fail = st.get(a + "_fail_from_page")
+    if fail and pno >= fail:
+        logreq({"action": a, "off": off, "page": pno, "failed": True})
+        return {"status": 500, "body": {}}
+    chunk = users[off:off + page]
+    entries = [{"entryId": "user-" + u["id"], "content": {"itemContent": {"user_results": {"result": {
+        "rest_id": u["id"], "core": {"screen_name": u["sn"], "name": u.get("name", u["sn"])},
+        "legacy": {"screen_name": u["sn"], "name": u.get("name", u["sn"]), "followers_count": 1, "friends_count": 1}}}}}}
+               for u in chunk]
+    if chunk and off + page < len(users):
+        entries.append(cursor_entry(str(off + page)))
+    logreq({"action": a, "off": off, "page": pno, "n": len(chunk)})
+    return {"status": 200, "body": {"data": {"user": {"result": {"timeline": {"timeline": {
+        "instructions": [{"type": "TimelineAddEntries", "entries": entries}]}}}}}}}
+
+
+def serve_media(port=0, fail_once=(), log_path=None):
+    """시험의 가짜 미디어 서버(127.0.0.1) — 어떤 경로든 작은 그림 · 영상 바이트를 준다. fail_once 의 글자를 품은 경로는
+    처음 한 번만 503. 돌려주는 값: (서버, 포트). 시험이 끝나면 server.shutdown()."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    pending = set(fail_once)
+    lock = threading.Lock()
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            path = self.path.split("?")[0]
+            with lock:
+                hit = next((f for f in pending if f in path), None)
+                if hit:
+                    pending.discard(hit)
+            if log_path:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"path": self.path, "failed": bool(hit)}) + "\n")
+            if hit:
+                self.send_response(503)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            body = (b"\x00\x00\x00\x18ftypmp42" if path.endswith(".mp4") else b"\xff\xd8\xff\xe0") + \
+                path.encode() * 8 + b"\xff\xd9"
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4" if path.endswith(".mp4") else "image/jpeg")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", port), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, srv.server_address[1]
+
+
 def handle(args):
     st = state()
     a = args.get("action", "")
@@ -223,22 +461,41 @@ def handle(args):
         logreq({"action": a, "screen_name": args.get("screen_name")})
         return {"status": 200, "body": {"data": {"user": {"result": user_obj(st, args.get("screen_name"))}}}}
     if a == "search":
-        return do_search(st, args)
+        return suspended_search_reply(st, args) if suspended(st) else do_search(st, args)
+    if a == "account_status":
+        return account_status_reply(st)
     if a == "user_tweets":
         return do_user_tweets(st, args)
     if a == "likes":
         return do_likes(st, args)
     if a == "bookmarks":
         return do_bookmarks(st, args)
+    if a == "tweet_detail":
+        return do_tweet_detail(st, args)
+    if a in ("followers", "following") and a in st:
+        return do_follow_list(st, args, a)
     logreq({"action": a, "unknown": True})
     return {"status": 200, "body": {"data": {}}}
+
+
+def with_rl(o):
+    """r56: state 의 rl 을 답의 _rl 로(진짜 데몬이 x-rate-limit-* 머리를 싣는 것처럼)"""
+    try:
+        rl = state().get("rl")
+    except Exception:
+        rl = None
+    if rl and isinstance(o, dict) and "status" in o:
+        o = dict(o, _rl=rl)
+    return o
 
 
 def main():
     os.makedirs(HOME, exist_ok=True)
     init_line = sys.stdin.readline()   # init args — 가짜 토큰. 값은 적지 않고 열쇠 이름과 프록시 출구만 남긴다
+    global TOKEN
     try:                               # (proxy_exit.py 가 '앱이 계정의 프록시를 데몬에 실어 보내는지' 를 본다)
         ia = json.loads(init_line or "{}")
+        TOKEN = str(ia.get("auth_token") or "")
         with open(os.path.join(HOME, "init.jsonl"), "a", encoding="utf-8") as f:
             # acct = 가짜 토큰의 끝 글자(계정과 출구의 짝을 본다)
             f.write(json.dumps({"keys": sorted(ia), "proxy": ia.get("proxy"), "acct": str(ia.get("auth_token") or "")[-1:]}) + "\n")
@@ -284,7 +541,7 @@ def main():
             out({"status": "ok"})
             continue
         try:
-            out(handle(args))
+            out(with_rl(handle(args)))
         except Exception as e:
             out({"error": "fake: %r" % (e,)})
 

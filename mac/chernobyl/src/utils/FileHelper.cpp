@@ -69,15 +69,22 @@ void setFinderComment(const QString &filePath, const QString &comment)
         "  tell application \"Finder\" to set comment of (POSIX file p as alias) to c\n"
         "end run");
 
+    // ★ 자동화 허락이 없거나(거절) Finder 가 답하지 않으면(허락 창이 떠 있는 동안 · 바쁜 Finder) 10분 동안은 osascript 를 띄우지 않는다
+    //   (r56). 예전엔 거절된 뒤에도 파일마다 띄워, 파일마다 0.1~5초씩(허락 창이 떠 있으면 5초 꽉) 수집이 멎었다. 영영 끊지 않는 것은
+    //   사용자가 그 사이 허락을 켤 수 있어서다 — 10분이 지나면 한 번 다시 해 보고, 되면 그대로 쓴다. 받은 곳 주소는 파일의
+    //   '다운로드 출처'(setDownloadMeta)에 늘 남는다.
+    static std::atomic<qint64> s_backoffUntilMs{0};
+    if (QDateTime::currentMSecsSinceEpoch() < s_backoffUntilMs.load()) return;
+
     QProcess proc;
     proc.start("/usr/bin/osascript", {"-e", script, filePath, comment});
     const bool finished = proc.waitForFinished(5000);
+    if (finished && proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0) s_backoffUntilMs.store(0);
     // ★ 실패를 말없이 넘기지 않는다 — Finder 에 보내는 Apple Event 는 macOS 의 '자동화' 허락이 있어야 한다. 허락을 거절했거나
     //   OS 업데이트 · 재서명으로 허락이 풀리면 모든 파일이 받은 곳 메모 없이 쌓였다(아무 말 없이). 한 번만 알린다(앱이 켜져 있는 동안).
     //   받은 곳 주소는 파일의 '다운로드 출처'(kMDItemWhereFroms — 허락이 필요 없다)에도 남는다.
     if (!finished || proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
         if (!finished) { proc.kill(); proc.waitForFinished(1000); }
-        if (!finderCommentFailureHook()) return;
         // ★ 오류 번호는 osascript 가 마지막 줄 끝에 붙이는 '(…)' 에서만 읽는다 — 그 앞에는 파일 경로 · 메모 글이 그대로 찍히므로
         //   경로에 '-1743' 이 든 파일이 없어진 것(-1700)을 '자동화를 켜라' 로 잘못 알렸다(검토, r54). 영어 문구는 보지 않는다(이 맥은 한국어).
         const QString err = finished ? QString::fromUtf8(proc.readAllStandardError()) : QString();
@@ -85,6 +92,8 @@ void setFinderComment(const QString &filePath, const QString &comment)
         int code = 0;
         for (auto it = kErrNum.globalMatch(err); it.hasNext();) code = it.next().captured(1).toInt();   // 마지막 것 = 진짜 오류
         const bool denied = finished && (code == -1743 || code == -1744);
+        if (denied || !finished) s_backoffUntilMs.store(QDateTime::currentMSecsSinceEpoch() + 10LL * 60 * 1000);   // 위 설명 — 10분 쉰다
+        if (!finderCommentFailureHook()) return;
         // ★ 알림은 종류마다 한 번씩 — 하나로 묶으면 처음 난 시간 초과 · 다른 오류가 자동화 안내를 영영 막았다(검토, r54).
         //   첫 Apple Event 는 macOS 가 '이 앱이 Finder 를 제어하려 합니다' 창을 띄우고 답을 기다린다 — 밤새 도는 수집이면 그 사이 5초가
         //   지나 시간 초과로 끝난다. 그 안내도 따로 한 번.
@@ -796,9 +805,21 @@ static QString linkifyTweetText(const QString &raw)
     return escaped;
 }
 
+// ★ r56 검토 — 카드의 미디어 주소는 경로 조각마다 퍼센트 인코딩한다. 파일 이름에 해시태그('#')나 '%' 가 흔히 남는데
+//   (downloadTweetMedia 는 <>:"/\|?* 와 공백만 뺀다), 그대로 src 에 넣으면 브라우저가 '#' 뒤를 조각 식별자로 읽어 그림이 뜨지 않았고,
+//   그 위에 hkMissing 이 '옮겨졌거나 지워짐' 이라고 잘못 알렸다. ':' 도 인코딩한다(첫 조각에 있으면 주소 형식으로 읽힌다).
+static QString cardMediaUrl(const QString &rel)
+{
+    QStringList segs;
+    for (const QString &seg : rel.split(QLatin1Char('/')))
+        segs << QString::fromLatin1(QUrl::toPercentEncoding(seg, QByteArrayLiteral("()!$&'*+,;=@")));
+    return segs.join(QLatin1Char('/'));
+}
+
 QString generateTweetArchiveHtml(const QString &saveDir,
                                   const QString &filename,
-                                  const QJsonObject &meta)
+                                  const QJsonObject &meta,
+                                  bool noOverwrite)
 {
     if (filename.isEmpty()) return QString();
     QDir().mkpath(saveDir);
@@ -816,21 +837,29 @@ QString generateTweetArchiveHtml(const QString &saveDir,
     const int retweetCount     = meta.value("retweetCount").toInt();
     const int replyCount       = meta.value("replyCount").toInt();
     const QJsonArray mediaArr  = meta.value("mediaRelPaths").toArray();
+    const int mediaExpected    = meta.value("mediaExpected").toInt(-1);
 
     // 미디어 블록 생성 — 이미지/비디오 구분
+    // ★ r56 — 붙인 파일이 나중에 옮겨지거나 지워지면(정리 · 사람이 옮김) 깨진 그림 아이콘만 남아 '카드가 깨졌다' 로 보였다.
+    //   불러오지 못하면 그 자리를 '파일을 찾을 수 없음 + 이름' 글로 바꾼다(hkMissing). 있어야 할 수보다 적게 붙었으면 빠진 수도 적는다.
     QString mediaBlock;
     if (!mediaArr.isEmpty()) {
         mediaBlock += "<div class=\"media\">\n";
         for (const auto &v : mediaArr) {
-            const QString rel = htmlEscape(v.toString());
+            const QString rel = htmlEscape(cardMediaUrl(v.toString()));
             const QString low = v.toString().toLower();
             if (low.endsWith(".mp4") || low.endsWith(".mov") || low.endsWith(".webm")) {
-                mediaBlock += QString("  <video src=\"%1\" controls preload=\"metadata\"></video>\n").arg(rel);
+                mediaBlock += QString("  <video src=\"%1\" controls preload=\"metadata\" onerror=\"hkMissing(this)\"></video>\n").arg(rel);
             } else {
-                mediaBlock += QString("  <a href=\"%1\" target=\"_blank\"><img src=\"%1\" loading=\"lazy\" alt=\"\"></a>\n").arg(rel);
+                mediaBlock += QString("  <a href=\"%1\" target=\"_blank\"><img src=\"%1\" loading=\"lazy\" alt=\"\" onerror=\"hkMissing(this)\"></a>\n").arg(rel);
             }
         }
         mediaBlock += "</div>\n";
+    }
+    if (mediaExpected > mediaArr.size()) {
+        const int missing = mediaExpected - int(mediaArr.size());
+        mediaBlock += QString("<div class=\"missing\">이 글의 미디어 %1개 가운데 %2개는 아직 받지 않아 붙이지 못했습니다"
+                              " — 미디어 받기를 켜고 다시 수집하면 붙습니다</div>\n").arg(mediaExpected).arg(missing);
     }
 
     // 제목 — "이름 (@handle) : 첫 40자"
@@ -883,7 +912,14 @@ QString generateTweetArchiveHtml(const QString &saveDir,
             "  .link { display: inline-block; margin-top: 12px; color: #1d9bf0;\n"
             "          text-decoration: none; font-size: 14px; }\n"
             "  .link:hover { text-decoration: underline; }\n"
+            "  .missing { margin: 8px 0; padding: 14px; border: 1px dashed #b0b8bf; border-radius: 12px;\n"
+            "             font-size: 13px; color: #536471; word-break: break-all; }\n"
             "</style>\n";
+    // 불러오지 못한 미디어 자리를 글로 바꾼다(위 ★ r56 — 깨진 그림 아이콘 대신)
+    html += "<script>function hkMissing(el){var d=document.createElement('div');d.className='missing';"
+            "var s=(el.getAttribute('src')||'').split('/').pop();try{s=decodeURIComponent(s)}catch(e){}"
+            "d.textContent='미디어 파일을 찾을 수 없습니다(옮겨졌거나 지워짐): '+s;"
+            "var a=el.parentNode&&el.parentNode.tagName==='A'?el.parentNode:el;a.parentNode.replaceChild(d,a);}</script>\n";
     html += "</head>\n<body>\n";
     html += "<article class=\"card\">\n";
     html += "  <div class=\"head\">\n";
@@ -922,18 +958,45 @@ QString generateTweetArchiveHtml(const QString &saveDir,
     // 검색용 메타 — 크롤러가 찾기 쉽도록 마지막에 숨김 정보
     html += QString("<!-- tweet:%1 author:%2 -->\n")
                 .arg(htmlEscape(tweetId), htmlEscape(handle));
+    // ★ r56 — 붙인 미디어 수 / 있어야 할 수(readTweetCardMark). 캡쳐를 끈 판은 이것을 보고, 더 붙일 것이 없으면 다시 쓰지 않는다
+    html += QString("<!-- hanishiki-card media:%1/%2 -->\n").arg(mediaArr.size()).arg(qMax(0, mediaExpected));
     html += "</body>\n</html>\n";
 
+    // ★ r56 — 쓰기 결과를 본다(NAS 가 끊기면 반쪽 카드가 남아 '카드가 깨졌다' 로 보였다). 실패하면 반쪽을 지운다.
+    //   noOverwrite: 그 자리에 이미 무엇이 있으면 쓰지 않는다(NewOnly — 있는지 보고 여는 사이에 진짜 캡쳐가 옮겨져 와도 덮지 않게).
+    //   그때는 반쪽도 지우지 않는다 — 그 이름은 이미 다른 것(옮겨 온 진짜 캡쳐)일 수 있다. 남은 반쪽 카드는 표시가 없어 다음 판이 다시 쓴다.
     QFile f(filePath);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return QString();
-    f.write(html.toUtf8());
+    if (!f.open(noOverwrite ? (QIODevice::WriteOnly | QIODevice::NewOnly) : (QIODevice::WriteOnly | QIODevice::Truncate)))
+        return QString();
+    const QByteArray bytes = html.toUtf8();
+    const bool wrote = f.write(bytes) == bytes.size() && f.flush();
     f.close();
+    if (!wrote || f.error() != QFileDevice::NoError) {
+        if (!noOverwrite) QFile::remove(filePath);
+        return QString();
+    }
 
     if (!tweetUrl.isEmpty()) {
         setDownloadMeta(filePath, tweetUrl);
         setFinderComment(filePath, tweetUrl);
     }
     return filePath;
+}
+
+bool readTweetCardMark(const QString &filePath, int *have, int *want)
+{
+    QFile f(filePath);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    const qint64 sz = f.size();
+    if (sz <= 0) return false;
+    // 표시는 파일 끝(</body> 바로 앞)에 있다 — 끝 4KB 만 읽는다(NAS 에서 카드마다 통째로 읽지 않게)
+    if (sz > 4096) f.seek(sz - 4096);
+    static const QRegularExpression re(QStringLiteral(R"(<!-- hanishiki-card media:(\d+)/(\d+) -->)"));
+    const auto m = re.match(QString::fromUtf8(f.readAll()));
+    if (!m.hasMatch()) return false;
+    if (have) *have = m.captured(1).toInt();
+    if (want) *want = m.captured(2).toInt();
+    return true;
 }
 
 } // namespace FileHelper

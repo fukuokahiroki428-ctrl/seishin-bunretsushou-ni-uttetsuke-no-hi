@@ -81,10 +81,293 @@ def _save_cached_hashes(hashes):
         os.makedirs(os.path.dirname(_hash_cache_path), exist_ok=True)
         data = dict(hashes)
         data["_timestamp"] = time.time()
-        with open(_hash_cache_path, "w") as f:
-            json.dump(data, f)
+        # 갈아 끼우기 — 이제 캐시의 나이가 긁을지 말지를 정한다(12시간). 반쯤 쓴 캐시는 해시를 잃게 한다
+        _atomic_json_write(_hash_cache_path, data)
     except Exception:
         pass
+
+
+# ★ 해시 캐시가 12시간보다 젊으면 기동 때의 긁기(x.com 첫 화면 + JS 번들 최대 20개)를 건너뛴다(r56).
+#   예전엔 데몬을 띄울 때마다 긁었다 — '전체' 한 대상에 데몬이 열네 번쯤 뜨니 그때마다 몇 초 · 요청 스무 개 남짓이 X 로 나갔다.
+#   해시가 정말 바뀌면 404 가 나고, 그때는 앱이 force 로 다시 부르고(404 수리 길) 데몬도 스스로 고친다(아래 메인 루프).
+_HASH_FRESH_SECS = 12 * 3600
+
+
+def _hash_cache_age():
+    """해시 캐시를 적은 지 몇 초 됐나(파일 안의 _timestamp). 없거나 못 읽으면 None"""
+    try:
+        with open(_hash_cache_path) as f:
+            ts = float((json.load(f) or {}).get("_timestamp", 0) or 0)
+    except Exception:
+        return None
+    return (time.time() - ts) if ts > 0 else None
+
+
+def _skip_hash_scrape(args):
+    """update_endpoints 를 긁지 않고 캐시로 답해도 되나 — force 면 늘 긁는다"""
+    if (args or {}).get("force"):
+        return False
+    age = _hash_cache_age()
+    return age is not None and 0 <= age < _HASH_FRESH_SECS
+
+
+def _cached_hash_reply(args, recent_404=0):
+    """update_endpoints 를 긁지 않고 캐시로 답할 때의 답 — 긁어야 하면 None.
+    ★ 답의 모양(status ok · cached True)을 시험(unit_daemon H5)이 볼 수 있게 본 루프에서 떼어 냈다(검토)
+    ★ recent_404 = 바로 앞까지 이어진 404 수 — 404 뒤의 부름은 force 가 없어도 긁는다(옛 앱의 수리 길, r56 검토 DPC-1)"""
+    if recent_404 or not _skip_hash_scrape(args):
+        return None
+    return {"status": "ok", "cached": True, "updated": []}
+
+
+# ── GraphQL 을 GET 으로 보낼지 POST 로 보낼지 — 작업(operation)마다 기억한다(r56) ──
+# ★ X 는 2026-11-21 부터 SearchTimeline 을 GET 으로 물으면 빈 본문 404 만 준다(어느 계정이든 · X 의 웹 앱 자신도 POST 로 보낸다 —
+#   RSSHub #23359, twikit fork PR #6, gallery-dl #9275). 같은 404 가 예전엔 '해시가 바뀌었다' 의 뜻이라, 앱은 해시를 다시 긁고 데몬을
+#   세 번 다시 띄운 뒤 검색을 포기했다. Followers 도 곧 POST 만 받는다는 보고가 있다. 그래서 작업마다:
+#     · 처음엔 기본(SearchTimeline 은 POST, 나머지는 GET) 또는 기억해 둔 방법으로 보내고,
+#     · 빈 본문 404 면 다른 방법으로 한 번 더 — 그게 200 이면 그 방법을 기억한다(<자료 폴더>/graphql_methods.json).
+#     · 두 방법 다 404 면 예전처럼 해시 수리로 넘어간다.
+#   7일 넘은 기억은 '다시 확인' 한다 — 기억한 방법으로 먼저 보내되(대개 맞다) 빈 404 면 다른 방법으로 물러서고, 맞으면 날짜를 새로 적는다.
+_methods_path = os.path.join(_data_dir, "graphql_methods.json")
+_METHOD_TTL = 7 * 86400
+_POST_DEFAULT_OPS = {"SearchTimeline"}
+_gql_methods = None
+
+
+def _load_gql_methods():
+    global _gql_methods
+    if _gql_methods is None:
+        try:
+            with open(_methods_path) as f:
+                d = json.load(f)
+            _gql_methods = d if isinstance(d, dict) else {}
+        except Exception:
+            _gql_methods = {}
+    return _gql_methods
+
+
+def _atomic_json_write(path, obj):
+    """반쯤 쓴 파일이 남지 않게 — 쓰는 데몬마다 제 임시 파일에 쓰고 갈아 끼운다(r56 검토). 앱은 데몬을 둘 이상 함께 띄운다 —
+    예전처럼 모두가 같은 '.tmp' 이름을 쓰면 동시에 쓸 때 한 파일에 겹쳐 써 깨진 JSON 이 들어갈 수 있었다."""
+    import tempfile
+    d = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(path) + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _save_gql_methods():
+    """기억을 파일로"""
+    try:
+        _atomic_json_write(_methods_path, _load_gql_methods())
+    except Exception:
+        pass
+
+
+def _gql_op(url):
+    """엔드포인트 주소의 마지막 마디 = 작업 이름(SearchTimeline 등)"""
+    from urllib.parse import urlparse
+    return urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _gql_query_id(url):
+    """작업 이름 바로 앞 마디 = queryId(update_endpoints 가 고쳐 넣은 값 그대로)"""
+    from urllib.parse import urlparse
+    parts = urlparse(url).path.rstrip("/").split("/")
+    return parts[-2] if len(parts) >= 2 else ""
+
+
+def _gql_first_method(op):
+    e = _load_gql_methods().get(op)
+    if isinstance(e, dict) and e.get("method") in ("GET", "POST"):
+        return e["method"]
+    return "POST" if op in _POST_DEFAULT_OPS else "GET"
+
+
+def _gql_remember(op, method):
+    """이 방법이 200 을 받았다 — 기억이 없고 기본과 다르거나, 다른 방법이 적혀 있거나, 7일이 지났으면 적는다"""
+    m = _load_gql_methods()
+    e = m.get(op) if isinstance(m.get(op), dict) else None
+    default = "POST" if op in _POST_DEFAULT_OPS else "GET"
+    now = time.time()
+    if e is None and method == default:
+        return   # 기본이 맞는다 — 적을 것이 없다(파일을 쓸데없이 쓰지 않는다)
+    if e is not None and e.get("method") == method and now - float(e.get("at", 0) or 0) < _METHOD_TTL:
+        return
+    m[op] = {"method": method, "at": now}
+    _save_gql_methods()
+
+
+def _is_empty_404(response):
+    try:
+        return response.status_code == 404 and not (response.text or "").strip()
+    except Exception:
+        return False
+
+
+async def _gql_send(client, method, url, variables, features, flatten_params, field_toggles=None):
+    """한 방법으로 한 번. POST 몸은 X 웹 앱과 같은 {variables, features, queryId[, fieldToggles]}.
+    ★ x-client-transaction-id 는 세션 계층(x_session · twikit)이 이 method 와 경로로 만든다 — POST 서명을 GET 으로 만들면 X 가 거절한다."""
+    headers = dict(client._base_headers)
+    if method == "POST":
+        body = {"variables": variables, "features": features, "queryId": _gql_query_id(url)}
+        if field_toggles is not None:
+            body["fieldToggles"] = field_toggles
+        headers["content-type"] = "application/json"
+        return await client.request("POST", url, json=body, headers=headers, raise_exception=False)
+    p = {"variables": variables, "features": features}
+    if field_toggles:   # 빈 것은 GET 쿼리에 싣지 않는다(예전 GET 과 같은 모양)
+        p["fieldToggles"] = field_toggles
+    return await client.request("GET", url, params=flatten_params(p), headers=headers, raise_exception=False)
+
+
+async def _gql_request(client, url, variables, features, flatten_params, field_toggles=None):
+    """모든 GraphQL 작업이 이것으로 보낸다 — (data, response) 를 돌려준다(client.request 와 같은 꼴)"""
+    op = _gql_op(url)
+    first = _gql_first_method(op)
+    data, response = await _gql_send(client, first, url, variables, features, flatten_params, field_toggles)
+    if _is_empty_404(response):
+        other = "POST" if first == "GET" else "GET"
+        print(json.dumps({"info": "%s: %s 가 빈 404 — %s 로 한 번 더 묻습니다" % (op, first, other)}), flush=True)
+        data2, response2 = await _gql_send(client, other, url, variables, features, flatten_params, field_toggles)
+        if response2.status_code == 200:
+            _gql_remember(op, other)
+            print(json.dumps({"info": "%s: 이제 %s 로 보냅니다(기억함)" % (op, other)}), flush=True)
+        return data2, response2
+    if response.status_code == 200:
+        _gql_remember(op, first)
+    return data, response
+
+
+def _rate_limit_of(response):
+    """x-rate-limit-limit / remaining / reset 머리 → {"limit","remaining","reset"}(있는 것만). 없으면 None"""
+    h = getattr(response, "headers", None) or {}
+    out = {}
+    for k in ("limit", "remaining", "reset"):
+        v = None
+        try:
+            v = h.get("x-rate-limit-" + k)
+            if v is None:
+                v = h.get("X-Rate-Limit-" + k.capitalize())
+        except Exception:
+            v = None
+        if v is None:
+            continue
+        try:
+            out[k] = int(str(v).strip())
+        except ValueError:
+            pass
+    return out or None
+
+
+def _suspended_gate(body):
+    """200 본문의 errors 가 '정지된 계정은 막는다' 문(gate)이면 그 문 이름, 아니면 None.
+    ★ 정지된 계정으로 검색하면 X 는 200 과 함께 빈 search_timeline + errors[{"message": "...ProductDisabled: Closed gate stopped
+      execution of the pipeline (LatestTabSrpDenySuspendedUsers)"}] 를 준다(2026-11-27 실측). 앱은 이것을 '모양 없는 빈 쪽'
+      으로 보고 같은 질의를 되풀이했다. 이것은 해시 · 서명 문제가 아니라 계정 상태다 — 원인을 붙여 돌려준다."""
+    errs = body.get("errors") if isinstance(body, dict) else None
+    for e in errs or []:
+        msg = str(e.get("message") or "") if isinstance(e, dict) else str(e)
+        if "DenySuspendedUsers" in msg or ("ProductDisabled" in msg and "Suspended" in msg):
+            m = (re.search(r"([A-Za-z0-9_]*DenySuspendedUsers[A-Za-z0-9_]*)", msg)
+                 or re.search(r"\(([A-Za-z0-9_]+)\)\s*$", msg))
+            return m.group(1) if m else "ProductDisabled"
+    return None
+
+
+def _lift_replace_cursor(ins):
+    """instructions 하나 — TimelineReplaceEntry 에 든 cursor-bottom 을 TimelineAddEntries 의 entries 뒤에 붙인다(제자리 수정)"""
+    lifted = []
+    for inst in ins:
+        if not isinstance(inst, dict) or inst.get("type") != "TimelineReplaceEntry":
+            continue
+        e = inst.get("entry")
+        if not isinstance(e, dict):
+            continue
+        eid = str(e.get("entryId") or "")
+        rep = str(inst.get("entry_id_to_replace") or "")
+        if eid.startswith("cursor-bottom"):
+            lifted.append(e)
+        elif rep.startswith("cursor-bottom"):
+            lifted.append(dict(e, entryId=rep))   # 앱은 entryId 로 커서를 찾는다
+    if not lifted:
+        return
+    add = next((i for i in ins if isinstance(i, dict) and i.get("type") == "TimelineAddEntries"), None)
+    if add is None:
+        add = {"type": "TimelineAddEntries", "entries": []}
+        ins.append(add)
+    if not isinstance(add.get("entries"), list):
+        add["entries"] = []
+    for e in lifted:
+        if e not in add["entries"]:
+            add["entries"].append(e)
+
+
+def _normalize_timeline(obj, depth=0):
+    """타임라인 모양 본문(검색 · UserTweets · 좋아요 · 북마크 · 하이라이트 · 리스트 · 커뮤니티 · 트윗 상세 …)을 고르게 한다(r56).
+    ★ X 는 검색의 2쪽부터 다음 쪽 커서(cursor-bottom)를 TimelineAddEntries 가 아니라 TimelineReplaceEntry(instruction.entry)에
+      싣는다(twikit 2.3.3 client.py:771-778 이 그렇게 읽는다). 앱은 AddEntries 만 읽어 모든 검색이 두 쪽(약 40개)에서 끝났다 —
+      '기간 지정' 이 그 달의 마지막 며칠만 받던 까닭이다. 여기서 그 커서를 AddEntries 로 옮겨 앱의 어느 읽는 곳이든 보게 한다.
+      나머지는 건드리지 않는다. 트윗 묶음(entries · items) 안으로는 내려가지 않는다(커서는 instructions 바로 아래에만 있다)."""
+    if depth > 12:
+        return
+    if isinstance(obj, dict):
+        ins = obj.get("instructions")
+        if isinstance(ins, list):
+            _lift_replace_cursor(ins)
+        for k, v in obj.items():
+            if k in ("instructions", "entries", "items", "legacy") or not isinstance(v, (dict, list)):
+                continue
+            _normalize_timeline(v, depth + 1)
+    elif isinstance(obj, list):
+        for v in obj:
+            if isinstance(v, (dict, list)):
+                _normalize_timeline(v, depth + 1)
+
+
+def _api_reply(response, data):
+    """API 답 한 줄 — 200 이면 본문을 고르게 하고(_normalize_timeline) 정지 계정 문을 알리고, 레이트 리밋 머리를 붙인다(_rl)"""
+    st = response.status_code
+    out = {"status": st, "body": data if st == 200 else response.text}
+    if st == 200 and isinstance(data, dict):
+        _normalize_timeline(data)
+        gate = _suspended_gate(data)
+        if gate is not None:
+            out["_cause"] = "account_suspended"
+            out["_gate"] = gate
+    rl = _rate_limit_of(response)
+    if rl:
+        out["_rl"] = rl
+    return out
+
+
+def _account_status_reply(response, data):
+    """verify_credentials 의 답에서 상태만 — screen_name · 메일 · 토큰은 절대 내보내지 않는다(로그에 그대로 남는다)"""
+    st = getattr(response, "status_code", 0)
+    d = data if isinstance(data, dict) else {}
+    codes = sorted(_x_error_codes(d))
+    out = {"status": st,
+           "suspended": bool(d.get("suspended")) or 64 in codes,
+           "protected": bool(d.get("protected")),
+           "needs_phone_verification": bool(d.get("needs_phone_verification")),
+           "locked": 326 in codes,
+           "error_code": codes[0] if codes else 0,
+           "user_id": str(d.get("id_str") or d.get("rest_id") or "")}
+    if st != 200 and codes:
+        # 메인 루프의 401/403 처리(잠김 · 정지면 쿠키를 갈지 않는다)가 오류 번호를 읽는 자리 — 번호만 싣는다
+        out["body"] = {"errors": [{"code": c} for c in codes]}
+    rl = _rate_limit_of(response)
+    if rl:
+        out["_rl"] = rl
+    return out
 
 
 async def fetch_current_hashes(http_client, user_agent, auth_token=None, ct0=None):
@@ -922,6 +1205,17 @@ async def main():
 
             if action == "update_endpoints":
                 # Manual trigger to refresh hashes (called by C++ on 404)
+                # ★ 12시간 안에 긁은 캐시가 있으면 긁지 않는다 — 캐시는 기동 때 이미 Endpoint 에 얹혔다. 앱의 404 수리 길은 force 를 싣는다(r56)
+                # ★ 바로 앞이 404 였으면 캐시로 답하지 않고 긁는다(r56 검토 DPC-1) — 고침 꾸러미로 이 데몬을 받은 옛 앱(r51~r55)은
+                #   force 를 싣지 않는다. 옛 앱의 사용자 조회 · 좋아요 · 북마크는 404 면 update_endpoints 한 번 + 다시 묻기 한 번이 전부라,
+                #   캐시로 답하면 해시가 정말 바뀐 뒤 12시간까지 그 셋이 막혔다. 기동 때의 부름(404 없음)만 캐시를 쓴다.
+                _cached_reply = _cached_hash_reply(args, consecutive_404)
+                if _cached_reply is not None:
+                    _age = _hash_cache_age() or 0
+                    print(json.dumps({"info": "GraphQL 해시: %d시간 전에 받은 캐시를 씁니다(12시간마다 · 404 면 다시 받습니다)"
+                                              % int(_age // 3600)}), flush=True)
+                    _reply(_cached_reply, _rid)
+                    continue
                 print(json.dumps({"info": "Manual hash refresh requested..."}), flush=True)
                 updated, err = await auto_repair_hashes(
                     client, Endpoint, auth_token=auth_token, ct0=ct0
@@ -1289,16 +1583,8 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
                 "screen_name": args["screen_name"],
                 "withSafetyModeUserFields": False,
             }
-            params = flatten_params({
-                'variables': variables,
-                'features': USER_FEATURES,
-                'fieldToggles': {"withAuxiliaryUserLabels": False},
-            })
-            data, response = await client.request(
-                'GET', Endpoint.USER_BY_SCREEN_NAME,
-                params=params, headers=client._base_headers,
-                raise_exception=False
-            )
+            data, response = await _gql_request(client, Endpoint.USER_BY_SCREEN_NAME, variables, USER_FEATURES,
+                                                flatten_params, field_toggles={"withAuxiliaryUserLabels": False})
             # Normalize response: inject name/profile_image into legacy for backward compat
             if response.status_code == 200 and isinstance(data, dict):
                 try:
@@ -1342,7 +1628,7 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
                             data["data"]["user"]["result"]["legacy"] = leg
                 except Exception:
                     pass
-            return {"status": response.status_code, "body": data if response.status_code == 200 else response.text}
+            return _api_reply(response, data)
 
         elif action == "user_tweets":
             variables = {
@@ -1356,16 +1642,8 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
             if args.get("cursor"):
                 variables["cursor"] = args["cursor"]
 
-            params = flatten_params({
-                'variables': variables,
-                'features': FEATURES,
-            })
-            data, response = await client.request(
-                'GET', Endpoint.USER_TWEETS,
-                params=params, headers=client._base_headers,
-                raise_exception=False
-            )
-            return {"status": response.status_code, "body": data if response.status_code == 200 else response.text}
+            data, response = await _gql_request(client, Endpoint.USER_TWEETS, variables, FEATURES, flatten_params)
+            return _api_reply(response, data)
 
         elif action == "search":
             variables = {
@@ -1373,24 +1651,19 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
                 "count": args.get("count", 40),
                 "querySource": "typed_query",
                 "product": "Latest",
+                # X 웹 앱이 2026-11 에 싣는 값 그대로(실측) — 빠지면 언젠가 400 이 된다
+                "withGrokTranslatedBio": False,
+                "withQuickPromoteEligibilityTweetFields": False,
             }
             if args.get("cursor"):
                 variables["cursor"] = args["cursor"]
 
-            params = flatten_params({
-                'variables': variables,
-                'features': FEATURES,
-            })
-            data, response = await client.request(
-                'GET', Endpoint.SEARCH_TIMELINE,
-                params=params, headers=client._base_headers,
-                raise_exception=False
-            )
+            data, response = await _gql_request(client, Endpoint.SEARCH_TIMELINE, variables, FEATURES, flatten_params)
 
             # 404 의 실제 원인은 대개 x-client-transaction-id 없음/무효(RSSHub #23408, 2026-09-27)
             if response.status_code == 404 and not getattr(client.client_transaction, "ready", True):
-                return {"status": 404, "body": response.text, "_cause": "no_tid",
-                        "_tid_reason": str(getattr(client.client_transaction, "reason", ""))}
+                return dict(_api_reply(response, data), _cause="no_tid",
+                            _tid_reason=str(getattr(client.client_transaction, "reason", "")))
             # 1.1/search/tweets.json · 2/search/adaptive.json 은 웹이 쓰지 않는 끝점 — 기본 꺼 둠
             if response.status_code == 404 and os.environ.get("HANISHIKI_LEGACY_SEARCH") == "1":
                 try:
@@ -1437,7 +1710,7 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
                 except Exception as e:
                     print(json.dumps({"info": f"adaptive search fallback failed: {e}"}), flush=True)
 
-            return {"status": response.status_code, "body": data if response.status_code == 200 else response.text}
+            return _api_reply(response, data)
 
         elif action == "likes":
             variables = {
@@ -1451,16 +1724,8 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
             if args.get("cursor"):
                 variables["cursor"] = args["cursor"]
 
-            params = flatten_params({
-                'variables': variables,
-                'features': FEATURES,
-            })
-            data, response = await client.request(
-                'GET', Endpoint.USER_LIKES,
-                params=params, headers=client._base_headers,
-                raise_exception=False
-            )
-            return {"status": response.status_code, "body": data if response.status_code == 200 else response.text}
+            data, response = await _gql_request(client, Endpoint.USER_LIKES, variables, FEATURES, flatten_params)
+            return _api_reply(response, data)
 
         elif action == "bookmarks":
             variables = {
@@ -1473,16 +1738,8 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
             bk_features = dict(FEATURES)
             bk_features["graphql_timeline_v2_bookmark_timeline"] = True
 
-            params = flatten_params({
-                'variables': variables,
-                'features': bk_features,
-            })
-            data, response = await client.request(
-                'GET', Endpoint.BOOKMARKS,
-                params=params, headers=client._base_headers,
-                raise_exception=False
-            )
-            return {"status": response.status_code, "body": data if response.status_code == 200 else response.text}
+            data, response = await _gql_request(client, Endpoint.BOOKMARKS, variables, bk_features, flatten_params)
+            return _api_reply(response, data)
 
         elif action == "tweet_detail":
             variables = {
@@ -1500,17 +1757,12 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
                 variables["cursor"] = args["cursor"]
                 variables["referrer"] = "tweet"
 
-            params = flatten_params({
-                'variables': variables,
-                'features': FEATURES,
-                'fieldToggles': {"withArticleRichContentState": True, "withArticlePlainText": False, "withGrokAnalyze": False, "withDisallowedReplyControls": False},
-            })
-            data, response = await client.request(
-                'GET', Endpoint.TWEET_DETAIL,
-                params=params, headers=client._base_headers,
-                raise_exception=False
-            )
-            return {"status": response.status_code, "body": data if response.status_code == 200 else response.text}
+            # ★ withArticlePlainText 를 켠다(r56) — X 의 글(Article) 본문을 평문으로도 받아 앱이 엑셀에 담는다(본문 읽기는 C++ 쪽)
+            data, response = await _gql_request(
+                client, Endpoint.TWEET_DETAIL, variables, FEATURES, flatten_params,
+                field_toggles={"withArticleRichContentState": True, "withArticlePlainText": True,
+                               "withGrokAnalyze": False, "withDisallowedReplyControls": False})
+            return _api_reply(response, data)
 
         elif action in ("followers", "following"):
             variables = {
@@ -1522,21 +1774,13 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
                 variables["cursor"] = args["cursor"]
 
             endpoint = Endpoint.FOLLOWERS if action == "followers" else Endpoint.FOLLOWING
-            params = flatten_params({
-                'variables': variables,
-                'features': FEATURES,
-            })
-            data, response = await client.request(
-                'GET', endpoint,
-                params=params, headers=client._base_headers,
-                raise_exception=False
-            )
+            data, response = await _gql_request(client, endpoint, variables, FEATURES, flatten_params)
 
             # 서명기가 준비되지 않은 404 는 해시 문제가 아니다 — 해시를 다시 받지 않고 원인을 붙여 돌려준다
             #   (메인 루프가 _cause == "no_tid" 를 보고 TID 만 다시 세운다)
             if response.status_code == 404 and not getattr(client.client_transaction, "ready", True):
-                return {"status": 404, "body": response.text, "_cause": "no_tid",
-                        "_tid_reason": str(getattr(client.client_transaction, "reason", ""))}
+                return dict(_api_reply(response, data), _cause="no_tid",
+                            _tid_reason=str(getattr(client.client_transaction, "reason", "")))
             # 404 = endpoint hash 만료 → 즉시 fresh hash fetch + retry (메인 루프 throttle 우회)
             if response.status_code == 404:
                 try:
@@ -1566,15 +1810,11 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
                     else:
                         endpoint = Endpoint.FOLLOWERS if action == "followers" else Endpoint.FOLLOWING
                         print(json.dumps({"info": f"hash 갱신됨: {updated} → retry"}), flush=True)
-                        data, response = await client.request(
-                            'GET', endpoint,
-                            params=params, headers=client._base_headers,
-                            raise_exception=False
-                        )
+                        data, response = await _gql_request(client, endpoint, variables, FEATURES, flatten_params)
                 except Exception as e:
                     print(json.dumps({"info": f"{action} hash repair 예외: {e}"}), flush=True)
 
-            return {"status": response.status_code, "body": data if response.status_code == 200 else response.text}
+            return _api_reply(response, data)
 
         elif action == "highlights":
             variables = {
@@ -1585,16 +1825,8 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
             }
             if args.get("cursor"):
                 variables["cursor"] = args["cursor"]
-            params = flatten_params({
-                'variables': variables,
-                'features': FEATURES,
-            })
-            data, response = await client.request(
-                'GET', Endpoint.USER_HIGHLIGHTS_TWEETS,
-                params=params, headers=client._base_headers,
-                raise_exception=False
-            )
-            return {"status": response.status_code, "body": data if response.status_code == 200 else response.text}
+            data, response = await _gql_request(client, Endpoint.USER_HIGHLIGHTS_TWEETS, variables, FEATURES, flatten_params)
+            return _api_reply(response, data)
 
         elif action in ("favoriters", "retweeters"):
             variables = {
@@ -1605,16 +1837,8 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
             if args.get("cursor"):
                 variables["cursor"] = args["cursor"]
             endpoint = Endpoint.FAVORITERS if action == "favoriters" else Endpoint.RETWEETERS
-            params = flatten_params({
-                'variables': variables,
-                'features': FEATURES,
-            })
-            data, response = await client.request(
-                'GET', endpoint,
-                params=params, headers=client._base_headers,
-                raise_exception=False
-            )
-            return {"status": response.status_code, "body": data if response.status_code == 200 else response.text}
+            data, response = await _gql_request(client, endpoint, variables, FEATURES, flatten_params)
+            return _api_reply(response, data)
 
         elif action == "list_tweets":
             variables = {
@@ -1623,16 +1847,8 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
             }
             if args.get("cursor"):
                 variables["cursor"] = args["cursor"]
-            params = flatten_params({
-                'variables': variables,
-                'features': FEATURES,
-            })
-            data, response = await client.request(
-                'GET', Endpoint.LIST_LATEST_TWEETS_TIMELINE,
-                params=params, headers=client._base_headers,
-                raise_exception=False
-            )
-            return {"status": response.status_code, "body": data if response.status_code == 200 else response.text}
+            data, response = await _gql_request(client, Endpoint.LIST_LATEST_TWEETS_TIMELINE, variables, FEATURES, flatten_params)
+            return _api_reply(response, data)
 
         elif action == "community_tweets":
             variables = {
@@ -1643,16 +1859,28 @@ async def handle_command(client, args, Endpoint, FEATURES, USER_FEATURES, flatte
             }
             if args.get("cursor"):
                 variables["cursor"] = args["cursor"]
-            params = flatten_params({
-                'variables': variables,
-                'features': FEATURES,
-            })
-            data, response = await client.request(
-                'GET', Endpoint.COMMUNITY_TWEETS_TIMELINE,
-                params=params, headers=client._base_headers,
-                raise_exception=False
-            )
-            return {"status": response.status_code, "body": data if response.status_code == 200 else response.text}
+            data, response = await _gql_request(client, Endpoint.COMMUNITY_TWEETS_TIMELINE, variables, FEATURES, flatten_params)
+            return _api_reply(response, data)
+
+        elif action == "account_status":
+            # ★ 이 계정이 X 에서 어떤 상태인가(r56) — 정지된 계정은 검색만 막히고(200 + 'DenySuspendedUsers') 타임라인 · 사용자 조회는
+            #   그대로 된다(2026-11-27 실측). 앱이 판마다 계정당 한 번 묻고, 정지된 계정으로는 검색하지 않는다.
+            #   돌려주는 것은 상태 칸뿐이다 — screen_name · 메일 · 토큰은 싣지 않는다.
+            try:
+                data, response = await client.request(
+                    'GET', "https://x.com/i/api/1.1/account/verify_credentials.json",
+                    params={"skip_status": "true", "include_email": "false"}, headers=client._base_headers,
+                    raise_exception=False
+                )
+            except Exception as e:
+                if type(e).__name__ == "AccountSuspended":   # twikit 으로 물러섰을 때 — 오류 64/37 을 예외로 던진다
+                    return {"status": 200, "suspended": True, "protected": False, "needs_phone_verification": False,
+                            "locked": False, "error_code": 64, "user_id": ""}
+                if type(e).__name__ == "AccountLocked":
+                    return {"status": 200, "suspended": False, "protected": False, "needs_phone_verification": False,
+                            "locked": True, "error_code": 326, "user_id": ""}
+                raise
+            return _account_status_reply(response, data)
 
         else:
             return {"error": f"Unknown action: {action}"}

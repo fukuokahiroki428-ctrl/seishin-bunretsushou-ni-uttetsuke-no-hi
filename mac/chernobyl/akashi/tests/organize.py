@@ -13,8 +13,9 @@
 살피는 것:
   1 r42 규칙을 틀로 옮김 — 가장 많이 쓴 정리할 곳이 공통, 별명이 든 표시 이름은 '자동', 대상 목록에 없는 규칙은 '따로 추가한 규칙'
   2 '모두 정리' — 계정 폴더 이름(프로필 폴더의 표시 이름 · 전각 ／), 연호 경계(平成31年4月 · 令和元年5月), 날짜 없는 파일은
-    파일 시각의 달, 같은 내용(media/ 와 _complete/)은 한 번, 이름만 같은 다른 내용은 '(2)', 정리 대상 아닌 것(.txt · .part)은 빼기,
-    아직 받지 않은 대상은 문제가 아니라 '받은 것 없음'
+    파일 시각의 달, _complete/ 사본은 한 번(같은 이름의 원본이 있으면 넘김), 이름만 같은 다른 내용은 '(2)', 정리 대상 아닌 것
+    (.txt · .part)은 빼기, 아직 받지 않은 대상은 문제가 아니라 '받은 것 없음'(까닭은 풍선에),
+    r56: 블루스카이 대상 '<짧은>.bsky.social'(수집기는 뗀 이름의 폴더) · 디스코드 '서버/채널'(서버 이름/채널 이름_ID 폴더)도 찾음
   3 원본이 바이트 · 시각까지 그대로 · 다시 정리하면 새로 두는 것 0
   4 수집이 끝나면 방금 받은 계정만 자동 정리
   5 계정 이름이 바뀌면 폴더 이름만 바뀐다
@@ -38,21 +39,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import paths  # noqa: E402
 
 ACC = '공작함 아카시・@akashi_demo-(X ／ twitter.com)'
+BSKY_ACC = 'bsky_demo.bsky.social・@bsky_demo.bsky.social-(Bluesky ／ bsky.app)'
+DISCORD_ACC = 'Demo Server #general・@111／222-(Discord ／ discord.com)'
+BSKY_BYTES = b'S' * 33
+DISCORD_BYTES = b'K' * 44
 
 
 def make_downloads(root: Path) -> Path:
     """앱의 트위터 저장 모양을 흉내 낸 가짜 받은 폴더."""
     u = root / 'twitter' / 'akashi_demo'
-    for d in ('media/_complete', 'media/sub', 'profiles/target/공작함 아카시(@akashi_demo)', 'profiles/followers/Stranger(@someone)', 'captures'):
+    for d in ('media/_complete', 'media/sub', 'media/likes', 'profiles/target/공작함 아카시(@akashi_demo)', 'profiles/followers/Stranger(@someone)', 'captures'):
         (u / d).mkdir(parents=True, exist_ok=True)
     files = {
         'media/20251103_142000_111.jpg': b'A' * 100,
-        'media/_complete/20251103_142000_111.jpg': b'A' * 100,          # 같은 내용 — 한 번만
+        'media/_complete/20251103_142000_111.jpg': b'A' * 100,          # 같은 이름의 사본 — 한 번만(중복으로 셈)
         'media/20190430_235900_222.png': b'B' * 50,                     # 平成31年4月
         'media/20190501_000100_333.mp4': b'C' * 70,                     # 令和元年5月
         'media/nodate.jpg': b'D' * 30,                                  # 파일 시각 → 令和6年7月
         'media/sub/20251110_000000_dup.jpg': b'E' * 10,
-        'media/_complete/20251110_000000_dup.jpg': b'F' * 10,           # 이름만 같다 — (2)
+        'media/likes/20251110_000000_dup.jpg': b'F' * 10,               # 다른 종류 폴더에 이름만 같다 — (2)
         'media/note.txt': b'not media',
         'media/20251101_000000_x.mp4.part': b'partial',
         'captures/20251103_142000_111.html': b'<html></html>',           # 캡처는 기본으로 빼기
@@ -64,6 +69,15 @@ def make_downloads(root: Path) -> Path:
     other = root / 'elsewhere' / 'akashi_m'          # 다른 앱으로 받은 폴더 — 따로 추가한 규칙
     other.mkdir(parents=True)
     (other / '20251105_000000_m.jpg').write_bytes(b'M' * 12)
+    # r56 — 블루스카이(bluesky_daemon: bluesky/<'.bsky.social' 을 뗀 핸들>/media/<작가>/<종류>/)와
+    #       디스코드(discord/<서버 이름>/<채널 이름>_<채널 ID>/ + index.json)의 저장 모양
+    b = root / 'bluesky' / 'bsky_demo' / 'media' / 'bsky_demo' / 'posts'
+    b.mkdir(parents=True)
+    (b / '20251103_1200_hello (abc).jpg').write_bytes(BSKY_BYTES)
+    dch = root / 'discord' / 'Demo Server' / 'general_222'
+    (dch / 'messages').mkdir(parents=True)
+    (dch / 'messages' / '20251103_120000_d.jpg').write_bytes(DISCORD_BYTES)
+    (dch / 'index.json').write_text(json.dumps({'channel_id': '222', 'channel_name': 'general', 'guild_id': '111'}), encoding='utf-8')
     return u
 
 
@@ -114,7 +128,11 @@ def main() -> int:
             check('정리하기 탭이 열린다', shown is True, shown)
             # 트위터 탭의 저장 경로 = 가짜 받은 곳의 뿌리. 대상 목록: 받은 계정 하나 + 아직 안 받은 계정 하나
             p.eval("document.getElementById('twitter-path').value = %s" % json.dumps(str(dl)))
+            p.eval("document.getElementById('bsky-path').value = %s; document.getElementById('discord-path').value = %s"
+                   % (json.dumps(str(dl)), json.dumps(str(dl))))
             p.eval("platformTargets.twitter = [{target:'akashi_demo', nickname:'별명', enabled:true}, {target:'never_dl', enabled:true}];"
+                   "platformTargets.bluesky = [{target:'bsky_demo.bsky.social', enabled:true}];"
+                   "platformTargets.discord = [{target:'111/222', enabled:true}];"
                    "window.confirm = function(){ return true };")
             # r42 의 설정 — 대상마다 규칙(불러오기가 별명을 표시 이름에 넣었다) + 대상 목록에 없는 규칙 하나. 틀로 옮긴다
             p.eval("organizeRestoreAll({organizeRules: [{platform:'twitter', target:'@akashi_demo', name:'별명', source:'', dest:%s},"
@@ -123,13 +141,14 @@ def main() -> int:
             time.sleep(1.0)
             cfg = cfg_now()
             org = cfg.get('organize') or {}
-            check('r42 규칙을 틀로 — 공통 정리할 곳 · 옮김 표시 · 옮기기 전 규칙 보관',
-                  org.get('root') == str(dest) and org.get('migrated') is True and len(org.get('before') or []) == 2, org)
+            check('r42 규칙을 틀로 — 공통 정리할 곳 · 옮김 표시 · 옮기기 전 규칙 보관(손대기 전 그대로 — 별명 이름도)',
+                  org.get('root') == str(dest) and org.get('migrated') is True and len(org.get('before') or []) == 2
+                  and (org.get('before') or [{}])[0].get('name') == '별명', org)
             check("별명이 든 표시 이름은 '자동'(따로 정함 없음) · 대상 목록에 없는 규칙만 남음",
                   not (org.get('overrides') or {}) and [r.get('target') for r in cfg.get('organizeRules') or []] == ['akashi_m'],
                   (org.get('overrides'), cfg.get('organizeRules')))
             rows = p.eval("Array.from(document.querySelectorAll('#org-accounts .org-acc')).map(e => e.dataset.key)")
-            check('계정 표 = 대상 목록 전부', rows == ['twitter:akashi_demo', 'twitter:never_dl'], rows)
+            check('계정 표 = 대상 목록 전부', rows == ['twitter:akashi_demo', 'twitter:never_dl', 'bluesky:bsky_demo.bsky.social', 'discord:111/222'], rows)
             prev = p.eval("document.getElementById('org-tpl-preview').textContent") or ''
             check('미리보기 — 이름 칸이 비면 자리만(‹자동 이름›), 나머지는 실제 모양',
                   '‹자동 이름›・@akashi_demo-(X ／ twitter.com)/' in prev and '年' in prev, prev)
@@ -150,21 +169,29 @@ def main() -> int:
                 ACC + '/令和7年11月/20251110_000000_dup.jpg',
                 ACC + '/令和7年11月/20251110_000000_dup (2).jpg',
                 MIS + '/令和7年11月/20251105_000000_m.jpg',
+                BSKY_ACC + '/令和7年11月/20251103_1200_hello (abc).jpg',
+                DISCORD_ACC + '/令和7年11月/20251103_120000_d.jpg',
             ])
-            check('정리 결과가 기준대로(이름 · 연호 · 중복 · 같은 이름 다른 내용 · 빼기 · 따로 추가한 규칙)', got == want,
+            check('정리 결과가 기준대로(이름 · 연호 · 중복 · 같은 이름 다른 내용 · 빼기 · 따로 추가한 규칙 · 블루스카이 · 디스코드)', got == want,
                   '\n      더 있음: %s\n      없음: %s' % (sorted(set(got) - set(want)), sorted(set(want) - set(got))))
             media = {h for rel, (h, _) in before.items() if '/media/' in '/' + rel and rel.split('.')[-1] in ('jpg', 'png', 'mp4')}
-            media |= {hashlib.sha256(b'M' * 12).hexdigest()}
+            media |= {hashlib.sha256(x).hexdigest() for x in (b'M' * 12, DISCORD_BYTES)}
             organized = {hashlib.sha256((dest / g).read_bytes()).hexdigest() for g in got}
             check('정리된 파일 내용 = 원본 미디어(서로 다른 내용마다 하나씩)', organized == media,
                   '%d vs %d' % (len(organized), len(media)))
             check('원본이 바이트 · 시각까지 그대로', snapshot(dl) == before)
             kv = p.eval("['copied','dup','missing','errors'].map(function(k){return document.getElementById('organize-kv-'+k).textContent})")
-            check('요약 — 새로 7 · 중복 1 · 받은 것 없음 1(아직 안 받은 대상) · 문제 0', kv == ['7', '1', '1', '0'], kv)
+            check('요약 — 새로 9 · 중복 1 · 받은 것 없음 1(아직 안 받은 대상) · 문제 0', kv == ['9', '1', '1', '0'], kv)
             nm = p.eval("(document.querySelector('.org-acc[data-key=\"twitter:akashi_demo\"] .org-acc-name')||{}).textContent||''")
             seen = ((cfg_now().get('organize') or {}).get('seen') or {})
             check('정리한 뒤 표에 찾은 이름 · 설정에 마지막 결과', nm == '공작함 아카시' and (seen.get('twitter:akashi_demo') or {}).get('copied') == 6
                   and (seen.get('twitter:never_dl') or {}).get('missing') == 1, (nm, seen))
+            check("블루스카이 '.bsky.social' 대상 · 디스코드 채널 대상도 정리됨(r56 전엔 '받은 것 없음')",
+                  (seen.get('bluesky:bsky_demo.bsky.social') or {}).get('copied') == 1 and (seen.get('discord:111/222') or {}).get('copied') == 1,
+                  {k: v for k, v in seen.items() if not k.startswith('twitter:')})
+            tip = p.eval("(document.querySelector('.org-acc[data-key=\"twitter:never_dl\"] .org-acc-st')||{}).title||''") or ''
+            check("'받은 것 없음' 의 까닭이 설정(seen.why)과 풍선에 남는다", '살폈지만' in ((seen.get('twitter:never_dl') or {}).get('why') or '')
+                  and '살폈지만' in tip, (tip, seen.get('twitter:never_dl')))
 
             # 2) 다시 정리 — 새로 0
             time.sleep(0.5)
@@ -184,7 +211,7 @@ def main() -> int:
             meta, _ = wait_done(p, 90)
             ran = p.eval("_orgRunIds.slice()")
             check("수집이 끝나면 방금 받은 계정만 자동 정리 — 새 파일만", ran == ['t:twitter:akashi_demo']
-                  and (dest / ACC / '令和7年12月' / '20251225_090000_444.jpg').exists() and len(tree(dest)) == 8, (ran, tree(dest)[-2:]))
+                  and (dest / ACC / '令和7年12月' / '20251225_090000_444.jpg').exists() and len(tree(dest)) == 10, (ran, tree(dest)[-2:]))
 
             # 4) 앱이 받은 파일의 EXIF 를 다시 쓴 흉내(같은 크기 · 시각 되돌림) — 같은 사진을 '(2)' 로 또 두지 않는다
             f = src / 'media' / '20251103_142000_111.jpg'
@@ -194,7 +221,7 @@ def main() -> int:
             time.sleep(0.3)
             p.eval('organizeRunAll()')
             meta, _ = wait_done(p)
-            check('원본을 다시 써도 같은 사진을 또 두지 않는다', meta == '끝' and len(tree(dest)) == 8, tree(dest))
+            check('원본을 다시 써도 같은 사진을 또 두지 않는다', meta == '끝' and len(tree(dest)) == 10, tree(dest))
 
             # 5) 계정이 이름을 바꿨다 — 다음 수집이 profiles/target/<새 이름>(@핸들)/ 을 남긴다. 계정 폴더는 이름만 바뀌고 다시 복사하지 않는다
             oldp = src / 'profiles' / 'target' / '공작함 아카시(@akashi_demo)'
@@ -207,7 +234,7 @@ def main() -> int:
             meta, _ = wait_done(p)
             NEW = '새 이름・@akashi_demo-(X ／ twitter.com)'
             names = sorted(x.name for x in dest.iterdir() if not x.name.startswith('.'))
-            check('이름이 바뀌면 계정 폴더 이름만 바뀐다(다시 복사 없음)', names == sorted([NEW, MIS]) and len(tree(dest)) == 9
+            check('이름이 바뀌면 계정 폴더 이름만 바뀐다(다시 복사 없음)', names == sorted([NEW, MIS, BSKY_ACC, DISCORD_ACC]) and len(tree(dest)) == 11
                   and (dest / NEW / '令和8年10月' / 'profile_20261015.jpg').exists(), '%s · %d개' % (names, len(tree(dest))))
 
             # 6) 틀 — 맞지 않는 틀은 미리보기가 알리고 돌지 않는다 · 다른 틀은 그 모양으로

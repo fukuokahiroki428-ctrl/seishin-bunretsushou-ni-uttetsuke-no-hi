@@ -42,7 +42,7 @@ public:
     HttpResponse postJson(const QString &url, const QJsonObject &json,
                           const QMap<QString, QString> &headers = {});
 
-    // Download file (streams to disk, uses separate download timeout)
+    // Download file (streams to disk; m_downloadTimeout = idle timeout, plus a size-scaled overall cap)
     bool downloadFile(const QString &url, const QString &filePath,
                       const QMap<QString, QString> &headers = {});
 
@@ -80,7 +80,8 @@ void setRunFlag(const std::atomic<bool> *flag) { m_runFlag = flag; }
 private:
     QNetworkAccessManager *m_nam;
     int m_timeout = 30000;
-    int m_downloadTimeout = 120000; // 2 minutes for file downloads
+    // ★ 받기에서 '자료 없이 멎어도 되는 시간'(r56 — 전체 시간이 아니다; 전체 상한은 HttpClient.cpp 의 downloadCapMs)
+    int m_downloadTimeout = 60000;
     int m_rateLimitMs = 0;
     qint64 m_lastRequestTime = 0;
     const std::atomic<bool> *m_runFlag = nullptr;  // nullptr 이면 폴링 비활성

@@ -8,6 +8,8 @@
 #include <QJsonArray>
 #include <QMap>
 #include <QSet>
+#include <QHash>
+#include <QStringList>
 #include <QPair>
 #include <QProcess>
 #include <QMutex>
@@ -78,6 +80,8 @@ private:
     QPair<QJsonArray, QString> searchTweets(const QString &query, const QString &cursor = QString());
     QPair<QJsonArray, QString> getUserTweets(const QString &userId, const QString &cursor = QString());
     QPair<QJsonArray, QString> getTweetDetail(const QString &tweetId, const QString &cursor = QString());
+    // 글 하나만(TweetDetail 의 그 글 자신) — status: OK · RATE_LIMITED · ERROR · GONE(답은 왔는데 그 글이 없다 — 지워짐 · 막힘). r56 미디어 다시 받기
+    QJsonObject fetchTweetById(const QString &tweetId, QString *status);
     // 전체 수집(all) 후속 자동탐지 — 저장된 _complete.xlsx 를 스캔
     void collectSpacesFromTimeline(const QJsonObject &config, const QString &target, const QString &userDir, const std::atomic<bool> &isRunning);
     void collectThreadsAuto(const QJsonObject &config, const QString &target, const QString &userDir, const std::atomic<bool> &isRunning);
@@ -102,7 +106,7 @@ private:
     DiskJsonBuffer *m_profileBuffer = nullptr;  // disk-based profile data (no RAM bloat)
 
     // EXIF metadata
-    void addExifMetadata(const QString &imagePath, const QJsonObject &tweet);
+    int addExifMetadata(const QString &imagePath, const QJsonObject &tweet);   // Common::addExifMetadata 의 값(1 = 적었다)
     void setFinderComment(const QString &filePath, const QString &comment);
 
     // Excel export — streaming from DiskJsonBuffer (no readAll)
@@ -111,14 +115,34 @@ private:
 
     // Rate limit handling
     void handleRateLimit(const QJsonArray &accounts, int &currentIdx, const std::atomic<bool> &isRunning);
+    // 계정을 idx 로 바꾼다(출구 · 토큰 · 데몬) — 레이트 리밋 · 정지 계정 · 남은 요청 0 이 함께 쓴다(r56)
+    void switchToAccount(const QJsonArray &accounts, int idx);
+    // 이 계정의 X 상태(account_status)를 판마다 한 번 묻는다 — 정지면 이 판의 검색에서 뺀다(r56)
+    void checkAccountStatus(int idx);
+    // 지금 계정의 남은 요청이 0 이고 풀리기 전이면, 쉬는 다른 계정으로 미리 바꾼다(429 를 받기 전에 — r56)
+    void rotateBeforeLimit(const QString &action, bool forSearch);
 
     // 통합 캡쳐 헬퍼 — 모든 type 분기에서 호출
     //   tweet: GraphQL/timeline에서 받은 단일 트윗 객체 (legacy + core 포함)
     //   capturesDir: <userDir>/captures (호출자가 mkpath)
     //   config: realCapture 플래그 + 쿠키 컨텍스트
     //   force: 명시적으로 캡쳐할지 (likes/bookmarks 같이 별도 폴더 쓸 때 capturesDir만 다르게)
-    QJsonObject standardTweetRow(const QJsonObject &tweet, const QString &fallbackAuthor, bool *isSpaceCard = nullptr);   // 엑셀 한 줄(30칸)
+    QJsonObject standardTweetRow(const QJsonObject &tweet, const QString &fallbackAuthor, bool *isSpaceCard = nullptr);   // 엑셀 한 줄(38칸 — tweetColumns)
     int captureTweet(const QJsonObject &tweet, const QString &capturesDir, const QJsonObject &config);   // 1 = 이번에 진짜 캡처 · 0 = 할 것 없음(끔 · 이미 받음) · -1 = 못 받음(카드로 대신)
+    // ★ r56 — 카드에 붙일 미디어 색인(트윗 ID → 파일). 예전엔 카드마다 media/ 를 통째로(_complete 까지) 훑었다 —
+    //   판마다 한 번 훑고, 그 뒤엔 그 글의 작성자 폴더 중 바뀐 것만 다시 본다(그 판에 새로 받은 미디어).
+    struct CardMediaIndex {
+        QHash<QString, QStringList> byId;   // 트윗 ID → 절대 경로들
+        QHash<QString, qint64> dirStamp;    // 본 폴더 → 그때의 수정 시각(ms)
+        QHash<QString, qint64> scanAt;      // 본 폴더 → 훑은 시각(ms) — 시각이 거친 디스크에서 같은 초에 들어온 것을 다시 본다
+        QStringList kindDirs;               // media/ 바로 밑 갈래 폴더(_complete 제외)
+        QSet<QString> forced;               // 있어야 할 수보다 적어 시각과 상관없이 다시 본 글(판마다 한 번)
+        bool built = false;
+    };
+    QHash<QString, CardMediaIndex> m_cardMediaIndex;   // media 뿌리 → 색인 (최상위 판마다 비운다)
+    // expected: 이 글에 있어야 할 미디어 수(모르면 -1). 찾은 것이 적으면 그 글의 폴더를 한 번 더 본다(r56 검토)
+    QStringList cardMediaFor(const QString &mediaRoot, const QStringList &tweetIds, const QStringList &authors,
+                             int expected = -1);
 
     HanishikiBackend *m_backend;
     // ★ 이 스레드에서 쓸 HttpClient 를 새로 만든다 — TwitterCollector.cpp 의 정의 설명 참고.
@@ -183,6 +207,9 @@ private:
     int m_mediaFailures = 0;             // 받지 못한 미디어 수 — 좋아요 · 북마크 · 리포스트 걸음의 '끊김 없이 다 봄' 판정
     QSet<QString> m_allKnownSnapshot;    // '전체' 판을 시작하기 전의 _complete 엑셀 ID — 하위 판(트윗 → 답글)이 서로의 것을 '이미 받은' 으로 세지 않게
     bool m_allKnownSnapshotSet = false;
+    QStringList m_runReplyIds;           // 이번 판(전체면 하위 판 모두)에 새로 받은 답글 ID — Phase 4(대화 미디어)가 읽는다(r56: 저장이 비운 버퍼를 읽던 것)
+    bool m_lastThreadClean = false;      // 마지막 스레드 판(type=thread)이 끊김 없이 다 봤나 — 스레드 자동탐지가 '다 엮음' 으로 적을지 가른다(r56, 검토 B-1)
+    bool m_subUserMissing = false;       // '전체' 의 하위 판이 사용자를 찾지 못했다 — '전체' 를 멈춘다(r56: 하위 판 사이의 다시 찾기를 뺐다)
     QSet<QString> m_allArmedLists;       // '전체' 판을 시작할 때 있던 tw_tweets_* 표시(search · timeline · replies) — 하위 판이 나눠 쓴다
     QString m_currentTarget;
     QString m_currentUserDir;
@@ -192,4 +219,18 @@ private:
 
     // 계정별 Rate Limit 추적 (인덱스 → 마지막 RL 시각)
     QMap<int, qint64> m_accountRateLimitTime;
+
+    // ── r56 계정 상태 · 레이트 리밋 머리 ──
+    QJsonArray m_accounts;               // 이번 판의 계정들(collect 가 넣는다 — 새 트윗 확인 · 팔로잉 가져오기에서는 비운다: 계정을 돌리지 않는다)
+    int m_activeAccountIdx = 0;          // 지금 데몬이 쓰는 계정(돌릴 때마다 바뀐다 — 각 단계의 currentAccountIdx 는 이것에 맞춘다)
+    QSet<int> m_accountChecked;          // 이번 판에 account_status 를 물은 계정
+    QSet<int> m_searchBlocked;           // 이번 판에 검색이 막힌 계정(X 가 정지 상태로 보아 검색 문을 닫았다)
+    bool m_searchAllBlockedLogged = false;   // '모든 계정이 검색을 막혔다' 를 이번 판에 이미 알렸다
+    int m_rlRemaining = -1;              // 마지막 답의 x-rate-limit-remaining(-1 = 모름)
+    qint64 m_rlReset = 0;                // 마지막 답의 x-rate-limit-reset(유닉스 초, 0 = 모름)
+    QString m_rlAction;                  // 그 답의 동작(search · user_tweets …) — 머리는 끝점마다 따로다
+    QString m_lastApiAction;             // 마지막으로 보낸 명령의 동작 — 429 의 풀림 시각 · 검색이 막힌 계정 건너뛰기를 그 동작에 맞춘다
+    QMap<int, qint64> m_accountFreeAt;   // 계정이 다시 쓸 수 있게 되는 때(유닉스 초) — 알면 풀림 시각 + 5초, 모르면 429 뒤 15분
+    QSet<QString> m_pinnedIds;           // 대상 계정이 고정한 트윗 ID(사용자 조회의 pinned_tweet_ids_str) — 엑셀 종류 앞에 📌
+    bool m_pinnedKnown = false;          // 사용자 조회가 pinned_tweet_ids_str 를 실제로 읽었다 — 그때만 엑셀의 📌 를 지금 고정한 글에 맞춘다(r56 검토 DC-2)
 };

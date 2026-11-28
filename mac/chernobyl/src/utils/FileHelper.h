@@ -167,9 +167,15 @@ QString capturePageHtmlFromContent(const QString &saveDir,
 //     - authorName, handle, tweetId, tweetUrl, tweetText,
 //       createdAt, tweetType, favoriteCount, retweetCount, replyCount
 //     - mediaRelPaths: QJsonArray of string (saveDir 기준 상대경로)
+//     - mediaExpected: 이 글(+ 리트윗 원문 · 인용글)에 있어야 할 미디어 수 — 붙인 것보다 많으면 빠진 수를 글로 알린다(r56)
 //   returns: 저장된 파일 경로 (실패 시 빈 문자열)
+// noOverwrite: 그 자리에 이미 파일이 있으면 쓰지 않는다(빈 값을 돌려준다) — 진짜 캡쳐가 옮겨지기를 기다리는 자리(r56 검토)
 QString generateTweetArchiveHtml(const QString &saveDir,
                                   const QString &filename,
-                                  const QJsonObject &meta);
+                                  const QJsonObject &meta,
+                                  bool noOverwrite = false);
+// ★ r56 — 위 카드가 끝에 적어 둔 '붙인 미디어 수 / 있어야 할 수'. 지금 꼴의 카드가 아니거나(옛 카드 · 진짜 캡쳐 · 반쪽)
+//   비었으면 false. 캡쳐를 끈 판이 같은 카드를 판마다 다시 쓰지 않게 본다.
+bool readTweetCardMark(const QString &filePath, int *have, int *want);
 
 } // namespace FileHelper

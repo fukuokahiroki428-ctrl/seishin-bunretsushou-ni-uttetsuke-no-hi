@@ -1862,6 +1862,166 @@ qint64 freeSpace(const QString &path)
     return si.bytesAvailable();
 }
 
+bool isOffLocalPath(const QString &path)
+{
+    if (path.isEmpty()) return false;
+    const QString p = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    bool mountCheck = false;
+    // ★ NAS 고르기 · 남은 공간 재기와 같은 나눔(volumeTopOf)을 쓴다 — 캡쳐만 다른 기준을 쓰면 Mountain Duck · CloudStorage 의
+    //   NAS 폴더가 '내장' 으로 보여 네트워크 위에서 .part 쓰기 + 이름 바꾸기를 했다.
+    if (volumeTopOf(p, &mountCheck) != QLatin1String("/")) return true;
+    // 그 밖의 네트워크 마운트(사용자가 건 sshfs · rclone · autofs 아래 NFS …) — 경로를 담는 가장 긴 마운트 자리로 판정한다
+    QString best;
+    bool net = false;
+    for (const MountInfo &m : systemMounts()) {
+        if (m.on.isEmpty()) continue;
+        const bool hit = m.on == QLatin1String("/") || p.compare(m.on, Qt::CaseInsensitive) == 0
+                         || p.startsWith(m.on + QLatin1Char('/'), Qt::CaseInsensitive);
+        if (hit && m.on.size() > best.size()) { best = m.on; net = isNetworkFs(m); }
+    }
+    return net;
+}
+
+bool saveVolumePresent(const QString &path, QString *topOut)
+{
+    if (path.isEmpty()) return false;
+    const QString p = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    bool mountCheck = false;
+    const QString top = volumeTopOf(p, &mountCheck);
+    if (topOut) *topOut = top;
+    if (top == QLatin1String("/")) return true;
+    if (!QFileInfo::exists(top)) return false;
+    // ★ freeSpace 와 같은 함정 — 디스크를 뺀 뒤 /Volumes/<이름> 이 내장 디스크 위의 빈 폴더로 남기도 한다. 거기에 옮기면
+    //   내장 디스크에 들어가 '옮겼다' 로 보인다. 그 디스크가 정말 붙어 있을 때(뿌리가 그 아래)만 붙어 있다고 본다.
+    if (mountCheck && !QFileInfo(top).isSymLink()) {
+        QStorageInfo si(top);
+        if (!si.isValid() || !si.isReady()) return false;
+        const QString root = si.rootPath();
+        return root.compare(top, Qt::CaseInsensitive) == 0 || root.startsWith(top + QLatin1Char('/'), Qt::CaseInsensitive);
+    }
+    return true;
+}
+
+// 한 번 흘려 쓰기 — 1MB 씩 읽어 쓰고, 쓰기 · 닫기 오류와 크기를 본다. 실패하면 쓰던 dst 를 지운다.
+static bool streamCopyOnce(const QString &src, const QString &dst, qint64 want, QString *err)
+{
+    QFile in(src);
+    if (!in.open(QIODevice::ReadOnly)) { *err = QStringLiteral("원본 열기 실패: ") + in.errorString(); return false; }
+    QFile out(dst);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        *err = QStringLiteral("쓰기 열기 실패: ") + out.errorString();
+        return false;
+    }
+    qint64 written = 0;
+    for (;;) {
+        const QByteArray buf = in.read(1024 * 1024);
+        if (buf.isEmpty()) {
+            if (in.error() != QFileDevice::NoError) {
+                *err = QStringLiteral("원본 읽기 실패: ") + in.errorString();
+                out.close(); QFile::remove(dst);
+                return false;
+            }
+            break;
+        }
+        if (out.write(buf) != buf.size()) {
+            *err = QStringLiteral("쓰기 모자람(디스크 공간 · 연결?): ") + out.errorString();
+            out.close(); QFile::remove(dst);
+            return false;
+        }
+        written += buf.size();
+    }
+    in.close();
+    const bool flushed = out.flush();
+    out.close();
+    if (!flushed || out.error() != QFileDevice::NoError) {
+        *err = QStringLiteral("닫기 실패: ") + out.errorString();
+        QFile::remove(dst);
+        return false;
+    }
+    const qint64 got = QFileInfo(dst).size();
+    if (written != want || got != want) {
+        *err = QStringLiteral("크기가 맞지 않음(%1 / %2 바이트)").arg(got).arg(want);
+        QFile::remove(dst);
+        return false;
+    }
+    return true;
+}
+
+#ifndef Q_OS_WIN
+// 바깥 복사 도구(cp · ditto) — 백업 쪽과 같이 '끝났다' 를 믿지 않고 크기를 본다(NAS 는 exit 0 인데 비어 있기도 했다).
+static bool copyWithTool(const QString &prog, const QStringList &args, const QString &dst, qint64 want,
+                         int timeoutMs, QString *err)
+{
+    QProcess p;
+    p.setProcessChannelMode(QProcess::MergedChannels);
+    p.start(prog, args);
+    const bool finished = p.waitForFinished(timeoutMs);
+    if (!finished || p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
+        if (p.state() != QProcess::NotRunning) { p.kill(); p.waitForFinished(2000); }
+        *err = QStringLiteral("%1 %2(exit=%3): %4").arg(QFileInfo(prog).fileName(),
+                    finished ? QStringLiteral("실패") : QStringLiteral("시간 초과")).arg(p.exitCode())
+                    .arg(QString::fromUtf8(p.readAll()).trimmed().left(160));
+        QFile::remove(dst);   // 반쪽을 남기지 않는다 — 머리(SingleFile 주석)만 있는 반쪽이 '다 받은 캡쳐' 로 읽힌다
+        return false;
+    }
+    const qint64 got = QFileInfo::exists(dst) ? QFileInfo(dst).size() : -1;
+    if (got != want) {
+        *err = QStringLiteral("%1 뒤 크기가 맞지 않음(%2 / %3 바이트)").arg(QFileInfo(prog).fileName()).arg(got).arg(want);
+        QFile::remove(dst);
+        return false;
+    }
+    return true;
+}
+#endif
+
+bool robustCopyFile(const QString &src, const QString &dst, QString *err)
+{
+    const QFileInfo sfi(src);
+    if (!sfi.isFile()) { if (err) *err = QStringLiteral("원본이 없음: ") + src; return false; }
+    const qint64 want = sfi.size();
+    const QString dir = QFileInfo(dst).absolutePath();
+    const QString part = dst + QStringLiteral(".part");
+#ifndef Q_OS_WIN
+    // 백업 쪽과 같은 기준 — 1MB/s 를 보장 + 10초(15초 ~ 20분)
+    const int toolTimeout = int(qBound(qint64(15000), qint64(10000) + (want / (1024 * 1024)) * 1000, qint64(1200000)));
+#endif
+    QString e;
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+        e.clear();
+        if (!QDir().mkpath(dir)) {
+            e = QStringLiteral("폴더를 만들 수 없음: %1 (%2)").arg(dir,
+                    QFileInfo::exists(dir) ? QStringLiteral("있지만 쓸 수 없음") : QStringLiteral("위 폴더가 없거나 쓸 수 없음"));
+        } else {
+            // [1] <dst>.part 에 다 쓰고 크기를 맞춘 뒤 제 이름으로 — 끊겨도 제 이름에 반쪽이 남지 않는다
+            QString e1;
+            if (streamCopyOnce(src, part, want, &e1)) {
+                if (QFileInfo::exists(dst)) QFile::remove(dst);
+                if (QFile::rename(part, dst) && QFileInfo(dst).size() == want) return true;
+                e1 = QStringLiteral("이름 바꾸기 실패(.part → 제 이름)");
+                QFile::remove(part);
+            }
+            e = e1;
+            // [2] 이름 바꾸기가 안 되는 곳(일부 WebDAV · SMB) — 제 이름에 바로
+            QString e2;
+            if (streamCopyOnce(src, dst, want, &e2)) return true;
+            e += QStringLiteral(" · 바로 쓰기: ") + e2;
+#ifndef Q_OS_WIN
+            // [3] cp -p → [4] ditto (백업 쪽에서 NAS 에 되던 길)
+            if (copyWithTool(QStringLiteral("/bin/cp"), {QStringLiteral("-p"), src, dst}, dst, want, toolTimeout, &e2)) return true;
+            e += QStringLiteral(" · ") + e2;
+#ifdef Q_OS_MACOS
+            if (copyWithTool(QStringLiteral("/usr/bin/ditto"), {src, dst}, dst, want, toolTimeout, &e2)) return true;
+            e += QStringLiteral(" · ") + e2;
+#endif
+#endif
+        }
+        if (attempt < 3) QThread::msleep(1000);   // NAS 가 깨어나는 시간
+    }
+    QFile::remove(part);
+    if (err) *err = e;
+    return false;
+}
+
 // 판을 시작할 때 읽은(믿을 만한) 표시 — 일찍 멈춘 판이 다시 적을 때 '끝까지 본 때' 를 물려주고, 끊긴 판은 그대로 되돌린다.
 //   끝까지 본 판(표시 없이 시작한 판)은 지금으로 적는다.
 //   ★ 걸음(스레드)마다 따로 든다. 한 대상을 옵션만 달리 두 줄로 두면 두 걸음이 함께 도는데, 기록을 같이 쓰면 뒤에 시작한 걸음이

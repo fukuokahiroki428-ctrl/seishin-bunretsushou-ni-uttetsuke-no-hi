@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QMutex>
 #include <QSemaphore>
 #include <QTemporaryDir>
@@ -240,6 +241,94 @@ static void testCaptureName(const QString &root)
     touch("20260101_233000_d4");
     check("캡처 이름 — 새 이름이 이미 있으면 새 이름", FileHelper::captureNameCompat(dir, px, "d4") == "20260102_083000_d4");
     check("캡처 이름 — 시각을 모르면 id 만", FileHelper::captureNameCompat(dir, QDateTime(), "e5") == "e5");
+}
+
+// ★ r56 — 캡쳐 배달의 튼튼한 복사 · 저장 디스크 판정 · 합성 카드 표시
+static void testRobustCopy(const QString &root)
+{
+    const QString d = root + "/robust";
+    QDir().mkpath(d + "/src");
+    const QString src = d + "/src/cap.html";
+    QByteArray body;
+    body.reserve(3 * 1024 * 1024 + 7);
+    for (int i = 0; body.size() < 3 * 1024 * 1024 + 7; ++i) body.append(QByteArray::number(i)).append('\n');
+    { QFile f(src); f.open(QIODevice::WriteOnly); f.write(body); }
+    const auto readAll = [](const QString &p) { QFile f(p); return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray(); };
+
+    QString err;
+    const QString dst = d + "/out/a/cap.html";   // 아직 없는 폴더 — 만들어 넣는다
+    check("튼튼한 복사 — 없는 폴더를 만들어 같은 바이트로", Common::robustCopyFile(src, dst, &err) && readAll(dst) == body, err);
+    check("튼튼한 복사 — .part 를 남기지 않는다", !QFileInfo::exists(dst + ".part"));
+    { QFile f(dst); f.open(QIODevice::WriteOnly | QIODevice::Truncate); f.write("<html>card</html>"); }
+    err.clear();
+    check("튼튼한 복사 — 있던 카드를 진짜로 바꾼다", Common::robustCopyFile(src, dst, &err) && readAll(dst) == body, err);
+
+    const QString ro = d + "/ro";
+    QDir().mkpath(ro);
+    QFile::setPermissions(ro, QFileDevice::ReadOwner | QFileDevice::ExeOwner | QFileDevice::ReadGroup | QFileDevice::ExeGroup
+                                  | QFileDevice::ReadOther | QFileDevice::ExeOther);   // 555
+    err.clear();
+    const bool roOk = Common::robustCopyFile(src, ro + "/cap.html", &err);
+    check("튼튼한 복사 — 쓸 수 없는 폴더면 실패하고 까닭을 준다", !roOk && !err.isEmpty(), err.left(160));
+    check("튼튼한 복사 — 실패해도 원본은 그대로", readAll(src) == body);
+    check("튼튼한 복사 — 실패하면 반쪽을 남기지 않는다", !QFileInfo::exists(ro + "/cap.html") && !QFileInfo::exists(ro + "/cap.html.part"));
+    err.clear();
+    check("튼튼한 복사 — 쓸 수 없는 폴더 아래 새 폴더도 실패", !Common::robustCopyFile(src, ro + "/new/cap.html", &err) && !err.isEmpty(), err.left(160));
+    QFile::setPermissions(ro, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    err.clear();
+    check("튼튼한 복사 — 원본이 없으면 실패", !Common::robustCopyFile(d + "/src/none.html", d + "/out/none.html", &err) && !err.isEmpty());
+
+    // 저장 디스크 판정 — 내장 디스크의 임시 폴더는 '밖' 이 아니고 늘 붙어 있다. 빠진 외장 디스크 자리는 붙어 있지 않다.
+    check("디스크 판정 — 내장 디스크의 폴더는 임시 디스크를 거치지 않는다", !Common::isOffLocalPath(d + "/out/a/cap.html"));
+    check("디스크 판정 — 내장 디스크는 붙어 있다", Common::saveVolumePresent(d + "/out/a/cap.html"));
+    check("디스크 판정 — /Volumes 아래는 임시 디스크를 거친다", Common::isOffLocalPath("/Volumes/hk-ut-no-such-disk/twitter/a/captures/x.html"));
+    // 끊긴 NAS 연결(Mountain Duck 자리에 연결 폴더가 없다) — 시험의 HOME 은 작업 폴더다(unit_common.py). /Volumes 는 건드리지 않는다
+    const QString duck = QDir::homePath() + "/Mountain Duck/hk-ut-nas";
+    QString top;
+    check("디스크 판정 — 끊긴 NAS 연결은 붙어 있지 않다",
+          Common::isOffLocalPath(duck + "/twitter/x.html") && !Common::saveVolumePresent(duck + "/twitter/x.html", &top) && top == duck, top);
+    QDir().mkpath(duck);
+    check("디스크 판정 — 연결되면 붙어 있다", Common::saveVolumePresent(duck + "/twitter/x.html"));
+    QDir(QDir::homePath() + "/Mountain Duck").removeRecursively();
+    check("디스크 판정 — CloudStorage 연결 아래는 임시 디스크를 거친다",
+          Common::isOffLocalPath(QDir::homePath() + "/Library/CloudStorage/hk-ut-nas/twitter/x.html"));
+
+    // 합성 카드 — 붙인 미디어 수 / 있어야 할 수를 끝에 적고, 빠진 것은 글로 알린다
+    const QString cdir = d + "/user/captures";
+    QDir().mkpath(d + "/user/media/tweets/alice");
+    { QFile f(d + "/user/media/tweets/alice/20260101_0900_hi-1234567890123(k1).jpg"); f.open(QIODevice::WriteOnly); f.write("jpg"); }
+    QJsonObject meta;
+    meta["authorName"] = "Alice"; meta["handle"] = "alice"; meta["tweetId"] = "1234567890123";
+    // tweetUrl 은 넣지 않는다 — 넣으면 카드가 Finder 메모(osascript → Finder)를 달아, 서명 없는 시험 파일에서 자동화 권한 창이 뜨고
+    //   부를 때마다 5초까지 막힌다. 아래에서 보는 것(표시 · 빠진 수 · hkMissing)은 주소와 상관없다.
+    meta["tweetText"] = "hi";
+    meta["mediaRelPaths"] = QJsonArray{QStringLiteral("../media/tweets/alice/20260101_0900_hi-1234567890123(k1).jpg")};
+    meta["mediaExpected"] = 2;
+    const QString card = FileHelper::generateTweetArchiveHtml(cdir, "c1", meta);
+    int have = -1, want = -1;
+    check("카드 — 붙인 수 / 있어야 할 수 표시", !card.isEmpty() && FileHelper::readTweetCardMark(card, &have, &want) && have == 1 && want == 2,
+          QString("%1/%2").arg(have).arg(want));
+    const QString html = QString::fromUtf8(readAll(card));
+    check("카드 — 빠진 미디어를 글로 알린다", html.contains("2개 가운데 1개는 아직 받지 않아"));
+    check("카드 — 불러오지 못한 그림 자리를 글로 바꾸는 처리가 있다", html.contains("onerror=\"hkMissing(this)\"") && html.contains("function hkMissing"));
+    // 해시태그('#') · '%' 가 든 미디어 이름 — 주소에 그대로 넣으면 '#' 뒤가 조각 식별자로 읽혀 그림이 뜨지 않았다(r56 검토)
+    {
+        const QString odd = QString::fromUtf8("20260101_0900_#イラスト新作100%-1234567890124(k2).jpg");
+        QJsonObject m2 = meta;
+        m2["tweetId"] = "1234567890124";
+        m2["mediaRelPaths"] = QJsonArray{QStringLiteral("../media/tweets/alice/") + odd};
+        m2["mediaExpected"] = 1;
+        const QString c2 = FileHelper::generateTweetArchiveHtml(cdir, "c2", m2);
+        const QString h2 = QString::fromUtf8(readAll(c2));
+        check("카드 — 미디어 주소의 '#' · '%' 를 인코딩한다", h2.contains("src=\"../media/tweets/alice/20260101_0900_%23")
+                                                         && h2.contains("100%25-1234567890124(k2).jpg\"") && !h2.contains("_#"), c2);
+        // 그 자리에 이미 무엇이 있으면 쓰지 않는다(진짜 캡쳐가 옮겨지기를 기다리는 자리)
+        const QString again = FileHelper::generateTweetArchiveHtml(cdir, "c2", meta, true);
+        check("카드 — noOverwrite 는 있는 파일을 덮지 않는다", again.isEmpty() && QString::fromUtf8(readAll(c2)) == h2);
+    }
+    { QFile f(cdir + "/real.html"); f.open(QIODevice::WriteOnly); f.write("<html><!--\n Page saved with SingleFile \n url: https://x.com/a/status/1 \n--></html>"); }
+    check("카드 — 진짜 캡쳐 · 옛 카드에는 표시가 없다", !FileHelper::readTweetCardMark(cdir + "/real.html", &have, &want)
+                                                    && !FileHelper::readTweetCardMark(cdir + "/none.html", &have, &want));
 }
 
 static void testJstText()
@@ -495,6 +584,7 @@ int main(int argc, char **argv)
     testFileTimes(td.path());
     testJst();
     testCaptureName(td.path());
+    testRobustCopy(td.path());
     testJstText();
     testPickPython();
     testOverrides(td.path());

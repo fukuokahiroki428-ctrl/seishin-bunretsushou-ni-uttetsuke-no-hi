@@ -15,7 +15,11 @@
   youtube_layout   유튜브 · 니코동 '저장 방식' — 채널별 폴더 / 폴더 없이 바로(파일 이름 · _complete · 엑셀)
   youtube_complete 유튜브 · 니코동 '끝나면 _complete 만 남기기' — 받은 폴더 비우기 · 자막/댓글 옮기기 · 장부 · 엑셀 줄 잇기
   crawl            크롤러 — 끝까지 · 중간에 멈춤 · 그림 받는 도중 멈춤 세 번
+  unit_daemon      데몬 단위 — GraphQL GET→POST 되묻기와 기억 · ReplaceEntry 커서 · 정지 계정 · 레이트 리밋 머리 · 해시 캐시(앱 없이)
+  unit_organize    정리 단위 — 수집기마다 저장 모양(트위터 · 블루스카이 · 디스코드 · 픽시브 · 팬박스 · 인스타)을 찾는가 · 까닭(why)(앱 없이)
   early_stop       일찍 멈춤 · 엑셀 칸 — 트위터 수집기를 가짜 X 에 대고(표시 · top · 두 줄 · 대화 묶음 · 최대 수 · 좋아요 · 북마크)
+  period_walk      기간 수집 — 한 달을 빠짐없이(바쁜 날 · 기간 안의 공백 · 리포스트) · 새 글만 · 정지 계정(가짜 X)
+  media_coverage   글 갈래 — 대체 글 · 카드 · 아티클 · 인용 안 그림 · HLS 영상 · 실패한 그림 다시 받기 · 팔로워 목록 보존(가짜 X)
   naikakukai       内閣会 '받을 때 옵션' — 화면에서 고른 옵션 · 대상별 옵션대로 받는가 · 설정에 남는가(가짜 X)
   singlefile       SingleFile 캡처 — 오류 화면 저장 안 함 · 지연 그림 · 다른 출처 · CSP
 
@@ -43,8 +47,8 @@ sys.path.insert(0, str(HERE))
 import _common as C  # noqa: E402
 from lib import paths  # noqa: E402
 
-TESTS = ["unit_common", "cookie_refresh", "capture_cleanup", "quit_during_hotfix", "viewer", "resume", "youtube_layout", "youtube_complete", "crawl", "crawl_record", "organize", "targets", "early_stop", "deep_walk", "naikakukai", "proxy_exit", "jst_time", "python_swap", "singlefile"]
-LABEL = {"unit_common": "공통 단위", "cookie_refresh": "쿠키 갱신", "capture_cleanup": "캡처 정리", "quit_during_hotfix": "끄기", "viewer": "옛 트위터", "resume": "이어받기", "youtube_layout": "저장 방식", "youtube_complete": "_complete 만", "crawl": "크롤러", "crawl_record": "끝까지 기록", "organize": "정리하기", "targets": "대상 목록", "early_stop": "일찍 멈춤", "deep_walk": "창립일까지", "naikakukai": "内閣会 옵션", "proxy_exit": "프록시 출구", "jst_time": "일본 시간", "python_swap": "파이썬 교체", "singlefile": "SingleFile"}
+TESTS = ["unit_common", "unit_daemon", "unit_organize", "cookie_refresh", "capture_cleanup", "quit_during_hotfix", "viewer", "resume", "youtube_layout", "youtube_complete", "crawl", "crawl_record", "organize", "targets", "early_stop", "deep_walk", "period_walk", "media_coverage", "naikakukai", "proxy_exit", "jst_time", "python_swap", "singlefile"]
+LABEL = {"unit_common": "공통 단위", "unit_daemon": "데몬 단위", "unit_organize": "정리 단위", "cookie_refresh": "쿠키 갱신", "capture_cleanup": "캡처 정리", "quit_during_hotfix": "끄기", "viewer": "옛 트위터", "resume": "이어받기", "youtube_layout": "저장 방식", "youtube_complete": "_complete 만", "crawl": "크롤러", "crawl_record": "끝까지 기록", "organize": "정리하기", "targets": "대상 목록", "early_stop": "일찍 멈춤", "deep_walk": "창립일까지", "period_walk": "기간 수집", "media_coverage": "글 갈래", "naikakukai": "内閣会 옵션", "proxy_exit": "프록시 출구", "jst_time": "일본 시간", "python_swap": "파이썬 교체", "singlefile": "SingleFile"}
 
 
 def run(name: str, verbose: bool, env: dict, timeout: int = 1200):

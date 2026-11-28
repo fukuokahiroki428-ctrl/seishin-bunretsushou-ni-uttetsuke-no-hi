@@ -642,11 +642,27 @@ public:
     // CDP (실제 Chrome) 기반 캡쳐 — QWebEngine으로는 x.com 등이 anti-bot shell 반환.
     //   실제 Chrome으로 navigate → outerHTML → 저장. 같은 m_captureChrome 인스턴스를
     //   이어서 재사용 (한 번 띄우면 batch 내내 살려둠 → 페이지마다 새로 띄우는 비용 회피).
+    // ★ r56 — 캡쳐가 '어떻게' 끝났나. bool 은 '제 자리에 진짜 캡쳐가 있다' 만 참이다.
+    //   Staged: 진짜 캡쳐는 받았지만 저장 폴더로 아직 못 옮겨 임시 디스크(.abiwa_cap)에 두었다(옆에 <파일>.dest.json).
+    //           앱 시작 · 트위터/크롤 수집 시작 때 다시 옮긴다 — 그 자리에 카드를 '덮어쓰지' 말 것.
+    //   NeedsLogin: loginCheckJs 가 참(로그인 화면) — 캡쳐하지 않았다. LoginAware 가 로그인 대기 뒤 한 번 더 한다.
+    enum class CaptureResult { Failed = 0, Saved, Staged, NeedsLogin };
     bool captureRealPageCDP(const QString &url,
                             const QString &saveDir,
                             const QString &filename,
                             int waitMs = 6000,
-                            const QList<QNetworkCookie> &cookies = {});
+                            const QList<QNetworkCookie> &cookies = {},
+                            CaptureResult *result = nullptr,
+                            const QString &loginCheckJs = QString());
+    // ★ 임시 디스크에 남은 진짜 캡쳐를 제 자리로 옮긴다(옆 기록 .dest.json 을 따라). 기록이 없는 옛 것(r55 까지)은
+    //   twitterRoot(<트위터 저장 경로>/twitter) 안 */captures 에서 같은 이름의 카드를 찾아 바꾼다 — 그 밖은 찾지 않는다.
+    //   옮긴 수를 돌려준다. 워커 스레드에서 부른다(NAS 복사로 오래 걸릴 수 있다).
+    int deliverStagedCaptures(const QString &twitterRoot = QString());
+    // 이 자리로 옮겨지기를 기다리는 진짜 캡쳐가 임시 디스크에 있나 — 있으면 다시 캡쳐하지 않는다(같은 글을 두 번 받지 않게)
+    bool stagedCapturePending(const QString &filePath) const;
+    // ★ r56 검토 — 임시 디스크 → 제 자리 옮기기의 잠금. 옮기기(앱 시작 · 수집 시작 · 캡쳐의 다시 옮기기)와, 그 자리에 대신 카드를
+    //   쓰는 트위터(captureTweet)가 함께 잡는다 — 카드가 막 옮겨진 진짜 캡쳐를 덮지 않게.
+    QRecursiveMutex &stagedDeliveryMutex() { return m_stagedDeliverMutex; }
 
     // ★ 로그인 대기 가능 캡쳐 — 첫 navigate 후 로그인 페이지 감지하면 사용자가
     //   Chrome 창에서 직접 로그인 후 GUI '확인' 버튼 누를 때까지 대기.
@@ -663,7 +679,8 @@ public:
                                       const QString &platform,
                                       int waitMs = 8000,
                                       const QList<QNetworkCookie> &cookies = {},
-                                      const QJsonObject &config = {});
+                                      const QJsonObject &config = {},
+                                      CaptureResult *result = nullptr);
 
     // ★ 플랫폼별 계정 쿠키 빌드 — 캡쳐 chrome 으로 로그인 상태 보장.
     //   config["accounts"][0] 우선 → fallback config 최상단 키 (sessionId/cookie/auth_token 등)
@@ -701,6 +718,21 @@ public:
     // ★ 병렬 모드: 각 trackKey마다 자기 Chrome 인스턴스 — 다른 디버그 포트로 격리
     QMap<QString, RealChromeCrawler*> m_captureChromesPerThread;
     QMutex m_capChromeMapMutex;
+    // ★ r56 — 지난 캡쳐가 로그인된 채 끝난 Chrome(열쇠 + 플랫폼). 여기 있으면 LoginAware 가 사전 navigate(같은 페이지를
+    //   한 번 더 여는 것)를 건너뛰고 캡쳐 안에서 로그인을 본다. 실패 · 로그인 화면이면 빼서 다음엔 원래 길로.
+    QSet<QString> m_capLoginOkKeys;
+    QMutex m_capLoginOkMutex;
+    // ★ r56 — 옮겨지기를 기다리는 진짜 캡쳐: 저장할 자리(정리된 절대 경로) → 임시 디스크의 파일
+    QHash<QString, QString> m_stagedCaptures;
+    mutable QMutex m_stagedCapturesMutex;
+    // 임시 디스크의 캡쳐 하나를 제 자리로(튼튼한 복사 · 크기 확인 · 메타 · 백업 큐). 되면 임시 파일과 옆 기록을 지운다.
+    bool deliverStagedFile(const QString &staged, const QString &dest, const QString &url, QString *why);
+    void noteStagedCapture(const QString &dest, const QString &staged);   // staged 가 비면 지운다
+    // ★ r56 검토 — 이 자리의 진짜 캡쳐가 임시 디스크에 있으면 지금 옮겨 본다(트위터 밖 플랫폼의 캡쳐가 다음 판에 옮겨지게). 되면 true
+    bool retryStagedCapture(const QString &dest);
+    QRecursiveMutex m_stagedDeliverMutex;
+    // 디스크가 붙어 있는데도 옮기기에 실패한 임시 파일 → (그때 시각 ms, 까닭). 한동안 다시 하지 않는다(m_stagedCapturesMutex 로 지킨다)
+    QHash<QString, QPair<qint64, QString>> m_deliverBackoff;
     int m_nextCapPort = 0;   // 0 이면 처음 배정할 때 Common::capturePortBase() + 1 로 시작
     // 수집 중 실패 건수. 디스코드 'all' 모드의 하위 수집과, 라우팅에 없는
     // 플랫폼이 들어온 경우를 센다. 0 이 아니면 '완료' 라고 말하지 않는다.

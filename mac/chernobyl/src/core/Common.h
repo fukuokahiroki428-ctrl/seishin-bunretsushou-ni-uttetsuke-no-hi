@@ -273,6 +273,17 @@ QString exiftoolProgram(QStringList *leadingArgs);
 
 // 저장 경로의 남은 공간 (바이트). 경로 없거나 마운트 안 됐으면 0.
 qint64 freeSpace(const QString &path);
+// ★ 이 경로가 '이 맥의 내장 디스크' 밖(외장 · NAS · Mountain Duck/Cyberduck/CloudStorage 연결 · 네트워크 마운트)인가.
+//   캡쳐를 임시 디스크에 먼저 다 쓰고 옮길지 고른다(r56 — 예전엔 "/Volumes/" 접두사만 봐서 Mountain Duck 등은 NAS 위에 1MB 씩 바로 썼다).
+bool isOffLocalPath(const QString &path);
+// ★ 그 경로의 디스크 · 연결이 지금 붙어 있나(내장 디스크면 늘 true). /Volumes/<이름> 이 빈 폴더로만 남은 것(디스크를 뺀 뒤)은 붙어 있지 않다.
+//   top 에 그 디스크 · 연결의 맨 위를 돌려준다(로그용).
+bool saveVolumePresent(const QString &path, QString *top = nullptr);
+// ★ 튼튼한 파일 복사(r56) — QFile::copy(목적지 폴더에 qt_temp 를 만든 뒤 이름 바꾸기)는 NAS(WebDAV/SMB/FUSE)에서 실패해
+//   진짜 캡쳐가 임시 폴더에 남고 그 자리엔 합성 카드가 들어갔다. 1MB 씩 "<dst>.part" 에 쓰며 쓰기 · 닫기를 하나하나 확인하고
+//   크기를 맞춘 뒤 이름을 바꾼다 → 안 되면 dst 에 바로 → /bin/cp -p → ditto. 최대 3번(사이 1초). 끝에 크기를 다시 본다.
+//   실패하면 err 에 까닭(마지막 오류 · 폴더를 만들 수 있었는지)을 담는다. 원본은 건드리지 않는다.
+bool robustCopyFile(const QString &src, const QString &dst, QString *err = nullptr);
 // 다 받은 곳에서 일찍 멈추기 — 그 목록(대상 · 종류)을 지난번에 끊김 없이 다 본 적이 있는가(<dir>/.hanishiki_walk_<kind>.json).
 //   판을 시작할 때 take 로 읽고 지운다. 끊김 없이 끝났거나(끝까지 · 일찍 멈춤) 할 때만 put 으로 다시 적는다.
 //   표시가 없으면(첫 판 · 중지 · 최대 수 · 오류로 끊긴 판 뒤) 이번 판은 일찍 멈추지 않고 끝까지 보아 사이를 메운다 —

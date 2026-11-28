@@ -102,7 +102,7 @@ class Endpoint:
     BASE = "https://x.com/i/api/graphql"
     USER_BY_SCREEN_NAME = BASE + "/NimuplG1OB7Fd2btCLdBOw/UserByScreenName"
     USER_TWEETS = BASE + "/QWF3SzpHmykQHsQMixG0cg/UserTweets"
-    SEARCH_TIMELINE = BASE + "/flaR-PUMshxFWZWPNpq4zA/SearchTimeline"
+    SEARCH_TIMELINE = BASE + "/vLHjqbDv7TPFMBkIIO1nOA/SearchTimeline"   # 2026-11-27 X 번들에서 긁은 값(r56)
     USER_LIKES = BASE + "/IohM3gxQHfvWePH5E3KuNA/Likes"
     BOOKMARKS = BASE + "/qToeLeMs43Q8cr7tRYXmaQ/Bookmarks"
     FOLLOWERS = BASE + "/gC_lyAxZOptAMLCJX5UhWw/Followers"
@@ -123,7 +123,8 @@ FEATURES = {
     "freedom_of_speech_not_reach_fetch_enabled": True,
     "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
     "longform_notetweets_consumption_enabled": True,
-    "longform_notetweets_inline_media_enabled": True,
+    # ★ X 웹 앱은 2026-11 에 False 로 보낸다(실측) — 웹 값을 따른다. 긴 글의 첨부 미디어는 legacy.extended_entities 로 그대로 온다
+    "longform_notetweets_inline_media_enabled": False,
     "longform_notetweets_rich_text_read_enabled": True,
     "responsive_web_edit_tweet_api_enabled": True,
     "responsive_web_enhance_cards_enabled": False,
@@ -139,6 +140,35 @@ FEATURES = {
     "tweetypie_unmention_optimization_enabled": True,
     "verified_phone_label_enabled": False,
     "view_counts_everywhere_api_enabled": True,
+    # ── 2026-11-27 X 웹 앱의 SearchTimeline 요청에서 그대로 옮긴 것(r56) — 웹 앱이 싣는 42개 가운데 위에 없던 것.
+    #   위의 옛 키는 지우지 않는다(다른 작업이 아직 요구할 수 있다). 값이 웹과 다르던 것은 웹 값으로 바꿨다(위 inline_media).
+    "rweb_video_screen_enabled": False,
+    "rweb_cashtags_enabled": True,
+    "profile_label_improvements_pcf_label_in_post_enabled": True,
+    "responsive_web_profile_redirect_enabled": True,
+    "rweb_tipjar_consumption_enabled": False,
+    "premium_content_api_read_enabled": False,
+    "communities_web_enable_tweet_community_results_fetch": True,
+    "responsive_web_grok_analyze_button_fetch_trends_enabled": False,
+    "responsive_web_grok_analyze_post_followups_enabled": True,
+    "rweb_cashtags_composer_attachment_enabled": True,
+    "responsive_web_jetfuel_frame": True,
+    "rweb_sports_post_context_enabled": True,
+    "x_elections_post_context_enabled": True,
+    "responsive_web_grok_share_attachment_enabled": True,
+    "responsive_web_grok_annotations_enabled": True,
+    "articles_preview_enabled": True,
+    "rweb_conversational_replies_downvote_enabled": False,
+    "content_disclosure_indicator_enabled": True,
+    "content_disclosure_ai_generated_indicator_enabled": True,
+    "responsive_web_grok_show_grok_translated_post": True,
+    "responsive_web_grok_analysis_button_from_backend": True,
+    "post_ctas_fetch_enabled": False,
+    "responsive_web_nested_quote_preview_enabled": True,
+    "responsive_web_grok_image_annotation_enabled": True,
+    "responsive_web_grok_imagine_annotation_enabled": True,
+    "responsive_web_made_on_x_label_enabled": False,
+    "responsive_web_grok_community_note_auto_translation_is_enabled": True,
 }
 
 USER_FEATURES = {

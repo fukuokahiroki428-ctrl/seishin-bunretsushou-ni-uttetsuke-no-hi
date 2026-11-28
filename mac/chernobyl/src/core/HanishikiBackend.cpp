@@ -564,7 +564,10 @@ void HanishikiBackend::performStartupCleanup()
     }
 
     // 3) 빈 서브 디렉토리 정리
+    // ★ r56 — .abiwa_cap(저장 폴더로 아직 못 옮긴 진짜 캡쳐 · 옆 기록)은 여기서 절대 건드리지 않는다. 그 안의 것은
+    //   deliverStagedCaptures 가 옮긴 뒤에만 지운다(숨은 폴더라 위 목록에 들지 않지만, 목록 조건이 바뀌어도 지키게 이름으로 막는다).
     for (const QFileInfo &fi : dir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        if (fi.fileName() == QLatin1String(".abiwa_cap")) continue;
         QDir sub(fi.absoluteFilePath());
         if (sub.isEmpty()) sub.removeRecursively();
     }
@@ -4617,6 +4620,20 @@ void HanishikiBackend::loadConfig()
         runJsAll(QString("checkDiskSetup('%1')").arg(td));
     }
 
+    // ★ r56 — 지난번에 저장 폴더로 못 옮긴 진짜 캡쳐(임시 디스크 .abiwa_cap)를 디스크 확인 뒤 한 번 옮긴다. NAS 복사가 오래
+    //   걸릴 수 있어 배경 스레드에서. 옆 기록이 없는 옛 것은 트위터 저장 경로 안에서만 바꿀 카드를 찾는다.
+    {
+        static std::atomic<bool> s_startupDelivery{false};
+        if (!s_startupDelivery.exchange(true)) {
+            QString tw = m_config->formData().value(QStringLiteral("twitter-path")).toString();
+            if (tw.startsWith(QLatin1Char('~'))) tw.replace(0, 1, QDir::homePath());
+            const QString twRoot = tw.isEmpty() ? QString() : tw + QStringLiteral("/twitter");
+            QThread *t = QThread::create([this, twRoot]() { deliverStagedCaptures(twRoot); });
+            connect(t, &QThread::finished, t, &QThread::deleteLater);
+            t->start();
+        }
+    }
+
     // ★ 프록시 프로필 목록을 폼 복원보다 먼저 보낸다. 니코동 '프록시' 칸은 목록이 와야
     //   옵션이 생긴다 — 순서가 바뀌면 저장된 이름이 잠깐 '직접 연결' 로 보인다
     //   (화면 쪽 fillProxySelect 가 dataset.want 로 한 번 더 막는다).
@@ -7865,27 +7882,400 @@ bool HanishikiBackend::captureRealTweetPage(const QString &tweetUrl,
 // 이미 '진짜 캡쳐' 가 끝난 파일인가 — 합성 카드·크롬 오류 화면·받다 만 파일은 아니라고 본다(다시 캡쳐해 덮어쓴다).
 // SingleFile 머리 주석은 <html …> 시작 태그 바로 뒤(documentElement 첫 자식)에 붙는다. 시작 태그가 긴 페이지
 // (클래스 목록·인라인 CSS 변수)에서도 놓치지 않게 앞 64KB 를 본다 — 놓치면 멀쩡한 캡쳐를 다시 받아 덮어쓴다.
+// ★ r56 — 다 쓴 캡쳐의 바이트 수를 파일에 적어 둔다(xattr). 머리 주석만 보면 끝이 잘린 파일(쓰다 디스크가 차거나 NAS 가
+//   끊김)도 '다 받음' 으로 남아 영영 다시 받지 않았다. 적힌 크기와 다르면 다 받지 않은 것으로 본다(적히지 않은 옛 파일 · xattr 을
+//   못 다는 NAS 는 예전처럼 머리만 본다).
+static const char *kCapSizeXattr = "com.hanishiki.capsize";
+static void setCaptureSizeMark(const QString &filePath, qint64 bytes)
+{
+#ifdef Q_OS_MACOS
+    const QByteArray v = QByteArray::number(bytes);
+    setxattr(QFile::encodeName(filePath).constData(), kCapSizeXattr, v.constData(), size_t(v.size()), 0, 0);
+#else
+    Q_UNUSED(filePath); Q_UNUSED(bytes);
+#endif
+}
+static qint64 captureSizeMark(const QString &filePath)   // 없으면 -1
+{
+#ifdef Q_OS_MACOS
+    char buf[32] = {0};
+    const ssize_t n = getxattr(QFile::encodeName(filePath).constData(), kCapSizeXattr, buf, sizeof(buf) - 1, 0, 0);
+    if (n <= 0) return -1;
+    bool ok = false;
+    const qint64 v = QByteArray(buf, int(n)).toLongLong(&ok);
+    return ok ? v : -1;
+#else
+    Q_UNUSED(filePath);
+    return -1;
+#endif
+}
+
 static bool isFinishedRealCapture(const QString &filePath)
 {
     QFile f(filePath);
     if (!f.open(QIODevice::ReadOnly)) return false;
     const QByteArray head = f.read(64 * 1024);
-    return head.contains("Page saved with SingleFile") && !head.contains("url: chrome-error://");
+    if (!head.contains("Page saved with SingleFile") || head.contains("url: chrome-error://")) return false;
+    const qint64 mark = captureSizeMark(filePath);
+    return mark < 0 || mark == f.size();
 }
+
+// SingleFile 머리 주석의 원래 주소(옆 기록이 없는 옛 임시 캡쳐를 옮길 때 Finder 메타에 쓴다)
+static QString singleFileUrlOf(const QString &filePath)
+{
+    QFile f(filePath);
+    if (!f.open(QIODevice::ReadOnly)) return QString();
+    static const QRegularExpression re(QStringLiteral(R"(\burl: (\S+))"));
+    const auto m = re.match(QString::fromUtf8(f.read(64 * 1024)));
+    return m.hasMatch() ? m.captured(1) : QString();
+}
+
+static QString stagedSidecarPath(const QString &staged) { return staged + QStringLiteral(".dest.json"); }
+
+bool HanishikiBackend::stagedCapturePending(const QString &filePath) const
+{
+    const QString key = QDir::cleanPath(QFileInfo(filePath).absoluteFilePath());
+    QString staged;
+    {
+        QMutexLocker lk(&m_stagedCapturesMutex);
+        staged = m_stagedCaptures.value(key);
+    }
+    return !staged.isEmpty() && QFileInfo::exists(staged);
+}
+
+void HanishikiBackend::noteStagedCapture(const QString &dest, const QString &staged)
+{
+    const QString key = QDir::cleanPath(QFileInfo(dest).absoluteFilePath());
+    QMutexLocker lk(&m_stagedCapturesMutex);
+    if (staged.isEmpty()) m_stagedCaptures.remove(key);
+    else m_stagedCaptures.insert(key, staged);
+}
+
+bool HanishikiBackend::deliverStagedFile(const QString &staged, const QString &dest, const QString &url, QString *why)
+{
+    const qint64 want = QFileInfo(staged).size();
+    if (want <= 0) { *why = QStringLiteral("임시 파일이 비어 있습니다"); return false; }
+    QString top;
+    if (!Common::saveVolumePresent(dest, &top)) {
+        *why = QStringLiteral("저장 디스크가 연결되어 있지 않습니다 — 연결되면 옮깁니다 (%1)").arg(top);
+        // 디스크가 빠진 것을 보았다 — 다시 붙으면 기다리지 않고 바로 옮긴다(아래 쉬기를 지운다)
+        QMutexLocker lk(&m_stagedCapturesMutex);
+        m_deliverBackoff.remove(staged);
+        return false;
+    }
+    // ★ r56 검토 — 디스크는 붙어 있는데 실패한 것(권한 · 읽기 전용 NAS 공유)은 30분 동안 다시 하지 않는다. robustCopyFile 이
+    //   세 번 · 1초 쉬며 cp · ditto 까지 돌려 한 파일에 몇 초가 들어, 그런 파일이 쌓이면 '새 글 확인' 같은 짧은 수집도
+    //   시작할 때마다 (파일 수 × 4초) 늦어졌다. 까닭은 지난번 것을 그대로 돌려준다(같은 알림이 다시 찍히지 않게).
+    static constexpr qint64 kDeliverBackoffMs = 30LL * 60 * 1000;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    {
+        QMutexLocker lk(&m_stagedCapturesMutex);
+        const auto it = m_deliverBackoff.constFind(staged);
+        if (it != m_deliverBackoff.cend() && now - it->first < kDeliverBackoffMs) { *why = it->second; return false; }
+    }
+    auto fail = [this, &staged, now, why](const QString &reason) {
+        *why = reason;
+        QMutexLocker lk(&m_stagedCapturesMutex);
+        m_deliverBackoff.insert(staged, qMakePair(now, reason));
+        return false;
+    };
+    const QString dir = QFileInfo(dest).absolutePath();
+    if (!QDir().mkpath(dir))
+        return fail(QStringLiteral("저장 폴더를 만들 수 없습니다: %1 — 폴더 권한 · 디스크 연결을 확인하십시오").arg(dir));
+    QString err;
+    if (!Common::robustCopyFile(staged, dest, &err)) return fail(err);
+    if (QFileInfo(dest).size() != want) {
+        const QString reason = QStringLiteral("옮긴 뒤 크기가 맞지 않습니다(%1 / %2 바이트)").arg(QFileInfo(dest).size()).arg(want);
+        QFile::remove(dest);
+        return fail(reason);
+    }
+    {
+        QMutexLocker lk(&m_stagedCapturesMutex);
+        m_deliverBackoff.remove(staged);
+    }
+    setCaptureSizeMark(dest, want);
+    // 제 자리에 다 들어간 것을 본 뒤에만 임시 파일을 지운다
+    QFile::remove(staged);
+    QFile::remove(stagedSidecarPath(staged));
+    noteStagedCapture(dest, QString());
+    if (!url.isEmpty()) {
+        FileHelper::setDownloadMeta(dest, url);
+        FileHelper::setFinderComment(dest, url);
+    }
+    // 백업 · WebDAV 큐는 메인 스레드에서 넣는다(이 함수는 수집 · 정리 스레드에서 돈다)
+    QMetaObject::invokeMethod(this, [this, dest]() {
+        enqueueWebDavUpload(dest);
+        enqueueBackup(dest);
+    }, Qt::QueuedConnection);
+    return true;
+}
+
+// ★ r56 검토 — 이 자리의 진짜 캡쳐가 임시 디스크에 있으면 지금 옮겨 본다. 옮기기가 앱 시작 · 트위터/크롤 수집 시작에만 있어,
+//   픽시브 · 인스타 · 텀블러 · 블루스카이는 디스크가 돌아와도 앱을 다시 켤 때까지 그 글을 늘 '캡쳐 실패' 로 셌다(깨끗한 걸음 ·
+//   일찍 멈춤이 그만큼 늦어진다). r55 까지는 다음 판이 그냥 다시 캡쳐해 받았다. 디스크가 빠져 있으면 saveVolumePresent 가 바로
+//   거르고, 붙어 있는데 실패한 것은 deliverStagedFile 이 한동안 쉰다. 다른 걸음이 지금 옮기는 중이면 기다리지 않는다.
+bool HanishikiBackend::retryStagedCapture(const QString &dest)
+{
+    if (!m_stagedDeliverMutex.tryLock()) return false;
+    const auto unlock = qScopeGuard([this]() { m_stagedDeliverMutex.unlock(); });
+    const QString key = QDir::cleanPath(QFileInfo(dest).absoluteFilePath());
+    QString staged;
+    {
+        QMutexLocker lk(&m_stagedCapturesMutex);
+        staged = m_stagedCaptures.value(key);
+    }
+    if (staged.isEmpty() || !QFileInfo::exists(staged)) return isFinishedRealCapture(dest);   // 그새 다른 걸음이 옮겼다
+    if (isFinishedRealCapture(dest)) {
+        // 그새 제 자리에 진짜 캡쳐가 있다 — 임시 사본은 같은 글의 남는 한 벌이다(deliverStagedCaptures 와 같다)
+        QFile::remove(staged);
+        QFile::remove(stagedSidecarPath(staged));
+        noteStagedCapture(dest, QString());
+        return true;
+    }
+    QString url;
+    {
+        QFile sf(stagedSidecarPath(staged));
+        if (sf.open(QIODevice::ReadOnly))
+            url = QJsonDocument::fromJson(sf.readAll()).object().value(QStringLiteral("url")).toString();
+    }
+    if (url.isEmpty()) url = singleFileUrlOf(staged);
+    QString why;
+    if (!deliverStagedFile(staged, dest, url, &why)) return false;
+    log(QString("📦 캡쳐 배달 ✅ %1 → %2").arg(QFileInfo(dest).fileName(), QFileInfo(dest).absolutePath()), "success", "twitter");
+    return true;
+}
+
+int HanishikiBackend::deliverStagedCaptures(const QString &twitterRoot)
+{
+    // 앱 시작(배경 스레드)과 수집 시작이 겹쳐도 같은 파일을 둘이 옮기지 않게(★ r56 검토 — 트위터의 대신 카드 쓰기도 같은 잠금을 잡는다)
+    QMutexLocker lk(&m_stagedDeliverMutex);
+    // 한 번 알린 것은 이 실행 동안 다시 알리지 않는다(수집을 시작할 때마다 같은 줄이 쌓이지 않게)
+    static QSet<QString> s_told;
+    auto tellOnce = [this](const QString &key, const QString &msg, const QString &level) {
+        if (s_told.contains(key)) return;
+        s_told.insert(key);
+        log(msg, level, "twitter");
+    };
+
+    QStringList dirs;
+    for (const QString &base : {Common::resolveTempBase(m_config ? m_config->tempDir() : QString()),
+                                QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/temp")}) {
+        const QString d = QDir::cleanPath(base + QStringLiteral("/.abiwa_cap"));
+        if (!dirs.contains(d) && QDir(d).exists()) dirs << d;
+    }
+    int delivered = 0;
+    QStringList leftovers;   // 옆 기록이 없는 옛 것(r55 까지)
+    const QDateTime dayAgo = QDateTime::currentDateTime().addDays(-1);
+    for (const QString &dir : dirs) {
+        const QFileInfoList files = QDir(dir).entryInfoList(QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot, QDir::Name);
+        for (const QFileInfo &fi : files) {
+            if (Common::appQuitting()) return delivered;
+            const QString name = fi.fileName();
+            const QString path = fi.absoluteFilePath();
+            if (name.endsWith(QLatin1String(".dest.json"))) {
+                if (!QFileInfo::exists(path.left(path.size() - 10))) QFile::remove(path);   // 짝 잃은 옆 기록
+                continue;
+            }
+            if (name.endsWith(QLatin1String(".part"))) {
+                // 쓰다 만 것(앱이 캡쳐 도중 끝났다) — 하루 지난 것만 치운다(지금 쓰는 중일 수 있다)
+                if (fi.lastModified() < dayAgo) QFile::remove(path);
+                continue;
+            }
+            const QString side = stagedSidecarPath(path);
+            QJsonObject rec;
+            {
+                QFile sf(side);
+                if (sf.open(QIODevice::ReadOnly)) rec = QJsonDocument::fromJson(sf.readAll()).object();
+            }
+            const QString dest = rec.value(QStringLiteral("dest")).toString();
+            if (dest.isEmpty()) {
+                // ★ 옆 기록이 없는 것 가운데 막 생긴 것은 지금 다른 걸음의 캡쳐가 옮기는 중일 수 있다(옆 기록은 옮기기에 실패한 뒤에 쓴다) —
+                //   10분 지난 것만 옛 것으로 본다
+                if (fi.lastModified() < QDateTime::currentDateTime().addSecs(-600)) leftovers << path;
+                continue;
+            }
+            const QString url = rec.value(QStringLiteral("url")).toString();
+            // 그새 다시 받아 제 자리에 진짜 캡쳐가 있다 — 임시 사본은 같은 글의 남는 한 벌이다
+            if (isFinishedRealCapture(dest)) {
+                QFile::remove(path);
+                QFile::remove(side);
+                noteStagedCapture(dest, QString());
+                log(QString("📦 캡쳐 배달 — 제 자리에 이미 진짜 캡쳐가 있어 임시 사본을 지웠습니다: %1").arg(QFileInfo(dest).fileName()),
+                    "info", "twitter");
+                continue;
+            }
+            noteStagedCapture(dest, path);   // 옮기기 전까지 이 자리는 다시 캡쳐하지 않는다
+            QString why;
+            if (deliverStagedFile(path, dest, url, &why)) {
+                ++delivered;
+                log(QString("📦 캡쳐 배달 ✅ %1 → %2").arg(QFileInfo(dest).fileName(), QFileInfo(dest).absolutePath()),
+                    "success", "twitter");
+            } else {
+                tellOnce(path + QLatin1Char('\n') + why,
+                         QString("📦 캡쳐 배달 대기 — %1: %2 (임시: %3)").arg(QFileInfo(dest).fileName(), why, path), "warning");
+            }
+        }
+    }
+
+    // ── 옆 기록이 없는 옛 것: 이름이 <밀리초>_<저장 이름>. 트위터 저장 경로 안의 */captures 에서 같은 이름의 '카드' 를 찾는다 ──
+    if (!leftovers.isEmpty()) {
+        QHash<QString, QStringList> wanted;   // 저장 이름 → 임시 파일들
+        static const QRegularExpression stagedName(QStringLiteral(R"(^\d{10,}_(.+)$)"));
+        for (const QString &path : leftovers) {
+            const auto m = stagedName.match(QFileInfo(path).fileName());
+            if (!m.hasMatch()) { tellOnce(path, QString("📦 임시 디스크에 이름을 알 수 없는 캡쳐가 있습니다 — 그대로 둡니다: %1").arg(path), "info"); continue; }
+            if (!isFinishedRealCapture(path)) {
+                tellOnce(path, QString("📦 임시 디스크의 캡쳐가 다 쓰이지 않은 것이라 옮기지 않습니다: %1").arg(path), "info");
+                continue;
+            }
+            wanted[m.captured(1)] << path;
+        }
+        // 이 실행에서 이미 찾아본 것은 다시 훑지 않는다(NAS 의 캡쳐 폴더 전체를 수집마다 훑지 않게)
+        static QSet<QString> s_searched;
+        const QString root = twitterRoot.isEmpty() ? QString() : QDir::cleanPath(twitterRoot);
+        QStringList fresh;
+        for (auto it = wanted.cbegin(); it != wanted.cend(); ++it)
+            for (const QString &p : it.value())
+                if (!s_searched.contains(root + QLatin1Char('\n') + p)) fresh << p;
+        if (!fresh.isEmpty() && !root.isEmpty()) {
+            if (!QDir(root).exists() || !Common::saveVolumePresent(root)) {
+                tellOnce(QStringLiteral("root\n") + root,
+                         QString("📦 임시 디스크에 옮기지 못한 옛 캡쳐 %1개 — 트위터 저장 디스크가 연결되어 있지 않습니다 — 연결되면 옮깁니다 (%2)")
+                             .arg(fresh.size()).arg(root), "warning");
+            } else {
+                for (const QString &p : fresh) s_searched.insert(root + QLatin1Char('\n') + p);
+                // <root>/<대상>/captures 아래 세 층까지 — 같은 이름이면서 '진짜 캡쳐가 아닌' 것(카드 · 반쪽)만 후보
+                QHash<QString, QStringList> found;
+                for (const QFileInfo &u : QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+                    QList<QPair<QString, int>> stack{{u.absoluteFilePath() + QStringLiteral("/captures"), 1}};
+                    while (!stack.isEmpty()) {
+                        if (Common::appQuitting()) return delivered;
+                        const auto [d, depth] = stack.takeLast();
+                        QDir qd(d);
+                        if (!qd.exists()) continue;
+                        for (const QFileInfo &e : qd.entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot)) {
+                            if (e.isDir()) { if (depth < 3) stack.append({e.absoluteFilePath(), depth + 1}); continue; }
+                            if (wanted.contains(e.fileName()) && !isFinishedRealCapture(e.absoluteFilePath()))
+                                found[e.fileName()] << e.absoluteFilePath();
+                        }
+                    }
+                }
+                for (auto it = wanted.cbegin(); it != wanted.cend(); ++it) {
+                    const QStringList cands = found.value(it.key());
+                    for (const QString &staged : it.value()) {
+                        if (!fresh.contains(staged)) continue;
+                        if (cands.size() != 1) {
+                            tellOnce(staged, cands.isEmpty()
+                                ? QString("📦 임시 디스크에 남은 캡쳐 — 바꿀 카드를 찾지 못해 그대로 둡니다: %1").arg(staged)
+                                : QString("📦 임시 디스크에 남은 캡쳐 — 같은 이름의 카드가 %1개라 그대로 둡니다: %2").arg(cands.size()).arg(staged),
+                                "info");
+                            continue;
+                        }
+                        QString why;
+                        if (deliverStagedFile(staged, cands.first(), singleFileUrlOf(staged), &why)) {
+                            ++delivered;
+                            log(QString("📦 캡쳐 배달 ✅ (예전에 못 옮긴 것) %1 → %2")
+                                    .arg(it.key(), QFileInfo(cands.first()).absolutePath()), "success", "twitter");
+                            break;   // 같은 이름의 다른 임시 사본은 그대로 둔다(제 자리는 이제 진짜 캡쳐다)
+                        }
+                        tellOnce(staged + QLatin1Char('\n') + why,
+                                 QString("📦 캡쳐 배달 대기 — %1: %2 (임시: %3)").arg(it.key(), why, staged), "warning");
+                    }
+                }
+            }
+        }
+    }
+    return delivered;
+}
+
+// ★ r56 — 한 캡쳐의 진행 상태. 메인 스레드(CDP 콜백)와 이 캡쳐를 기다리는 수집 스레드가 함께 본다.
+//   state: 0 진행 · 1 끝냄(파일을 넘김) · 2 버림(타임아웃). 0→1 과 0→2 는 compare_exchange 로 한쪽만 이긴다 —
+//   타임아웃으로 돌아간 뒤 늦게 끝난 마무리가 호출자가 카드를 쓰는 그 자리에 파일을 덮어쓰던 것을 막는다.
+//   phaseAt: 단계마다 시작 시각(ms) — 타임아웃 · 완료 때 단계별 걸린 시간을 남긴다(어디서 시간이 드는지 보이게).
+struct CapRun {
+    enum Phase { Open = 0, Ready, Scroll, Filters, SingleFile, Transfer, PhaseCount };
+    std::atomic<int> state{0};
+    std::atomic<int> phase{Open};
+    std::atomic<qint64> phaseAt[PhaseCount];
+    // 아래는 state 를 1 로 바꾸기 '전' 에 메인 스레드가 채우고, 수집 스레드는 그 뒤에만 읽는다
+    QString writeTarget;     // 다 쓴 파일(임시 디스크의 것이거나 제 자리 옆 .part)
+    bool staged = false;     // 임시 디스크(.abiwa_cap)에 썼다
+    qint64 written = 0;      // 실제로 쓴 바이트
+    QString scrollNote;      // 스크롤 단계 요약(로그)
+    bool needsLogin = false;
+    CapRun() { for (auto &a : phaseAt) a.store(0); }
+    void mark(int p) { phaseAt[p].store(QDateTime::currentMSecsSinceEpoch()); phase.store(p); }
+    // "열기 1.2s · 준비 3.0s · 스크롤 8.1s …" — upTo 는 지금 시각(진행 중인 단계의 끝으로 쓴다)
+    QString summary(qint64 upTo) const {
+        static const char *names[PhaseCount] = {"열기", "준비", "스크롤", "필터", "SingleFile", "저장"};
+        QStringList out;
+        const int cur = phase.load();
+        for (int i = 0; i <= cur && i < PhaseCount; ++i) {
+            const qint64 st = phaseAt[i].load();
+            if (st <= 0) continue;
+            qint64 en = upTo;
+            for (int j = i + 1; j <= cur && j < PhaseCount; ++j) if (phaseAt[j].load() > 0) { en = phaseAt[j].load(); break; }
+            out << QStringLiteral("%1 %2s").arg(QString::fromUtf8(names[i])).arg(double(en - st) / 1000.0, 0, 'f', 1);
+        }
+        return out.join(QStringLiteral(" · "));
+    }
+};
 
 bool HanishikiBackend::captureRealPageCDP(const QString &url,
                                       const QString &saveDir,
                                       const QString &filename,
                                       int waitMs,
-                                      const QList<QNetworkCookie> &cookies)
+                                      const QList<QNetworkCookie> &cookies,
+                                      CaptureResult *result,
+                                      const QString &loginCheckJs)
 {
+    if (result) *result = CaptureResult::Failed;
     if (url.isEmpty() || saveDir.isEmpty()) return false;
 
-    QDir().mkpath(saveDir);
     QString filePath = saveDir + "/" + filename + ".html";
+    // ★ r56 — 저장 디스크 밖(외장 · NAS · Mountain Duck/CloudStorage 연결)이면 임시 디스크에 다 쓴 뒤 옮긴다.
+    //   예전엔 "/Volumes/" 접두사만 봐서 Mountain Duck 등의 NAS 폴더는 네트워크 위에서 바로 썼다.
+    //   HANISHIKI_CAP_STAGE_ALL=1 은 시험용 — 어느 곳이든 임시 디스크를 거친다(옮기기 실패 · 다시 옮기기를 시험한다).
+    static const bool s_stageAll = qEnvironmentVariableIntValue("HANISHIKI_CAP_STAGE_ALL") == 1;
+    const bool useLocalTemp = s_stageAll || Common::isOffLocalPath(filePath);
+    // ★ 폴더를 만들 수 없으면 알린다. 임시 디스크를 거치는 곳(디스크가 빠졌을 수 있다)은 그래도 캡쳐해 임시 디스크에 둔다 —
+    //   연결되면 옮긴다. 바로 쓰는 곳은 시간을 들이기 전에 멈춘다.
+    //   디스크 · 연결이 빠졌으면 폴더를 만들지 않는다 — 빈 연결 자리(~/Mountain Duck/<연결> 등)에 만들면 내장 디스크에 들어가
+    //   나중에 '옮겼다' 로 보인다(freeSpace · saveVolumePresent 와 같은 함정).
+    QString volTop;
+    if (useLocalTemp && !Common::saveVolumePresent(saveDir, &volTop)) {
+        log(QString("[캡쳐] 저장 디스크가 연결되어 있지 않습니다 — 연결되면 옮깁니다 (%1)").arg(volTop), "warning", "twitter");
+    } else if (!QDir().mkpath(saveDir)) {
+        if (!useLocalTemp) {
+            log(QString("[캡쳐] 캡쳐 폴더를 만들 수 없습니다: %1 — 폴더 권한 · 디스크를 확인하십시오").arg(saveDir), "error", "twitter");
+            return false;
+        }
+        log(QString("[캡쳐] 캡쳐 폴더를 만들 수 없습니다: %1 — 임시 디스크에 받아 두고 나중에 옮깁니다").arg(saveDir), "warning", "twitter");
+    }
     // ★ 파일이 '있기만' 하면 끝으로 보던 것을 바꾼다 — 트위터는 캡쳐가 한 번 실패하면 같은 이름(filename.html)에
     //   합성 카드를 쓰는데(TwitterCollector::captureTweet), 그 카드 때문에 이후 판에서 진짜 캡쳐를 영영 못 받았다.
-    if (isFinishedRealCapture(filePath)) return true;
+    if (isFinishedRealCapture(filePath)) { if (result) *result = CaptureResult::Saved; return true; }
+    // 임시 디스크에서 이 자리로 옮겨지기를 기다리는 진짜 캡쳐가 있다 — 다시 받지 않는다
+    //   ★ r56 검토 — 기다리기만 하지 않고 지금 옮겨 본다(디스크가 돌아왔으면 이번 판에 '받음' 이 된다)
+    if (stagedCapturePending(filePath)) {
+        if (retryStagedCapture(filePath)) { if (result) *result = CaptureResult::Saved; return true; }
+        if (result) *result = CaptureResult::Staged;
+        return false;
+    }
+    QString stageDir;
+    if (useLocalTemp) {
+        const QString baseTemp = Common::resolveTempBase(m_config ? m_config->tempDir() : QString());
+        if (baseTemp.isEmpty()) {
+            log("⚠ 임시 디스크 미설정 — 설정 → 디스크 설정에서 경로 지정 필요", "error", "twitter");
+            return false;
+        }
+        stageDir = baseTemp + "/.abiwa_cap";
+        if (!QDir().mkpath(stageDir)) {
+            log(QString("[캡쳐] 임시 디스크에 폴더를 만들 수 없습니다: %1 — 설정 → 디스크 설정을 확인하십시오").arg(stageDir), "error", "twitter");
+            return false;
+        }
+    }
+    auto run = std::make_shared<CapRun>();
 
     // ★ RAM 제한 — 동시 Chrome 인스턴스 1개로 제한 (8GB Mac OOM 방지).
     //   슬롯 확보까지 최대 30분 대기, 함수 끝에서 release.
@@ -8052,9 +8442,12 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
     }
 
     QString libCode = s_sfLibCode;
-    QMetaObject::invokeMethod(this, [this, chromePtr, url, filePath, libCode, waitMs, done, resultOk, trackKey]() {
+    run->mark(CapRun::Open);
+    QMetaObject::invokeMethod(this, [this, chromePtr, url, filePath, libCode, waitMs, done, resultOk, trackKey,
+                                     run, useLocalTemp, stageDir, loginCheckJs]() {
         if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-        (*chromePtr)->navigate(url, [this, chromePtr, filePath, url, libCode, waitMs, done, resultOk, trackKey](bool navOk) {
+        (*chromePtr)->navigate(url, [this, chromePtr, filePath, url, libCode, waitMs, done, resultOk, trackKey,
+                                     run, useLocalTemp, stageDir, loginCheckJs](bool navOk) {
             if (!navOk) {
                 log("CDP navigate 실패 — 캡쳐 스킵", "warning", "twitter");
                 done->release();
@@ -8072,8 +8465,9 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                     return document.readyState;
                 })()
             )JS").arg(qMin(waitMs, 3000));
-            if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-            (*chromePtr)->evaluate(readyJs, [this, chromePtr, filePath, url, libCode, done, resultOk, trackKey](const QJsonValue &) {
+            run->mark(CapRun::Ready);
+            auto afterReady = [this, chromePtr, filePath, url, libCode, done, resultOk, trackKey,
+                               run, useLocalTemp, stageDir](const QJsonValue &) {
                 // 원래 QTimer::singleShot 람다 내부 그대로 호출 — 매크로 이어짐
                 // ★ 단순 캡쳐 — 끝까지 스크롤 + 댓글 펼치기. virtualized DOM 재구성 제거 (메모리↓)
                 //   사용자 의도: "그냥 캡쳐만 해서 다운하는 방식. 댓글까지 전부 보이게"
@@ -8086,6 +8480,7 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                         //   (로컬 시험: 8장 중 7장 누락 → 한 화면씩: 8장 모두). 상한 55초는 예전(80×0.7초)과 같다.
                         const se = document.scrollingElement || document.documentElement;
                         let prevH = 0, same = 0;
+                        const tDown = performance.now();
                         const deadline = performance.now() + 55000;
                         // ★ 화면이 실제로 한 번 그려질 때까지 기다린다. IntersectionObserver 는 그리는 순간에만 판정한다 —
                         //   최소화된 수집 창은 그리는 간격이 길어 0.3초만 머물면 그사이 그리지 않은 그림을 건너뛰었다
@@ -8111,21 +8506,66 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                             }
                         }
                         // 2) "더 보기" 버튼 자동 클릭 (댓글 펼치기)
+                        // ★ r56 — 예전엔 화면 전체의 button/[role=button] 가운데 글자가 '더 보기…' 로 시작하는 것을 다 눌렀다.
+                        //   X 의 오른쪽 칸 아래 '더 보기 …'(메뉴를 여는 단추)까지 눌려, 열린 메뉴(소개 · 앱 다운로드 · 개발자 /
+                        //   基本情報 · アプリを入手 · 開発者)가 캡처의 오른쪽을 가린 채 저장됐다(남아 있던 캡처 4개 모두 — '배치가 엉망').
+                        //   이제 본문 칸(X 는 primaryColumn, 그 밖의 사이트는 main) 안에서만 누르고, 메뉴를 여는 단추(aria-haspopup) ·
+                        //   탐색 · 옆 칸 · 글쓰기 상자 · 꺼진 단추는 빼고, 누른 뒤 혹시 열린 메뉴 층은 닫는다(저장 직전에 한 번 더).
+                        //   이 스크립트는 pixiv · 인스타 · 텀블러 · 블루스카이 · 크롤러도 함께 쓴다 — X 에만 맞춘 것(본문 칸 · 옆 칸 ·
+                        //   #layers 층 숨기기)은 X 에서만 하고, 다른 사이트는 예전처럼 화면 전체에서 고르되 메뉴를 여는 단추 ·
+                        //   꺼진 단추 · 탐색 · 대화상자 · 입력 폼만 뺀다(검토). 층은 지우지 않고 숨긴다 — React 가 제 것을 찾다
+                        //   못 찾아 오류를 내지 않게.
+                        const isX = /(^|\.)(x|twitter)\.com$/.test(location.hostname);
+                        const closeLayers = () => {
+                            if (!isX) return;
+                            try {
+                                document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true}));
+                                document.querySelectorAll('#layers [role="menu"], #layers [data-testid="Dropdown"], #layers [data-testid="HoverCard"]').forEach(m => {
+                                    const layer = m.closest('#layers > div') || m;
+                                    try { layer.style.setProperty('display', 'none', 'important'); } catch(e){}
+                                });
+                            } catch(e){}
+                        };
                         try {
-                            document.querySelectorAll('button, [role="button"]').forEach(b => {
+                            const root = isX ? (document.querySelector('[data-testid="primaryColumn"]') || document.querySelector('main') || document.body) : document.body;
+                            const skipSel = isX
+                                ? 'nav, [role="navigation"], [data-testid="sidebarColumn"], header, footer, [role="menu"], [role="dialog"], form, [data-testid^="tweetTextarea"], [data-testid="toolBar"]'
+                                : 'nav, [role="navigation"], [role="menu"], [role="dialog"], form';
+                            root.querySelectorAll('button, [role="button"]').forEach(b => {
+                                if (b.closest(skipSel)) return;
+                                if (b.getAttribute('aria-haspopup')) return;
+                                if (b.disabled || b.getAttribute('aria-disabled') === 'true') return;
                                 const t = (b.textContent || '').trim();
-                                if (t.match(/^(더 보기|더보기|모두 보기|모두보기|Show more|See more|See all|View all|Load more|More replies|댓글|답글|もっと見る)/i)) {
+                                if (!t || t.length > 40) return;
+                                if (t.match(/^(더 보기|더보기|모두 보기|모두보기|Show more|See more|See all|View all|Load more|More replies|댓글|답글|もっと見る|さらに表示)/i)) {
                                     try { b.click(); } catch(e){}
                                 }
                             });
                         } catch(e){}
                         await sleep(1000);
+                        closeLayers();
+                        const downMs = performance.now() - tDown;
                         // 3) 다시 한 번 끝까지 (펼친 댓글 lazy-load)
+                        // ★ r56 — 예전엔 0.5초씩 30번(15초)을 늘 채웠다(멈춘 페이지도). 높이가 4번 잇달아 그대로이고 화면 안에
+                        //   도는 표시(role=progressbar — X 의 '불러오는 중')가 없으면 멈춘다. 상한 30번은 그대로(계속 붙는 답글 목록).
+                        //   느린 회선에서 X 가 답글을 1.5초 넘게 걸려 붙여도 놓치지 않게 3번이 아닌 4번(2초)을 본다.
+                        const tBottom = performance.now();
+                        let lastH = -1, still3 = 0, bottomIters = 0;
+                        const spinning = () => Array.from(document.querySelectorAll('[role="progressbar"]')).some(e => {
+                            const r = e.getBoundingClientRect();
+                            return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight;
+                        });
                         for (let i = 0; i < 30; i++) {
                             window.scrollTo(0, document.body.scrollHeight);
                             await sleep(500);
                             tick({carousel: true});
+                            bottomIters++;
+                            const h = Math.max(se.scrollHeight, document.body.scrollHeight);
+                            if (h === lastH && !spinning()) { if (++still3 >= 4) break; }
+                            else { still3 = 0; lastH = h; }
                         }
+                        const bottomMs = performance.now() - tBottom;
+                        closeLayers();   // 스크롤 중에 떠오른 층(메뉴 · 사용자 카드)도 저장에 남기지 않는다
                         // 3b) 그리지 않고도 지연 그림 — 화면이 꺼진 맥(덮개 닫힘 · 화면 잠듦)은 그리기를 멈춰 IntersectionObserver 가
                         //   울리지 않는다(밤의 内閣会 캡처에서 그림이 빠졌다 — 시험 io.html 0/6). 문서가 열릴 때 심어 둔 기록
                         //   (RealChromeCrawler 의 __hkFireIO)으로 아직 못 들은 '그림' 대상에만 '보인다' 를 알리고, loading=lazy 는
@@ -8161,13 +8601,23 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                         // 4) 페이지 맨 위 (캡쳐 상태 정상화)
                         window.scrollTo(0, 0);
                         await sleep(500);
-                        return 1;
+                        return {down: Math.round(downMs), bottom: Math.round(bottomMs), bottomIters: bottomIters};
                     })()
                 )JS";
                 if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
+                run->mark(CapRun::Scroll);
                 (*chromePtr)->ensureActive();   // 숨은 탭이 얼어 있으면 깨운다(Chrome 의 절약 모드 · 메모리 정리)
-                (*chromePtr)->evaluate(scrollJs, [this, chromePtr, filePath, url, libCode, done, resultOk, trackKey](const QJsonValue &v) {
-                    log(QString("[캡쳐] virtualized 스크롤 완료 — article %1개 정적 DOM 재구성").arg(v.toInt()), "info", "twitter");
+                (*chromePtr)->evaluate(scrollJs, [this, chromePtr, filePath, url, libCode, done, resultOk, trackKey,
+                                                  run, useLocalTemp, stageDir](const QJsonValue &v) {
+                    {
+                        const QJsonObject so = v.toObject();
+                        run->scrollNote = QString("아래로 %1s · 바닥 확인 %2s(%3번)")
+                            .arg(so.value("down").toDouble() / 1000.0, 0, 'f', 1)
+                            .arg(so.value("bottom").toDouble() / 1000.0, 0, 'f', 1)
+                            .arg(so.value("bottomIters").toInt());
+                        log(QString("[캡쳐] 스크롤 완료 — %1").arg(run->scrollNote), "info", "twitter");
+                    }
+                    run->mark(CapRun::Filters);
 
                     // ★ 트위터의 절전 모드 / sensitive overlay / grayscale/blur 필터 강제 제거
                     //   계속 스크롤하면 트위터가 페이지에 grayscale 필터 거는 경우 있음 (사용자 캡쳐 흑백 현상)
@@ -8217,12 +8667,15 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                         })()
                     )JS";
                     if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-                    (*chromePtr)->evaluate(clearFiltersJs, [this, chromePtr, filePath, url, libCode, done, resultOk, trackKey](const QJsonValue &) {
+                    (*chromePtr)->evaluate(clearFiltersJs, [this, chromePtr, filePath, url, libCode, done, resultOk, trackKey,
+                                                            run, useLocalTemp, stageDir](const QJsonValue &) {
                     log("[캡쳐] grayscale/blur 필터 정리 완료", "info", "twitter");
                     // 1) SingleFile lib 주입
                     if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
+                    run->mark(CapRun::SingleFile);   // ★ 여기서 시간 예산을 새로 잡는다(아래 기다림) — 스크롤이 길었다고 저장을 잘라 먹지 않게
                     (*chromePtr)->setCorsRelax(true);   // SingleFile fetch 가 CORS 로 비지 않게 — getPageData 끝에서 끈다
-                    (*chromePtr)->evaluate(libCode, [this, chromePtr, filePath, url, done, resultOk, trackKey](const QJsonValue &) {
+                    (*chromePtr)->evaluate(libCode, [this, chromePtr, filePath, url, done, resultOk, trackKey,
+                                                     run, useLocalTemp, stageDir](const QJsonValue &) {
                     // 2) singlefile.getPageData() 호출 (await Promise)
                     QString call = R"JS(
                         (async () => {
@@ -8278,8 +8731,15 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                         })()
                     )JS";
                     if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
-                    (*chromePtr)->evaluate(call, [this, chromePtr, filePath, url, done, resultOk, trackKey](const QJsonValue &v) {
+                    (*chromePtr)->evaluate(call, [this, chromePtr, filePath, url, done, resultOk, trackKey,
+                                                  run, useLocalTemp, stageDir](const QJsonValue &v) {
                         if (*chromePtr) (*chromePtr)->setCorsRelax(false);   // 자원 모으기 끝 — 페이지 자체 요청은 원래 규칙대로
+                        // 타임아웃으로 버린 캡쳐 — 늦게 온 결과를 쓰지 않는다
+                        if (run->state.load() == 2) {
+                            if (*chromePtr) (*chromePtr)->evaluate("delete window.__capContent; true;", [](const QJsonValue &){});
+                            done->release();
+                            return;
+                        }
                         QJsonObject obj = v.toObject();
                         if (obj.contains("error")) {
                             log(QString("[SingleFile] 호출 오류: %1").arg(obj["error"].toString()), "warning", "twitter");
@@ -8296,72 +8756,82 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                                 done->release();
                                 return;
                             }
-                            // ★ NAS/외장 path 면 사용자 임시 디스크에 먼저 쓰고 → 끝나면 NAS 로 cp.
-                            // ★ 다 받기 전에는 제 이름을 쓰지 않는다(.part) — 끊긴 파일이 '이미 캡쳐됨' 으로 남지 않게
-                            QString writeTarget = filePath + QStringLiteral(".part");
-                            bool useLocalTemp = filePath.startsWith("/Volumes/");
-                            if (useLocalTemp) {
-                                QString baseTemp = Common::resolveTempBase(m_config ? m_config->tempDir() : QString());
-                                if (baseTemp.isEmpty()) {
-                                    log("⚠ 임시 디스크 미설정 — 설정 → 디스크 설정에서 경로 지정 필요", "error", "twitter");
-                                    done->release();
-                                    return;
-                                }
-                                QString tmpDir = baseTemp + "/.abiwa_cap";
-                                QDir().mkpath(tmpDir);
-                                writeTarget = tmpDir + "/" +
-                                    QString::number(QDateTime::currentMSecsSinceEpoch()) + "_" +
-                                    QFileInfo(filePath).fileName();
-                            } else {
-                                QDir().mkpath(QFileInfo(filePath).absolutePath());
+                            // ★ 저장 디스크 밖(외장 · NAS)이면 임시 디스크에 먼저 다 쓰고 → 끝나면 수집 스레드가 옮긴다(r56: 튼튼한 복사).
+                            // ★ 다 받기 전에는 제 이름을 쓰지 않는다(.part) — 끊긴 파일이 '이미 캡쳐됨' 으로 남지 않게.
+                            //   임시 디스크 쪽도 .part 로 쓰고 다 쓴 뒤에 이름을 바꾼다 — 옆 기록 없이 남은 것이 늘 '다 쓴 것' 이게.
+                            const QString writeTarget = useLocalTemp
+                                ? stageDir + "/" + QString::number(QDateTime::currentMSecsSinceEpoch()) + "_"
+                                      + QFileInfo(filePath).fileName() + QStringLiteral(".part")
+                                : filePath + QStringLiteral(".part");
+                            if (!useLocalTemp && !QDir().mkpath(QFileInfo(filePath).absolutePath())) {
+                                log(QString("[SingleFile] 캡쳐 폴더를 만들 수 없습니다: %1 — 폴더 권한 · 디스크를 확인하십시오")
+                                    .arg(QFileInfo(filePath).absolutePath()), "error", "twitter");
+                                done->release();
+                                return;
                             }
                             QFile *outFile = new QFile(writeTarget);
                             if (!outFile->open(QIODevice::WriteOnly)) {
-                                log(QString("[SingleFile] 파일 열기 실패: %1 (target=%2)")
-                                    .arg(writeTarget, filePath), "error", "twitter");
+                                log(QString("[SingleFile] 파일 열기 실패: %1 (%2, target=%3)")
+                                    .arg(writeTarget, outFile->errorString(), filePath), "error", "twitter");
                                 delete outFile;
                                 done->release();
                                 return;
                             }
+                            run->mark(CapRun::Transfer);
                             const qint64 CHUNK = 1024 * 1024;  // 1MB
                             auto offsetPtr = std::make_shared<qint64>(0);
+                            auto writeErr = std::make_shared<QString>();
                             auto fetchNext = std::make_shared<std::function<void()>>();
-                            *fetchNext = [this, chromePtr, outFile, totalSize, offsetPtr, fetchNext, filePath, writeTarget, useLocalTemp, url, done, resultOk, trackKey]() {
-                                if (*offsetPtr >= totalSize) {
+                            *fetchNext = [this, chromePtr, outFile, totalSize, offsetPtr, writeErr, fetchNext, filePath, writeTarget,
+                                          useLocalTemp, done, resultOk, trackKey, run]() {
+                                // ★ r56 — 타임아웃으로 버린 캡쳐는 더 쓰지 않고 지운다(호출자가 그 자리에 카드를 쓰고 있을 수 있다)
+                                const bool abandoned = run->state.load() == 2;
+                                if (*offsetPtr >= totalSize && !abandoned) {
+                                    // ★ r56 — 쓰기 · 닫기 결과와 실제 크기를 본다. 예전엔 write() 반환값을 버려, 임시 디스크가 차거나
+                                    //   NAS 가 끊겨 끝이 잘린 파일도 머리 주석이 있어 '다 받은 캡쳐' 로 영영 남았다.
+                                    const bool flushed = outFile->flush();
                                     outFile->close();
+                                    const bool closeOk = flushed && outFile->error() == QFileDevice::NoError;
+                                    const QString closeErr = outFile->errorString();
                                     delete outFile;
                                     // JS global 해제 (Chrome 이 이미 정리됐으면 해제할 대상도 없다)
                                     if (*chromePtr)
                                         (*chromePtr)->evaluate("delete window.__capContent; true;", [](const QJsonValue &){});
-
-                                    // ★ 로컬 temp 에 쓴 경우 → NAS 로 cp + 로컬 삭제
-                                    bool finalOk = true;
+                                    const qint64 onDisk = QFileInfo(writeTarget).size();
+                                    if (!closeOk || onDisk != run->written) {
+                                        log(QString("[SingleFile] ⚠ 캡쳐 파일이 끝까지 써지지 않았습니다(%1 / %2 바이트%3) — 버리고 다음 판에 다시 받습니다. "
+                                                    "임시 디스크 · 저장 디스크의 공간을 확인하십시오")
+                                            .arg(onDisk).arg(run->written).arg(closeOk ? QString() : QStringLiteral(", ") + closeErr),
+                                            "warning", "twitter");
+                                        QFile::remove(writeTarget);
+                                        done->release();
+                                        return;
+                                    }
+                                    QString finalTarget = writeTarget;
                                     if (useLocalTemp) {
-                                        QDir().mkpath(QFileInfo(filePath).absolutePath());
-                                        QFile::remove(filePath);
-                                        if (!QFile::copy(writeTarget, filePath)) {
-                                            log(QString("[SingleFile] ⚠ NAS 복사 실패 (로컬에 남김): %1").arg(writeTarget),
-                                                "warning", "twitter");
-                                            finalOk = false;
-                                        } else {
-                                            QFile::remove(writeTarget);  // 로컬 temp 삭제
-                                        }
-                                    } else {
-                                        QFile::remove(filePath);   // 다시 캡쳐(카드·오류 화면을 덮어쓰기)
-                                        if (!QFile::rename(writeTarget, filePath)) {
-                                            log(QString("[SingleFile] ⚠ 이름 바꾸기 실패 (.part 로 남김): %1").arg(writeTarget),
-                                                "warning", "twitter");
-                                            finalOk = false;
+                                        finalTarget.chop(5);   // ".part" — 임시 디스크 안에서의 이름 바꾸기(같은 디스크)
+                                        QFile::remove(finalTarget);
+                                        if (!QFile::rename(writeTarget, finalTarget)) {
+                                            log(QString("[SingleFile] ⚠ 임시 디스크에서 이름을 바꾸지 못했습니다: %1 — 이 캡쳐는 저장하지 않습니다")
+                                                .arg(writeTarget), "warning", "twitter");
+                                            QFile::remove(writeTarget);
+                                            done->release();
+                                            return;
                                         }
                                     }
-                                    FileHelper::setDownloadMeta(filePath, url);
-                                    FileHelper::setFinderComment(filePath, url);
-                                    *resultOk = finalOk;
-                                    log(QString("[SingleFile] ✅ 캡쳐 완료: %1 (%2KB)")
-                                        .arg(QFileInfo(filePath).fileName())
-                                        .arg(totalSize / 1024), "success", "twitter");
-                                    enqueueWebDavUpload(filePath);
-                                    enqueueBackup(filePath);
+                                    run->writeTarget = finalTarget;
+                                    run->staged = useLocalTemp;
+                                    int expected = 0;
+                                    if (!run->state.compare_exchange_strong(expected, 1)) {
+                                        // 그새 타임아웃으로 버려졌다 — 기다리던 쪽은 이미 돌아갔다
+                                        QFile::remove(finalTarget);
+                                        log("[SingleFile] 늦게 끝난 캡쳐 — 시간이 지나 이미 버린 것이라 저장하지 않습니다", "warning", "twitter");
+                                        done->release();
+                                        return;
+                                    }
+                                    // ★ 제 자리로 옮기기 · 메타 · '✅ 캡쳐 완료' 는 기다리던 수집 스레드가 한다(r56) — 옮기기가 실패하면
+                                    //   성공이라 말하지 않고, NAS 복사 · Finder 메모(osascript)로 메인 스레드를 붙잡지 않는다.
+                                    *resultOk = true;
 
                                     // ★ N회 캡쳐마다 Chrome 재시작 — 메모리 누수 방지 (60+개 안정성)
                                     static const int CHROME_REUSE_LIMIT = 25;
@@ -8386,27 +8856,41 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                                     done->release();
                                     return;
                                 }
+                                // ★ 트랙 종료로 슬롯이 비워졌거나(아래 타임아웃 포함) 조각이 문자열로 안 왔거나 쓰기가 모자랐다 — 저장하지 않고 끝낸다.
+                                if (abandoned || !*chromePtr || *offsetPtr < 0) {
+                                    outFile->close();
+                                    delete outFile;
+                                    QFile::remove(writeTarget);
+                                    if (abandoned && *chromePtr)
+                                        (*chromePtr)->evaluate("delete window.__capContent; true;", [](const QJsonValue &){});
+                                    log(writeErr->isEmpty()
+                                            ? QStringLiteral("[SingleFile] 청크 전송 중단 — 이 캡쳐는 저장하지 않습니다")
+                                            : QString("[SingleFile] ⚠ 캡쳐 파일 쓰기 실패(%1) — 이 캡쳐는 저장하지 않습니다. 디스크 공간 · 권한을 확인하십시오")
+                                                  .arg(*writeErr),
+                                        "warning", "twitter");
+                                    done->release();
+                                    return;
+                                }
                                 qint64 end = qMin(*offsetPtr + CHUNK, totalSize);
                                 // ★ 조각 끝이 서로게이트 쌍(이모지) 한가운데면 한 글자 더 — 둘로 갈리면 양쪽이 깨진 글자가 된다
                                 QString slice = QString("(()=>{const s=window.__capContent;let e=%2;"
                                                         "const c=s.charCodeAt(e-1);if(e<s.length&&c>=0xD800&&c<=0xDBFF)e++;"
                                                         "return s.slice(%1,e)})()").arg(*offsetPtr).arg(end);
-                                // ★ 트랙 종료로 슬롯이 비워졌거나(아래 타임아웃 포함) 조각이 문자열로 안 왔다 — 저장하지 않고 끝낸다.
-                                if (!*chromePtr || *offsetPtr < 0) {
-                                    outFile->close();
-                                    delete outFile;
-                                    QFile::remove(writeTarget);
-                                    log("[SingleFile] 청크 전송 중단 — 이 캡쳐는 저장하지 않습니다", "warning", "twitter");
-                                    done->release();
-                                    return;
-                                }
-                                (*chromePtr)->evaluate(slice, [outFile, offsetPtr, fetchNext](const QJsonValue &cv) {
+                                (*chromePtr)->evaluate(slice, [outFile, offsetPtr, writeErr, fetchNext, run](const QJsonValue &cv) {
                                     // 페이지가 바뀌었거나(다음 캡쳐의 navigate) 렌더러가 죽으면 값이 비어 온다 —
                                     //   예전엔 빈 조각을 쓰고 계속 가서 잘린 파일이 '✅ 캡쳐 완료' 로 남았다.
                                     const QString part = cv.isString() ? cv.toString() : QString();
                                     if (part.isEmpty()) { *offsetPtr = -1; (*fetchNext)(); return; }
                                     QByteArray bytes = part.toUtf8();
-                                    outFile->write(bytes);
+                                    // ★ r56 — 덜 써졌으면(디스크가 참 · NAS 끊김) 여기서 멈춘다. 쓴 바이트를 세어 끝에 파일 크기와 맞춘다
+                                    const qint64 n = outFile->write(bytes);
+                                    if (n != bytes.size()) {
+                                        *writeErr = outFile->errorString();
+                                        *offsetPtr = -1;
+                                        (*fetchNext)();
+                                        return;
+                                    }
+                                    run->written += n;
                                     bytes.clear();
                                     *offsetPtr += part.size();   // 서로게이트 보정으로 end 보다 1 클 수 있다
                                     (*fetchNext)();
@@ -8423,21 +8907,35 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                             done->release();
                             return;
                         }
-                        // disk stream write — content.toUtf8() 임시 사본 회피
-                        QFile f(filePath);
-                        if (f.open(QIODevice::WriteOnly)) {
+                        // ★ r56 — 이 길도 다 쓴 것을 확인한 뒤 넘긴다(옮기기 · 메타 · 완료 알림은 수집 스레드가 위와 같이 한다)
+                        {
+                            const QString tgt = useLocalTemp
+                                ? stageDir + "/" + QString::number(QDateTime::currentMSecsSinceEpoch()) + "_" + QFileInfo(filePath).fileName()
+                                : filePath + QStringLiteral(".part");
                             QByteArray bytes = content.toUtf8();
-                            int sz = bytes.size();
-                            f.write(bytes);
-                            f.close();
-                            bytes.clear();          // 즉시 해제
                             content = QString();    // 큰 string 즉시 해제
-                            FileHelper::setDownloadMeta(filePath, url);
-                            FileHelper::setFinderComment(filePath, url);
+                            const qint64 sz = bytes.size();
+                            QFile f(tgt + (useLocalTemp ? QStringLiteral(".part") : QString()));
+                            bool ok = f.open(QIODevice::WriteOnly) && f.write(bytes) == sz;
+                            bytes.clear();          // 즉시 해제
+                            ok = f.flush() && ok;
+                            f.close();
+                            ok = ok && f.error() == QFileDevice::NoError && QFileInfo(f.fileName()).size() == sz;
+                            if (ok && useLocalTemp) ok = QFile::rename(f.fileName(), tgt);
+                            int expected = 0;
+                            if (!ok || !run->state.compare_exchange_strong(expected, 1)) {
+                                if (!ok)
+                                    log(QString("[SingleFile] ⚠ 캡쳐 파일 쓰기 실패(%1) — 이 캡쳐는 저장하지 않습니다").arg(f.errorString()),
+                                        "warning", "twitter");
+                                QFile::remove(f.fileName());
+                                QFile::remove(tgt);
+                                done->release();
+                                return;
+                            }
+                            run->writeTarget = tgt;
+                            run->staged = useLocalTemp;
+                            run->written = sz;
                             *resultOk = true;
-                            log(QString("[SingleFile] ✅ 캡쳐 완료: %1 (%2KB)")
-                                .arg(QFileInfo(filePath).fileName())
-                                .arg(sz / 1024), "success", "twitter");
                         }
                         // ★ chrome 메모리 해제는 다음 capture 시작 시 navigate가 덮어씀.
                         //   (이전엔 about:blank 호출로 즉시 해제 시도 → lambda chromePtr capture 누락 빌드 에러 → 제거)
@@ -8446,24 +8944,110 @@ bool HanishikiBackend::captureRealPageCDP(const QString &url,
                 });   // close evaluate(libCode)
                 });   // close evaluate(clearFiltersJs)
                 });   // close evaluate(scrollJs)
-            });   // close evaluate(readyJs) — readyState 동적 대기 wrapper
+            };   // afterReady — readyState 동적 대기 뒤
+            if (!*chromePtr) { done->release(); return; }   // 트랙 종료로 슬롯이 비워짐
+            // ★ r56 — 로그인 검사를 여기서 한다(같은 페이지를 로그인 검사용으로 한 번 더 열지 않게). 로그인 화면이면
+            //   캡쳐하지 않고 '로그인 필요' 로 돌아간다 — LoginAware 가 로그인 대기 뒤 한 번 더 한다.
+            (*chromePtr)->evaluate(readyJs, [chromePtr, done, run, loginCheckJs, afterReady](const QJsonValue &rv) {
+                if (loginCheckJs.isEmpty() || !*chromePtr) { afterReady(rv); return; }
+                (*chromePtr)->evaluate(loginCheckJs, [done, run, afterReady, rv](const QJsonValue &lv) {
+                    if (lv.toBool()) { run->needsLogin = true; done->release(); return; }
+                    afterReady(rv);
+                });
+            });
         });   // close navigate
     }, Qt::QueuedConnection);
 
-    if (!done->tryAcquire(1, waitMs + 120000)) {  // +120s: 스크롤 lazy-load 시간 확보
-        log("captureRealPageCDP 타임아웃 — 이 캡쳐 Chrome 을 내리고 다음 항목은 새로 띄웁니다", "warning", "twitter");
-        // ★ 그냥 돌아가면 슬롯·잠금이 풀린 뒤에도 콜백 사슬이 계속 돈다 — 다음 캡쳐가 같은 Chrome 을 navigate 하면
-        //   늦게 온 getPageData/조각 전송이 다음 페이지 내용을 이 파일에 쓰거나 잘린 파일을 남겼다.
-        //   슬롯을 먼저 비워(사슬의 if (!*chromePtr) 가드가 받는다) 그 다음에 내린다 — stop() 이 대기 콜백을 바로 부른다.
-        //   큐 순서상 다음 캡쳐의 invokeMethod 보다 먼저 돈다.
-        QMetaObject::invokeMethod(this, [chromePtr]() {
-            RealChromeCrawler *c = *chromePtr;
-            *chromePtr = nullptr;
-            if (c) { c->stop(); c->deleteLater(); }
-        }, Qt::QueuedConnection);
+    // ★ r56 — 단계별 시간 예산. 예전엔 통째로 waitMs+120초라, 답글이 끝없이 붙는 글은 스크롤이 시간을 다 먹고 저장(getPageData ·
+    //   조각 전송)이 잘려 카드가 됐다. 열기~필터는 waitMs+120초, SingleFile 부터는 새로 150초(자원마다 30초 · 큰 페이지 전송),
+    //   통틀어 waitMs+270초를 넘지 않는다. 타임아웃이면 단계마다 걸린 시간을 남긴다 — 어디서 막혔는지 보이게.
+    const qint64 tStart = QDateTime::currentMSecsSinceEpoch();
+    const qint64 prepBudget = qint64(waitMs) + 120000;
+    const qint64 saveBudget = 150000;
+    const qint64 hardCap = qint64(waitMs) + 270000;
+    bool finished = false;
+    for (;;) {
+        if (done->tryAcquire(1, 500)) { finished = true; break; }
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const qint64 sfAt = run->phaseAt[CapRun::SingleFile].load();
+        if ((sfAt <= 0 ? now - tStart > prepBudget : now - sfAt > saveBudget) || now - tStart > hardCap) break;
+    }
+    if (!finished) {
+        int expected = 0;
+        if (run->state.compare_exchange_strong(expected, 2)) {
+            log(QString("captureRealPageCDP 타임아웃 (%1) — 이 캡쳐 Chrome 을 내리고 다음 항목은 새로 띄웁니다")
+                .arg(run->summary(QDateTime::currentMSecsSinceEpoch())), "warning", "twitter");
+            // ★ 그냥 돌아가면 슬롯·잠금이 풀린 뒤에도 콜백 사슬이 계속 돈다 — 다음 캡쳐가 같은 Chrome 을 navigate 하면
+            //   늦게 온 getPageData/조각 전송이 다음 페이지 내용을 이 파일에 쓰거나 잘린 파일을 남겼다.
+            //   슬롯을 먼저 비워(사슬의 if (!*chromePtr) 가드가 받는다) 그 다음에 내린다 — stop() 이 대기 콜백을 바로 부른다.
+            //   큐 순서상 다음 캡쳐의 invokeMethod 보다 먼저 돈다.
+            QMetaObject::invokeMethod(this, [chromePtr]() {
+                RealChromeCrawler *c = *chromePtr;
+                *chromePtr = nullptr;
+                if (c) { c->stop(); c->deleteLater(); }
+            }, Qt::QueuedConnection);
+            return false;
+        }
+        // 마무리가 막 끝났다(state 1) — 곧 오는 신호를 받아 이어 간다
+        done->tryAcquire(1, 30000);
+    }
+    if (run->needsLogin) {
+        if (result) *result = CaptureResult::NeedsLogin;
         return false;
     }
-    return *resultOk;
+    if (!*resultOk || run->writeTarget.isEmpty()) return false;
+
+    // ★ r56 — 제 자리로 넘기기(수집 스레드). 성공 알림 · Finder 메타 · 백업/WebDAV 큐는 파일이 제 자리에 들어간 것을 본 뒤에만.
+    //   예전엔 NAS 복사가 실패해도 '✅ 캡쳐 완료' 를 찍고 없는 경로에 메타를 달았으며, 호출자는 그 자리에 카드를 써서
+    //   진짜 페이지가 숨은 임시 폴더에 영영 남았다(.abiwa_cap 에 4개 — 2026-11-21/22).
+    const QString name = QFileInfo(filePath).fileName();
+    if (run->staged) {
+        QString why;
+        if (!deliverStagedFile(run->writeTarget, filePath, url, &why)) {
+            // 옆 기록을 남긴다 — 앱 시작 · 다음 트위터/크롤 수집 시작 때 이것을 보고 다시 옮긴다
+            QJsonObject rec;
+            rec["dest"] = filePath;
+            rec["url"] = url;
+            rec["bytes"] = run->written;
+            rec["at"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+            QString serr;
+            if (!Common::writeFileAtomic(stagedSidecarPath(run->writeTarget), QJsonDocument(rec).toJson(QJsonDocument::Compact), &serr))
+                log(QString("[SingleFile] 옆 기록(.dest.json)을 쓰지 못했습니다: %1").arg(serr), "warning", "twitter");
+            noteStagedCapture(filePath, run->writeTarget);
+            log(QString("[SingleFile] ⚠ 진짜 캡쳐를 저장 폴더로 옮기지 못해 임시 디스크에 두었습니다 — 앱을 다시 켜거나 다음 수집을 "
+                        "시작하면 다시 옮깁니다: %1 (%2) — 임시: %3").arg(name, why, run->writeTarget), "warning", "twitter");
+            if (result) *result = CaptureResult::Staged;
+            return false;
+        }
+    } else {
+        QFile::remove(filePath);   // 다시 캡쳐(카드·오류 화면을 덮어쓰기)
+        if (!QFile::rename(run->writeTarget, filePath)) {
+            QString err;
+            if (!Common::robustCopyFile(run->writeTarget, filePath, &err)) {
+                log(QString("[SingleFile] ⚠ 캡쳐를 제 이름으로 바꾸지 못했습니다(.part 로 남김): %1 (%2)").arg(run->writeTarget, err),
+                    "warning", "twitter");
+                return false;
+            }
+            QFile::remove(run->writeTarget);
+        }
+        if (QFileInfo(filePath).size() != run->written) {
+            log(QString("[SingleFile] ⚠ 저장한 캡쳐의 크기가 맞지 않습니다(%1 / %2 바이트) — 버리고 다음 판에 다시 받습니다: %3")
+                .arg(QFileInfo(filePath).size()).arg(run->written).arg(name), "warning", "twitter");
+            QFile::remove(filePath);
+            return false;
+        }
+        setCaptureSizeMark(filePath, run->written);
+        FileHelper::setDownloadMeta(filePath, url);
+        FileHelper::setFinderComment(filePath, url);
+        QMetaObject::invokeMethod(this, [this, filePath]() {
+            enqueueWebDavUpload(filePath);
+            enqueueBackup(filePath);
+        }, Qt::QueuedConnection);
+    }
+    log(QString("[SingleFile] ✅ 캡쳐 완료: %1 (%2KB) — %3")
+        .arg(name).arg(run->written / 1024).arg(run->summary(QDateTime::currentMSecsSinceEpoch())), "success", "twitter");
+    if (result) *result = CaptureResult::Saved;
+    return true;
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -8578,13 +9162,22 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
                                                 const QString &platform,
                                                 int waitMs,
                                                 const QList<QNetworkCookie> &cookies,
-                                                const QJsonObject &config)
+                                                const QJsonObject &config,
+                                                CaptureResult *result)
 {
+    if (result) *result = CaptureResult::Failed;
     if (url.isEmpty() || saveDir.isEmpty()) return false;
     QString p = platform.isEmpty() ? "general" : platform;
     // ★ 이미 끝난 항목은 사전 navigate(로그인 검사)부터 건너뛴다 — 예전엔 다시 돌릴 때마다 받은 글마다
     //   캡쳐 Chrome 이 그 페이지를 한 번씩 열고(로드+1.5초) 나서야 captureRealPageCDP 가 '있음' 으로 돌아갔다.
-    if (isFinishedRealCapture(saveDir + "/" + filename + ".html")) return true;
+    if (isFinishedRealCapture(saveDir + "/" + filename + ".html")) { if (result) *result = CaptureResult::Saved; return true; }
+    // 임시 디스크에서 옮겨지기를 기다리는 진짜 캡쳐가 있다(r56) — 다시 받지 않는다
+    //   ★ r56 검토 — 지금 옮겨 본다(트위터 밖 플랫폼은 옮기기가 따로 돌지 않는다 — retryStagedCapture)
+    if (stagedCapturePending(saveDir + "/" + filename + ".html")) {
+        if (retryStagedCapture(saveDir + "/" + filename + ".html")) { if (result) *result = CaptureResult::Saved; return true; }
+        if (result) *result = CaptureResult::Staged;
+        return false;
+    }
 
     // ★ 캡쳐 시작 전 — 저장된 계정 쿠키 자동 주입 (전 플랫폼 공통).
     //   호출자가 추가 cookies 를 넘기면 그것도 병합 → 사용자 입력 쿠키 보존.
@@ -8598,6 +9191,36 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
     }
     // 이하 함수 본문은 'cookies' 가 아닌 'mergedCookies' 를 사용하도록 변환.
     const QList<QNetworkCookie> &effectiveCookies = mergedCookies;
+
+    // ★ r56 — 같은 페이지를 두 번 열지 않는다. 예전엔 글마다 로그인 검사용으로 한 번 열고(로드 + 1.5초) 본 캡쳐가 또 열었다.
+    //   이 Chrome(열쇠 + 플랫폼)의 지난 캡쳐가 로그인된 채 끝났으면 사전 navigate 를 건너뛰고, 캡쳐 안에서(readyState 뒤)
+    //   로그인을 본다. 로그인 화면이면 아래 원래 길(사전 검사 → 로그인 대기)로 가서 한 번 더 한다.
+    //   실패하면 열쇠를 빼서 다음 글은 원래 길로 — 원래 길의 60초 사전 검사가 얼어붙은 렌더러를 정리하는 길이라 남겨 둔다.
+    const QString loginOkKey = [&]() {
+        const QString tk = currentThreadTrackKey();
+        const QString ex = Common::proxyExitTag();
+        return ((tk.isEmpty() && !ex.isEmpty()) ? QStringLiteral("~exit:") + ex : tk) + QLatin1Char('\n') + p;
+    }();
+    auto setLoginOk = [this, &loginOkKey](bool ok) {
+        QMutexLocker lk(&m_capLoginOkMutex);
+        if (ok) m_capLoginOkKeys.insert(loginOkKey); else m_capLoginOkKeys.remove(loginOkKey);
+    };
+    bool fastPath;
+    {
+        QMutexLocker lk(&m_capLoginOkMutex);
+        fastPath = m_capLoginOkKeys.contains(loginOkKey);
+    }
+    if (fastPath) {
+        CaptureResult r = CaptureResult::Failed;
+        const bool ok = captureRealPageCDP(url, saveDir, filename, waitMs, effectiveCookies, &r, loginCheckJs);
+        if (r != CaptureResult::NeedsLogin) {
+            if (r == CaptureResult::Failed) setLoginOk(false);
+            if (result) *result = r;
+            return ok;
+        }
+        setLoginOk(false);
+        log(QString("🔐 [%1] 캡쳐 중 로그인 화면이 보였습니다 — 로그인을 확인한 뒤 다시 캡쳐합니다").arg(p), "warning", p);
+    }
 
     // 1) 캡쳐 chrome 시작 보장 + cookie inject (captureRealPageCDP가 처음에 알아서 함)
     //    여긴 그냥 단발 navigate + 로그인 체크만 함.
@@ -8856,7 +9479,12 @@ bool HanishikiBackend::captureRealPageCDPLoginAware(const QString &url,
 
     // 3) 본 캡쳐 호출 (captureRealPageCDP가 navigate를 다시 해도 같은 페이지면 깜빡임 적음)
     preNavSlot.release();   // 로그인 대기 동안 쥐고 있었다면 여기서 놓는다 — captureRealPageCDP 가 같은 슬롯을 다시 잡는다
-    return captureRealPageCDP(url, saveDir, filename, waitMs, effectiveCookies);
+    CaptureResult r = CaptureResult::Failed;
+    const bool ok = captureRealPageCDP(url, saveDir, filename, waitMs, effectiveCookies, &r);
+    // 진짜 캡쳐를 받았으면(제 자리든 임시 디스크든) 로그인된 Chrome 이다 — 다음 글부터 사전 navigate 를 건너뛴다
+    setLoginOk(ok || r == CaptureResult::Staged);
+    if (result) *result = r;
+    return ok;
 }
 
 void HanishikiBackend::confirmLoginDone(const QString &platform)
@@ -13838,6 +14466,65 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
         return sanitizeFilename(name, 200);
     };
 
+    // ★ r56 — 사람(작가 · 대상)의 폴더 이름. 이미 있는 '<ID>_…' 폴더가 있으면(여럿이면 가장 최근에 쓴 것) 그것을 그대로 쓰고,
+    //   그것이 없을 때만 이름을 못 얻은 판의 '<ID>' 폴더를 쓴다. 예전엔 늘 '<ID>_<지금 이름>' 이라, 작가가 이름을 바꾸면 폴더가 하나 더
+    //   생겨 한 사람의 파일이 둘로 갈렸고(정리하기는 후보 여럿으로 멈췄다), 프로필 API 가 실패한 판은 '<ID>' 만의 폴더를 따로 만들었다.
+    //   이미 받은 파일은 옮기지 않는다 — 없을 때만 지금 이름으로 만든다. parent 마다 · ID 마다 한 번만 찾는다(작품마다 pixiv/ 를 훑지 않게).
+    QHash<QString, QStringList> pxDirsCache;
+    auto pxPersonDirs = [&pxDirsCache](const QString &parent, const QString &uid) -> QStringList {
+        const QString key = parent + QLatin1Char('|') + uid;
+        const auto hit = pxDirsCache.constFind(key);
+        if (hit != pxDirsCache.constEnd()) return hit.value();
+        QStringList named, bare;   // named: '<ID>_…' 를 최근 것부터, bare: '<ID>'
+        if (!uid.isEmpty()) {
+            QFileInfoList fl = QDir(parent).entryInfoList({uid, uid + "_*"}, QDir::Dirs | QDir::NoDotAndDotDot);
+            std::sort(fl.begin(), fl.end(), [](const QFileInfo &a, const QFileInfo &b) { return a.lastModified() > b.lastModified(); });
+            for (const QFileInfo &fi : fl) {
+                if (fi.fileName() == uid) bare << fi.fileName();
+                else if (fi.fileName().startsWith(uid + QLatin1Char('_'))) named << fi.fileName();
+            }
+        }
+        const QStringList all = named + bare;
+        pxDirsCache.insert(key, all);
+        return all;
+    };
+    QHash<QString, QString> pxDirCache;
+    auto pxPersonDir = [&pxDirCache, &pxPersonDirs](const QString &parent, const QString &uid, const QString &uname) -> QString {
+        const QString key = parent + QLatin1Char('|') + uid;
+        const auto hit = pxDirCache.constFind(key);
+        if (hit != pxDirCache.constEnd()) return hit.value();
+        const QStringList have = pxPersonDirs(parent, uid);
+        QString best = have.value(0);
+        if (best.isEmpty()) {
+            const QString nm = sanitizeFilename(uname.left(30).trimmed(), 30);
+            best = nm.isEmpty() ? uid : uid + "_" + nm;
+            if (best.isEmpty()) best = QStringLiteral("_");   // ID · 이름 모두 없음 — 예전 이름('' + '_' + '')과 같게
+        }
+        pxDirCache.insert(key, best);
+        return best;
+    };
+    // r56 전의 북마크 자리(pixiv/<작가>/bookmarks/<sub>/)에 그 작품(이름 끝 '(작품ID[_쪽])' 패턴)이나 소설 폴더(…_<소설ID>, 이름 그대로)가 이미 있나 —
+    //   작가 폴더가 여럿이면(이름 바꿈) 모두 본다. 있으면 그 작가 폴더(pixiv/<작가>), 없으면 빈 글.
+    auto pxOldBookmarkDir = [&pxPersonDirs](const QString &pixivDir, const QString &uid, const QString &sub,
+                                            const QStringList &patterns, QDir::Filters kind) -> QString {
+        for (const QString &n : pxPersonDirs(pixivDir, uid)) {
+            const QString d = pixivDir + "/" + n + "/bookmarks/" + sub;
+            if (!QDir(d).exists()) continue;
+            // ★ 폴더(소설)는 이름 그대로 본다 — QDir 이름 필터는 와일드카드라, 제목에 남는 '[' ']'(유닉스 이름이면 '*' '?' 도)가
+            //   문자 묶음이 되어 '[R-18] …' 같은 옛 소설을 못 찾고 새 자리에 또 받았다(검토). 작품 패턴(숫자뿐)만 와일드카드로.
+            if (kind == QDir::Dirs) {
+                for (const QString &p : patterns)
+                    if (!p.isEmpty() && QFileInfo(d + "/" + p).isDir()) return pixivDir + "/" + n;
+                continue;
+            }
+            if (!QDir(d).entryList(patterns, kind | QDir::NoDotAndDotDot).isEmpty()) return pixivDir + "/" + n;
+        }
+        return QString();
+    };
+    // ★ r56 — 북마크를 받는 판의 대상(북마크한 사람) 폴더 이름. 북마크 작품은 이제 대상 폴더 아래 bookmarks/<작가>/ 에 둔다 —
+    //   예전엔 작가 폴더(pixiv/<작가>/bookmarks/)에 두어, 정리하기가 그 대상의 것으로 찾지 못했다(북마크만 받는 대상은 '받은 것 없음').
+    QString pxTargetDirName;
+
     // Excel complete data (downloadIllust에서 추가)
     QJsonArray pxExcelData;
 
@@ -13931,11 +14618,22 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
         QString pixivUserId = body["userId"].toString();
         pxLastAuthorId = pixivUserId;
         QString pixivDir = savePath + "/pixiv";
-        QString userBaseDir = pixivDir + "/" + pixivUserId + "_" + sanitizeFilename(pixivUserName.left(30).trimmed(), 30);
-        // 타입별 서브폴더: bookmarks → bookmarks/illusts/, user → illusts/, illust → illusts/
+        QString userBaseDir = pixivDir + "/" + pxPersonDir(pixivDir, pixivUserId, pixivUserName);
+        // 타입별 서브폴더: bookmarks → <대상>/bookmarks/<작가>/illusts/ (r56), user → illusts/, illust → illusts/
         QString userSaveDir;
         if (type == "bookmarks") {
-            userSaveDir = userBaseDir + "/bookmarks/illusts";
+            userSaveDir = userBaseDir + "/bookmarks/illusts";   // r56 전의 자리 — 이미 거기 받은 작품은 거기서 빠진 쪽만 채운다
+            const QString pxBmOld = pxOldBookmarkDir(pixivDir, pixivUserId, QStringLiteral("illusts"),
+                                                     {QString("*(%1).*").arg(iid), QString("*(%1_*).*").arg(iid)}, QDir::Files);
+            if (!pxBmOld.isEmpty()) {
+                userBaseDir = pxBmOld;   // _complete · captures 도 옛 작가 폴더 그대로
+                userSaveDir = pxBmOld + "/bookmarks/illusts";
+            } else if (!pxTargetDirName.isEmpty()) {
+                // ★ 옛 자리에 없는 작품만 새 자리로 — 옛 것까지 옮기면 받아 둔 북마크를 전부 다시 받고 캡처도 다시 떴다
+                const QString bmRoot = pixivDir + "/" + pxTargetDirName + "/bookmarks";
+                userBaseDir = bmRoot + "/" + pxPersonDir(bmRoot, pixivUserId, pixivUserName);
+                userSaveDir = userBaseDir + "/illusts";
+            }
         } else {
             userSaveDir = userBaseDir + "/illusts";
         }
@@ -14259,10 +14957,20 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
         // 저장 경로: pixiv/{userId}_{userName}/{novels|bookmarks/novels}/{제목}_{ID}/
         QString nPixivUserId = nBody["userId"].toString();
         QString nPixivDir = savePath + "/pixiv";
-        QString nUserDir = nPixivDir + "/" + nPixivUserId + "_" + sanitizeFilename(nUserName.left(30).trimmed(), 30);
+        QString nUserDir = nPixivDir + "/" + pxPersonDir(nPixivDir, nPixivUserId, nUserName);
         QString novelFolderName = sanitizeFilename(nTitle.left(50).trimmed(), 50) + "_" + nid;
         QString novelsBase = (type == "bookmarks") ? "/bookmarks/novels/" : "/novels/";
         QString novelDir = nUserDir + novelsBase + novelFolderName;
+        // ★ r56 — 북마크 소설도 대상 폴더 아래 bookmarks/<작가>/novels/ 로(옛 자리에 이미 있는 소설은 거기 그대로 — 작가 폴더가 여럿이면 모두 본다)
+        if (type == "bookmarks") {
+            const QString old = pxOldBookmarkDir(nPixivDir, nPixivUserId, QStringLiteral("novels"), {novelFolderName}, QDir::Dirs);
+            if (!old.isEmpty()) {
+                novelDir = old + "/bookmarks/novels/" + novelFolderName;
+            } else if (!pxTargetDirName.isEmpty()) {
+                const QString bmRoot = nPixivDir + "/" + pxTargetDirName + "/bookmarks";
+                novelDir = bmRoot + "/" + pxPersonDir(bmRoot, nPixivUserId, nUserName) + "/novels/" + novelFolderName;
+            }
+        }
         QDir().mkpath(novelDir);
 
         // ── 삽입 이미지 처리: [uploadedimage:XXX] / [pixivimage:XXX[-pageNum]] ──
@@ -14535,10 +15243,11 @@ void HanishikiBackend::runPixivCollection(const QJsonObject &config)
             if (nameResp.isOk()) {
                 pixivUserName = nameResp.json()["body"].toObject()["name"].toString();
             }
-            QString userDirName = userId;
-            if (!pixivUserName.isEmpty()) userDirName += "_" + sanitizeFilename(pixivUserName.left(30).trimmed(), 30);
+            // ★ r56 — 이미 있는 '<ID>_…' · '<ID>' 폴더를 쓴다(이름을 바꿨거나 이름을 못 얻은 판에 두 번째 폴더를 만들지 않는다)
+            QString userDirName = pxPersonDir(pixivDir, userId, pixivUserName);
             QString profileSaveDir = pixivDir + "/" + userDirName + "/profiles";
             pxUserDirName = userDirName;
+            pxTargetDirName = userDirName;
             QDir().mkpath(profileSaveDir);
             downloadPixivProfile(userId, profileSaveDir);
         }
@@ -22604,6 +23313,8 @@ void HanishikiBackend::runCrawlCollection(const QJsonObject &config)
         }
         QThread *thread = QThread::create([this, urlList, capturesDir, crawlDir, loginCheckJs, crawlCookies, config, crawlRun,
                                            record, recordLogins]() {
+            // ★ r56 — 지난번에 저장 폴더로 못 옮긴 캡쳐를 먼저 옮긴다(옆 기록이 있는 것만 — 크롤은 트위터 저장 경로를 찾아보지 않는다)
+            if (!record) deliverStagedCaptures(QString());
             int saved = 0;
             for (int i = 0; i < urlList.size(); ++i) {
                 if (!platformRunning("crawl", true) || crawlRun != s_crawlRun.load()) break;

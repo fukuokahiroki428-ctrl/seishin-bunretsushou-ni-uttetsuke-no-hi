@@ -11,6 +11,7 @@
 #include <QDateTime>
 #include <QProcess>
 #include <QCoreApplication>
+#include <limits>
 
 HttpClient::HttpClient(QObject *parent)
     : QObject(parent)
@@ -76,6 +77,47 @@ namespace {
 struct InFlight {
     InFlight() { s_inFlight.fetch_add(1, std::memory_order_acq_rel); }
     ~InFlight() { s_inFlight.fetch_sub(1, std::memory_order_acq_rel); }
+};
+}
+
+// ★ 받기의 시간 재기는 '전체 시간' 이 아니라 '멎은 시간' 이다(r56). 예전엔 한 번 건 120초가 받기 전체를 잘라, 느린 회선 · 프록시에서
+//   수백 MB 영상은 매번 끝까지 받지 못하고 지워졌다(그리고 다음 판도 같은 자리에서 또 잘렸다). 이제 자료가 올 때마다 다시 잰다
+//   (m_downloadTimeout = 멎어도 되는 시간). 끝없이 늘어지는 것만 막는 안전망으로 전체 상한을 둔다 — 크기를 알면
+//   max(15분, 크기 ÷ 64KB/s), 모르면 30분.
+static int downloadCapMs(qint64 contentLength)
+{
+    constexpr qint64 kMinCap = 15LL * 60 * 1000;
+    if (contentLength > 0)
+        return int(qMin<qint64>(std::numeric_limits<int>::max(), qMax(kMinCap, contentLength * 1000 / (64 * 1024))));
+    return 30 * 60 * 1000;
+}
+
+namespace {
+// 멎은 시간(idle) · 전체 상한(cap) 두 시계 — 둘 중 하나가 울리면 timedOut 을 세우고 루프를 끝낸다.
+struct DownloadClock {
+    QTimer idle, cap;
+    QElapsedTimer since;
+    bool timedOut = false;
+    int idleMs = 60000;
+    void arm(QNetworkReply *reply, QEventLoop &loop, int idleMsIn)
+    {
+        idleMs = idleMsIn > 0 ? idleMsIn : 60000;
+        idle.setSingleShot(true);
+        cap.setSingleShot(true);
+        QObject::connect(&idle, &QTimer::timeout, &loop, [this, &loop]() { timedOut = true; loop.quit(); });
+        QObject::connect(&cap, &QTimer::timeout, &loop, [this, &loop]() { timedOut = true; loop.quit(); });
+        // 크기를 알게 되면(머리글이 오면 — 넘겨주기마다 다시 온다) 상한을 그 크기에 맞춘다. 이미 흐른 시간은 뺀다.
+        QObject::connect(reply, &QNetworkReply::metaDataChanged, &loop, [this, reply]() {
+            const QVariant cl = reply->header(QNetworkRequest::ContentLengthHeader);
+            const qint64 left = qint64(downloadCapMs(cl.isValid() ? cl.toLongLong() : 0)) - since.elapsed();
+            cap.start(int(qMax<qint64>(1000, left)));
+        });
+        since.start();
+        idle.start(idleMs);
+        cap.start(downloadCapMs(0));
+    }
+    void poke() { idle.start(idleMs); }   // 자료가 왔다 — 멎은 시간을 다시 잰다
+    void stop() { idle.stop(); cap.stop(); }
 };
 }
 
@@ -162,8 +204,7 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
     }
 
     QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
+    DownloadClock clock;   // 멎은 시간 · 전체 상한(위 downloadCapMs 설명)
 
     // Write data as it arrives (streaming)
     // ★ write 의 반환값을 본다. 디스크가 차면 조용히 모자라게 쓰이고, 그 파일이
@@ -172,10 +213,10 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
     connect(reply, &QNetworkReply::readyRead, [&]() {
         const QByteArray chunk = reply->readAll();
         if (file.write(chunk) != chunk.size()) writeFailed = true;
+        clock.poke();
     });
 
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
 
     // 중지 플래그 폴링 — 파일 다운로드 중에도 중단 가능하게
     QTimer cancelPoll;
@@ -193,18 +234,18 @@ bool HttpClient::downloadFile(const QString &url, const QString &filePath,
         cancelPoll.start();
     }
 
-    timer.start(m_downloadTimeout);
+    clock.arm(reply, loop, m_downloadTimeout);
     loop.exec();
     cancelPoll.stop();
     // ★ 받기도 시간 초과도 아닌데 루프가 끝났다면 바깥에서 끝낸 것이다(앱이 끝날 때 QCoreApplication::exit 는 주 스레드의
     //   모든 루프를 끝낸다). 그때를 '다 받음' 으로 읽으면 잘린 자료가 성공이 된다 — 취소로 다룬다.
-    if (!cancelled && timer.isActive() && !reply->isFinished()) { cancelled = true; reply->abort(); }
+    if (!cancelled && !clock.timedOut && !reply->isFinished()) { cancelled = true; reply->abort(); }
 
     bool success = false;
     if (cancelled) {
         // 중지 요청 — 부분 파일은 곧 아래에서 삭제됨
-    } else if (timer.isActive()) {
-        timer.stop();
+    } else if (!clock.timedOut) {
+        clock.stop();
         // Write any remaining data
         const QByteArray remaining = reply->readAll();
         if (!remaining.isEmpty() && file.write(remaining) != remaining.size()) writeFailed = true;
@@ -310,12 +351,12 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
     bool writeFailed = false;
 
     QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
+    DownloadClock clock;   // downloadFile 과 같다 — 멎은 시간 · 전체 상한
 
     connect(reply, &QNetworkReply::readyRead, [&]() {
         QByteArray chunk = reply->readAll();
         if (file.write(chunk) != chunk.size()) writeFailed = true;
+        clock.poke();
         hash.addData(chunk);
         // 첫 512바이트 캡처
         if (totalWritten < 512) {
@@ -326,7 +367,6 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
     });
 
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
 
     // 중지 플래그 폴링
     QTimer cancelPoll;
@@ -344,17 +384,17 @@ HttpClient::DownloadResult HttpClient::downloadFileEx(const QString &url, const 
         cancelPoll.start();
     }
 
-    timer.start(m_downloadTimeout);
+    clock.arm(reply, loop, m_downloadTimeout);
     loop.exec();
     cancelPoll.stop();
     // ★ 받기도 시간 초과도 아닌데 루프가 끝났다면 바깥에서 끝낸 것이다(앱이 끝날 때 QCoreApplication::exit 는 주 스레드의
     //   모든 루프를 끝낸다). 그때를 '다 받음' 으로 읽으면 잘린 자료가 성공이 된다 — 취소로 다룬다.
-    if (!cancelled && timer.isActive() && !reply->isFinished()) { cancelled = true; reply->abort(); }
+    if (!cancelled && !clock.timedOut && !reply->isFinished()) { cancelled = true; reply->abort(); }
 
     if (cancelled) {
         // fallthrough → 아래 파일 삭제
-    } else if (timer.isActive()) {
-        timer.stop();
+    } else if (!clock.timedOut) {
+        clock.stop();
         QByteArray remaining = reply->readAll();
         if (!remaining.isEmpty()) {
             if (file.write(remaining) != remaining.size()) writeFailed = true;
