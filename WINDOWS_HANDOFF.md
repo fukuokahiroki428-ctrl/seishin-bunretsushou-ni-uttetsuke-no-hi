@@ -2144,3 +2144,54 @@ X 의 검색은 긴 공백을 한 번에 건너지 못해서, **70일 넘게 쉰
 R1 공백 셋을 건너 12/12 · 바닥 표시, R2 건너뛰기로 until 검색 55 → 11, R3 표시 뒤에 올라온 공백 너머의 글, R4 `oldest` 아래로 내려가지 않음.
 가짜 X 의 `created_ms`(없으면 가장 오래된 제 글 이틀 전 — 최근 글만 둔 시험들이 몇 년치 빈 주를 걷지 않게).
 기능 시험 19/19 · inspect_all --doctor --hotfix 6/6 · 앱 minos 26.0 · Mach-O 253 개 모두 arm64.
+
+---
+
+# ★ 맥 → 윈도우 (2026-11-28): r56 — X 검색은 이제 POST 만 받습니다 · 정지 계정 · 검색 커서 · 캡처 배달 · 정리하기
+
+맥 `ueno` `4607a7a` · `mac-4.0.0-r56`. **①은 급합니다 — 윈도우 판도 지금 검색이 전부 실패하고 있을 것입니다.**
+
+### ① SearchTimeline: GET → 빈 본문 404 (2026-11-21 ~04:00 UTC 부터)
+- 같은 주소(`/i/api/graphql/<id>/SearchTimeline`)에 **POST**, `content-type: application/json`, 본문 `{"variables":…, "features":…, "queryId":"<id>"}`
+  → 200. x-client-transaction-id 는 POST 와 그 경로로 만듭니다. X 의 웹 앱(responsive-web main.js)도 그렇게 보냅니다
+  (공개 보고: RSSHub PR #23359, twikit fork PR #6, gallery-dl #9275, XActions #42).
+- 같은 404 가 예전엔 '해시가 바뀌었다' 였습니다 — 그대로 두면 해시를 긁고 데몬을 다시 띄운 뒤 검색을 포기하고 타임라인(최근 약 3200개)만 받습니다.
+- 맥 데몬(`resources/tools/twitter_daemon.py` `_gql_request`): GraphQL 을 모두 한 도우미로 — SearchTimeline 은 POST, 나머지는 GET 으로 시작,
+  **빈 본문 404 면 다른 방법으로 한 번 더** 묻고 맞은 방법을 `<자료 폴더>/graphql_methods.json` 에 7일 기억. 두 방법 다 404 일 때만 해시 수리.
+  검색 변수에 `withGrokTranslatedBio:false` · `withQuickPromoteEligibilityTweetFields:false`, features 는 웹 앱의 키(42개)를 넣었습니다.
+- 2026-11-27 GET 으로 200 이던 것: UserByScreenName · UserTweets · Followers · TweetDetail · UserHighlightsTweets(Followers 도 곧 POST 만 받는다는 보고가 있어
+  위의 되묻기를 모든 작업에 걸었습니다).
+
+### ② 정지된 계정은 POST 로도 검색이 막힙니다
+- 200 응답에 `errors[].message = "InvalidArgument: ProductDisabled: Closed gate stopped execution of the pipeline (LatestTabSrpDenySuspendedUsers)"`
+  (Top 이면 `TopTabSrpDenySuspendedUsers`), `data.search_by_raw_query.search_timeline = {}`. `GET /i/api/1.1/account/verify_credentials.json` 의 `suspended`.
+  그 계정으로도 타임라인 · 글 상세 · 프로필은 받힙니다.
+- 맥: 데몬이 `_cause: account_suspended` 로 알리고(새 `account_status` 동작 — 이름 · 메일 · 토큰은 돌려주지 않습니다), C++ 은 판마다 계정당 한 번
+  확인해 그 계정을 검색에서 빼고 다른 계정으로, 모두 막혔으면 한 번 알리고 검색 단계를 오류로 끝냅니다(바닥 · 걸음 표시 · 진행 기록을 남기지 않음,
+  타임라인 단계는 돎). 기간 판은 그때 타임라인으로 그 기간을 받습니다(쪽 전체가 기간보다 옛것이면 멈춤).
+
+### ③ 검색이 두 쪽(약 40개)에서 끊기던 것 — 윈도우 트리도 같은 코드입니다
+- 2쪽부터 다음 커서(cursor-bottom)는 `TimelineReplaceEntry` 지시의 `entry.content.value` 로 옵니다(twikit 2.3.3 client.py:771-778 이 이렇게 읽습니다).
+  `searchTweets` 가 `TimelineAddEntries` 만 보면 커서가 비어 기간 · 좁히기 · 답글 기간 판이 두 쪽에서 끝나고, until: 걸음은 바쁜 날의 나머지를 버렸습니다.
+  맥은 데몬이 그 항목을 AddEntries 로 옮기고 C++ 도 ReplaceEntry 를 읽습니다. 모든 검색 반복에 '같은 커서면 끝' · 400쪽 상한.
+- 바쁜 날: 그 날이 질의 하나에 다 들지 않으면 `max_id:<가장 옛 ID-1>` 로 잇고, 안 들으면(그대로 같은 글) 구멍으로 보고 바닥 · 걸음 표시를 적지 않습니다.
+- 기간 판은 기간 시작까지 until 걸음(since: 유지) + `filter:nativeretweets include:nativeretweets` 리포스트 걸음, '새 글만' · 'both' 앞 단계는 지난번
+  가장 새 글을 만날 때까지 내려갑니다(커서가 마른 것만으로 '다 봤다' 고 하지 않습니다). 모양 없는 쪽(errors 만 든 200)은 공백이 아니라 오류.
+
+### ④ 그 밖의 트위터(맥 r56)
+- 실패한 미디어는 `.hanishiki_media_retry_<엑셀>.json` 에 적고 다음 판에 글 상세로 다시 받습니다. 다운로드 시간 제한은 '쉬는 시간 60초'(예전 전체 120초 —
+  긴 영상이 늘 실패). mp4 없이 HLS 만 있는 영상은 yt-dlp 로(`/video/<미디어 순번>`).
+- **엑셀 38칸** — 끝에 alt_text · card_title · card_url · article_title · article_text · edit_ids · quoted_text · quoted_author 를 붙였습니다(옛 30칸 파일은 채워 다시 씀).
+  두 판의 엑셀을 같은 모양으로 두려면 윈도우도 같은 순서로 붙여 주십시오.
+- 팔로워 · 팔로잉이 오류로 끝나면 받아 둔 목록과 합칩니다(짧은 목록으로 덮어쓰던 것). 오류 ERROR 무한 재시도는 5번에서 끊고 다음 단계로.
+  스레드 자동 찾기는 in_reply_to 칸이 '@이름 (ID)' 라 한 번도 맞지 않았습니다(정규식으로 이름만).
+- 고정한 글: UserTweets 첫 쪽의 `TimelinePinEntry` 를 읽어 종류 칸에 📌(U+1F4CC)+빈칸.
+
+### ⑤ 캡처 · 정리하기(맥)
+- 외장 · NAS 로 옮기지 못한 캡처가 '✅ 캡쳐 완료' 로 찍히고 임시 폴더에 남던 것: 옆에 `.dest.json` 을 두고 디스크가 있을 때 옮깁니다(크기 확인).
+- '더 보기' 를 X 본문 칸(primaryColumn)에서만 누르고 메뉴를 여는 단추(aria-haspopup)는 뺍니다 — 오른쪽 아래 '더 보기' 메뉴가 열린 채 찍혔습니다.
+  고정 15초 스크롤 · 같은 페이지 두 번 열기도 없앴습니다.
+- 정리하기: 블루스카이 `.bsky.social`(수집기는 폴더에서 뗍니다) · 디스코드 `discord/<서버 이름>/<채널>_<채널ID>` · 픽시브(이름을 바꾼 작가의 두 폴더 ·
+  숫자만인 폴더 · 북마크)를 찾게 했습니다.
+
+시험(맥): 기능 시험 23가지 · 점검 6/6.
